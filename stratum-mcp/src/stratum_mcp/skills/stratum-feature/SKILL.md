@@ -1,20 +1,31 @@
 ---
 name: stratum-feature
-description: Implement a feature using the Stratum MCP server — read existing patterns, design, implement, write passing tests. Each phase is a postcondition-checked step.
+description: Implement a feature using the Stratum MCP server — read existing patterns, design, implement, write passing tests. Each phase is a postcondition-checked step. Use with "--plan-only" to stop after design for review.
 ---
 
 # Stratum Feature
 
 Implement a feature using Stratum: read → design → implement → test.
 
+## When to Use
+
+- Implementing a feature that touches multiple files or has non-obvious design
+- When you want postcondition-checked phases (read → design → implement → test)
+- **Plan only:** Add `--plan-only` to stop after the design step — get the approach reviewed before writing code. Equivalent to the old `/stratum-plan`.
+- As a building block inside larger workflows (compose, stratum-build)
+
 ## Instructions
 
 1. Understand the request — ask one clarifying question if the scope is ambiguous
 2. Read the relevant files before writing the spec (you need real file contents for the `read` steps)
 3. Write a `.stratum.yaml` spec internally using the template below — **never show it to the user**
-4. Call `stratum_plan` with the spec, flow `"add_feature"`, and inputs containing the file contents
+4. Call `stratum_plan` with the spec and inputs containing the file contents
 5. Execute each step using your tools, calling `stratum_step_done` after each
 6. Narrate progress in plain English — what you're doing, what you found, what you built
+
+**Plan-only mode:** Use flow `"plan_feature"` (2 steps: read → design). Present the design and **stop** — do not implement. Wait for user to approve or redirect.
+
+**Full mode (default):** Use flow `"add_feature"` (4 steps: read → design → implement → test).
 
 **If a step fails its postcondition:** fix your output and retry silently. Don't mention YAML — say what you corrected.
 
@@ -24,7 +35,7 @@ Implement a feature using Stratum: read → design → implement → test.
 
 ## Spec Template
 
-Adapt `intent` fields and contract fields for the specific feature. The four-step structure (read → design → implement → test) is fixed.
+Adapt `intent` fields and contract fields for the specific feature. The step structures below are fixed.
 
 ```yaml
 version: "0.1"
@@ -37,6 +48,8 @@ contracts:
     approach: {type: string}
     files_to_change: {type: string}
     edge_cases: {type: string}
+    trade_offs: {type: string}
+    open_questions: {type: string}
   ImplementationResult:
     files_changed: {type: string}
     summary: {type: string}
@@ -68,6 +81,8 @@ functions:
       Follow the patterns identified in the analysis.
       List every file that will change and why.
       Identify edge cases that must be handled.
+      State trade-offs honestly — if there are two reasonable approaches, describe both.
+      List any open questions that would change the design if answered differently.
     input:
       analysis: {type: string}
       feature_description: {type: string}
@@ -108,6 +123,24 @@ functions:
     retries: 3
 
 flows:
+  plan_feature:
+    input:
+      file_contents: {type: string}
+      feature_description: {type: string}
+    output: FeatureDesign
+    steps:
+      - id: s1
+        function: read_codebase
+        inputs:
+          file_contents: "$.input.file_contents"
+          feature_description: "$.input.feature_description"
+      - id: s2
+        function: design_feature
+        inputs:
+          analysis: "$.steps.s1.output.patterns"
+          feature_description: "$.input.feature_description"
+        depends_on: [s1]
+
   add_feature:
     input:
       file_contents: {type: string}
@@ -141,6 +174,32 @@ flows:
 
 ## Narration Pattern
 
+### Plan-only mode
+```
+Reading the codebase...
+Designing the approach...
+
+Here's the plan:
+
+**What changes:**
+[files and why, in plain English]
+
+**Approach:**
+[the design in 3-5 sentences]
+
+**Edge cases to handle:**
+[list]
+
+**Trade-offs:**
+[honest description of alternatives considered]
+
+**Open questions:**
+[anything that would change the design if answered differently — or "none"]
+
+Ready to implement when you are. Or redirect me if the approach isn't right.
+```
+
+### Full mode
 ```
 Reading the codebase...
 Designing the approach...
@@ -154,7 +213,7 @@ After completion, call `stratum_audit` and include the trace in the commit descr
 
 ## Memory
 
-**Before writing the spec:** Read the project's `MEMORY.md` (at `.claude/memory/MEMORY.md` or the root). Find any lines tagged `[stratum-feature]`. Incorporate them into the `intent` fields — they encode patterns like test conventions, module boundaries, or constraints that prior sessions discovered.
+**Before writing the spec:** Read the project's `MEMORY.md` (at `.claude/memory/MEMORY.md` or the root). Find any lines tagged `[stratum-feature]` or `[stratum-plan]`. Incorporate them into the `intent` fields — they encode patterns like test conventions, module boundaries, or constraints that prior sessions discovered.
 
 **After `stratum_audit`:** For each step with `attempts > 1`, ask: does the retry reveal a project-specific constraint (a non-obvious coupling, a test convention, an invariant that must be preserved)? If yes, append a one-liner to `MEMORY.md`:
 

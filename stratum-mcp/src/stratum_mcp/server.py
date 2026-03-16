@@ -197,8 +197,9 @@ async def stratum_step_done(
         child_st = _flows.get(_child_fid_before) if _child_fid_before else None
         if child_st is not None:
             _child_audit = _build_audit_snapshot(child_st)
-        # Unwrap child result: extract output, None on failure
-        result = result.get("output") if isinstance(result, dict) else result
+        # Unwrap child result: extract output if wrapped in completion envelope
+        if isinstance(result, dict) and "status" in result and "output" in result:
+            result = result["output"]
 
     try:
         status, violations = process_step_result(state, step_id, result)
@@ -1316,6 +1317,7 @@ def _remove_hooks(root: Path, removed: list[str]) -> None:
 def _cmd_setup() -> None:
     """Write .claude/mcp.json and append Stratum block to CLAUDE.md."""
     import json
+    import shutil
     from pathlib import Path
 
     # Walk up from cwd to find project root (nearest .git or CLAUDE.md)
@@ -1367,9 +1369,20 @@ def _cmd_setup() -> None:
         print("  CLAUDE.md: created")
         changed.append("CLAUDE.md")
 
-    # --- Skills ---
+    # --- Skills (sync with manifest) ---
     skills_home = Path.home() / ".claude" / "skills"
     pkg_skills = Path(__file__).parent / "skills"
+    manifest_path = skills_home / ".stratum-skills.json"
+
+    # Load previous manifest
+    previous_skills: list[str] = []
+    if manifest_path.exists():
+        try:
+            previous_skills = json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    current_skills: list[str] = []
     if pkg_skills.is_dir():
         for skill_dir in sorted(pkg_skills.iterdir()):
             if not skill_dir.is_dir():
@@ -1377,6 +1390,7 @@ def _cmd_setup() -> None:
             src = skill_dir / "SKILL.md"
             if not src.exists():
                 continue
+            current_skills.append(skill_dir.name)
             dest_dir = skills_home / skill_dir.name
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / "SKILL.md"
@@ -1388,6 +1402,20 @@ def _cmd_setup() -> None:
                 verb = "updated" if dest.exists() else "installed"
                 print(f"  ~/.claude/skills/{skill_dir.name}: {verb}")
                 changed.append(f"skills/{skill_dir.name}")
+
+    # Remove skills from previous install that no longer exist in package
+    for old_skill in previous_skills:
+        if old_skill not in current_skills:
+            old_dir = skills_home / old_skill
+            if old_dir.exists():
+                shutil.rmtree(old_dir)
+                print(f"  ~/.claude/skills/{old_skill}: removed (no longer in package)")
+                changed.append(f"skills/{old_skill} (removed)")
+
+    # Write updated manifest
+    if current_skills:
+        skills_home.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(current_skills, indent=2) + "\n")
 
     # --- Hooks ---
     _install_hooks(root, changed)
@@ -1401,6 +1429,7 @@ def _cmd_setup() -> None:
 def _cmd_uninstall(keep_skills: bool = False) -> None:
     """Remove Stratum config from the project and optionally from ~/.claude/skills/."""
     import json
+    import shutil
     from pathlib import Path
 
     root = Path.cwd()
@@ -1453,28 +1482,40 @@ def _cmd_uninstall(keep_skills: bool = False) -> None:
         print("  CLAUDE.md: not found — skipped")
 
     # --- Skills ---
+    skills_home = Path.home() / ".claude" / "skills"
+    manifest_path = skills_home / ".stratum-skills.json"
     if keep_skills:
         print("  ~/.claude/skills/stratum-*: kept (--keep-skills)")
     else:
-        skills_home = Path.home() / ".claude" / "skills"
+        # Remove all skills tracked by manifest + current package
+        to_remove: set[str] = set()
+        # From manifest
+        if manifest_path.exists():
+            try:
+                to_remove.update(json.loads(manifest_path.read_text()))
+            except (json.JSONDecodeError, OSError):
+                pass
+        # From current package (in case manifest was missing)
         pkg_skills = Path(__file__).parent / "skills"
         if pkg_skills.is_dir():
             for skill_dir in sorted(pkg_skills.iterdir()):
-                if not skill_dir.is_dir():
-                    continue
-                dest = skills_home / skill_dir.name / "SKILL.md"
-                dest_dir = skills_home / skill_dir.name
-                if dest.exists():
-                    dest.unlink()
-                    # Remove the directory if now empty
-                    try:
-                        dest_dir.rmdir()
-                    except OSError:
-                        pass
-                    print(f"  ~/.claude/skills/{skill_dir.name}: removed")
-                    removed.append(f"skills/{skill_dir.name}")
-                else:
-                    print(f"  ~/.claude/skills/{skill_dir.name}: not found — skipped")
+                if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
+                    to_remove.add(skill_dir.name)
+
+        for skill_name in sorted(to_remove):
+            dest_dir = skills_home / skill_name
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+                print(f"  ~/.claude/skills/{skill_name}: removed")
+                removed.append(f"skills/{skill_name}")
+            else:
+                print(f"  ~/.claude/skills/{skill_name}: not found — skipped")
+
+    # Clean up manifest
+    if manifest_path.exists():
+        manifest_path.unlink()
+        if not keep_skills:
+            print("  ~/.claude/skills/.stratum-skills.json: removed")
 
     # --- Hooks ---
     _remove_hooks(root, removed)
