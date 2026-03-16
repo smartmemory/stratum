@@ -1215,6 +1215,12 @@ def _install_hooks(root: Path, changed: list[str]) -> None:
         old_command = f"bash .claude/hooks/{script_name}"
         event_hooks: list = hooks_cfg.setdefault(event, [])
 
+        # Remove old-format entries ({"command": ..., "args": [...]}) — no "hooks" key
+        old_format = [e for e in event_hooks if "hooks" not in e]
+        if old_format:
+            event_hooks[:] = [e for e in event_hooks if "hooks" in e]
+            registered_any = True
+
         # Remove old relative-path commands from entries (migration)
         for entry in event_hooks:
             entry_hooks = entry.get("hooks", [])
@@ -1233,7 +1239,7 @@ def _install_hooks(root: Path, changed: list[str]) -> None:
         if already:
             print(f"  settings.json hooks.{event}: stratum entry already present — skipped")
         else:
-            event_hooks.append({"hooks": [{"type": "command", "command": command}]})
+            event_hooks.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
             registered_any = True
 
     if registered_any:
@@ -1286,6 +1292,11 @@ def _remove_hooks(root: Path, removed: list[str]) -> None:
         old_command = f"bash .claude/hooks/{script_name}"
         if event not in hooks_cfg:
             continue
+        # Remove old-format entries (no "hooks" key)
+        valid = [e for e in hooks_cfg[event] if "hooks" in e]
+        if len(valid) < len(hooks_cfg[event]):
+            hooks_cfg[event] = valid
+            changed = True
         for entry in hooks_cfg[event]:
             entry_hooks = entry.get("hooks", [])
             filtered = [
