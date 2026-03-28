@@ -414,6 +414,60 @@ def test_parallel_done_require_n_passes_when_met():
         _flows.pop(flow_id, None)
 
 
+# ---------------------------------------------------------------------------
+# 8b. parallel_dispatch with isolation="none" passes through (STRAT-REV Task 1)
+# ---------------------------------------------------------------------------
+
+_V03_ISOLATION_NONE = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: claude
+            isolation: none
+            intent_template: "Do: {task.desc}"
+            depends_on: [analyze]
+""")
+
+
+def test_parallel_dispatch_isolation_none_passes_through():
+    """isolation: none is returned in the dispatch object, not defaulted to worktree."""
+    result = _run(stratum_plan(
+        spec=_V03_ISOLATION_NONE, flow="main", inputs={}, ctx=None,
+    ))
+    flow_id = result["flow_id"]
+
+    try:
+        # Complete analyze (decompose)
+        task_graph = {
+            "tasks": [
+                {"id": "t1", "desc": "task 1", "files_owned": ["a.py"], "depends_on": []},
+                {"id": "t2", "desc": "task 2", "files_owned": ["b.py"], "depends_on": []},
+            ]
+        }
+        _run(stratum_step_done(flow_id, "analyze", task_graph, ctx=None))
+
+        # Get execute step info — isolation should be "none", not "worktree"
+        state = _flows[flow_id]
+        info = get_current_step_info(state)
+        assert info["status"] == "parallel_dispatch"
+        assert info["isolation"] == "none"
+    finally:
+        _flows.pop(flow_id, None)
+
+
 def test_parallel_done_require_n_fails_when_not_met():
     result = _run(stratum_plan(
         spec=_V03_REQUIRE_N, flow="main", inputs={}, ctx=None,

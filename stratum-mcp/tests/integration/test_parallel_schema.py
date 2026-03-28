@@ -316,6 +316,25 @@ def test_max_concurrent_defaults_to_3():
 # _step_mode handles new types
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# isolation: "none" validates for parallel_dispatch steps (STRAT-REV Task 1)
+# ---------------------------------------------------------------------------
+
+def test_isolation_none_validates():
+    """A parallel_dispatch step with isolation: none parses without error."""
+    ir = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: none\n",
+    )
+    spec = parse_and_validate(ir)
+    execute_step = next(s for s in spec.flows["build"].steps if s.id == "execute")
+    assert execute_step.isolation == "none"
+
+
+# ---------------------------------------------------------------------------
+# _step_mode handles new types
+# ---------------------------------------------------------------------------
+
 def test_step_mode_decompose():
     from stratum_mcp.executor import _step_mode
     spec = parse_and_validate(_VALID_V03_SPEC)

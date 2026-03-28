@@ -487,7 +487,7 @@ _IR_SCHEMA_V03: dict = {
                 # v0.3 STRAT-PAR: parallel_dispatch fields
                 "source": {"type": "string"},
                 "max_concurrent": {"type": "integer", "minimum": 1},
-                "isolation": {"type": "string", "enum": ["worktree", "branch"]},
+                "isolation": {"type": "string", "enum": ["worktree", "branch", "none"]},
                 "require": {"oneOf": [
                     {"type": "string", "enum": ["all", "any"]},
                     {"type": "integer", "minimum": 1},
