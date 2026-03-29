@@ -9,21 +9,73 @@ pip install stratum-mcp
 stratum-mcp install
 ```
 
-`setup` configures Claude Code in one command: writes `.claude/mcp.json`, appends the execution model block to `CLAUDE.md`, and installs nine skills to `~/.claude/skills/`. Restart Claude Code and it's active.
+`install` configures Claude Code in one command: writes `.claude/mcp.json`, appends the execution model block to `CLAUDE.md`, installs skills to `~/.claude/skills/`, and registers session hooks to `~/.stratum/hooks/`. Restart Claude Code and it's active.
+
+## IR Spec (v0.3)
+
+Stratum specs are YAML files with typed contracts, step definitions, and postcondition ensures:
+
+```yaml
+version: "0.3"
+
+contracts:
+  ReviewResult:
+    clean:    {type: boolean}
+    summary:  {type: string}
+    findings: {type: array}
+
+flows:
+  my_flow:
+    steps:
+      - id: implement
+        agent: claude
+        intent: "Build the feature"
+        output_contract: ReviewResult
+        ensure:
+          - "result.clean == True"
+        retries: 3
+```
+
+### Step types
+
+| Type | Purpose |
+|---|---|
+| `inline` | Single agent step with intent + ensures (default) |
+| `function` | Named function reference |
+| `flow` | Sub-flow invocation |
+| `decompose` | Agent decomposes work into a TaskGraph |
+| `parallel_dispatch` | Fan-out tasks from a TaskGraph with concurrency control |
+
+### Parallel dispatch (v0.3)
+
+```yaml
+- id: execute
+  type: parallel_dispatch
+  source: "$.steps.decompose.output.tasks"
+  max_concurrent: 3
+  isolation: worktree    # worktree | branch | none
+  require: all           # all | any | N
+  merge: sequential_apply
+  intent_template: "Implement {task.description}"
+```
+
+- `isolation: worktree` — git worktree per task (write isolation)
+- `isolation: none` — shared working directory (read-only tasks)
+- `require` — how many tasks must pass: `all`, `any`, or integer N
 
 ## Skills
 
 | Skill | What it structures |
 |---|---|
-| `/stratum-onboard` | Read a new codebase cold and write project-specific `MEMORY.md` — run once after setup |
+| `/stratum-onboard` | Read a new codebase cold and write project-specific `MEMORY.md` |
 | `/stratum-plan` | Design a feature and present it for review — no implementation until approved |
 | `/stratum-feature` | Feature build: read existing patterns → design → implement → tests pass |
 | `/stratum-review` | Three-pass code review: security → logic → performance → consolidate |
-| `/stratum-debug` | Debug: read test → read code → check env → form hypotheses → confirm/rule out → fix |
+| `/stratum-debug` | Debug: read test → read code → check env → hypotheses → confirm/rule out → fix |
 | `/stratum-refactor` | File split: analyze → design modules → plan extraction order → extract one at a time |
 | `/stratum-migrate` | Find bare LLM calls and rewrite as `@infer` + `@contract` |
 | `/stratum-test` | Write a test suite for existing untested code |
-| `/stratum-learn` | Review session transcripts — extract retry patterns, write conclusions to `MEMORY.md` |
+| `/stratum-speckit` | Spec-kit lifecycle: spec.md → plan.md → tasks/ → `.stratum.yaml` → execute |
 
 ## MCP Tools
 
@@ -31,8 +83,21 @@ stratum-mcp install
 |---|---|
 | `stratum_validate` | Validate a `.stratum.yaml` spec |
 | `stratum_plan` | Validate + create execution state + return first step |
-| `stratum_step_done` | Report a completed step; check postconditions; return next step or completion |
+| `stratum_resume` | Resume an existing flow from its current step |
+| `stratum_step_done` | Report step result; check postconditions; return next step or completion |
+| `stratum_parallel_done` | Report batch results for a parallel_dispatch step |
+| `stratum_skip_step` | Skip a step (policy: skip mode) |
+| `stratum_gate_resolve` | Resolve a gate step (approve/revise/kill) |
 | `stratum_audit` | Return per-step trace (attempts, duration) for any flow |
+| `stratum_check_timeouts` | Check for timed-out steps in a flow |
+| `stratum_iteration_start` | Start an iteration loop on a step |
+| `stratum_iteration_report` | Report iteration result (clean/dirty/max_reached) |
+| `stratum_iteration_abort` | Abort an iteration loop |
+| `stratum_commit` | Checkpoint flow state with a label |
+| `stratum_revert` | Revert flow state to a labeled checkpoint |
+| `stratum_compile_speckit` | Compile tasks/*.md into a `.stratum.yaml` spec |
+| `stratum_draft_pipeline` | Generate a pipeline spec from a description |
+| `stratum_list_workflows` | List all active and completed flows |
 
 ## Building on Stratum
 
@@ -68,6 +133,16 @@ stratum-mcp/contracts/
   gate-mutation.v1.schema.json
   audit-record.v1.schema.json
 ```
+
+## Hooks
+
+`stratum-mcp install` registers three Claude Code hooks in `~/.stratum/hooks/`:
+
+| Hook | Trigger | Purpose |
+|---|---|---|
+| `stratum-session-start.sh` | SessionStart | Initialize Stratum state for the session |
+| `stratum-session-stop.sh` | Stop | Clean up and persist session state |
+| `stratum-post-tool-failure.sh` | PostToolUseFailure | Log tool failures for debugging |
 
 ## How It Works
 
