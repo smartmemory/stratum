@@ -679,6 +679,14 @@ def _apply_cert_defaults(s: dict) -> None:
         template["sections"] = copy.deepcopy(CERT_DEFAULT_SECTIONS)
     if "require_citations" not in template:
         template["require_citations"] = False
+    # Validate section structure
+    for i, section in enumerate(template.get("sections", [])):
+        for required_field in ("id", "label", "description"):
+            if required_field not in section:
+                raise IRSemanticError(
+                    f"reasoning_template section {i} is missing required field '{required_field}'",
+                    path=f"reasoning_template.sections[{i}]"
+                )
 
 
 def _build_step(s: dict) -> IRStepDef:
@@ -1077,7 +1085,9 @@ def _validate_semantics(spec: IRSpec) -> None:
                     fn = spec.functions.get(step.function)
                     has_ensure = bool(fn and fn.ensure)
                     has_guardrails = bool(fn and fn.guardrails)
-                has_cert = bool(step.reasoning_template)
+                # Only count reasoning_template as validation for claude-agent steps
+                # (codex-agent steps silently skip cert at runtime)
+                has_cert = bool(step.reasoning_template) and (step.agent or "claude") in ("claude", "")
                 has_validation = has_ensure or has_guardrails or bool(step.output_schema) or has_cert
                 if step.on_fail and not has_validation:
                     raise IRSemanticError(

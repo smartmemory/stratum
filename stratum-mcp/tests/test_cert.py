@@ -135,6 +135,45 @@ class TestReasoningTemplateParsing:
         with pytest.raises(IRSemanticError, match="reasoning_template"):
             parse_and_validate(_CERT_ON_FUNCTION_SPEC)
 
+    def test_malformed_section_rejected(self):
+        """Section missing label/description should fail validation."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: review
+                    agent: claude
+                    intent: "Review"
+                    reasoning_template:
+                      require_citations: true
+                      sections:
+                        - id: premises
+        """)
+        with pytest.raises(IRSemanticError, match="missing required field"):
+            parse_and_validate(spec_yaml)
+
+    def test_has_validation_codex_agent_cert_only(self):
+        """Codex step with reasoning_template but no ensure should not count as validated."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: s1
+                    agent: codex
+                    intent: "Review code"
+                    on_fail: s1
+                    reasoning_template:
+                      require_citations: false
+        """)
+        with pytest.raises(IRSemanticError, match="on_fail but no ensure"):
+            parse_and_validate(spec_yaml)
+
 
 # ---------------------------------------------------------------------------
 # validate_certificate tests
