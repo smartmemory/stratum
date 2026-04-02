@@ -1,6 +1,7 @@
 """IR types, JSON Schema registry, parser, and validator for .stratum.yaml v0.1/v0.2/v0.3."""
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -104,6 +105,8 @@ class IRStepDef:
     require: str | int | None = None
     merge: str | None = None
     intent_template: str | None = None
+    # STRAT-CERT: semi-formal reasoning certificate template
+    reasoning_template: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -342,6 +345,7 @@ _IR_SCHEMA_V02: dict = {
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "reasoning_template": {"type": "object"},
             }
         },
         "FlowDef": {
@@ -494,6 +498,7 @@ _IR_SCHEMA_V03: dict = {
                 ]},
                 "merge": {"type": "string", "enum": ["sequential_apply", "manual"]},
                 "intent_template": {"type": "string"},
+                "reasoning_template": {"type": "object"},
             }
         },
         "TaskGraph": {
@@ -642,6 +647,40 @@ def _build_flow(name: str, d: dict) -> IRFlowDef:
     )
 
 
+# ---------------------------------------------------------------------------
+# STRAT-CERT: default reasoning certificate sections
+# ---------------------------------------------------------------------------
+
+CERT_DEFAULT_SECTIONS: list[dict] = [
+    {
+        "id": "premises",
+        "label": "Premises",
+        "description": "State every verifiable fact you are using. Each premise must cite a file:line.",
+    },
+    {
+        "id": "trace",
+        "label": "Trace",
+        "description": "Walk through the logic step by step. Reference premises by [P<n>] ID.",
+    },
+    {
+        "id": "conclusion",
+        "label": "Conclusion",
+        "description": "State your finding. Every claim must reference at least one premise.",
+    },
+]
+
+
+def _apply_cert_defaults(s: dict) -> None:
+    """Apply default sections to reasoning_template if sections not specified."""
+    template = s.get("reasoning_template")
+    if template is None:
+        return
+    if "sections" not in template:
+        template["sections"] = copy.deepcopy(CERT_DEFAULT_SECTIONS)
+    if "require_citations" not in template:
+        template["require_citations"] = False
+
+
 def _build_step(s: dict) -> IRStepDef:
     sb = s.get("budget")
     step_budget = IRBudgetDef(ms=sb.get("ms"), usd=sb.get("usd")) if sb else None
@@ -650,6 +689,8 @@ def _build_step(s: dict) -> IRStepDef:
     max_concurrent = s.get("max_concurrent")
     if step_type == "parallel_dispatch" and max_concurrent is None:
         max_concurrent = 3
+    # STRAT-CERT: apply default sections before constructing frozen dataclass
+    _apply_cert_defaults(s)
     return IRStepDef(
         id=s["id"],
         function=s.get("function", ""),
@@ -687,6 +728,7 @@ def _build_step(s: dict) -> IRStepDef:
         require=s.get("require"),
         merge=s.get("merge"),
         intent_template=s.get("intent_template"),
+        reasoning_template=s.get("reasoning_template"),
     )
 
 
@@ -867,6 +909,14 @@ def _validate_semantics(spec: IRSpec) -> None:
                             f"parallel_dispatch step '{step.id}' must have 'intent_template'",
                             path=f"flows.{flow_name}.steps.{step.id}.intent_template"
                         )
+                    # CERT-1: reasoning_template not valid on parallel_dispatch
+                    if step.reasoning_template:
+                        raise IRSemanticError(
+                            f"Step '{step.id}' in flow '{flow_name}' has 'reasoning_template' "
+                            f"which is not valid on parallel_dispatch steps. "
+                            f"Use it on inline or decompose steps only.",
+                            path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
+                        )
 
                 # depends_on check for decompose/parallel_dispatch
                 for dep in step.depends_on:
@@ -910,6 +960,14 @@ def _validate_semantics(spec: IRSpec) -> None:
                     raise IRSemanticError(
                         f"Step '{step.id}' references undefined function '{step.function}'",
                         path=f"flows.{flow_name}.steps.{step.id}.function"
+                    )
+                # CERT-1: reasoning_template not valid on function steps
+                if step.reasoning_template:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' in flow '{flow_name}' has 'reasoning_template' "
+                        f"which is not valid on function steps. "
+                        f"Use it on inline or decompose steps only.",
+                        path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
                     )
                 # Step-level execution fields forbidden on function steps
                 for field_name in ("step_ensure", "step_retries", "output_contract", "step_model", "step_budget", "step_guardrails"):
@@ -1019,7 +1077,8 @@ def _validate_semantics(spec: IRSpec) -> None:
                     fn = spec.functions.get(step.function)
                     has_ensure = bool(fn and fn.ensure)
                     has_guardrails = bool(fn and fn.guardrails)
-                has_validation = has_ensure or has_guardrails or bool(step.output_schema)
+                has_cert = bool(step.reasoning_template)
+                has_validation = has_ensure or has_guardrails or bool(step.output_schema) or has_cert
                 if step.on_fail and not has_validation:
                     raise IRSemanticError(
                         f"Step '{step.id}' has on_fail but no ensure/guardrails — on_fail can never trigger",

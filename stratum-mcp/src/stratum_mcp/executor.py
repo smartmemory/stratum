@@ -1,7 +1,6 @@
 """Flow controller: plan state management, $ reference resolution, ensure compilation."""
 from __future__ import annotations
 
-import concurrent.futures
 import copy
 import hashlib
 import json
@@ -39,24 +38,68 @@ def _scan_guardrails(patterns: list[re.Pattern[str]], text: str) -> list[str]:
 
     Each pattern search is bounded by a wall-clock timeout to prevent ReDoS.
     Patterns that timeout or error are treated as matches (fail-closed).
+
+    Uses multiprocessing to enforce hard kill on stuck regex workers.
+    A subprocess can be os.kill()'d; a thread running C-level re.search() cannot.
     """
+    if not patterns:
+        return []
     hits: list[str] = []
     for compiled in patterns:
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            future = pool.submit(compiled.search, text)
-            match = future.result(timeout=_GUARDRAIL_SEARCH_TIMEOUT_S)
+            match = _run_regex_with_kill_timeout(compiled, text, _GUARDRAIL_SEARCH_TIMEOUT_S)
             if match:
                 hits.append(compiled.pattern)
-        except concurrent.futures.TimeoutError:
+        except TimeoutError:
             # ReDoS or slow pattern — fail-closed: treat as match
             hits.append(compiled.pattern)
         except Exception:
             # Any other error — fail-closed
             hits.append(compiled.pattern)
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
     return hits
+
+
+def _regex_search_worker(pattern_str: str, flags: int, text: str, result_pipe):
+    """Worker function for subprocess-based regex search."""
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # don't propagate ctrl-c
+    try:
+        compiled = re.compile(pattern_str, flags)
+        match = compiled.search(text)
+        result_pipe.send(bool(match))
+    except Exception:
+        result_pipe.send(True)  # fail-closed
+    finally:
+        result_pipe.close()
+
+
+def _run_regex_with_kill_timeout(compiled: re.Pattern[str], text: str, timeout_s: float) -> bool:
+    """Run a regex search in a subprocess with a hard kill timeout.
+
+    Returns True if the pattern matched, False otherwise.
+    Raises TimeoutError if the search exceeded the timeout (worker is killed).
+    """
+    import multiprocessing
+    parent_conn, child_conn = multiprocessing.Pipe(duplex=False)
+    proc = multiprocessing.Process(
+        target=_regex_search_worker,
+        args=(compiled.pattern, compiled.flags, text, child_conn),
+        daemon=True,
+    )
+    proc.start()
+    child_conn.close()  # parent doesn't write
+
+    if parent_conn.poll(timeout_s):
+        result = parent_conn.recv()
+        parent_conn.close()
+        proc.join(timeout=1)
+        return result
+    else:
+        # Timeout — hard kill the subprocess
+        proc.kill()
+        proc.join(timeout=2)
+        parent_conn.close()
+        raise TimeoutError(f"regex search timed out after {timeout_s}s")
 
 
 def compile_guardrails(patterns: list[str]) -> list[re.Pattern[str]]:
@@ -65,6 +108,63 @@ def compile_guardrails(patterns: list[str]) -> list[re.Pattern[str]]:
     for pat in patterns:
         compiled.append(re.compile(pat, re.IGNORECASE | re.MULTILINE))
     return compiled
+
+
+# ---------------------------------------------------------------------------
+# STRAT-CERT: Reasoning template injection & validation
+# ---------------------------------------------------------------------------
+
+def inject_cert_instructions(intent: str, template: dict) -> str:
+    """Build a structured output format block from reasoning_template and append to intent."""
+    sections = template.get("sections", [])
+    require_citations = template.get("require_citations", False)
+
+    lines = [
+        intent,
+        "",
+        "---",
+        "",
+        "You MUST structure your response with these sections:",
+        "",
+    ]
+
+    for i, section in enumerate(sections):
+        lines.append(f"## {section['label']}")
+        lines.append(section["description"])
+        if i == 0 and require_citations:
+            lines.append("Format each fact as: [P1] <fact, citing file:line>, [P2] ..., etc.")
+        if i > 0 and require_citations:
+            lines.append("Reference premises by their [P<n>] ID.")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def validate_certificate(template: dict, result: dict) -> list[str]:
+    """Validate agent output contains required reasoning sections.
+
+    Returns list of violations (empty = pass).
+    """
+    artifact = result.get("artifact", "")
+    violations = []
+
+    for section in template.get("sections", []):
+        heading = f"## {section['label']}"
+        if heading not in artifact:
+            violations.append(f"certificate missing section: {section['label']}")
+
+    if template.get("require_citations", False) and not violations:
+        # Only check citations if all sections are present
+        conclusion_label = template["sections"][-1]["label"]
+        conclusion_idx = artifact.find(f"## {conclusion_label}")
+        if conclusion_idx >= 0:
+            conclusion_text = artifact[conclusion_idx:]
+            if not re.search(r'\[P\d+\]', conclusion_text):
+                violations.append(
+                    "certificate violation: conclusion contains no premise citations [P<n>]"
+                )
+
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +976,10 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         max_retries = step.step_retries or 1
         contract = state.spec.contracts.get(step.output_contract or "")
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
+        # STRAT-CERT: inject structured reasoning format for claude-agent steps
+        intent = step.intent or ""
+        if step.reasoning_template and (step.agent or 'claude') in ('claude', ''):
+            intent = inject_cert_instructions(intent, step.reasoning_template)
         return {
             "status": "execute_step",
             "flow_id": state.flow_id,
@@ -883,7 +987,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "total_steps": len(state.ordered_steps),
             "step_id": step.id,
             "step_mode": "inline",
-            "intent": step.intent,
+            "intent": intent,
             "agent": step.agent,
             "inputs": resolved,
             "output_contract": step.output_contract,
@@ -897,6 +1001,10 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         max_retries = step.step_retries or 2
         contract = state.spec.contracts.get(step.output_contract or "")
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
+        # STRAT-CERT: inject structured reasoning format for claude-agent steps
+        intent = step.intent or ""
+        if step.reasoning_template and (step.agent or 'claude') in ('claude', ''):
+            intent = inject_cert_instructions(intent, step.reasoning_template)
         return {
             "status": "execute_step",
             "flow_id": state.flow_id,
@@ -904,7 +1012,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "total_steps": len(state.ordered_steps),
             "step_id": step.id,
             "step_mode": "decompose",
-            "intent": step.intent,
+            "intent": intent,
             "agent": step.agent,
             "inputs": resolved,
             "output_contract": step.output_contract,
@@ -1074,6 +1182,24 @@ def process_step_result(
                     return ("on_fail_routed", guardrail_violations)
                 return ("retries_exhausted", guardrail_violations)
             return ("guardrail_blocked", guardrail_violations)
+
+    # STRAT-CERT: validate reasoning certificate before ensure expressions
+    # Only for claude-agent steps with a reasoning_template
+    if step.reasoning_template and (step.agent or 'claude') in ('claude', ''):
+        cert_violations = validate_certificate(step.reasoning_template, result)
+        if cert_violations:
+            if attempt >= max_retries:
+                dispatched = state.dispatched_at.get(step_id, state.flow_start)
+                duration_ms = int((time.monotonic() - dispatched) * 1000)
+                state.records.append(_make_record(duration_ms))
+                if step.on_fail:
+                    state.step_outputs[step_id] = result
+                    target_idx = _find_step_idx(state, step.on_fail)
+                    _clear_from(state, target_idx, preserve={step_id})
+                    state.current_idx = target_idx
+                    return ("on_fail_routed", cert_violations)
+                return ("retries_exhausted", cert_violations)
+            return ("ensure_failed", cert_violations)
 
     violations: list[str] = []
     for expr in ensure_exprs:
