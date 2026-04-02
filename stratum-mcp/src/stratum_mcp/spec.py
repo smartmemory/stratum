@@ -679,6 +679,12 @@ def _apply_cert_defaults(s: dict) -> None:
         template["sections"] = copy.deepcopy(CERT_DEFAULT_SECTIONS)
     if "require_citations" not in template:
         template["require_citations"] = False
+    # Reject empty sections
+    if not template.get("sections"):
+        raise IRSemanticError(
+            "reasoning_template must have at least one section",
+            path="reasoning_template.sections"
+        )
     # Validate section structure
     for i, section in enumerate(template.get("sections", [])):
         for required_field in ("id", "label", "description"):
@@ -1043,6 +1049,14 @@ def _validate_semantics(spec: IRSpec) -> None:
                 pass  # Inline step: no additional mode-specific checks
 
             elif step.flow_ref:
+                # CERT-1: reasoning_template not valid on flow steps
+                if step.reasoning_template:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' in flow '{flow_name}' has 'reasoning_template' "
+                        f"which is not valid on flow steps. "
+                        f"Use it on inline or decompose steps only.",
+                        path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
+                    )
                 # Must reference a known flow
                 if step.flow_ref not in known_flow_names:
                     raise IRSemanticError(

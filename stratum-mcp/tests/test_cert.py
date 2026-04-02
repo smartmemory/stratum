@@ -393,3 +393,68 @@ class TestCertIntentInjection:
         step_info = get_current_step_info(state)
         assert step_info["intent"] == "Plain intent"
         assert "## Premises" not in step_info["intent"]
+
+
+# ---------------------------------------------------------------------------
+# Empty sections guard tests
+# ---------------------------------------------------------------------------
+
+class TestEmptySectionsGuard:
+
+    def test_validate_certificate_empty_sections_no_crash(self):
+        """validate_certificate with empty sections and require_citations should not crash."""
+        template = {"require_citations": True, "sections": []}
+        result = {"artifact": "some text"}
+        violations = validate_certificate(template, result)
+        # No IndexError — should return empty violations (no sections to check)
+        assert violations == []
+
+    def test_empty_sections_list_rejected_at_parse(self):
+        """Explicitly passing sections: [] should be rejected during parsing."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: review
+                    agent: claude
+                    intent: "Review"
+                    reasoning_template:
+                      require_citations: false
+                      sections: []
+        """)
+        with pytest.raises(IRSemanticError, match="at least one section"):
+            parse_and_validate(spec_yaml)
+
+
+# ---------------------------------------------------------------------------
+# CERT-1: reasoning_template rejected on flow steps
+# ---------------------------------------------------------------------------
+
+class TestCertOnFlowStep:
+
+    def test_cert_rejected_on_flow_step(self):
+        """reasoning_template is not valid on flow steps."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              sub:
+                input: {}
+                output: ""
+                steps:
+                  - id: work
+                    agent: claude
+                    intent: "Do work"
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: delegate
+                    flow: sub
+                    reasoning_template:
+                      require_citations: false
+        """)
+        with pytest.raises(IRSemanticError, match="reasoning_template"):
+            parse_and_validate(spec_yaml)
