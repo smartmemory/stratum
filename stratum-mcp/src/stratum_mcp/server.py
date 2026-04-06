@@ -255,6 +255,9 @@ async def stratum_step_done(
         if _is_flow_step:
             # Delete child — next retry creates a new child
             _cleanup_child()
+        # Clear iteration state so a new loop can be started on retry
+        state.iteration_outcome.pop(step_id, None)
+        state.iteration_best.pop(step_id, None)
         # Persist incremented attempts so retry budget survives an MCP server restart.
         # current_idx has not advanced — get_current_step_info returns the same step
         # with updated retries_remaining. Persist AFTER get_current_step_info in case

@@ -645,3 +645,52 @@ def test_inline_spec_iteration():
 
     r2 = report_iteration(state, "review", {"clean": True})
     assert r2["outcome"] == "exit_success"
+
+
+def test_iteration_outcome_cleared_on_validation_failure():
+    """iteration_outcome is consumed on validation failure so loop can restart."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+            ensure:
+              - "result.v == 'required_value'"
+            retries: 2
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 5
+                exit_criterion: "result.v == 'done'"
+    """)
+    spec = parse_and_validate(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    _flows[state.flow_id] = state
+
+    # Start iteration, exit with a result that won't pass ensure
+    _run(stratum_iteration_start(state.flow_id, "s1", ctx=None))
+    _run(stratum_iteration_report(state.flow_id, "s1", {"v": "done"}, ctx=None))
+
+    # step_done with result that fails ensure
+    r = _run(stratum_step_done(state.flow_id, "s1", {"v": "wrong"}, ctx=None))
+    assert r["status"] == "ensure_failed"
+
+    # iteration_outcome should be cleared so we can start a new loop
+    assert "s1" not in state.iteration_outcome
+
+    # Should be able to start a new iteration loop
+    r2 = _run(stratum_iteration_start(state.flow_id, "s1", ctx=None))
+    assert r2["status"] == "iteration_started"
+
+    delete_persisted_flow(state.flow_id)

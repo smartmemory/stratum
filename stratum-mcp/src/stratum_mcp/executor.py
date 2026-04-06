@@ -1171,6 +1171,11 @@ def process_step_result(
         fn_name = ""
         guardrail_patterns = step.step_guardrails or []
 
+    # Best-result substitution for scored iterations
+    best_entry = state.iteration_best.get(step_id)
+    if best_entry:
+        result = best_entry["result"]
+
     state.attempts[step_id] = state.attempts.get(step_id, 0) + 1
     attempt = state.attempts[step_id]
 
@@ -1270,6 +1275,7 @@ def process_step_result(
         return ("ensure_failed", violations)
 
     state.step_outputs[step_id] = result
+    state.iteration_best.pop(step_id, None)
     state.records.append(_make_record(duration_ms))
     if mode == "flow":
         state.active_child_flow_id = None

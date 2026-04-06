@@ -219,6 +219,7 @@ from stratum_mcp.executor import (
     _flows,
     create_flow_state,
     get_current_step_info,
+    process_step_result,
     start_iteration,
     report_iteration,
     abort_iteration,
@@ -630,3 +631,24 @@ def test_abort_without_scores_returns_null_best():
     r = abort_iteration(state, "s1", "giving up")
     assert r["best_result"] is None
     assert r["best_score"] is None
+
+
+def test_process_step_result_substitutes_best():
+    """process_step_result uses iteration_best result for validation and storage."""
+    state = _make_scored_state()
+    start_iteration(state, "s1")
+
+    # First report: high score triggers exit (best_score > 0.9)
+    r1 = report_iteration(state, "s1", {"score": 0.95, "v": "best"})
+    assert r1["outcome"] == "exit_success"
+
+    # Call process_step_result with a different result (simulating caller passing last)
+    status, violations = process_step_result(state, "s1", {"score": 0.3, "v": "last"})
+    assert status == "ok"
+
+    # step_outputs should have the BEST result, not the last
+    assert state.step_outputs["s1"]["v"] == "best"
+    assert state.step_outputs["s1"]["score"] == 0.95
+
+    # iteration_best should be consumed
+    assert "s1" not in state.iteration_best
