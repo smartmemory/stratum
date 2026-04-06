@@ -264,18 +264,14 @@ _ENSURE_BUILTINS: dict[str, Any] = {
     "int": int,
     "str": str,
     "no_file_conflicts": _no_file_conflicts,
+    "max": max,
+    "min": min,
 }
 
 
-def compile_ensure(expr: str) -> Callable[[Any], bool]:
-    """
-    Compile 'result.field > value' string into a callable.
-
-    If the result is a dict, it is wrapped in SimpleNamespace so that
-    attribute-style access (result.confidence) works on dict outputs.
-
-    Safety: __builtins__ is empty. Dunder attributes are blocked at compile time.
-    """
+def compile_ensure(expr: str) -> Callable[..., bool]:
+    """Compile 'result.field > value' string into a callable.
+    Accepts optional keyword arguments injected into the eval namespace."""
     if "__" in expr:
         raise EnsureCompileError(
             f"Ensure expression may not contain dunder attributes: {expr!r}"
@@ -285,11 +281,15 @@ def compile_ensure(expr: str) -> Callable[[Any], bool]:
     except SyntaxError as exc:
         raise EnsureCompileError(f"Cannot compile ensure expression {expr!r}: {exc}") from exc
 
-    def evaluator(result: Any) -> bool:
+    def evaluator(result: Any, **extra_locals: Any) -> bool:
         if isinstance(result, dict):
             result = types.SimpleNamespace(**result)
         try:
-            return bool(eval(code, {"__builtins__": {}, **_ENSURE_BUILTINS}, {"result": result}))
+            return bool(eval(
+                code,
+                {"__builtins__": {}, **_ENSURE_BUILTINS},
+                {"result": result, **extra_locals},
+            ))
         except Exception as exc:
             raise EnsureCompileError(
                 f"Ensure expression {expr!r} raised: {exc}"
@@ -301,6 +301,41 @@ def compile_ensure(expr: str) -> Callable[[Any], bool]:
 
 def compile_ensure_list(exprs: list[str]) -> list[Callable[[Any], bool]]:
     return [compile_ensure(e) for e in exprs]
+
+
+def compile_score_expr(expr: str) -> Callable[[Any], float]:
+    """Compile a score expression into a callable that returns a numeric value.
+    Same safety as compile_ensure but returns raw numeric, rejects bool."""
+    if "__" in expr:
+        raise EnsureCompileError(
+            f"Score expression may not contain dunder attributes: {expr!r}"
+        )
+    try:
+        code = compile(expr, "<score_expr>", "eval")
+    except SyntaxError as exc:
+        raise EnsureCompileError(f"Cannot compile score expression {expr!r}: {exc}") from exc
+
+    def evaluator(result: Any) -> float:
+        if isinstance(result, dict):
+            result = types.SimpleNamespace(**result)
+        try:
+            value = eval(code, {"__builtins__": {}, **_ENSURE_BUILTINS}, {"result": result})
+        except Exception as exc:
+            raise EnsureCompileError(
+                f"Score expression {expr!r} raised: {exc}"
+            ) from exc
+        if isinstance(value, bool):
+            raise EnsureCompileError(
+                f"Score expression {expr!r} returned bool ({value}), expected numeric"
+            )
+        if not isinstance(value, (int, float)):
+            raise EnsureCompileError(
+                f"Score expression {expr!r} returned non-numeric type {type(value).__name__}"
+            )
+        return float(value)
+
+    evaluator.__name__ = f"score({expr})"
+    return evaluator
 
 
 def _validate_output_schema(result: dict[str, Any], schema: dict[str, Any]) -> list[str]:
