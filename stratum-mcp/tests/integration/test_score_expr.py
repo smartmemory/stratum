@@ -211,3 +211,93 @@ def test_compile_ensure_prior_scores_max():
     assert fn({"v": "x"}, best_score=0.8, prior_scores=[0.8, 0.8], iteration=3) is True
     # Still improving
     assert fn({"v": "x"}, best_score=0.9, prior_scores=[0.7, 0.8], iteration=3) is False
+
+
+# --- iteration_best lifecycle tests ---
+
+from stratum_mcp.executor import (
+    _flows,
+    create_flow_state,
+    get_current_step_info,
+    start_iteration,
+    report_iteration,
+    abort_iteration,
+    persist_flow,
+    restore_flow,
+    delete_persisted_flow,
+    commit_checkpoint,
+    revert_checkpoint,
+    _clear_from,
+)
+from stratum_mcp.spec import parse_and_validate as pv
+
+
+_SCORED_SPEC = textwrap.dedent("""\
+    version: "0.2"
+    contracts:
+      Out:
+        score: {type: number}
+        v: {type: string}
+    functions:
+      work:
+        mode: infer
+        intent: "Produce output"
+        input: {}
+        output: Out
+    flows:
+      main:
+        input: {}
+        output: Out
+        steps:
+          - id: s1
+            function: work
+            inputs: {}
+            max_iterations: 10
+            score_expr: "result.score"
+            exit_criterion: "best_score > 0.9"
+""")
+
+
+@pytest.fixture(autouse=True)
+def _cleanup():
+    _flows.clear()
+    yield
+    _flows.clear()
+
+
+def _make_scored_state():
+    spec = pv(_SCORED_SPEC)
+    state = create_flow_state(spec, "main", {}, raw_spec=_SCORED_SPEC)
+    get_current_step_info(state)
+    return state
+
+
+def test_iteration_best_persists_and_restores():
+    """iteration_best survives persist/restore cycle."""
+    state = _make_scored_state()
+    state.iteration_best["s1"] = {"score": 0.85, "iteration": 2, "result": {"score": 0.85, "v": "good"}}
+    persist_flow(state)
+    restored = restore_flow(state.flow_id)
+    assert restored is not None
+    assert restored.iteration_best["s1"]["score"] == 0.85
+    assert restored.iteration_best["s1"]["iteration"] == 2
+    delete_persisted_flow(state.flow_id)
+
+
+def test_iteration_best_cleared_by_clear_from():
+    """_clear_from removes iteration_best for affected steps."""
+    state = _make_scored_state()
+    state.iteration_best["s1"] = {"score": 0.85, "iteration": 2, "result": {"score": 0.85, "v": "good"}}
+    _clear_from(state, 0)
+    assert "s1" not in state.iteration_best
+
+
+def test_iteration_best_in_checkpoint():
+    """iteration_best is included in checkpoint snapshot/restore."""
+    state = _make_scored_state()
+    state.iteration_best["s1"] = {"score": 0.85, "iteration": 2, "result": {"score": 0.85, "v": "good"}}
+    commit_checkpoint(state, "before_change")
+    state.iteration_best["s1"]["score"] = 0.99
+    assert revert_checkpoint(state, "before_change")
+    assert state.iteration_best["s1"]["score"] == 0.85
+    delete_persisted_flow(state.flow_id)

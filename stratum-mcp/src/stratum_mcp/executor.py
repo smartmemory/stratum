@@ -553,6 +553,7 @@ def _clear_from(state: "FlowState", target_idx: int, preserve: set[str] | None =
             del state.attempts[sid]
     for sid in steps_to_clear:
         state.iteration_outcome.pop(sid, None)
+        state.iteration_best.pop(sid, None)
     # Clear per-step iteration history for affected steps (ENG-4)
     for sid in steps_to_clear:
         state.iterations.pop(sid, None)
@@ -686,6 +687,7 @@ class FlowState:
     archived_iterations: list[dict[str, list[dict]]] = field(default_factory=list)
     active_iteration: dict[str, Any] | None = None
     iteration_outcome: dict[str, str] = field(default_factory=dict)
+    iteration_best: dict[str, dict] = field(default_factory=dict)
     # v0.2 STRAT-ENG-5: flow composition
     parent_flow_id: str | None = None
     parent_step_id: str | None = None
@@ -729,6 +731,7 @@ def persist_flow(state: FlowState) -> None:
         "archived_iterations": state.archived_iterations,
         "active_iteration":   state.active_iteration,
         "iteration_outcome":  state.iteration_outcome,
+        "iteration_best":     state.iteration_best,
         "parent_flow_id":     state.parent_flow_id,
         "parent_step_id":     state.parent_step_id,
         "active_child_flow_id": state.active_child_flow_id,
@@ -786,6 +789,7 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         archived_iterations=payload.get("archived_iterations", []),
         active_iteration=payload.get("active_iteration"),
         iteration_outcome=payload.get("iteration_outcome", {}),
+        iteration_best=payload.get("iteration_best", {}),
         parent_flow_id=payload.get("parent_flow_id"),
         parent_step_id=payload.get("parent_step_id"),
         active_child_flow_id=payload.get("active_child_flow_id"),
@@ -828,6 +832,7 @@ def commit_checkpoint(state: FlowState, label: str) -> None:
         "archived_iterations": copy.deepcopy(state.archived_iterations),
         "active_iteration":   copy.deepcopy(state.active_iteration),
         "iteration_outcome":  dict(state.iteration_outcome),
+        "iteration_best":     copy.deepcopy(state.iteration_best),
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       copy.deepcopy(state.child_audits),
     }
@@ -856,6 +861,7 @@ def revert_checkpoint(state: FlowState, label: str) -> bool:
     state.archived_iterations = copy.deepcopy(snap.get("archived_iterations", []))
     state.active_iteration   = copy.deepcopy(snap.get("active_iteration"))
     state.iteration_outcome  = dict(snap.get("iteration_outcome", {}))
+    state.iteration_best     = copy.deepcopy(snap.get("iteration_best", {}))
     state.active_child_flow_id = snap.get("active_child_flow_id")
     state.child_audits       = copy.deepcopy(snap.get("child_audits", {}))
     persist_flow(state)
@@ -1398,6 +1404,7 @@ def resolve_gate(
         state.archived_iterations.append(state.iterations)
         state.iterations = {}
         state.active_iteration = None
+        state.iteration_best = {}
 
         # Clear active state from on_revise target onward
         _clear_from(state, target_idx)
