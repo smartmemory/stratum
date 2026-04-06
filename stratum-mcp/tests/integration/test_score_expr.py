@@ -430,3 +430,203 @@ def test_ties_keep_earlier_result():
 
     assert state.iteration_best["s1"]["result"]["v"] == "first"
     assert state.iteration_best["s1"]["iteration"] == 1
+
+
+def test_score_stagnation_fires_without_exit_criterion():
+    """Score-based stagnation fires when score_expr is set but no exit_criterion."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            score: {type: number}
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 20
+                score_expr: "result.score"
+    """)
+    spec = pv(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    get_current_step_info(state)
+    start_iteration(state, "s1")
+
+    # Best score on iteration 1
+    report_iteration(state, "s1", {"score": 0.8, "v": "best"})
+    # 3 more that don't improve
+    report_iteration(state, "s1", {"score": 0.5, "v": "worse1"})
+    report_iteration(state, "s1", {"score": 0.6, "v": "worse2"})
+    r = report_iteration(state, "s1", {"score": 0.7, "v": "worse3"})
+
+    assert r["outcome"] == "exit_stagnation"
+    assert r["best_score"] == 0.8
+    assert r["final_result"]["v"] == "best"
+
+
+def test_score_stagnation_suppressed_with_exit_criterion():
+    """When exit_criterion is present alongside score_expr, default stagnation is suppressed."""
+    state = _make_scored_state()  # Has exit_criterion: "best_score > 0.9"
+    start_iteration(state, "s1")
+
+    # Best on iter 1, then 3 non-improving — should NOT trigger stagnation
+    report_iteration(state, "s1", {"score": 0.5, "v": "best"})
+    report_iteration(state, "s1", {"score": 0.3, "v": "a"})
+    report_iteration(state, "s1", {"score": 0.4, "v": "b"})
+    r = report_iteration(state, "s1", {"score": 0.2, "v": "c"})
+
+    assert r["outcome"] == "continue"  # NOT exit_stagnation
+
+
+def test_fingerprint_stagnation_not_used_with_score_expr():
+    """With score_expr, fingerprint stagnation never fires even if results are identical."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            score: {type: number}
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 20
+                score_expr: "result.score"
+                exit_criterion: "best_score > 0.99"
+    """)
+    spec = pv(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    get_current_step_info(state)
+    start_iteration(state, "s1")
+
+    # 3 identical results — would trigger fingerprint stagnation without score_expr
+    for _ in range(3):
+        r = report_iteration(state, "s1", {"score": 0.5, "v": "same"})
+
+    # Should continue because stagnation is suppressed (exit_criterion is present)
+    assert r["outcome"] == "continue"
+
+
+def test_score_error_logged_and_loop_continues():
+    """score_expr eval failure doesn't crash the loop."""
+    state = _make_scored_state()
+    start_iteration(state, "s1")
+
+    # First iteration: score works
+    report_iteration(state, "s1", {"score": 0.5, "v": "a"})
+
+    # Second iteration: result has no 'score' field — score_expr fails
+    r = report_iteration(state, "s1", {"v": "no_score"})
+
+    assert r["outcome"] == "continue"
+    history = state.iterations["s1"]
+    assert history[1]["score"] is None
+    assert "score_error" in history[1]
+    # Best is still from iteration 1
+    assert state.iteration_best["s1"]["score"] == 0.5
+
+
+def test_score_bool_rejected():
+    """Boolean score is treated as error."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            done: {type: boolean}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 5
+                score_expr: "result.done"
+    """)
+    spec = pv(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    get_current_step_info(state)
+    start_iteration(state, "s1")
+
+    r = report_iteration(state, "s1", {"done": True})
+    assert r["outcome"] == "continue"
+    assert state.iterations["s1"][0]["score"] is None
+    assert "score_error" in state.iterations["s1"][0]
+
+
+def test_abort_includes_best_result():
+    """abort_iteration returns best_result when score_expr is present."""
+    state = _make_scored_state()
+    start_iteration(state, "s1")
+
+    report_iteration(state, "s1", {"score": 0.8, "v": "good"})
+    report_iteration(state, "s1", {"score": 0.5, "v": "meh"})
+
+    r = abort_iteration(state, "s1", "user cancelled")
+    assert r["status"] == "iteration_aborted"
+    assert r["best_result"] == {"score": 0.8, "v": "good"}
+    assert r["best_score"] == 0.8
+
+
+def test_abort_without_scores_returns_null_best():
+    """abort_iteration with no successful scores returns null best_result."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 5
+                score_expr: "result.nonexistent"
+    """)
+    spec = pv(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    get_current_step_info(state)
+    start_iteration(state, "s1")
+
+    # Score will fail (no 'nonexistent' field)
+    report_iteration(state, "s1", {"v": "a"})
+
+    r = abort_iteration(state, "s1", "giving up")
+    assert r["best_result"] is None
+    assert r["best_score"] is None

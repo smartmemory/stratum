@@ -1736,6 +1736,7 @@ def abort_iteration(
         )
 
     count = state.active_iteration["count"]
+    has_score_expr = bool(state.active_iteration.get("score_expr"))
 
     # Append abort report — uses count (not count+1) because abort is not a real iteration
     report = {
@@ -1753,10 +1754,20 @@ def abort_iteration(
 
     persist_flow(state)
 
-    return {
+    response = {
         "status": "iteration_aborted",
         "flow_id": state.flow_id,
         "step_id": step_id,
         "iteration": count,
         "reason": reason,
     }
+
+    best_entry = state.iteration_best.get(step_id)
+    if best_entry:
+        response["best_result"] = best_entry["result"]
+        response["best_score"] = best_entry["score"]
+    elif has_score_expr:
+        response["best_result"] = None
+        response["best_score"] = None
+
+    return response
