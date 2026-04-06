@@ -94,6 +94,8 @@ class IRStepDef:
     # v0.2 STRAT-ENG-4: per-step iteration
     max_iterations: int | None = None
     exit_criterion: str | None = None
+    # v0.2 STRAT-SCORE: numeric scoring expression for iteration loops
+    score_expr: str | None = None
     # v0.2: pre-execution guardrails — regex patterns checked against result
     step_guardrails: list[str] | None = None
     # v0.3 STRAT-PAR: step type — "decompose" or "parallel_dispatch" (None = legacy inferred mode)
@@ -344,6 +346,7 @@ _IR_SCHEMA_V02: dict = {
                 # Per-step iteration (STRAT-ENG-4)
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
+                "score_expr": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "reasoning_template": {"type": "object"},
             }
@@ -487,6 +490,7 @@ _IR_SCHEMA_V03: dict = {
                 # Per-step iteration (STRAT-ENG-4)
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
+                "score_expr": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 # v0.3 STRAT-PAR: parallel_dispatch fields
                 "source": {"type": "string"},
@@ -738,6 +742,7 @@ def _build_step(s: dict) -> IRStepDef:
         step_budget=step_budget,
         max_iterations=s.get("max_iterations"),
         exit_criterion=s.get("exit_criterion"),
+        score_expr=s.get("score_expr"),
         step_guardrails=s.get("guardrails"),
         # v0.3 STRAT-PAR fields
         step_type=step_type,
@@ -944,6 +949,12 @@ def _validate_semantics(spec: IRSpec) -> None:
                             f"Step '{step.id}' depends_on unknown step '{dep}'",
                             path=f"flows.{flow_name}.steps.{step.id}.depends_on"
                         )
+                if step.score_expr is not None:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has score_expr but is a {step.step_type} step "
+                        f"— score_expr is not supported on {step.step_type} steps",
+                        path=f"flows.{flow_name}.steps.{step.id}.score_expr"
+                    )
                 continue  # skip legacy mode checks
 
             # --- 1. Mode exclusion: exactly one of function, intent, flow_ref ---
@@ -1010,6 +1021,11 @@ def _validate_semantics(spec: IRSpec) -> None:
                         raise IRSemanticError(
                             f"Gate step '{step.id}' must not have max_iterations (gates have their own revise cycle)",
                             path=f"flows.{flow_name}.steps.{step.id}.max_iterations"
+                        )
+                    if step.score_expr is not None:
+                        raise IRSemanticError(
+                            f"Gate step '{step.id}' must not have score_expr",
+                            path=f"flows.{flow_name}.steps.{step.id}.score_expr"
                         )
                     # Gate steps CAN have skip_if (e.g., file_exists-based .approved markers).
                     # When skip_if is true, the gate is auto-approved via PolicyRecord.
@@ -1161,6 +1177,18 @@ def _validate_semantics(spec: IRSpec) -> None:
                     raise IRSemanticError(
                         f"Step '{step.id}' exit_criterion must not contain dunder attributes",
                         path=f"flows.{flow_name}.steps.{step.id}.exit_criterion"
+                    )
+                # score_expr requires max_iterations
+                if step.score_expr and not step.max_iterations:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has score_expr but no max_iterations",
+                        path=f"flows.{flow_name}.steps.{step.id}.score_expr"
+                    )
+                # score_expr dunder guard
+                if step.score_expr and "__" in step.score_expr:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' score_expr must not contain dunder attributes",
+                        path=f"flows.{flow_name}.steps.{step.id}.score_expr"
                     )
             else:
                 # Gate steps: on_fail and next are gate-incompatible
