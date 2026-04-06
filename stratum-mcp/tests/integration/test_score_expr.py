@@ -301,3 +301,132 @@ def test_iteration_best_in_checkpoint():
     assert revert_checkpoint(state, "before_change")
     assert state.iteration_best["s1"]["score"] == 0.85
     delete_persisted_flow(state.flow_id)
+
+
+def test_score_tracked_across_iterations():
+    """Each iteration records a score and best is tracked."""
+    state = _make_scored_state()
+    start_iteration(state, "s1")
+
+    r1 = report_iteration(state, "s1", {"score": 0.5, "v": "a"})
+    assert r1["outcome"] == "continue"
+
+    r2 = report_iteration(state, "s1", {"score": 0.8, "v": "b"})
+    assert r2["outcome"] == "continue"
+
+    # Check iteration history has scores
+    history = state.iterations["s1"]
+    assert history[0]["score"] == 0.5
+    assert history[1]["score"] == 0.8
+
+    # Check best tracking
+    assert state.iteration_best["s1"]["score"] == 0.8
+    assert state.iteration_best["s1"]["iteration"] == 2
+    assert state.iteration_best["s1"]["result"] == {"score": 0.8, "v": "b"}
+
+
+def test_exit_criterion_with_best_score():
+    """exit_criterion can use best_score to exit."""
+    state = _make_scored_state()
+    start_iteration(state, "s1")
+
+    r1 = report_iteration(state, "s1", {"score": 0.5, "v": "a"})
+    assert r1["outcome"] == "continue"
+
+    # This should trigger exit: best_score (0.95) > 0.9
+    r2 = report_iteration(state, "s1", {"score": 0.95, "v": "b"})
+    assert r2["outcome"] == "exit_success"
+    assert r2["best_score"] == 0.95
+    assert r2["best_iteration"] == 2
+    assert r2["final_result"] == {"score": 0.95, "v": "b"}
+
+
+def test_best_result_selected_on_exit_max():
+    """On max iterations, best result is returned, not last."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            score: {type: number}
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 3
+                score_expr: "result.score"
+    """)
+    spec = pv(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    get_current_step_info(state)
+    start_iteration(state, "s1")
+
+    report_iteration(state, "s1", {"score": 0.3, "v": "a"})
+    report_iteration(state, "s1", {"score": 0.9, "v": "best"})  # This is the best
+    r3 = report_iteration(state, "s1", {"score": 0.4, "v": "worst"})  # Last but not best
+
+    assert r3["outcome"] == "exit_max"
+    assert r3["final_result"] == {"score": 0.9, "v": "best"}
+    assert r3["best_score"] == 0.9
+    assert r3["best_iteration"] == 2
+
+
+def test_prior_scores_available_in_exit_criterion():
+    """exit_criterion can reference prior_scores and iteration."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            score: {type: number}
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 10
+                score_expr: "result.score"
+                exit_criterion: "iteration >= 3"
+    """)
+    spec = pv(spec_yaml)
+    state = create_flow_state(spec, "main", {}, raw_spec=spec_yaml)
+    get_current_step_info(state)
+    start_iteration(state, "s1")
+
+    r1 = report_iteration(state, "s1", {"score": 0.5, "v": "a"})
+    assert r1["outcome"] == "continue"
+    r2 = report_iteration(state, "s1", {"score": 0.6, "v": "b"})
+    assert r2["outcome"] == "continue"
+    r3 = report_iteration(state, "s1", {"score": 0.7, "v": "c"})
+    assert r3["outcome"] == "exit_success"  # iteration == 3
+
+
+def test_ties_keep_earlier_result():
+    """When scores tie, the earlier result is kept."""
+    state = _make_scored_state()
+    start_iteration(state, "s1")
+
+    report_iteration(state, "s1", {"score": 0.8, "v": "first"})
+    report_iteration(state, "s1", {"score": 0.8, "v": "second"})  # Tie
+
+    assert state.iteration_best["s1"]["result"]["v"] == "first"
+    assert state.iteration_best["s1"]["iteration"] == 1

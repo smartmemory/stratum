@@ -1549,6 +1549,7 @@ def start_iteration(state: FlowState, step_id: str) -> dict[str, Any]:
         "round": state.round,
         "max_iterations": step.max_iterations,
         "exit_criterion": step.exit_criterion,
+        "score_expr": step.score_expr,
         "count": 0,
         "started_at": time.monotonic(),
         "status": "active",
@@ -1571,7 +1572,7 @@ def report_iteration(
     step_id: str,
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    """Report one iteration result. Evaluates exit_criterion, enforces max."""
+    """Report one iteration result. Evaluates score_expr, exit_criterion, enforces max."""
     if state.active_iteration is None:
         raise MCPExecutionError("No active iteration loop")
     if state.active_iteration["step_id"] != step_id:
@@ -1584,33 +1585,85 @@ def report_iteration(
     ai["count"] += 1
     count = ai["count"]
     max_iter = ai["max_iterations"]
+    score_expr_str = ai.get("score_expr")
 
-    # Evaluate exit criterion
+    # --- Score evaluation (before exit_criterion) ---
+    current_score: float | None = None
+    score_error: str | None = None
+    if score_expr_str:
+        try:
+            score_fn = compile_score_expr(score_expr_str)
+            current_score = score_fn(result)
+        except EnsureCompileError as exc:
+            score_error = str(exc)
+            current_score = None
+
+        # Update best tracking (strictly greater, ties keep earlier)
+        if current_score is not None:
+            best = state.iteration_best.get(step_id)
+            if best is None or current_score > best["score"]:
+                state.iteration_best[step_id] = {
+                    "score": current_score,
+                    "iteration": count,
+                    "result": result,
+                }
+
+    # --- Build enriched eval context for exit_criterion ---
     exit_met = False
     exit_criterion_error: str | None = None
     if ai["exit_criterion"]:
         try:
             fn = compile_ensure(ai["exit_criterion"])
-            exit_met = fn(result)
+            if score_expr_str:
+                prior_scores = [
+                    r["score"] for r in state.iterations.get(step_id, [])
+                    if r.get("score") is not None
+                ]
+                best_entry = state.iteration_best.get(step_id)
+                best_score = best_entry["score"] if best_entry else None
+                exit_met = fn(
+                    result,
+                    best_score=best_score,
+                    prior_scores=prior_scores,
+                    iteration=count,
+                )
+            else:
+                exit_met = fn(result)
         except EnsureCompileError as exc:
             exit_met = False
             exit_criterion_error = str(exc)
 
-    # Stagnation detection: fingerprint the result and check for consecutive duplicates
+    # --- Stagnation detection ---
     result_fingerprint = hashlib.sha256(
         json.dumps(result, sort_keys=True, default=str).encode()
     ).hexdigest()
 
     stagnation_detected = False
     if not exit_met:
-        history = state.iterations.get(step_id, [])
-        # Check last (_STAGNATION_WINDOW - 1) entries — if all have the same fingerprint
-        # as the current result, this is the Nth consecutive duplicate
-        window = _STAGNATION_WINDOW - 1  # need (window) prior + current = _STAGNATION_WINDOW
-        if len(history) >= window:
-            recent = history[-window:]
-            if all(r.get("result_fingerprint") == result_fingerprint for r in recent):
-                stagnation_detected = True
+        if score_expr_str:
+            # Score-based stagnation: only when exit_criterion is absent
+            if not ai["exit_criterion"]:
+                history = state.iterations.get(step_id, [])
+                window = _STAGNATION_WINDOW - 1
+                if len(history) >= window:
+                    best_entry = state.iteration_best.get(step_id)
+                    best_so_far = best_entry["score"] if best_entry else None
+                    if best_so_far is not None:
+                        recent_scores = [r.get("score") for r in history[-window:]]
+                        if (current_score is None or current_score <= best_so_far) and all(
+                            s is None or s <= best_so_far for s in recent_scores
+                        ):
+                            best_iter = best_entry["iteration"]
+                            if best_iter <= count - _STAGNATION_WINDOW:
+                                stagnation_detected = True
+        else:
+            # Fingerprint-based stagnation (existing behavior)
+            history = state.iterations.get(step_id, [])
+            window = _STAGNATION_WINDOW - 1
+            if len(history) >= window:
+                recent = history[-window:]
+                if all(r.get("result_fingerprint") == result_fingerprint for r in recent):
+                    stagnation_detected = True
 
     # Determine outcome
     if exit_met:
@@ -1632,6 +1685,10 @@ def report_iteration(
         "outcome": outcome,
         "timestamp": time.monotonic(),
     }
+    if score_expr_str:
+        report["score"] = current_score
+        if score_error:
+            report["score_error"] = score_error
     state.iterations.setdefault(step_id, []).append(report)
 
     # On exit: write outcome, clear active
@@ -1641,6 +1698,7 @@ def report_iteration(
 
     persist_flow(state)
 
+    # Build response
     response: dict[str, Any] = {
         "status": "iteration_continue" if outcome == "continue" else "iteration_exit",
         "flow_id": state.flow_id,
@@ -1653,7 +1711,13 @@ def report_iteration(
     if exit_criterion_error:
         response["exit_criterion_error"] = exit_criterion_error
     if outcome != "continue":
-        response["final_result"] = result
+        best_entry = state.iteration_best.get(step_id)
+        if best_entry:
+            response["final_result"] = best_entry["result"]
+            response["best_score"] = best_entry["score"]
+            response["best_iteration"] = best_entry["iteration"]
+        else:
+            response["final_result"] = result
     return response
 
 
