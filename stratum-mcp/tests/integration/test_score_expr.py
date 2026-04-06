@@ -652,3 +652,80 @@ def test_process_step_result_substitutes_best():
 
     # iteration_best should be consumed
     assert "s1" not in state.iteration_best
+
+
+# --- E2E golden flow via MCP tools ---
+
+import asyncio
+from stratum_mcp.server import (
+    stratum_plan,
+    stratum_step_done,
+    stratum_iteration_start,
+    stratum_iteration_report,
+    stratum_iteration_abort,
+    stratum_audit,
+)
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def test_e2e_scored_iteration_via_mcp():
+    """Full lifecycle: plan -> start_iteration -> report (with scoring) -> step_done."""
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            score: {type: number}
+            v: {type: string}
+        functions:
+          work:
+            mode: infer
+            intent: "Produce output"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 10
+                score_expr: "result.score"
+                exit_criterion: "best_score > 0.9"
+    """)
+
+    # Plan
+    plan_r = _run(stratum_plan(spec_yaml, "main", {}, ctx=None))
+    assert plan_r["status"] == "execute_step"
+    flow_id = plan_r["flow_id"]
+
+    # Start iteration
+    start_r = _run(stratum_iteration_start(flow_id, "s1", ctx=None))
+    assert start_r["status"] == "iteration_started"
+
+    # Iteration 1: low score
+    r1 = _run(stratum_iteration_report(flow_id, "s1", {"score": 0.5, "v": "attempt1"}, ctx=None))
+    assert r1["outcome"] == "continue"
+
+    # Iteration 2: best score
+    r2 = _run(stratum_iteration_report(flow_id, "s1", {"score": 0.95, "v": "attempt2"}, ctx=None))
+    assert r2["outcome"] == "exit_success"
+    assert r2["best_score"] == 0.95
+    assert r2["final_result"]["v"] == "attempt2"
+
+    # Step done with best result
+    done_r = _run(stratum_step_done(flow_id, "s1", r2["final_result"], ctx=None))
+    assert done_r["status"] == "complete"
+
+    # Audit should show score in iteration history
+    audit_r = _run(stratum_audit(flow_id, ctx=None))
+    iterations = audit_r.get("iterations", {}).get("s1", [])
+    assert len(iterations) == 2
+    assert iterations[0]["score"] == 0.5
+    assert iterations[1]["score"] == 0.95
+
+    delete_persisted_flow(flow_id)
