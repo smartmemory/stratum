@@ -17,7 +17,7 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator
 
 from .errors import MCPExecutionError
-from .spec import IRSpec, IRFlowDef, IRStepDef
+from .spec import IRSpec, IRFlowDef, IRStepDef, plan_completion
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +264,7 @@ _ENSURE_BUILTINS: dict[str, Any] = {
     "int": int,
     "str": str,
     "no_file_conflicts": _no_file_conflicts,
+    "plan_completion": plan_completion,
     "max": max,
     "min": min,
 }
@@ -693,6 +694,108 @@ class FlowState:
     parent_step_id: str | None = None
     active_child_flow_id: str | None = None
     child_audits: dict[str, list[dict]] = field(default_factory=dict)
+    # STRAT-IMMUTABLE: SHA-256 checksum of the parsed FlowDefinition at flow creation.
+    # Verified at every step transition to detect in-memory tampering.
+    # Empty string = legacy flow (no checksum); skips verification.
+    spec_checksum: str = ""
+
+
+# ---------------------------------------------------------------------------
+# STRAT-IMMUTABLE: spec integrity checksumming
+# ---------------------------------------------------------------------------
+
+def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -> str:
+    """Compute a deterministic SHA-256 checksum of a parsed FlowDefinition.
+
+    Serializes the parsed structure (sorted step IDs, sorted fields) rather
+    than raw YAML text, so whitespace/comment changes don't cause false positives.
+
+    When ``spec`` is provided, the checksum also covers the function definitions
+    referenced by steps (intent, ensure, mode) to detect tampering of function defs.
+    """
+    def _step_fingerprint(step: "IRStepDef") -> dict:
+        return {
+            "id": step.id,
+            "function": step.function,
+            "intent": step.intent,
+            "flow_ref": step.flow_ref,
+            "agent": step.agent,
+            "depends_on": sorted(step.depends_on),
+            "inputs": dict(sorted(step.inputs.items())),
+            "ensure": step.step_ensure or [],
+            "on_approve": step.on_approve,
+            "on_revise": step.on_revise,
+            "on_kill": step.on_kill,
+            "on_fail": step.on_fail,
+            "next": step.next,
+            "policy": step.policy,
+            "skip_if": step.skip_if,
+            "step_type": step.step_type,
+            "source": step.source,
+            "require": step.require,
+            "max_iterations": step.max_iterations,
+            "exit_criterion": step.exit_criterion,
+        }
+
+    def _fn_fingerprint(fn_name: str) -> dict | None:
+        """Return a fingerprint of a function def referenced by a step."""
+        if spec is None:
+            return None
+        fn_def = spec.functions.get(fn_name)
+        if fn_def is None:
+            return None
+        return {
+            "name": fn_name,
+            "mode": fn_def.mode,
+            "intent": fn_def.intent,
+            "ensure": fn_def.ensure or [],
+        }
+
+    steps_sorted = sorted(flow_def.steps, key=lambda s: s.id)
+
+    # Collect unique function names referenced by the flow's steps
+    fn_names_sorted = sorted({s.function for s in flow_def.steps if s.function})
+    fn_fingerprints = [fp for n in fn_names_sorted if (fp := _fn_fingerprint(n)) is not None]
+
+    fingerprint = {
+        "name": flow_def.name,
+        "steps": [_step_fingerprint(s) for s in steps_sorted],
+        "functions": fn_fingerprints,
+        "max_rounds": flow_def.max_rounds,
+    }
+    canonical = json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def verify_spec_integrity(flow_def: "IRFlowDef", state: "FlowState") -> dict | None:
+    """Verify the in-memory FlowDefinition matches the stored checksum.
+
+    Recomputes the checksum from ``flow_def`` and ``state.spec`` (which may both
+    have been tampered with — if either changed, the checksum won't match the
+    original stored in ``state.spec_checksum``).
+
+    Returns None on success. Returns an error dict on mismatch or if the
+    state carries an empty checksum (legacy/backward-compat — no-op).
+    """
+    if not state.spec_checksum:
+        # Legacy flow or flow created before STRAT-IMMUTABLE — skip verification.
+        return None
+
+    # Use state.spec for function lookups: if state.spec was tampered to replace
+    # a function's intent, the recomputed checksum will differ from the original.
+    actual = compute_spec_checksum(flow_def, state.spec)
+    if actual == state.spec_checksum:
+        return None
+
+    return {
+        "status": "spec_modified",
+        "error": (
+            "Flow definition was modified during execution. "
+            "Revert changes and retry."
+        ),
+        "expected_checksum": state.spec_checksum,
+        "actual_checksum": actual,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +839,7 @@ def persist_flow(state: FlowState) -> None:
         "parent_step_id":     state.parent_step_id,
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       state.child_audits,
+        "spec_checksum":      state.spec_checksum,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -794,6 +898,7 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         parent_step_id=payload.get("parent_step_id"),
         active_child_flow_id=payload.get("active_child_flow_id"),
         child_audits=payload.get("child_audits", {}),
+        spec_checksum=payload.get("spec_checksum", ""),
     )
 
 
@@ -874,6 +979,7 @@ def create_flow_state(spec: IRSpec, flow_name: str, inputs: dict[str, Any], raw_
     if flow_def is None:
         raise MCPExecutionError(f"Flow '{flow_name}' not found in spec")
     ordered = _topological_sort(flow_def)
+    checksum = compute_spec_checksum(flow_def, spec)
     return FlowState(
         flow_id=str(uuid.uuid4()),
         flow_name=flow_name,
@@ -888,6 +994,7 @@ def create_flow_state(spec: IRSpec, flow_name: str, inputs: dict[str, Any], raw_
         flow_start=time.monotonic(),
         current_idx=0,
         round_start_step_id=None,  # round-0 records carry None per contract
+        spec_checksum=checksum,
     )
 
 

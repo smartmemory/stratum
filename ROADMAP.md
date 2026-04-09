@@ -1,6 +1,6 @@
 # Stratum Roadmap
 
-**Last updated:** 2026-03-13
+**Last updated:** 2026-04-09
 
 ---
 
@@ -42,8 +42,8 @@
 | T2-8 | Kahn's topological sort on `depends_on` + implicit refs | COMPLETE |
 | T2-9 | `stratum-mcp install` CLI command | COMPLETE |
 | T2-10 | `stratum-mcp validate <file>` CLI command | COMPLETE |
-| T2-11 | Published to PyPI as `stratum-mcp` 0.2.3 | COMPLETE |
-| T2-12 | 449 passing tests (contracts, invariants, integration) | COMPLETE |
+| T2-11 | Published to PyPI as `stratum-mcp` 0.2.18 | COMPLETE |
+| T2-12 | 537 passing tests (contracts, invariants, integration) | COMPLETE |
 | T2-13 | `stratum-mcp uninstall` command | COMPLETE |
 | T2-14 | FlowState persistence (survive MCP server restart) | COMPLETE |
 | T2-15 | `ensure` file-aware builtins (`file_exists`, `file_contains`) | COMPLETE |
@@ -59,6 +59,8 @@
 | T2-25 | STRAT-ENG-5: Routing and composition — `on_fail`/`next` step routing, `flow:` sub-execution with child FlowState lifecycle, child audit snapshots, result unwrapping; 414 tests | COMPLETE |
 | T2-26 | Stagnation detection: SHA256 fingerprinting of iteration results, configurable window, `exit_stagnation` priority ordering | COMPLETE |
 | T2-27 | Pre-execution guardrails: regex patterns on functions/steps, fail-closed semantics, ReDoS timeout, parse-time validation | COMPLETE |
+| T2-28 | STRAT-CERT: `reasoning_template` — structured reasoning sections in step results, validation in `step_done` pipeline, rejected on flow/parallel_dispatch steps | COMPLETE |
+| T2-29 | STRAT-SCORE: `score_expr` — numeric scoring for iteration loops, best-result tracking, score-aware stagnation, enriched `exit_criterion` context (`best_score`, `prior_scores`, `iteration`), best-result auto-select and substitution in `process_step_result` | COMPLETE |
 
 ### Parallel Execution (IR v0.3)
 
@@ -66,10 +68,12 @@ Automatic task decomposition and concurrent dispatch. Bumps IR from v0.2 to v0.3
 
 | ID | Feature | Status |
 |---|---|---|
-| T2-PAR-1 | IR v0.3 schema: `decompose` and `parallel_dispatch` step types, `TaskGraph` contract, `no_file_conflicts` built-in ensure | PLANNED |
-| T2-PAR-2 | Ready-set executor: replace `current_idx` with `completed_steps` + `active_steps` sets; compute ready steps from satisfied `depends_on` | PLANNED |
-| T2-PAR-3 | `stratum_parallel_done` MCP tool: batch result reporting for parallel dispatch with per-task status | PLANNED |
-| T2-PAR-4 | Semantic validation: `decompose` requires TaskGraph output, `parallel_dispatch` requires `source` ref, no nested parallelism | PLANNED |
+| T2-PAR-1 | IR v0.3 schema: `decompose` and `parallel_dispatch` step types, `TaskGraph` contract, backward-compatible superset of v0.2. 20 tests. | COMPLETE |
+| T2-PAR-2 | Executor decompose/parallel_dispatch handling: decompose returns `execute_step` with `step_mode: "decompose"`, parallel_dispatch resolves source ref and returns task graph. `no_file_conflicts` built-in with transitive dependency detection. 10 tests. | COMPLETE |
+| T2-PAR-3 | `stratum_parallel_done` MCP tool: batch result reporting with require semantics (all/any/N), merge conflict detection, ensure evaluation. | COMPLETE |
+| T2-PAR-4 | Semantic validation: decompose requires agent+intent+output_contract, parallel_dispatch requires source+intent_template, parallel_dispatch-only fields forbidden on other step types. | COMPLETE |
+| T2-PAR-5 | **`stratum-mcp migrate`**: CLI command to upgrade pipeline specs across IR versions. Detects current version, applies known transforms (e.g. v0.2→v0.3: insert decompose, fix `on_approve` targets, update output refs), validates result, writes back or `--dry-run`. Prevents silent breakage when IR changes are deployed across projects. | PLANNED |
+| T2-PAR-6 | `isolation: "none"` option for parallel_dispatch steps | COMPLETE |
 
 ### Compose Integration
 
@@ -220,22 +224,6 @@ never by writing `.stratum.yaml` by hand. See `docs/features/pipeline-authoring/
 
 ---
 
-## Track 6 — stratum-ui *(SUPERSEDED)*
-
-**Removed 2026-03-05.** stratum-ui (FastAPI + React, `:7821`) has been deleted. Pipeline monitoring
-and gate approval now live in Compose, which integrates with stratum via the stable query/gate CLI
-contract (`stratum-mcp query`, `stratum-mcp gate`) rather than direct file access or an HTTP server.
-
-| ID | Item | Status |
-|---|---|---|
-| T6-1 | Project scaffold | SUPERSEDED |
-| T6-2 | Monitor view | SUPERSEDED |
-| T6-3 | Gate queue | SUPERSEDED |
-| T6-4 | Pipeline editor | SUPERSEDED |
-| T6-5 | Generate | SUPERSEDED |
-
----
-
 ## Evaluation & Benchmarks
 
 Answers two questions: (1) is Stratum/Compose better than not using it, and (2) which memory tier is better for a given workload.
@@ -311,13 +299,19 @@ Must be resolved before publishing 0.2.0 to PyPI.
 
 ## Prioritization Notes
 
-**Next up (as of 2026-03-13):**
-- R-1 through R-10 complete — pre-release debt resolved
-- `stratum-mcp` 0.2.3 published to PyPI (stagnation detection + guardrails)
+**Recently completed (since 2026-03-13):**
+- T2-PAR-1 through T2-PAR-4, T2-PAR-6 — IR v0.3 parallel execution shipped
+- T2-28 STRAT-CERT — structured reasoning templates with validation
+- T2-29 STRAT-SCORE — numeric scoring for iteration loops (hill-climbing optimization)
+- `stratum-mcp` 0.2.18 published to PyPI
+- 537 passing tests
+
+**Next up (as of 2026-04-09):**
 - D-4 (MCP registry), D-5 (HN/r/ClaudeAI post)
+- T2-F5 — Fold `agent_run` into stratum-mcp (closes enforcement gap)
+- T2-PAR-5 — `stratum-mcp migrate` CLI
 
 **Longer horizon:**
-- T2-PAR (Parallel task decomposition) — IR v0.3, `decompose` + `parallel_dispatch` step types, ready-set executor model. See `compose/docs/features/STRAT-PAR/design.md`.
 - T1-12 (TypeScript) — unlocks Cursor/Windsurf users; significant effort
 - E-0 → E-8 (Evaluation & Benchmarks) — difficulty taxonomy, task battery, comparison harness
 - T1-13/14/15 (DSPy, Temporal, Ray) — Phase 3 per original design

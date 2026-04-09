@@ -29,6 +29,7 @@ from .executor import (
     delete_persisted_flow,
     commit_checkpoint,
     revert_checkpoint,
+    verify_spec_integrity,
 )
 from .spec import parse_and_validate
 
@@ -170,6 +171,13 @@ async def stratum_step_done(
                 "message": f"No active flow with id '{flow_id}'",
             }
         _flows[flow_id] = state
+
+    # STRAT-IMMUTABLE: verify spec has not been tampered with since flow creation.
+    flow_def = state.spec.flows.get(state.flow_name)
+    if flow_def is not None:
+        integrity_err = verify_spec_integrity(flow_def, state)
+        if integrity_err is not None:
+            return integrity_err
 
     # Gate step rejection: must not process gate steps through stratum_step_done.
     # This check fires before process_step_result so no state is mutated on rejection.
@@ -332,6 +340,13 @@ async def stratum_parallel_done(
                 "message": f"No active flow with id '{flow_id}'",
             }
         _flows[flow_id] = state
+
+    # STRAT-IMMUTABLE: verify spec has not been tampered with since flow creation.
+    _pd_flow_def = state.spec.flows.get(state.flow_name)
+    if _pd_flow_def is not None:
+        _pd_integrity_err = verify_spec_integrity(_pd_flow_def, state)
+        if _pd_integrity_err is not None:
+            return _pd_integrity_err
 
     # Verify current step is a parallel_dispatch step with matching step_id
     if state.current_idx >= len(state.ordered_steps):

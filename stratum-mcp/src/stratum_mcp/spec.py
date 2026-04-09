@@ -547,6 +547,69 @@ SCHEMAS: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
+# Ensure builtins — plan_completion
+# ---------------------------------------------------------------------------
+
+def plan_completion(plan_items: list, files_changed: list, threshold: float = 90) -> bool:
+    """Validate that the implementation diff covers plan acceptance criteria.
+
+    plan_items: list of dicts with keys: text (str), file (str|None), critical (bool)
+    files_changed: list of file path strings touched in the diff
+    threshold: minimum completion percentage (0-100, default 90)
+
+    Returns True when completion >= threshold and no critical items are missing.
+    Raises ValueError with plain string violations otherwise.
+
+    Guard: empty plan_items returns True immediately (nothing to check).
+    """
+    if not plan_items:
+        return True
+
+    changed_set = set(files_changed or [])
+
+    done: list[dict] = []
+    missing: list[dict] = []
+
+    for item in plan_items:
+        file_ref = item.get("file") if isinstance(item, dict) else getattr(item, "file", None)
+        if file_ref and file_ref in changed_set:
+            done.append(item)
+        elif file_ref:
+            missing.append(item)
+        else:
+            # No file reference — count as done (can't verify, assume complete)
+            done.append(item)
+
+    completion = len(done) / len(plan_items) * 100
+
+    violations: list[str] = []
+
+    # Critical items missing → violation regardless of threshold
+    for item in missing:
+        is_critical = item.get("critical", False) if isinstance(item, dict) else getattr(item, "critical", False)
+        if is_critical:
+            text = item.get("text", "") if isinstance(item, dict) else getattr(item, "text", "")
+            file_ref = item.get("file", "") if isinstance(item, dict) else getattr(item, "file", "")
+            violations.append(f"Missing critical item: {text} (expected in {file_ref})")
+
+    if violations:
+        raise ValueError(violations)
+
+    # Below threshold → violation listing all missing items
+    if completion < threshold:
+        msgs: list[str] = [
+            f"Plan completion {completion:.0f}% is below threshold {threshold:.0f}%"
+        ]
+        for item in missing:
+            text = item.get("text", "") if isinstance(item, dict) else getattr(item, "text", "")
+            file_ref = item.get("file", "") if isinstance(item, dict) else getattr(item, "file", "")
+            msgs.append(f"Missing item: {text} (expected in {file_ref})")
+        raise ValueError(msgs)
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public parse entry point
 # ---------------------------------------------------------------------------
 
