@@ -1169,27 +1169,82 @@ _HOOK_SCRIPTS: dict[str, str] = {
 _STRATUM_HOOKS_DIR = Path.home() / ".stratum" / "hooks"
 
 
-def _install_hooks(root: Path, changed: list[str]) -> None:
-    """Copy hook scripts to ~/.stratum/hooks/ and register them in settings.json with absolute paths."""
-    import json
+def _copy_hook_scripts(
+    changed: list[str],
+    verbose: bool = True,
+    failures: list[str] | None = None,
+) -> None:
+    """Copy bundled hook scripts to ~/.stratum/hooks/ if missing, stale, or not executable.
+
+    Per-script errors are isolated — one failing script does not abort the
+    rest of the pass. Appends installed/updated/re-chmodded script paths to
+    `changed`. When `failures` is provided, per-script OSError messages are
+    appended to it so callers can surface them even when `verbose=False`.
+    When `verbose=True`, prints status lines to stdout matching the existing
+    install CLI behavior. When `verbose=False`, produces no stdout output —
+    suitable for reuse from the stdio MCP startup path.
+    """
+    import stat as _stat
 
     _STRATUM_HOOKS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Copy each script file to ~/.stratum/hooks/, make executable
     for script_name in _HOOK_SCRIPTS.values():
         src = _HOOKS_DIR / script_name
         dst = _STRATUM_HOOKS_DIR / script_name
         if not src.exists():
+            # Broken package: bundled source missing. Flag as failure so
+            # the install path fails fast before registering a dangling
+            # hook entry in settings.json.
+            if verbose:
+                print(f"  ~/.stratum/hooks/{script_name}: missing bundled source")
+            if failures is not None:
+                failures.append(f"{script_name}: bundled source missing from package")
             continue
-        content = src.read_text()
-        if dst.exists() and dst.read_text() == content:
-            print(f"  ~/.stratum/hooks/{script_name}: already up to date — skipped")
-        else:
-            verb = "updated" if dst.exists() else "installed"
-            dst.write_text(content)
-            dst.chmod(0o755)
-            print(f"  ~/.stratum/hooks/{script_name}: {verb}")
-            changed.append(f"~/.stratum/hooks/{script_name}")
+        try:
+            content = src.read_text()
+            if dst.exists():
+                dst_content = dst.read_text()
+                if dst_content == content:
+                    # Content matches — check execute bit
+                    mode = dst.stat().st_mode
+                    if mode & _stat.S_IXUSR:
+                        if verbose:
+                            print(f"  ~/.stratum/hooks/{script_name}: already up to date — skipped")
+                        continue
+                    # Content matches but execute bit dropped — re-chmod only
+                    dst.chmod(0o755)
+                    if verbose:
+                        print(f"  ~/.stratum/hooks/{script_name}: re-chmod")
+                    changed.append(f"~/.stratum/hooks/{script_name}")
+                    continue
+                # Content differs — overwrite
+                dst.write_text(content)
+                dst.chmod(0o755)
+                if verbose:
+                    print(f"  ~/.stratum/hooks/{script_name}: updated")
+                changed.append(f"~/.stratum/hooks/{script_name}")
+            else:
+                # First install
+                dst.write_text(content)
+                dst.chmod(0o755)
+                if verbose:
+                    print(f"  ~/.stratum/hooks/{script_name}: installed")
+                changed.append(f"~/.stratum/hooks/{script_name}")
+        except OSError as exc:
+            # Per-script error isolation — continue with remaining scripts
+            if verbose:
+                print(f"  ~/.stratum/hooks/{script_name}: failed ({exc})")
+            if failures is not None:
+                failures.append(f"{script_name}: {exc}")
+
+
+def _register_hooks_in_settings(root: Path, changed: list[str]) -> None:
+    """Register hook scripts in .claude/settings.json and migrate old per-project copies.
+
+    Separated from file provisioning so the stdio MCP startup path can provision
+    files without touching project config.
+    """
+    import json
 
     # Migrate: clean up old per-project hook scripts
     old_hooks_dir = root / ".claude" / "hooks"
@@ -1248,6 +1303,74 @@ def _install_hooks(root: Path, changed: list[str]) -> None:
         changed.append(".claude/settings.json")
     else:
         print("  .claude/settings.json: Stratum hooks already registered — skipped")
+
+
+def _install_hooks(root: Path, changed: list[str]) -> None:
+    """Copy hook scripts to ~/.stratum/hooks/ and register them in settings.json with absolute paths.
+
+    Fails fast: if any hook script fails to copy, raises OSError before
+    registering anything in settings.json. This prevents `stratum-mcp install`
+    from reporting success while leaving .claude/settings.json pointing at
+    missing script files.
+    """
+    failures: list[str] = []
+    _copy_hook_scripts(changed, verbose=True, failures=failures)
+    if failures:
+        raise OSError(
+            "failed to install hook scripts to ~/.stratum/hooks/: "
+            + "; ".join(failures)
+        )
+    _register_hooks_in_settings(root, changed)
+
+
+def _self_install_hooks_on_startup() -> None:
+    """Auto-install hook scripts to ~/.stratum/hooks/ if missing or stale.
+
+    Runs before mcp.run() in stdio mode. Best-effort self-heal: per-script
+    errors are isolated inside _copy_hook_scripts, and the outer try/except
+    catches infrastructure failures (e.g., mkdir denied on the hooks
+    directory itself). The MCP server always continues starting — this
+    function never raises.
+
+    Settings.json registration is NOT touched (that still requires explicit
+    `stratum-mcp install`). This function only ensures the hook script
+    files exist and are executable so that references already written by a
+    prior `stratum-mcp install` can resolve.
+
+    Output goes to stderr only — stdout is reserved for the stdio MCP
+    JSON-RPC protocol.
+    """
+    try:
+        changed: list[str] = []
+        failures: list[str] = []
+        # Per-script errors are caught inside _copy_hook_scripts, collected
+        # in `failures`, and surfaced below. The outer try/except catches
+        # infrastructure failures (e.g., PermissionError on mkdir for the
+        # hooks directory itself).
+        _copy_hook_scripts(changed, verbose=False, failures=failures)
+        if changed:
+            # Neutral wording covers install, update, and re-chmod cases
+            # — the user-visible outcome is the same (files are in place
+            # and executable).
+            names = ", ".join(Path(c).name for c in changed)
+            print(
+                f"stratum-mcp: auto-installed/refreshed hook scripts: {names}",
+                file=sys.stderr,
+            )
+        if failures:
+            # Surface per-script failures so broken installs don't persist
+            # silently. One warning line aggregates all failed scripts.
+            print(
+                f"stratum-mcp: warning: failed to install hook scripts to "
+                f"~/.stratum/hooks/: {'; '.join(failures)}",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"stratum-mcp: warning: could not auto-install hooks to "
+            f"~/.stratum/hooks/: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _remove_hooks(root: Path, removed: list[str]) -> None:
@@ -1843,6 +1966,7 @@ def main() -> None:
         print("Run 'stratum-mcp --help' for usage.", file=sys.stderr)
         sys.exit(1)
 
+    _self_install_hooks_on_startup()
     mcp.run(transport="stdio")
 
 
