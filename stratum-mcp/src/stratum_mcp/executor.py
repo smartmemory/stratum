@@ -17,7 +17,7 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator
 
 from .errors import MCPExecutionError
-from .spec import IRSpec, IRFlowDef, IRStepDef, vocabulary_compliance
+from .spec import IRSpec, IRFlowDef, IRStepDef, plan_completion, vocabulary_compliance
 
 
 # ---------------------------------------------------------------------------
@@ -264,19 +264,16 @@ _ENSURE_BUILTINS: dict[str, Any] = {
     "int": int,
     "str": str,
     "no_file_conflicts": _no_file_conflicts,
+    "plan_completion": plan_completion,
     "vocabulary_compliance": vocabulary_compliance,
+    "max": max,
+    "min": min,
 }
 
 
-def compile_ensure(expr: str) -> Callable[[Any], bool]:
-    """
-    Compile 'result.field > value' string into a callable.
-
-    If the result is a dict, it is wrapped in SimpleNamespace so that
-    attribute-style access (result.confidence) works on dict outputs.
-
-    Safety: __builtins__ is empty. Dunder attributes are blocked at compile time.
-    """
+def compile_ensure(expr: str) -> Callable[..., bool]:
+    """Compile 'result.field > value' string into a callable.
+    Accepts optional keyword arguments injected into the eval namespace."""
     if "__" in expr:
         raise EnsureCompileError(
             f"Ensure expression may not contain dunder attributes: {expr!r}"
@@ -323,6 +320,41 @@ def compile_ensure(expr: str) -> Callable[[Any], bool]:
 
 def compile_ensure_list(exprs: list[str]) -> list[Callable[[Any], bool]]:
     return [compile_ensure(e) for e in exprs]
+
+
+def compile_score_expr(expr: str) -> Callable[[Any], float]:
+    """Compile a score expression into a callable that returns a numeric value.
+    Same safety as compile_ensure but returns raw numeric, rejects bool."""
+    if "__" in expr:
+        raise EnsureCompileError(
+            f"Score expression may not contain dunder attributes: {expr!r}"
+        )
+    try:
+        code = compile(expr, "<score_expr>", "eval")
+    except SyntaxError as exc:
+        raise EnsureCompileError(f"Cannot compile score expression {expr!r}: {exc}") from exc
+
+    def evaluator(result: Any) -> float:
+        if isinstance(result, dict):
+            result = types.SimpleNamespace(**result)
+        try:
+            value = eval(code, {"__builtins__": {}, **_ENSURE_BUILTINS}, {"result": result})
+        except Exception as exc:
+            raise EnsureCompileError(
+                f"Score expression {expr!r} raised: {exc}"
+            ) from exc
+        if isinstance(value, bool):
+            raise EnsureCompileError(
+                f"Score expression {expr!r} returned bool ({value}), expected numeric"
+            )
+        if not isinstance(value, (int, float)):
+            raise EnsureCompileError(
+                f"Score expression {expr!r} returned non-numeric type {type(value).__name__}"
+            )
+        return float(value)
+
+    evaluator.__name__ = f"score({expr})"
+    return evaluator
 
 
 def _validate_output_schema(result: dict[str, Any], schema: dict[str, Any]) -> list[str]:
@@ -540,6 +572,7 @@ def _clear_from(state: "FlowState", target_idx: int, preserve: set[str] | None =
             del state.attempts[sid]
     for sid in steps_to_clear:
         state.iteration_outcome.pop(sid, None)
+        state.iteration_best.pop(sid, None)
     # Clear per-step iteration history for affected steps (ENG-4)
     for sid in steps_to_clear:
         state.iterations.pop(sid, None)
@@ -673,11 +706,114 @@ class FlowState:
     archived_iterations: list[dict[str, list[dict]]] = field(default_factory=list)
     active_iteration: dict[str, Any] | None = None
     iteration_outcome: dict[str, str] = field(default_factory=dict)
+    iteration_best: dict[str, dict] = field(default_factory=dict)
     # v0.2 STRAT-ENG-5: flow composition
     parent_flow_id: str | None = None
     parent_step_id: str | None = None
     active_child_flow_id: str | None = None
     child_audits: dict[str, list[dict]] = field(default_factory=dict)
+    # STRAT-IMMUTABLE: SHA-256 checksum of the parsed FlowDefinition at flow creation.
+    # Verified at every step transition to detect in-memory tampering.
+    # Empty string = legacy flow (no checksum); skips verification.
+    spec_checksum: str = ""
+
+
+# ---------------------------------------------------------------------------
+# STRAT-IMMUTABLE: spec integrity checksumming
+# ---------------------------------------------------------------------------
+
+def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -> str:
+    """Compute a deterministic SHA-256 checksum of a parsed FlowDefinition.
+
+    Serializes the parsed structure (sorted step IDs, sorted fields) rather
+    than raw YAML text, so whitespace/comment changes don't cause false positives.
+
+    When ``spec`` is provided, the checksum also covers the function definitions
+    referenced by steps (intent, ensure, mode) to detect tampering of function defs.
+    """
+    def _step_fingerprint(step: "IRStepDef") -> dict:
+        return {
+            "id": step.id,
+            "function": step.function,
+            "intent": step.intent,
+            "flow_ref": step.flow_ref,
+            "agent": step.agent,
+            "depends_on": sorted(step.depends_on),
+            "inputs": dict(sorted(step.inputs.items())),
+            "ensure": step.step_ensure or [],
+            "on_approve": step.on_approve,
+            "on_revise": step.on_revise,
+            "on_kill": step.on_kill,
+            "on_fail": step.on_fail,
+            "next": step.next,
+            "policy": step.policy,
+            "skip_if": step.skip_if,
+            "step_type": step.step_type,
+            "source": step.source,
+            "require": step.require,
+            "max_iterations": step.max_iterations,
+            "exit_criterion": step.exit_criterion,
+        }
+
+    def _fn_fingerprint(fn_name: str) -> dict | None:
+        """Return a fingerprint of a function def referenced by a step."""
+        if spec is None:
+            return None
+        fn_def = spec.functions.get(fn_name)
+        if fn_def is None:
+            return None
+        return {
+            "name": fn_name,
+            "mode": fn_def.mode,
+            "intent": fn_def.intent,
+            "ensure": fn_def.ensure or [],
+        }
+
+    steps_sorted = sorted(flow_def.steps, key=lambda s: s.id)
+
+    # Collect unique function names referenced by the flow's steps
+    fn_names_sorted = sorted({s.function for s in flow_def.steps if s.function})
+    fn_fingerprints = [fp for n in fn_names_sorted if (fp := _fn_fingerprint(n)) is not None]
+
+    fingerprint = {
+        "name": flow_def.name,
+        "steps": [_step_fingerprint(s) for s in steps_sorted],
+        "functions": fn_fingerprints,
+        "max_rounds": flow_def.max_rounds,
+    }
+    canonical = json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def verify_spec_integrity(flow_def: "IRFlowDef", state: "FlowState") -> dict | None:
+    """Verify the in-memory FlowDefinition matches the stored checksum.
+
+    Recomputes the checksum from ``flow_def`` and ``state.spec`` (which may both
+    have been tampered with — if either changed, the checksum won't match the
+    original stored in ``state.spec_checksum``).
+
+    Returns None on success. Returns an error dict on mismatch or if the
+    state carries an empty checksum (legacy/backward-compat — no-op).
+    """
+    if not state.spec_checksum:
+        # Legacy flow or flow created before STRAT-IMMUTABLE — skip verification.
+        return None
+
+    # Use state.spec for function lookups: if state.spec was tampered to replace
+    # a function's intent, the recomputed checksum will differ from the original.
+    actual = compute_spec_checksum(flow_def, state.spec)
+    if actual == state.spec_checksum:
+        return None
+
+    return {
+        "status": "spec_modified",
+        "error": (
+            "Flow definition was modified during execution. "
+            "Revert changes and retry."
+        ),
+        "expected_checksum": state.spec_checksum,
+        "actual_checksum": actual,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -716,10 +852,12 @@ def persist_flow(state: FlowState) -> None:
         "archived_iterations": state.archived_iterations,
         "active_iteration":   state.active_iteration,
         "iteration_outcome":  state.iteration_outcome,
+        "iteration_best":     state.iteration_best,
         "parent_flow_id":     state.parent_flow_id,
         "parent_step_id":     state.parent_step_id,
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       state.child_audits,
+        "spec_checksum":      state.spec_checksum,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -773,10 +911,12 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         archived_iterations=payload.get("archived_iterations", []),
         active_iteration=payload.get("active_iteration"),
         iteration_outcome=payload.get("iteration_outcome", {}),
+        iteration_best=payload.get("iteration_best", {}),
         parent_flow_id=payload.get("parent_flow_id"),
         parent_step_id=payload.get("parent_step_id"),
         active_child_flow_id=payload.get("active_child_flow_id"),
         child_audits=payload.get("child_audits", {}),
+        spec_checksum=payload.get("spec_checksum", ""),
     )
 
 
@@ -815,6 +955,7 @@ def commit_checkpoint(state: FlowState, label: str) -> None:
         "archived_iterations": copy.deepcopy(state.archived_iterations),
         "active_iteration":   copy.deepcopy(state.active_iteration),
         "iteration_outcome":  dict(state.iteration_outcome),
+        "iteration_best":     copy.deepcopy(state.iteration_best),
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       copy.deepcopy(state.child_audits),
     }
@@ -843,6 +984,7 @@ def revert_checkpoint(state: FlowState, label: str) -> bool:
     state.archived_iterations = copy.deepcopy(snap.get("archived_iterations", []))
     state.active_iteration   = copy.deepcopy(snap.get("active_iteration"))
     state.iteration_outcome  = dict(snap.get("iteration_outcome", {}))
+    state.iteration_best     = copy.deepcopy(snap.get("iteration_best", {}))
     state.active_child_flow_id = snap.get("active_child_flow_id")
     state.child_audits       = copy.deepcopy(snap.get("child_audits", {}))
     persist_flow(state)
@@ -855,6 +997,7 @@ def create_flow_state(spec: IRSpec, flow_name: str, inputs: dict[str, Any], raw_
     if flow_def is None:
         raise MCPExecutionError(f"Flow '{flow_name}' not found in spec")
     ordered = _topological_sort(flow_def)
+    checksum = compute_spec_checksum(flow_def, spec)
     return FlowState(
         flow_id=str(uuid.uuid4()),
         flow_name=flow_name,
@@ -869,6 +1012,7 @@ def create_flow_state(spec: IRSpec, flow_name: str, inputs: dict[str, Any], raw_
         flow_start=time.monotonic(),
         current_idx=0,
         round_start_step_id=None,  # round-0 records carry None per contract
+        spec_checksum=checksum,
     )
 
 
@@ -1152,6 +1296,11 @@ def process_step_result(
         fn_name = ""
         guardrail_patterns = step.step_guardrails or []
 
+    # Best-result substitution for scored iterations
+    best_entry = state.iteration_best.get(step_id)
+    if best_entry:
+        result = best_entry["result"]
+
     state.attempts[step_id] = state.attempts.get(step_id, 0) + 1
     attempt = state.attempts[step_id]
 
@@ -1254,6 +1403,7 @@ def process_step_result(
         return ("ensure_failed", violations)
 
     state.step_outputs[step_id] = result
+    state.iteration_best.pop(step_id, None)
     state.records.append(_make_record(duration_ms))
     if mode == "flow":
         state.active_child_flow_id = None
@@ -1388,6 +1538,7 @@ def resolve_gate(
         state.archived_iterations.append(state.iterations)
         state.iterations = {}
         state.active_iteration = None
+        state.iteration_best = {}
 
         # Clear active state from on_revise target onward
         _clear_from(state, target_idx)
@@ -1532,6 +1683,7 @@ def start_iteration(state: FlowState, step_id: str) -> dict[str, Any]:
         "round": state.round,
         "max_iterations": step.max_iterations,
         "exit_criterion": step.exit_criterion,
+        "score_expr": step.score_expr,
         "count": 0,
         "started_at": time.monotonic(),
         "status": "active",
@@ -1554,7 +1706,7 @@ def report_iteration(
     step_id: str,
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    """Report one iteration result. Evaluates exit_criterion, enforces max."""
+    """Report one iteration result. Evaluates score_expr, exit_criterion, enforces max."""
     if state.active_iteration is None:
         raise MCPExecutionError("No active iteration loop")
     if state.active_iteration["step_id"] != step_id:
@@ -1567,33 +1719,85 @@ def report_iteration(
     ai["count"] += 1
     count = ai["count"]
     max_iter = ai["max_iterations"]
+    score_expr_str = ai.get("score_expr")
 
-    # Evaluate exit criterion
+    # --- Score evaluation (before exit_criterion) ---
+    current_score: float | None = None
+    score_error: str | None = None
+    if score_expr_str:
+        try:
+            score_fn = compile_score_expr(score_expr_str)
+            current_score = score_fn(result)
+        except EnsureCompileError as exc:
+            score_error = str(exc)
+            current_score = None
+
+        # Update best tracking (strictly greater, ties keep earlier)
+        if current_score is not None:
+            best = state.iteration_best.get(step_id)
+            if best is None or current_score > best["score"]:
+                state.iteration_best[step_id] = {
+                    "score": current_score,
+                    "iteration": count,
+                    "result": result,
+                }
+
+    # --- Build enriched eval context for exit_criterion ---
     exit_met = False
     exit_criterion_error: str | None = None
     if ai["exit_criterion"]:
         try:
             fn = compile_ensure(ai["exit_criterion"])
-            exit_met = fn(result)
+            if score_expr_str:
+                prior_scores = [
+                    r["score"] for r in state.iterations.get(step_id, [])
+                    if r.get("score") is not None
+                ]
+                best_entry = state.iteration_best.get(step_id)
+                best_score = best_entry["score"] if best_entry else None
+                exit_met = fn(
+                    result,
+                    best_score=best_score,
+                    prior_scores=prior_scores,
+                    iteration=count,
+                )
+            else:
+                exit_met = fn(result)
         except EnsureCompileError as exc:
             exit_met = False
             exit_criterion_error = str(exc)
 
-    # Stagnation detection: fingerprint the result and check for consecutive duplicates
+    # --- Stagnation detection ---
     result_fingerprint = hashlib.sha256(
         json.dumps(result, sort_keys=True, default=str).encode()
     ).hexdigest()
 
     stagnation_detected = False
     if not exit_met:
-        history = state.iterations.get(step_id, [])
-        # Check last (_STAGNATION_WINDOW - 1) entries — if all have the same fingerprint
-        # as the current result, this is the Nth consecutive duplicate
-        window = _STAGNATION_WINDOW - 1  # need (window) prior + current = _STAGNATION_WINDOW
-        if len(history) >= window:
-            recent = history[-window:]
-            if all(r.get("result_fingerprint") == result_fingerprint for r in recent):
-                stagnation_detected = True
+        if score_expr_str:
+            # Score-based stagnation: only when exit_criterion is absent
+            if not ai["exit_criterion"]:
+                history = state.iterations.get(step_id, [])
+                window = _STAGNATION_WINDOW - 1
+                if len(history) >= window:
+                    best_entry = state.iteration_best.get(step_id)
+                    best_so_far = best_entry["score"] if best_entry else None
+                    if best_so_far is not None:
+                        recent_scores = [r.get("score") for r in history[-window:]]
+                        if (current_score is None or current_score <= best_so_far) and all(
+                            s is None or s <= best_so_far for s in recent_scores
+                        ):
+                            best_iter = best_entry["iteration"]
+                            if best_iter <= count - _STAGNATION_WINDOW:
+                                stagnation_detected = True
+        else:
+            # Fingerprint-based stagnation (existing behavior)
+            history = state.iterations.get(step_id, [])
+            window = _STAGNATION_WINDOW - 1
+            if len(history) >= window:
+                recent = history[-window:]
+                if all(r.get("result_fingerprint") == result_fingerprint for r in recent):
+                    stagnation_detected = True
 
     # Determine outcome
     if exit_met:
@@ -1615,6 +1819,10 @@ def report_iteration(
         "outcome": outcome,
         "timestamp": time.monotonic(),
     }
+    if score_expr_str:
+        report["score"] = current_score
+        if score_error:
+            report["score_error"] = score_error
     state.iterations.setdefault(step_id, []).append(report)
 
     # On exit: write outcome, clear active
@@ -1624,6 +1832,7 @@ def report_iteration(
 
     persist_flow(state)
 
+    # Build response
     response: dict[str, Any] = {
         "status": "iteration_continue" if outcome == "continue" else "iteration_exit",
         "flow_id": state.flow_id,
@@ -1636,7 +1845,13 @@ def report_iteration(
     if exit_criterion_error:
         response["exit_criterion_error"] = exit_criterion_error
     if outcome != "continue":
-        response["final_result"] = result
+        best_entry = state.iteration_best.get(step_id)
+        if best_entry:
+            response["final_result"] = best_entry["result"]
+            response["best_score"] = best_entry["score"]
+            response["best_iteration"] = best_entry["iteration"]
+        else:
+            response["final_result"] = result
     return response
 
 
@@ -1655,6 +1870,7 @@ def abort_iteration(
         )
 
     count = state.active_iteration["count"]
+    has_score_expr = bool(state.active_iteration.get("score_expr"))
 
     # Append abort report — uses count (not count+1) because abort is not a real iteration
     report = {
@@ -1672,10 +1888,20 @@ def abort_iteration(
 
     persist_flow(state)
 
-    return {
+    response = {
         "status": "iteration_aborted",
         "flow_id": state.flow_id,
         "step_id": step_id,
         "iteration": count,
         "reason": reason,
     }
+
+    best_entry = state.iteration_best.get(step_id)
+    if best_entry:
+        response["best_result"] = best_entry["result"]
+        response["best_score"] = best_entry["score"]
+    elif has_score_expr:
+        response["best_result"] = None
+        response["best_score"] = None
+
+    return response

@@ -94,6 +94,8 @@ class IRStepDef:
     # v0.2 STRAT-ENG-4: per-step iteration
     max_iterations: int | None = None
     exit_criterion: str | None = None
+    # v0.2 STRAT-SCORE: numeric scoring expression for iteration loops
+    score_expr: str | None = None
     # v0.2: pre-execution guardrails — regex patterns checked against result
     step_guardrails: list[str] | None = None
     # v0.3 STRAT-PAR: step type — "decompose" or "parallel_dispatch" (None = legacy inferred mode)
@@ -344,6 +346,7 @@ _IR_SCHEMA_V02: dict = {
                 # Per-step iteration (STRAT-ENG-4)
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
+                "score_expr": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "reasoning_template": {"type": "object"},
             }
@@ -487,6 +490,7 @@ _IR_SCHEMA_V03: dict = {
                 # Per-step iteration (STRAT-ENG-4)
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
+                "score_expr": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 # v0.3 STRAT-PAR: parallel_dispatch fields
                 "source": {"type": "string"},
@@ -815,6 +819,69 @@ def vocabulary_compliance(
 
 
 # ---------------------------------------------------------------------------
+# Ensure builtins — plan_completion
+# ---------------------------------------------------------------------------
+
+def plan_completion(plan_items: list, files_changed: list, threshold: float = 90) -> bool:
+    """Validate that the implementation diff covers plan acceptance criteria.
+
+    plan_items: list of dicts with keys: text (str), file (str|None), critical (bool)
+    files_changed: list of file path strings touched in the diff
+    threshold: minimum completion percentage (0-100, default 90)
+
+    Returns True when completion >= threshold and no critical items are missing.
+    Raises ValueError with plain string violations otherwise.
+
+    Guard: empty plan_items returns True immediately (nothing to check).
+    """
+    if not plan_items:
+        return True
+
+    changed_set = set(files_changed or [])
+
+    done: list[dict] = []
+    missing: list[dict] = []
+
+    for item in plan_items:
+        file_ref = item.get("file") if isinstance(item, dict) else getattr(item, "file", None)
+        if file_ref and file_ref in changed_set:
+            done.append(item)
+        elif file_ref:
+            missing.append(item)
+        else:
+            # No file reference — count as done (can't verify, assume complete)
+            done.append(item)
+
+    completion = len(done) / len(plan_items) * 100
+
+    violations: list[str] = []
+
+    # Critical items missing → violation regardless of threshold
+    for item in missing:
+        is_critical = item.get("critical", False) if isinstance(item, dict) else getattr(item, "critical", False)
+        if is_critical:
+            text = item.get("text", "") if isinstance(item, dict) else getattr(item, "text", "")
+            file_ref = item.get("file", "") if isinstance(item, dict) else getattr(item, "file", "")
+            violations.append(f"Missing critical item: {text} (expected in {file_ref})")
+
+    if violations:
+        raise ValueError(violations)
+
+    # Below threshold → violation listing all missing items
+    if completion < threshold:
+        msgs: list[str] = [
+            f"Plan completion {completion:.0f}% is below threshold {threshold:.0f}%"
+        ]
+        for item in missing:
+            text = item.get("text", "") if isinstance(item, dict) else getattr(item, "text", "")
+            file_ref = item.get("file", "") if isinstance(item, dict) else getattr(item, "file", "")
+            msgs.append(f"Missing item: {text} (expected in {file_ref})")
+        raise ValueError(msgs)
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public parse entry point
 # ---------------------------------------------------------------------------
 
@@ -1010,6 +1077,7 @@ def _build_step(s: dict) -> IRStepDef:
         step_budget=step_budget,
         max_iterations=s.get("max_iterations"),
         exit_criterion=s.get("exit_criterion"),
+        score_expr=s.get("score_expr"),
         step_guardrails=s.get("guardrails"),
         # v0.3 STRAT-PAR fields
         step_type=step_type,
@@ -1216,6 +1284,12 @@ def _validate_semantics(spec: IRSpec) -> None:
                             f"Step '{step.id}' depends_on unknown step '{dep}'",
                             path=f"flows.{flow_name}.steps.{step.id}.depends_on"
                         )
+                if step.score_expr is not None:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has score_expr but is a {step.step_type} step "
+                        f"— score_expr is not supported on {step.step_type} steps",
+                        path=f"flows.{flow_name}.steps.{step.id}.score_expr"
+                    )
                 continue  # skip legacy mode checks
 
             # --- 1. Mode exclusion: exactly one of function, intent, flow_ref ---
@@ -1282,6 +1356,11 @@ def _validate_semantics(spec: IRSpec) -> None:
                         raise IRSemanticError(
                             f"Gate step '{step.id}' must not have max_iterations (gates have their own revise cycle)",
                             path=f"flows.{flow_name}.steps.{step.id}.max_iterations"
+                        )
+                    if step.score_expr is not None:
+                        raise IRSemanticError(
+                            f"Gate step '{step.id}' must not have score_expr",
+                            path=f"flows.{flow_name}.steps.{step.id}.score_expr"
                         )
                     # Gate steps CAN have skip_if (e.g., file_exists-based .approved markers).
                     # When skip_if is true, the gate is auto-approved via PolicyRecord.
@@ -1433,6 +1512,18 @@ def _validate_semantics(spec: IRSpec) -> None:
                     raise IRSemanticError(
                         f"Step '{step.id}' exit_criterion must not contain dunder attributes",
                         path=f"flows.{flow_name}.steps.{step.id}.exit_criterion"
+                    )
+                # score_expr requires max_iterations
+                if step.score_expr and not step.max_iterations:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has score_expr but no max_iterations",
+                        path=f"flows.{flow_name}.steps.{step.id}.score_expr"
+                    )
+                # score_expr dunder guard
+                if step.score_expr and "__" in step.score_expr:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' score_expr must not contain dunder attributes",
+                        path=f"flows.{flow_name}.steps.{step.id}.score_expr"
                     )
             else:
                 # Gate steps: on_fail and next are gate-incompatible

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### stratum-mcp — STRAT-SCORE
+
+- **`score_expr` field on `IRStepDef`**: optional numeric scoring expression for iteration loops (requires `max_iterations`)
+- Validation: rejected on gate steps, decompose/parallel_dispatch steps, and when missing `max_iterations`; dunder guard applied
+
+### stratum-mcp — STRAT-PAR (T2-PAR-1 through T2-PAR-4)
+
+- **IR v0.3 schema**: `decompose` and `parallel_dispatch` step types. Backward-compatible superset of v0.2.
+- **`decompose` step**: agent-executed step emitting TaskGraph (`files_owned`, `files_read`, `depends_on`)
+- **`parallel_dispatch` step**: concurrent execution with `max_concurrent`, `isolation`, `require`, `merge`, `intent_template`
+- **`no_file_conflicts` ensure builtin**: validates no two independent tasks share `files_owned`; transitive dependency aware
+- **`stratum_parallel_done` MCP tool**: batch result reporting with require semantics (all/any/N), merge conflict detection
+- **Semantic validation**: decompose requires agent+intent+output_contract; parallel_dispatch requires source+intent_template
+- 30 new tests (479 total passing)
+
 ### stratum-py
 
 - `@pipeline` / `@phase` decorators — pipeline authoring model; metadata capture and IR compilation separate from MCP execution mode
