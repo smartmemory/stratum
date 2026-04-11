@@ -194,9 +194,15 @@ def test_uninstall_prints_nothing_to_remove_when_already_clean(tmp_path, capsys)
 from stratum_mcp.server import _HOOK_SCRIPTS, _STRATUM_HOOKS_DIR
 
 
-@pytest.fixture(autouse=False)
+@pytest.fixture(autouse=True)
 def isolated_hooks_dir(tmp_path, monkeypatch):
-    """Redirect _STRATUM_HOOKS_DIR to a temp dir so hook tests are isolated."""
+    """Redirect _STRATUM_HOOKS_DIR to a temp dir so hook tests are isolated.
+
+    autouse=True so every test in this module is isolated by default — prevents
+    tests that exercise _cmd_setup/_cmd_uninstall from touching the real
+    ~/.stratum/hooks/ directory and wiping the user's hook scripts as a side
+    effect of running the test suite. (Root cause of T2-HOOK-CLEARER-ROOTCAUSE.)
+    """
     hooks_dir = tmp_path / ".stratum-hooks-test"
     hooks_dir.mkdir()
     import stratum_mcp.server as srv

@@ -218,9 +218,14 @@ def test_setup_skill_idempotent(tmp_path, capsys):
 # Hooks (T2-M2/M3/M4)
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=False)
+@pytest.fixture(autouse=True)
 def isolated_hooks_dir(tmp_path, monkeypatch):
-    """Redirect _STRATUM_HOOKS_DIR to a temp dir so hook tests are isolated."""
+    """Redirect _STRATUM_HOOKS_DIR to a temp dir so hook tests are isolated.
+
+    autouse=True so every test in this module is isolated by default — prevents
+    _cmd_setup from writing to the real ~/.stratum/hooks/ directory as a side
+    effect of running the test suite. (Related to T2-HOOK-CLEARER-ROOTCAUSE.)
+    """
     hooks_dir = tmp_path / ".stratum-hooks-test"
     hooks_dir.mkdir()
     import stratum_mcp.server as srv
