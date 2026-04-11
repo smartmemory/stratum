@@ -17,7 +17,7 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator
 
 from .errors import MCPExecutionError
-from .spec import IRSpec, IRFlowDef, IRStepDef
+from .spec import IRSpec, IRFlowDef, IRStepDef, vocabulary_compliance
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +264,7 @@ _ENSURE_BUILTINS: dict[str, Any] = {
     "int": int,
     "str": str,
     "no_file_conflicts": _no_file_conflicts,
+    "vocabulary_compliance": vocabulary_compliance,
 }
 
 

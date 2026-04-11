@@ -346,3 +346,143 @@ class TestVocabularyScanning:
         violations = exc_info.value.args[0]
         # Should be 1 violation, not 2 (dedupe)
         assert len(violations) == 1
+
+
+# ---------------------------------------------------------------------------
+# Git fallback tests
+# ---------------------------------------------------------------------------
+
+import subprocess
+
+
+def _init_git_repo(tmp_path):
+    """Initialize a git repo in tmp_path and make a baseline commit."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    # Baseline file so HEAD exists
+    (tmp_path / "baseline.txt").write_text("baseline\n")
+    subprocess.run(["git", "add", "baseline.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+
+class TestGitFallback:
+    def test_tracked_modification_found_via_git(self, tmp_path, monkeypatch):
+        """When files_changed is empty and git_fallback=True, tracked modifications are scanned."""
+        _init_git_repo(tmp_path)
+        tracked = tmp_path / "code.py"
+        tracked.write_text("user_id = 1\n")
+        subprocess.run(["git", "add", "code.py"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "add code"],
+            cwd=tmp_path, check=True, capture_output=True,
+        )
+        tracked.write_text("userId = 1\n")
+
+        _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance("vocab.yaml", [], git_fallback=True)
+        violations = exc_info.value.args[0]
+        assert any("userId" in v for v in violations)
+
+    def test_untracked_file_found_via_git(self, tmp_path, monkeypatch):
+        """Untracked new files are also scanned via ls-files --others."""
+        _init_git_repo(tmp_path)
+        untracked = tmp_path / "new_file.py"
+        untracked.write_text("userId = 1\n")
+
+        _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance("vocab.yaml", [], git_fallback=True)
+        violations = exc_info.value.args[0]
+        assert any("userId" in v for v in violations)
+
+    def test_files_changed_takes_precedence_over_git(self, tmp_path, monkeypatch):
+        """When files_changed is non-empty, git is not consulted even if git_fallback=True."""
+        _init_git_repo(tmp_path)
+        tracked = tmp_path / "modified.py"
+        tracked.write_text("userId = 1\n")
+        subprocess.run(["git", "add", "modified.py"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "x"], cwd=tmp_path, check=True, capture_output=True
+        )
+        tracked.write_text("userId = 1\nuserId = 2\n")
+        clean = tmp_path / "clean.py"
+        clean.write_text("user_id = 3\n")
+
+        _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        assert vocabulary_compliance(
+            "vocab.yaml",
+            [str(clean)],
+            git_fallback=True,
+        ) is True
+
+    def test_not_a_git_repo_returns_true(self, tmp_path, monkeypatch):
+        """files_changed empty + git_fallback=True + not a git repo → returns True gracefully."""
+        _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        assert vocabulary_compliance(
+            "vocab.yaml", [], git_fallback=True
+        ) is True
+
+    def test_git_fallback_disabled_empty_files_returns_true(self, tmp_path, monkeypatch):
+        """Empty files_changed + git_fallback=False → returns True even in a git repo."""
+        _init_git_repo(tmp_path)
+        untracked = tmp_path / "new.py"
+        untracked.write_text("userId = 1\n")
+
+        _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        assert vocabulary_compliance(
+            "vocab.yaml", [], git_fallback=False
+        ) is True
+
+
+# ---------------------------------------------------------------------------
+# Registration smoke test
+# ---------------------------------------------------------------------------
+
+class TestRegistration:
+    def test_vocabulary_compliance_in_ensure_builtins(self):
+        """vocabulary_compliance is registered and callable from ensure expressions."""
+        from stratum_mcp.executor import _ENSURE_BUILTINS
+        assert "vocabulary_compliance" in _ENSURE_BUILTINS
+        assert _ENSURE_BUILTINS["vocabulary_compliance"] is vocabulary_compliance
+
+    def test_callable_via_compile_ensure(self, tmp_path, monkeypatch):
+        """An ensure expression using vocabulary_compliance compiles and executes."""
+        from stratum_mcp.executor import compile_ensure
+
+        _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "clean.py"
+        src.write_text("user_id = 1\n")
+        monkeypatch.chdir(tmp_path)
+
+        fn = compile_ensure(
+            "vocabulary_compliance('vocab.yaml', result.files_changed)"
+        )
+        assert fn({"files_changed": [str(src)]}) is True
