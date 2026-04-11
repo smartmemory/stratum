@@ -1299,8 +1299,20 @@ def _register_hooks_in_settings(root: Path, changed: list[str]) -> None:
 
 
 def _install_hooks(root: Path, changed: list[str]) -> None:
-    """Copy hook scripts to ~/.stratum/hooks/ and register them in settings.json with absolute paths."""
-    _copy_hook_scripts(changed, verbose=True)
+    """Copy hook scripts to ~/.stratum/hooks/ and register them in settings.json with absolute paths.
+
+    Fails fast: if any hook script fails to copy, raises OSError before
+    registering anything in settings.json. This prevents `stratum-mcp install`
+    from reporting success while leaving .claude/settings.json pointing at
+    missing script files.
+    """
+    failures: list[str] = []
+    _copy_hook_scripts(changed, verbose=True, failures=failures)
+    if failures:
+        raise OSError(
+            "failed to install hook scripts to ~/.stratum/hooks/: "
+            + "; ".join(failures)
+        )
     _register_hooks_in_settings(root, changed)
 
 

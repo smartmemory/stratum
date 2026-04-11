@@ -509,3 +509,80 @@ class TestCopyHookScripts:
 
         captured = capsys.readouterr()
         assert captured.out == ""
+
+    def test_failures_out_param_collects_errors(self, isolated_hooks_dir, monkeypatch):
+        """failures out-param is populated on per-script OSError."""
+        from stratum_mcp.server import _copy_hook_scripts, _HOOK_SCRIPTS
+
+        scripts = list(_HOOK_SCRIPTS.values())
+        bad_script_name = scripts[0]
+
+        real_write_text = Path.write_text
+        def fake_write_text(self, data, *args, **kwargs):
+            if self.name == bad_script_name:
+                raise OSError("simulated write failure")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+        changed: list[str] = []
+        failures: list[str] = []
+        _copy_hook_scripts(changed, verbose=False, failures=failures)
+
+        assert len(failures) == 1
+        assert bad_script_name in failures[0]
+        assert "simulated write failure" in failures[0]
+        # Other scripts still installed
+        assert len(changed) == len(scripts) - 1
+
+
+class TestInstallHooksFailFast:
+    """Regression: _install_hooks must fail fast on per-script copy error
+    so the CLI install path never leaves .claude/settings.json pointing at
+    missing hook scripts."""
+
+    def test_install_hooks_raises_on_copy_failure(
+        self, tmp_path, isolated_hooks_dir, monkeypatch, capsys
+    ):
+        """_install_hooks raises OSError if any script fails to copy."""
+        from stratum_mcp.server import _install_hooks, _HOOK_SCRIPTS
+
+        scripts = list(_HOOK_SCRIPTS.values())
+        bad_script_name = scripts[0]
+
+        real_write_text = Path.write_text
+        def fake_write_text(self, data, *args, **kwargs):
+            if self.name == bad_script_name:
+                raise OSError("simulated write failure")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+        changed: list[str] = []
+        with pytest.raises(OSError, match="failed to install hook scripts"):
+            _install_hooks(tmp_path, changed)
+
+    def test_install_hooks_does_not_register_settings_on_copy_failure(
+        self, tmp_path, isolated_hooks_dir, monkeypatch
+    ):
+        """When copy fails, settings.json is NOT touched — fail-fast atomic integrity."""
+        from stratum_mcp.server import _install_hooks, _HOOK_SCRIPTS
+
+        scripts = list(_HOOK_SCRIPTS.values())
+        bad_script_name = scripts[0]
+
+        real_write_text = Path.write_text
+        def fake_write_text(self, data, *args, **kwargs):
+            if self.name == bad_script_name:
+                raise OSError("simulated write failure")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+        changed: list[str] = []
+        with pytest.raises(OSError):
+            _install_hooks(tmp_path, changed)
+
+        # settings.json was not created/modified — registration never ran
+        settings_file = tmp_path / ".claude" / "settings.json"
+        assert not settings_file.exists()
