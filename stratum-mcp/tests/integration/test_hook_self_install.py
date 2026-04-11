@@ -112,10 +112,15 @@ class TestSelfInstallHooksOnStartup:
         assert "warning" in captured.err
         assert "could not auto-install hooks" in captured.err
 
-    def test_missing_bundled_sources_is_silent_noop(
+    def test_missing_bundled_sources_prints_warning(
         self, isolated_hooks_dir, monkeypatch, capsys
     ):
-        """Monkeypatch _HOOKS_DIR to empty dir → silent no-op, no error, no stderr."""
+        """Monkeypatch _HOOKS_DIR to empty dir → stderr warning about missing bundled sources.
+
+        A broken package with missing bundled hook scripts is a real error
+        condition — the user needs to see it so they can reinstall. Silent
+        behavior here would mask packaging bugs.
+        """
         from stratum_mcp.server import _self_install_hooks_on_startup
         import stratum_mcp.server as srv
 
@@ -127,9 +132,11 @@ class TestSelfInstallHooksOnStartup:
 
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert captured.err == ""
+        assert "warning" in captured.err
+        assert "bundled source missing" in captured.err
         for script_name in _HOOK_SCRIPTS.values():
             assert not (isolated_hooks_dir / script_name).exists()
+            assert script_name in captured.err
 
     def test_per_script_write_failure_prints_warning(
         self, isolated_hooks_dir, monkeypatch, capsys

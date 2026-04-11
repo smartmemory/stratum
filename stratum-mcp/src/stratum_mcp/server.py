@@ -1192,6 +1192,13 @@ def _copy_hook_scripts(
         src = _HOOKS_DIR / script_name
         dst = _STRATUM_HOOKS_DIR / script_name
         if not src.exists():
+            # Broken package: bundled source missing. Flag as failure so
+            # the install path fails fast before registering a dangling
+            # hook entry in settings.json.
+            if verbose:
+                print(f"  ~/.stratum/hooks/{script_name}: missing bundled source")
+            if failures is not None:
+                failures.append(f"{script_name}: bundled source missing from package")
             continue
         try:
             content = src.read_text()

@@ -586,3 +586,27 @@ class TestInstallHooksFailFast:
         # settings.json was not created/modified — registration never ran
         settings_file = tmp_path / ".claude" / "settings.json"
         assert not settings_file.exists()
+
+    def test_install_hooks_raises_on_missing_bundled_source(
+        self, tmp_path, isolated_hooks_dir, monkeypatch
+    ):
+        """_install_hooks raises if bundled source is missing (broken package).
+
+        Regression: a broken package install used to silently skip missing
+        scripts while still registering all hooks in settings.json, leaving
+        dangling entries pointing at nonexistent files.
+        """
+        from stratum_mcp.server import _install_hooks
+        import stratum_mcp.server as srv
+
+        empty_dir = isolated_hooks_dir.parent / "empty_bundle"
+        empty_dir.mkdir()
+        monkeypatch.setattr(srv, "_HOOKS_DIR", empty_dir)
+
+        changed: list[str] = []
+        with pytest.raises(OSError, match="bundled source missing"):
+            _install_hooks(tmp_path, changed)
+
+        # settings.json was not created — registration never ran
+        settings_file = tmp_path / ".claude" / "settings.json"
+        assert not settings_file.exists()
