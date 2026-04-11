@@ -543,6 +543,131 @@ SCHEMAS: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
+# Ensure builtin — vocabulary_compliance (STRAT-VOCAB)
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+
+# 10 MB — duplicated from executor.py to avoid circular imports
+_VOCAB_SIZE_LIMIT = 10 * 1024 * 1024
+
+# Identifier syntax: starts with letter/underscore, followed by alphanumerics/underscore
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _load_vocabulary(path: str) -> dict[str, dict]:
+    """Load and validate vocabulary.yaml.
+
+    Returns empty dict for missing/empty/comments-only files (no-op case).
+    Raises ValueError([list of messages]) on malformed YAML or schema errors.
+    """
+    if not os.path.isfile(path):
+        return {}
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as exc:
+        raise ValueError([f"vocabulary.yaml malformed: cannot read {path}: {exc}"])
+
+    try:
+        parsed = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ValueError([f"vocabulary.yaml malformed: {exc}"])
+
+    # Empty file or comments-only → None → treat as empty
+    if parsed is None:
+        return {}
+
+    if not isinstance(parsed, dict):
+        raise ValueError(["vocabulary.yaml schema error: top-level must be a mapping"])
+
+    # Validate each entry
+    validated: dict[str, dict] = {}
+    for canonical, entry in parsed.items():
+        if not isinstance(canonical, str) or not _IDENTIFIER_RE.match(canonical):
+            raise ValueError([
+                f"vocabulary.yaml schema error: canonical name {canonical!r} "
+                f"must match identifier syntax (letters, digits, underscore; "
+                f"starts with letter or underscore)"
+            ])
+        if not isinstance(entry, dict):
+            raise ValueError([
+                f"vocabulary.yaml schema error: entry for {canonical!r} "
+                f"must be a mapping, got {type(entry).__name__}"
+            ])
+
+        # Check for unknown fields (strict — catches typos)
+        allowed_fields = {"reject", "reason"}
+        unknown = set(entry.keys()) - allowed_fields
+        if unknown:
+            raise ValueError([
+                f"vocabulary.yaml schema error: entry for {canonical!r} "
+                f"has unknown fields: {sorted(unknown)}. Allowed: {sorted(allowed_fields)}"
+            ])
+
+        reject = entry.get("reject")
+        if not isinstance(reject, list) or not reject:
+            raise ValueError([
+                f"vocabulary.yaml schema error: entry for {canonical!r} "
+                f"must have non-empty 'reject' list"
+            ])
+
+        for alias in reject:
+            if not isinstance(alias, str) or not _IDENTIFIER_RE.match(alias):
+                raise ValueError([
+                    f"vocabulary.yaml schema error: alias {alias!r} in "
+                    f"{canonical!r} must match identifier syntax"
+                ])
+            if alias == canonical:
+                raise ValueError([
+                    f"vocabulary.yaml schema error: canonical {canonical!r} "
+                    f"cannot reject itself"
+                ])
+
+        reason = entry.get("reason", "")
+        if reason is not None and not isinstance(reason, str):
+            raise ValueError([
+                f"vocabulary.yaml schema error: reason for {canonical!r} "
+                f"must be a string"
+            ])
+
+        validated[canonical] = {
+            "reject": list(reject),
+            "reason": reason or "",
+        }
+
+    # Cross-entry validation: no duplicate aliases, no canonical-as-alias
+    canonicals = set(validated.keys())
+    alias_to_canonical: dict[str, str] = {}
+    for canonical, entry in validated.items():
+        for alias in entry["reject"]:
+            if alias in canonicals:
+                raise ValueError([
+                    f"vocabulary.yaml schema error: {alias!r} is both a canonical "
+                    f"and a rejected alias for {canonical!r}"
+                ])
+            if alias in alias_to_canonical:
+                raise ValueError([
+                    f"vocabulary.yaml schema error: alias {alias!r} is rejected by "
+                    f"multiple canonicals ({alias_to_canonical[alias]}, {canonical})"
+                ])
+            alias_to_canonical[alias] = canonical
+
+    return validated
+
+
+def vocabulary_compliance(
+    path: str,
+    files_changed: list[str],
+    git_fallback: bool = False,
+    base: str = "HEAD",
+) -> bool:
+    """Stub — will be implemented in Task 3."""
+    raise NotImplementedError
+
+
+# ---------------------------------------------------------------------------
 # Public parse entry point
 # ---------------------------------------------------------------------------
 
