@@ -1296,6 +1296,46 @@ def _install_hooks(root: Path, changed: list[str]) -> None:
     _register_hooks_in_settings(root, changed)
 
 
+def _self_install_hooks_on_startup() -> None:
+    """Auto-install hook scripts to ~/.stratum/hooks/ if missing or stale.
+
+    Runs before mcp.run() in stdio mode. Best-effort self-heal: per-script
+    errors are isolated inside _copy_hook_scripts, and the outer try/except
+    catches infrastructure failures (e.g., mkdir denied on the hooks
+    directory itself). The MCP server always continues starting — this
+    function never raises.
+
+    Settings.json registration is NOT touched (that still requires explicit
+    `stratum-mcp install`). This function only ensures the hook script
+    files exist and are executable so that references already written by a
+    prior `stratum-mcp install` can resolve.
+
+    Output goes to stderr only — stdout is reserved for the stdio MCP
+    JSON-RPC protocol.
+    """
+    try:
+        changed: list[str] = []
+        # Per-script errors are caught inside _copy_hook_scripts, not here.
+        # This outer try only catches infrastructure failures (e.g.,
+        # PermissionError on mkdir for the hooks directory itself).
+        _copy_hook_scripts(changed, verbose=False)
+        if changed:
+            # Neutral wording covers install, update, and re-chmod cases
+            # — the user-visible outcome is the same (files are in place
+            # and executable).
+            names = ", ".join(Path(c).name for c in changed)
+            print(
+                f"stratum-mcp: auto-installed/refreshed hook scripts: {names}",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"stratum-mcp: warning: could not auto-install hooks to "
+            f"~/.stratum/hooks/: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _remove_hooks(root: Path, removed: list[str]) -> None:
     """Remove hook scripts and their settings.json entries written by setup."""
     import json
@@ -1889,6 +1929,7 @@ def main() -> None:
         print("Run 'stratum-mcp --help' for usage.", file=sys.stderr)
         sys.exit(1)
 
+    _self_install_hooks_on_startup()
     mcp.run(transport="stdio")
 
 
