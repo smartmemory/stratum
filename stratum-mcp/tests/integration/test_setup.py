@@ -374,3 +374,138 @@ def test_setup_migration_preserves_colocated_hooks(tmp_path, capsys, isolated_ho
         "Foreign hook in mixed entry was lost during migration"
     # Old Stratum hook must be gone
     assert "bash .claude/hooks/stratum-session-start.sh" not in all_commands
+
+
+# ---------------------------------------------------------------------------
+# _copy_hook_scripts direct tests (T2-HOOK-INSTALL)
+# ---------------------------------------------------------------------------
+
+class TestCopyHookScripts:
+    def test_clean_destination_installs_all_scripts(self, isolated_hooks_dir):
+        """Empty hooks dir → all three scripts installed and executable."""
+        from stratum_mcp.server import _copy_hook_scripts, _HOOK_SCRIPTS
+        import stat
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        assert len(changed) == 3
+        for script_name in _HOOK_SCRIPTS.values():
+            dst = isolated_hooks_dir / script_name
+            assert dst.exists()
+            assert dst.stat().st_mode & stat.S_IXUSR
+
+    def test_matching_content_executable_is_skipped(self, isolated_hooks_dir):
+        """Scripts present with matching content AND executable → all skipped, changed empty."""
+        from stratum_mcp.server import _copy_hook_scripts, _HOOK_SCRIPTS, _HOOKS_DIR
+
+        for script_name in _HOOK_SCRIPTS.values():
+            src = _HOOKS_DIR / script_name
+            dst = isolated_hooks_dir / script_name
+            dst.write_text(src.read_text())
+            dst.chmod(0o755)
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        assert changed == []
+
+    def test_matching_content_but_not_executable_rechmods(self, isolated_hooks_dir):
+        """Scripts present with matching content but execute bit dropped → re-chmodded, changed populated, content preserved."""
+        from stratum_mcp.server import _copy_hook_scripts, _HOOK_SCRIPTS, _HOOKS_DIR
+        import stat
+
+        for script_name in _HOOK_SCRIPTS.values():
+            src = _HOOKS_DIR / script_name
+            dst = isolated_hooks_dir / script_name
+            dst.write_text(src.read_text())
+            dst.chmod(0o644)
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        assert len(changed) == 3
+        for script_name in _HOOK_SCRIPTS.values():
+            dst = isolated_hooks_dir / script_name
+            src = _HOOKS_DIR / script_name
+            assert dst.read_text() == src.read_text()
+            assert dst.stat().st_mode & stat.S_IXUSR
+
+    def test_mismatched_content_is_overwritten(self, isolated_hooks_dir):
+        """Scripts present but content differs → overwritten with bundle content, executable."""
+        from stratum_mcp.server import _copy_hook_scripts, _HOOK_SCRIPTS, _HOOKS_DIR
+        import stat
+
+        for script_name in _HOOK_SCRIPTS.values():
+            dst = isolated_hooks_dir / script_name
+            dst.write_text("#!/bin/bash\n# stale content\nexit 1\n")
+            dst.chmod(0o755)
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        assert len(changed) == 3
+        for script_name in _HOOK_SCRIPTS.values():
+            dst = isolated_hooks_dir / script_name
+            src = _HOOKS_DIR / script_name
+            assert dst.read_text() == src.read_text()
+            assert dst.stat().st_mode & stat.S_IXUSR
+
+    def test_per_script_error_isolation(self, isolated_hooks_dir, monkeypatch):
+        """One script fails (OSError on write) → that one skipped, others still processed."""
+        from stratum_mcp.server import _copy_hook_scripts, _HOOK_SCRIPTS
+
+        scripts = list(_HOOK_SCRIPTS.values())
+        assert len(scripts) >= 2, "Test requires at least 2 hook scripts"
+        bad_script_name = scripts[0]
+
+        real_write_text = Path.write_text
+        def fake_write_text(self, data, *args, **kwargs):
+            if self.name == bad_script_name:
+                raise OSError("simulated write failure")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        assert len(changed) == len(scripts) - 1
+        assert not any(bad_script_name in c for c in changed)
+        for script_name in scripts[1:]:
+            assert (isolated_hooks_dir / script_name).exists()
+
+    def test_creates_hooks_directory_if_missing(self, tmp_path, monkeypatch):
+        """_copy_hook_scripts creates ~/.stratum/hooks/ if it doesn't exist."""
+        from stratum_mcp.server import _copy_hook_scripts
+        import stratum_mcp.server as srv
+
+        hooks_dir = tmp_path / "nonexistent" / "hooks"
+        assert not hooks_dir.exists()
+        monkeypatch.setattr(srv, "_STRATUM_HOOKS_DIR", hooks_dir)
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        assert hooks_dir.exists()
+        assert len(changed) == 3
+
+    def test_verbose_true_prints_status(self, isolated_hooks_dir, capsys):
+        """verbose=True prints install/update/skip status lines to stdout."""
+        from stratum_mcp.server import _copy_hook_scripts
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=True)
+
+        captured = capsys.readouterr()
+        assert "installed" in captured.out or "updated" in captured.out
+
+    def test_verbose_false_is_silent(self, isolated_hooks_dir, capsys):
+        """verbose=False produces no stdout even when scripts are installed."""
+        from stratum_mcp.server import _copy_hook_scripts
+
+        changed: list[str] = []
+        _copy_hook_scripts(changed, verbose=False)
+
+        captured = capsys.readouterr()
+        assert captured.out == ""

@@ -1169,27 +1169,67 @@ _HOOK_SCRIPTS: dict[str, str] = {
 _STRATUM_HOOKS_DIR = Path.home() / ".stratum" / "hooks"
 
 
-def _install_hooks(root: Path, changed: list[str]) -> None:
-    """Copy hook scripts to ~/.stratum/hooks/ and register them in settings.json with absolute paths."""
-    import json
+def _copy_hook_scripts(changed: list[str], verbose: bool = True) -> None:
+    """Copy bundled hook scripts to ~/.stratum/hooks/ if missing, stale, or not executable.
+
+    Per-script errors are isolated — one failing script does not abort the
+    rest of the pass. Appends installed/updated/re-chmodded script paths to
+    `changed`. When `verbose=True`, prints status lines to stdout matching
+    the existing install CLI behavior. When `verbose=False`, produces no
+    stdout output — suitable for reuse from the stdio MCP startup path.
+    """
+    import stat as _stat
 
     _STRATUM_HOOKS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Copy each script file to ~/.stratum/hooks/, make executable
     for script_name in _HOOK_SCRIPTS.values():
         src = _HOOKS_DIR / script_name
         dst = _STRATUM_HOOKS_DIR / script_name
         if not src.exists():
             continue
-        content = src.read_text()
-        if dst.exists() and dst.read_text() == content:
-            print(f"  ~/.stratum/hooks/{script_name}: already up to date — skipped")
-        else:
-            verb = "updated" if dst.exists() else "installed"
-            dst.write_text(content)
-            dst.chmod(0o755)
-            print(f"  ~/.stratum/hooks/{script_name}: {verb}")
-            changed.append(f"~/.stratum/hooks/{script_name}")
+        try:
+            content = src.read_text()
+            if dst.exists():
+                dst_content = dst.read_text()
+                if dst_content == content:
+                    # Content matches — check execute bit
+                    mode = dst.stat().st_mode
+                    if mode & _stat.S_IXUSR:
+                        if verbose:
+                            print(f"  ~/.stratum/hooks/{script_name}: already up to date — skipped")
+                        continue
+                    # Content matches but execute bit dropped — re-chmod only
+                    dst.chmod(0o755)
+                    if verbose:
+                        print(f"  ~/.stratum/hooks/{script_name}: re-chmod")
+                    changed.append(f"~/.stratum/hooks/{script_name}")
+                    continue
+                # Content differs — overwrite
+                dst.write_text(content)
+                dst.chmod(0o755)
+                if verbose:
+                    print(f"  ~/.stratum/hooks/{script_name}: updated")
+                changed.append(f"~/.stratum/hooks/{script_name}")
+            else:
+                # First install
+                dst.write_text(content)
+                dst.chmod(0o755)
+                if verbose:
+                    print(f"  ~/.stratum/hooks/{script_name}: installed")
+                changed.append(f"~/.stratum/hooks/{script_name}")
+        except OSError as exc:
+            # Per-script error isolation — continue with remaining scripts
+            if verbose:
+                print(f"  ~/.stratum/hooks/{script_name}: failed ({exc})")
+
+
+def _register_hooks_in_settings(root: Path, changed: list[str]) -> None:
+    """Register hook scripts in .claude/settings.json and migrate old per-project copies.
+
+    Separated from file provisioning so the stdio MCP startup path can provision
+    files without touching project config.
+    """
+    import json
 
     # Migrate: clean up old per-project hook scripts
     old_hooks_dir = root / ".claude" / "hooks"
@@ -1248,6 +1288,12 @@ def _install_hooks(root: Path, changed: list[str]) -> None:
         changed.append(".claude/settings.json")
     else:
         print("  .claude/settings.json: Stratum hooks already registered — skipped")
+
+
+def _install_hooks(root: Path, changed: list[str]) -> None:
+    """Copy hook scripts to ~/.stratum/hooks/ and register them in settings.json with absolute paths."""
+    _copy_hook_scripts(changed, verbose=True)
+    _register_hooks_in_settings(root, changed)
 
 
 def _remove_hooks(root: Path, removed: list[str]) -> None:
