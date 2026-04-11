@@ -1169,14 +1169,20 @@ _HOOK_SCRIPTS: dict[str, str] = {
 _STRATUM_HOOKS_DIR = Path.home() / ".stratum" / "hooks"
 
 
-def _copy_hook_scripts(changed: list[str], verbose: bool = True) -> None:
+def _copy_hook_scripts(
+    changed: list[str],
+    verbose: bool = True,
+    failures: list[str] | None = None,
+) -> None:
     """Copy bundled hook scripts to ~/.stratum/hooks/ if missing, stale, or not executable.
 
     Per-script errors are isolated — one failing script does not abort the
     rest of the pass. Appends installed/updated/re-chmodded script paths to
-    `changed`. When `verbose=True`, prints status lines to stdout matching
-    the existing install CLI behavior. When `verbose=False`, produces no
-    stdout output — suitable for reuse from the stdio MCP startup path.
+    `changed`. When `failures` is provided, per-script OSError messages are
+    appended to it so callers can surface them even when `verbose=False`.
+    When `verbose=True`, prints status lines to stdout matching the existing
+    install CLI behavior. When `verbose=False`, produces no stdout output —
+    suitable for reuse from the stdio MCP startup path.
     """
     import stat as _stat
 
@@ -1221,6 +1227,8 @@ def _copy_hook_scripts(changed: list[str], verbose: bool = True) -> None:
             # Per-script error isolation — continue with remaining scripts
             if verbose:
                 print(f"  ~/.stratum/hooks/{script_name}: failed ({exc})")
+            if failures is not None:
+                failures.append(f"{script_name}: {exc}")
 
 
 def _register_hooks_in_settings(root: Path, changed: list[str]) -> None:
@@ -1315,10 +1323,12 @@ def _self_install_hooks_on_startup() -> None:
     """
     try:
         changed: list[str] = []
-        # Per-script errors are caught inside _copy_hook_scripts, not here.
-        # This outer try only catches infrastructure failures (e.g.,
-        # PermissionError on mkdir for the hooks directory itself).
-        _copy_hook_scripts(changed, verbose=False)
+        failures: list[str] = []
+        # Per-script errors are caught inside _copy_hook_scripts, collected
+        # in `failures`, and surfaced below. The outer try/except catches
+        # infrastructure failures (e.g., PermissionError on mkdir for the
+        # hooks directory itself).
+        _copy_hook_scripts(changed, verbose=False, failures=failures)
         if changed:
             # Neutral wording covers install, update, and re-chmod cases
             # — the user-visible outcome is the same (files are in place
@@ -1326,6 +1336,14 @@ def _self_install_hooks_on_startup() -> None:
             names = ", ".join(Path(c).name for c in changed)
             print(
                 f"stratum-mcp: auto-installed/refreshed hook scripts: {names}",
+                file=sys.stderr,
+            )
+        if failures:
+            # Surface per-script failures so broken installs don't persist
+            # silently. One warning line aggregates all failed scripts.
+            print(
+                f"stratum-mcp: warning: failed to install hook scripts to "
+                f"~/.stratum/hooks/: {'; '.join(failures)}",
                 file=sys.stderr,
             )
     except Exception as exc:

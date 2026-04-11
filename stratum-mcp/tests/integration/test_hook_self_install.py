@@ -131,6 +131,37 @@ class TestSelfInstallHooksOnStartup:
         for script_name in _HOOK_SCRIPTS.values():
             assert not (isolated_hooks_dir / script_name).exists()
 
+    def test_per_script_write_failure_prints_warning(
+        self, isolated_hooks_dir, monkeypatch, capsys
+    ):
+        """Per-script OSError surfaces as a stderr warning even when verbose=False."""
+        from stratum_mcp.server import _self_install_hooks_on_startup
+
+        scripts = list(_HOOK_SCRIPTS.values())
+        bad_script_name = scripts[0]
+
+        real_write_text = Path.write_text
+        def fake_write_text(self, data, *args, **kwargs):
+            if self.name == bad_script_name:
+                raise OSError("simulated write failure")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+        _self_install_hooks_on_startup()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        # Warning should mention the failed script
+        assert "warning" in captured.err
+        assert "failed to install hook scripts" in captured.err
+        assert bad_script_name in captured.err
+        assert "simulated write failure" in captured.err
+        # The other scripts were still installed → also see the "refreshed" line
+        assert "auto-installed/refreshed hook scripts" in captured.err
+        for script_name in scripts[1:]:
+            assert script_name in captured.err
+
 
 # ---------------------------------------------------------------------------
 # main() branching — self-install runs only on stdio path
