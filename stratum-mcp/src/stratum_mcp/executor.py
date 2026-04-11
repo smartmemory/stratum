@@ -285,11 +285,32 @@ def compile_ensure(expr: str) -> Callable[[Any], bool]:
     except SyntaxError as exc:
         raise EnsureCompileError(f"Cannot compile ensure expression {expr!r}: {exc}") from exc
 
-    def evaluator(result: Any) -> bool:
+    def evaluator(result: Any, **extra_locals: Any) -> bool:
         if isinstance(result, dict):
             result = types.SimpleNamespace(**result)
         try:
-            return bool(eval(code, {"__builtins__": {}, **_ENSURE_BUILTINS}, {"result": result}))
+            return bool(eval(
+                code,
+                {"__builtins__": {}, **_ENSURE_BUILTINS},
+                {"result": result, **extra_locals},
+            ))
+        except ValueError as exc:
+            # Structured-violation passthrough: if the builtin raised
+            # ValueError([list of strings]), preserve the list via an attribute
+            # on EnsureCompileError so the ensure loop can surface each
+            # violation separately rather than collapsing them into a single
+            # stringified list.
+            if (
+                exc.args
+                and isinstance(exc.args[0], list)
+                and all(isinstance(v, str) for v in exc.args[0])
+            ):
+                err = EnsureCompileError(f"ensure '{expr}' failed")
+                err.violations = exc.args[0]
+                raise err from exc
+            raise EnsureCompileError(
+                f"Ensure expression {expr!r} raised: {exc}"
+            ) from exc
         except Exception as exc:
             raise EnsureCompileError(
                 f"Ensure expression {expr!r} raised: {exc}"
@@ -1211,7 +1232,10 @@ def process_step_result(
             if not fn(result):
                 violations.append(f"ensure '{expr}' failed")
         except EnsureCompileError as exc:
-            violations.append(str(exc))
+            if hasattr(exc, "violations"):
+                violations.extend(exc.violations)
+            else:
+                violations.append(str(exc))
 
     dispatched = state.dispatched_at.get(step_id, state.flow_start)
     duration_ms = int((time.monotonic() - dispatched) * 1000)
