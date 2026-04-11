@@ -149,3 +149,200 @@ class TestVocabularyLoader:
         )
         with pytest.raises(ValueError, match="schema error"):
             _load_vocabulary(str(p))
+
+
+# ---------------------------------------------------------------------------
+# File scanning tests
+# ---------------------------------------------------------------------------
+
+def _write_vocab(tmp_path, content: str) -> str:
+    """Helper to write a vocab file and return its path."""
+    p = tmp_path / "vocab.yaml"
+    p.write_text(content)
+    return str(p)
+
+
+class TestVocabularyScanning:
+    def test_no_vocabulary_file_returns_true(self, tmp_path):
+        """Missing vocabulary file → no-op pass."""
+        assert vocabulary_compliance(
+            str(tmp_path / "nope.yaml"),
+            ["some/file.py"],
+        ) is True
+
+    def test_empty_vocabulary_returns_true(self, tmp_path):
+        """Empty vocab → nothing to check."""
+        vocab_path = _write_vocab(tmp_path, "")
+        assert vocabulary_compliance(vocab_path, ["some/file.py"]) is True
+
+    def test_clean_files_pass(self, tmp_path):
+        """No rejected aliases in the file → pass."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "clean.py"
+        src.write_text("def get_user_id():\n    return user_id\n")
+        assert vocabulary_compliance(vocab_path, [str(src)]) is True
+
+    def test_whole_word_match_finds_alias(self, tmp_path):
+        """Rejected alias with word boundaries → violation."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "bad.py"
+        src.write_text("def get_user():\n    return userId\n")
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(vocab_path, [str(src)])
+        violations = exc_info.value.args[0]
+        assert len(violations) == 1
+        assert "userId" in violations[0]
+        assert "user_id" in violations[0]
+
+    def test_whole_word_does_not_match_inside_other_word(self, tmp_path):
+        """'uid' should not match inside 'uuid' or 'guide'."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [uid]\n",
+        )
+        src = tmp_path / "safe.py"
+        src.write_text("def get_uuid():\n    return 'guide_me'\n")
+        assert vocabulary_compliance(vocab_path, [str(src)]) is True
+
+    def test_case_sensitive_match(self, tmp_path):
+        """'userId' does not match 'UserID' unless listed."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "mixed.py"
+        src.write_text("class UserID:\n    pass\n")
+        assert vocabulary_compliance(vocab_path, [str(src)]) is True
+
+    def test_multiple_occurrences_one_per_violation(self, tmp_path):
+        """Same alias used N times → N violations."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "multi.py"
+        src.write_text(
+            "def a(userId):\n"
+            "    pass\n"
+            "def b(userId):\n"
+            "    return userId\n"
+        )
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(vocab_path, [str(src)])
+        violations = exc_info.value.args[0]
+        assert len(violations) == 3
+
+    def test_reason_included_in_violation(self, tmp_path):
+        """Reason string appears in violation message."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n"
+            "  reject: [userId]\n"
+            "  reason: 'standardized on snake_case'\n",
+        )
+        src = tmp_path / "bad.py"
+        src.write_text("userId = 1\n")
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(vocab_path, [str(src)])
+        violations = exc_info.value.args[0]
+        assert "standardized on snake_case" in violations[0]
+
+    def test_no_reason_omits_parenthetical(self, tmp_path):
+        """When reason is absent, message has no (reason: ...) suffix."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "bad.py"
+        src.write_text("userId = 1\n")
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(vocab_path, [str(src)])
+        violations = exc_info.value.args[0]
+        assert "(reason:" not in violations[0]
+
+    def test_empty_reason_omits_parenthetical(self, tmp_path):
+        """Empty reason string behaves same as absent."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n"
+            "  reject: [userId]\n"
+            "  reason: ''\n",
+        )
+        src = tmp_path / "bad.py"
+        src.write_text("userId = 1\n")
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(vocab_path, [str(src)])
+        violations = exc_info.value.args[0]
+        assert "(reason:" not in violations[0]
+
+    def test_multiple_files(self, tmp_path):
+        """Scan multiple files; violations reported with correct paths."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        f1 = tmp_path / "a.py"
+        f1.write_text("userId = 1\n")
+        f2 = tmp_path / "b.py"
+        f2.write_text("def foo(userId):\n    pass\n")
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(vocab_path, [str(f1), str(f2)])
+        violations = exc_info.value.args[0]
+        assert len(violations) == 2
+
+    def test_missing_file_skipped_silently(self, tmp_path):
+        """Deleted files in files_changed → skip, no error."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        result = vocabulary_compliance(
+            vocab_path,
+            [str(tmp_path / "nonexistent.py")],
+        )
+        assert result is True
+
+    def test_empty_files_changed_returns_true(self, tmp_path):
+        """Empty files_changed with git_fallback off → nothing to scan."""
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        assert vocabulary_compliance(vocab_path, [], git_fallback=False) is True
+
+    def test_large_file_skipped(self, tmp_path, monkeypatch):
+        """Files over the size limit are skipped silently."""
+        import stratum_mcp.spec as spec_mod
+        monkeypatch.setattr(spec_mod, "_VOCAB_SIZE_LIMIT", 10)
+
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "big.py"
+        src.write_text("userId = " + "'x'" * 100)  # well over 10 bytes
+        assert vocabulary_compliance(vocab_path, [str(src)]) is True
+
+    def test_path_normalization_dedupe(self, tmp_path, monkeypatch):
+        """Equivalent paths (./a.py, a.py) are scanned once."""
+        monkeypatch.chdir(tmp_path)
+        vocab_path = _write_vocab(
+            tmp_path,
+            "user_id:\n  reject: [userId]\n",
+        )
+        src = tmp_path / "a.py"
+        src.write_text("userId = 1\n")
+        with pytest.raises(ValueError) as exc_info:
+            vocabulary_compliance(
+                vocab_path,
+                ["a.py", "./a.py"],  # same file, different form
+            )
+        violations = exc_info.value.args[0]
+        # Should be 1 violation, not 2 (dedupe)
+        assert len(violations) == 1
