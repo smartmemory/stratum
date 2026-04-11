@@ -543,6 +543,278 @@ SCHEMAS: dict[str, dict] = {
 
 
 # ---------------------------------------------------------------------------
+# Ensure builtin — vocabulary_compliance (STRAT-VOCAB)
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+import subprocess  # noqa: E402
+
+# 10 MB — duplicated from executor.py to avoid circular imports
+_VOCAB_SIZE_LIMIT = 10 * 1024 * 1024
+
+# Identifier syntax: starts with letter/underscore, followed by alphanumerics/underscore
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _load_vocabulary(path: str) -> dict[str, dict]:
+    """Load and validate vocabulary.yaml.
+
+    Returns empty dict for missing/empty/comments-only files (no-op case).
+    Raises ValueError([list of messages]) on malformed YAML or schema errors.
+    """
+    if not os.path.isfile(path):
+        return {}
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as exc:
+        raise ValueError([f"vocabulary.yaml malformed: cannot read {path}: {exc}"])
+
+    try:
+        parsed = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ValueError([f"vocabulary.yaml malformed: {exc}"])
+
+    # Empty file or comments-only → None → treat as empty
+    if parsed is None:
+        return {}
+
+    if not isinstance(parsed, dict):
+        raise ValueError(["vocabulary.yaml schema error: top-level must be a mapping"])
+
+    # Validate each entry
+    validated: dict[str, dict] = {}
+    for canonical, entry in parsed.items():
+        if not isinstance(canonical, str) or not _IDENTIFIER_RE.match(canonical):
+            raise ValueError([
+                f"vocabulary.yaml schema error: canonical name {canonical!r} "
+                f"must match identifier syntax (letters, digits, underscore; "
+                f"starts with letter or underscore)"
+            ])
+        if not isinstance(entry, dict):
+            raise ValueError([
+                f"vocabulary.yaml schema error: entry for {canonical!r} "
+                f"must be a mapping, got {type(entry).__name__}"
+            ])
+
+        # Check for unknown fields (strict — catches typos)
+        allowed_fields = {"reject", "reason"}
+        unknown = set(entry.keys()) - allowed_fields
+        if unknown:
+            raise ValueError([
+                f"vocabulary.yaml schema error: entry for {canonical!r} "
+                f"has unknown fields: {sorted(unknown)}. Allowed: {sorted(allowed_fields)}"
+            ])
+
+        reject = entry.get("reject")
+        if not isinstance(reject, list) or not reject:
+            raise ValueError([
+                f"vocabulary.yaml schema error: entry for {canonical!r} "
+                f"must have non-empty 'reject' list"
+            ])
+
+        for alias in reject:
+            if not isinstance(alias, str) or not _IDENTIFIER_RE.match(alias):
+                raise ValueError([
+                    f"vocabulary.yaml schema error: alias {alias!r} in "
+                    f"{canonical!r} must match identifier syntax"
+                ])
+            if alias == canonical:
+                raise ValueError([
+                    f"vocabulary.yaml schema error: canonical {canonical!r} "
+                    f"cannot reject itself"
+                ])
+
+        reason = entry.get("reason", "")
+        if reason is not None and not isinstance(reason, str):
+            raise ValueError([
+                f"vocabulary.yaml schema error: reason for {canonical!r} "
+                f"must be a string"
+            ])
+
+        validated[canonical] = {
+            "reject": list(reject),
+            "reason": reason or "",
+        }
+
+    # Cross-entry validation: no duplicate aliases, no canonical-as-alias
+    canonicals = set(validated.keys())
+    alias_to_canonical: dict[str, str] = {}
+    for canonical, entry in validated.items():
+        for alias in entry["reject"]:
+            if alias in canonicals:
+                raise ValueError([
+                    f"vocabulary.yaml schema error: {alias!r} is both a canonical "
+                    f"and a rejected alias for {canonical!r}"
+                ])
+            if alias in alias_to_canonical:
+                raise ValueError([
+                    f"vocabulary.yaml schema error: alias {alias!r} is rejected by "
+                    f"multiple canonicals ({alias_to_canonical[alias]}, {canonical})"
+                ])
+            alias_to_canonical[alias] = canonical
+
+    return validated
+
+
+def _git_changed_files(base: str) -> list[str] | None:
+    """Return list of changed files from `git diff --name-only <base>` plus untracked files.
+    Returns None on any failure (not a repo, base invalid, git missing, timeout).
+    """
+    try:
+        diff_result = subprocess.run(
+            ["git", "diff", "--name-only", base],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if diff_result.returncode != 0:
+            return None
+        tracked = [f for f in diff_result.stdout.splitlines() if f]
+
+        untracked_result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        untracked = (
+            [f for f in untracked_result.stdout.splitlines() if f]
+            if untracked_result.returncode == 0 else []
+        )
+
+        seen: set[str] = set()
+        combined: list[str] = []
+        for f in tracked + untracked:
+            if f not in seen:
+                seen.add(f)
+                combined.append(f)
+        return combined
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _scan_file_for_aliases(
+    path: str,
+    alias_to_canonical: dict[str, str],
+    canonical_to_reason: dict[str, str],
+    compiled_matchers: dict[str, "re.Pattern[str]"],
+) -> list[str]:
+    """Scan one file and return a list of violation strings.
+
+    path: file path (already normalized, existence checked)
+    alias_to_canonical: map alias → canonical name
+    canonical_to_reason: map canonical → reason string (may be empty)
+    compiled_matchers: map alias → compiled regex
+    """
+    violations: list[str] = []
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return violations  # File disappeared between existence check and size check
+    if size > _VOCAB_SIZE_LIMIT:
+        return violations  # Skip large files silently
+
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return violations
+
+    for line_idx, line in enumerate(lines):
+        line_no = line_idx + 1  # 1-based
+        for alias, pattern in compiled_matchers.items():
+            for _ in pattern.finditer(line):
+                canonical = alias_to_canonical[alias]
+                reason = canonical_to_reason.get(canonical, "")
+                msg = (
+                    f"vocabulary violation: {path}:{line_no} uses {alias!r} "
+                    f"— canonical is {canonical!r}"
+                )
+                if reason:
+                    msg += f" (reason: {reason})"
+                violations.append(msg)
+
+    return violations
+
+
+def vocabulary_compliance(
+    path: str,
+    files_changed: list[str],
+    git_fallback: bool = False,
+    base: str = "HEAD",
+) -> bool:
+    """Scan files_changed for rejected vocabulary aliases.
+
+    Loads ``contracts/vocabulary.yaml`` from `path`. For each rejected alias,
+    greps the changed files and emits one violation per whole-word match.
+
+    Returns True when no violations are found (or when there's nothing to check).
+    Raises ValueError([list of violation strings]) when violations exist.
+
+    path: path to vocabulary.yaml (resolved against process cwd)
+    files_changed: list of files the step touched (authoritative source)
+    git_fallback: if True and files_changed is empty, try git diff
+    base: git ref to diff against (default HEAD)
+    """
+    vocab = _load_vocabulary(path)
+    if not vocab:
+        return True  # No vocabulary → nothing to check
+
+    # Build lookup tables
+    alias_to_canonical: dict[str, str] = {}
+    canonical_to_reason: dict[str, str] = {}
+    for canonical, entry in vocab.items():
+        canonical_to_reason[canonical] = entry["reason"]
+        for alias in entry["reject"]:
+            alias_to_canonical[alias] = canonical
+
+    # Determine files to scan
+    if files_changed:
+        file_list = files_changed
+    elif git_fallback:
+        fallback = _git_changed_files(base)
+        if fallback is None:
+            return True  # Git failed; nothing we can do
+        file_list = fallback
+    else:
+        return True  # No files to scan
+
+    # Normalize and dedupe file paths
+    seen_paths: set[str] = set()
+    normalized_files: list[str] = []
+    for f in file_list:
+        norm = os.path.normpath(f)
+        if norm in seen_paths:
+            continue
+        seen_paths.add(norm)
+        if os.path.isfile(norm):
+            normalized_files.append(norm)
+
+    if not normalized_files:
+        return True  # All files missing/deleted
+
+    # Compile whole-word matchers (case-sensitive)
+    compiled_matchers: dict[str, re.Pattern[str]] = {
+        alias: re.compile(r"\b" + re.escape(alias) + r"\b", re.MULTILINE)
+        for alias in alias_to_canonical
+    }
+
+    # Scan each file
+    all_violations: list[str] = []
+    for file_path in normalized_files:
+        all_violations.extend(
+            _scan_file_for_aliases(
+                file_path,
+                alias_to_canonical,
+                canonical_to_reason,
+                compiled_matchers,
+            )
+        )
+
+    if all_violations:
+        raise ValueError(all_violations)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public parse entry point
 # ---------------------------------------------------------------------------
 
