@@ -11,3 +11,13 @@ venv/
 
 node_modules/
 package-lock.json
+
+# IDE / tool state
+.claude/
+.playwright-mcp/
+
+# Secrets
+.mcpregistry_*_token
+
+# Lock files (pnpm/uv)
+uv.lock
