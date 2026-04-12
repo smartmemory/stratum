@@ -497,3 +497,303 @@ def test_parallel_done_require_n_fails_when_not_met():
         assert result["status"] in ("ensure_failed", "error")
     finally:
         _flows.pop(flow_id, None)
+
+
+# ---------------------------------------------------------------------------
+# STRAT-CERT-PAR: per-task certificate validation in stratum_parallel_done
+# ---------------------------------------------------------------------------
+
+_V03_PAR_CERT = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: "claude:reviewer"
+            require: all
+            intent_template: "Do: {task.desc}"
+            depends_on: [analyze]
+            retries: 1
+            task_reasoning_template:
+              require_citations: false
+""")
+
+_V03_PAR_CERT_ANY = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: "claude:reviewer"
+            require: any
+            intent_template: "Do: {task.desc}"
+            depends_on: [analyze]
+            retries: 1
+            task_reasoning_template:
+              require_citations: false
+""")
+
+_V03_PAR_CERT_CODEX = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: codex
+            require: all
+            intent_template: "Do: {task.desc}"
+            depends_on: [analyze]
+            retries: 1
+            task_reasoning_template:
+              require_citations: false
+""")
+
+# Valid certificate artifact — contains all three default section headings
+_VALID_CERT = "## Premises\nfacts\n\n## Trace\nreasoning\n\n## Conclusion\nverdict\n"
+
+# Invalid certificate — missing Trace and Conclusion headings
+_BAD_CERT = "## Premises\njust premises, no trace or conclusion\n"
+
+
+def _dispatch_to_execute(flow_id, num_tasks=2):
+    """Helper: run prepare → analyze → return after execute step is dispatched."""
+    task_graph = {
+        "tasks": [
+            {"id": f"t{i}", "desc": f"task {i}", "files_owned": [f"f{i}.py"], "depends_on": []}
+            for i in range(1, num_tasks + 1)
+        ]
+    }
+    _run(stratum_step_done(flow_id, "analyze", task_graph, ctx=None))
+
+
+def test_parallel_done_cert_pass_advances_flow():
+    """All tasks produce valid certs → flow advances."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        assert result["status"] == "complete"
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_fail_marks_task_failed_and_require_all_fails():
+    """One task misses cert sections → task flipped to failed, require=all fails step."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        # require=all with one cert-failed task → step fails
+        assert result["status"] in ("ensure_failed", "error")
+        violations = result.get("violations", [])
+        assert any("cert" in str(v).lower() for v in violations)
+        assert any("t2" in str(v) for v in violations)
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_fail_passes_with_require_any():
+    """require=any + one cert pass + one cert fail → step succeeds."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT_ANY, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        assert result["status"] == "complete"
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_skipped_for_codex_agent():
+    """Codex agent + task_reasoning_template → cert validation skipped."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT_CODEX, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        # Both results are BAD certs but codex → cert check skipped → flow advances
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        assert result["status"] == "complete"
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_reads_reasoning_field_fallback():
+    """Task result with 'reasoning' field instead of 'artifact' still validates."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        task_results = [
+            {"task_id": "t1", "result": {"reasoning": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"reasoning": _VALID_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        assert result["status"] == "complete"
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_violations_surface_in_fail_reasons():
+    """require-all + one cert failure → response violations contains per-task cert strings."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        violations = result.get("violations", [])
+        assert any("task 't2' cert" in str(v) for v in violations), \
+            f"Expected per-task cert violation for t2 in violations, got: {violations}"
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_violations_surface_on_retries_exhausted():
+    """retries exhausted after cert failures → error response includes cert strings.
+
+    Each call passes fresh task_results (mirroring real retry flow where the
+    consumer re-dispatches tasks and produces new results each attempt).
+    """
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        def _make_bad_results():
+            return [
+                {"task_id": "t1", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+                {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+            ]
+        # First attempt — cert failure
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=_make_bad_results(), merge_status="clean", ctx=None,
+        ))
+        assert result["status"] in ("ensure_failed", "error")
+        # Second attempt — fresh dispatch, still bad, retries exhausted (retries=1)
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=_make_bad_results(), merge_status="clean", ctx=None,
+        ))
+        violations = result.get("violations", [])
+        assert any("cert" in str(v).lower() for v in violations), \
+            f"Expected cert violations in retries-exhausted payload, got: {violations}"
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_violations_surface_on_merge_conflict():
+    """merge_status=conflict + cert failures → both surface in violations."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+        ]
+        result = _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="conflict", ctx=None,
+        ))
+        violations = result.get("violations", [])
+        # Both conflict and cert violations should be surfaced
+        assert any("conflict" in str(v).lower() for v in violations)
+        assert any("cert" in str(v).lower() for v in violations)
+    finally:
+        _flows.pop(flow_id, None)
+
+
+def test_parallel_done_cert_task_result_has_cert_violations_metadata():
+    """Task with cert failure has cert_violations field set on the aggregate task_results."""
+    result = _run(stratum_plan(spec=_V03_PAR_CERT, flow="main", inputs={}, ctx=None))
+    flow_id = result["flow_id"]
+    try:
+        _dispatch_to_execute(flow_id)
+        # Pass fresh list per call since server mutates
+        task_results = [
+            {"task_id": "t1", "result": {"artifact": _VALID_CERT}, "status": "complete"},
+            {"task_id": "t2", "result": {"artifact": _BAD_CERT}, "status": "complete"},
+        ]
+        _run(stratum_parallel_done(
+            flow_id=flow_id, step_id="execute",
+            task_results=task_results, merge_status="clean", ctx=None,
+        ))
+        # After handler, the task_results list should have the failure metadata
+        t2 = next(t for t in task_results if t["task_id"] == "t2")
+        assert t2["status"] == "failed"
+        assert "cert_violations" in t2
+        assert any("missing section" in v.lower() for v in t2["cert_violations"])
+    finally:
+        _flows.pop(flow_id, None)

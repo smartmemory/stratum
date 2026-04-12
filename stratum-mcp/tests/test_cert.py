@@ -458,3 +458,245 @@ class TestCertOnFlowStep:
         """)
         with pytest.raises(IRSemanticError, match="reasoning_template"):
             parse_and_validate(spec_yaml)
+
+
+# ---------------------------------------------------------------------------
+# STRAT-CERT-PAR: task_reasoning_template on parallel_dispatch steps
+# ---------------------------------------------------------------------------
+
+_PAR_CERT_SPEC = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: claude
+            require: all
+            intent_template: "Do: {task.desc}"
+            depends_on: [analyze]
+            task_reasoning_template:
+              require_citations: true
+""")
+
+_PAR_CERT_CUSTOM_SECTIONS_SPEC = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: claude
+            require: all
+            intent_template: "Do: {task.desc}"
+            depends_on: [analyze]
+            task_reasoning_template:
+              require_citations: false
+              sections:
+                - id: findings
+                  label: Findings
+                  description: What you found
+""")
+
+
+class TestTaskReasoningTemplate:
+
+    def test_task_reasoning_template_accepted_on_parallel_dispatch(self):
+        """task_reasoning_template parses cleanly on parallel_dispatch steps."""
+        spec = parse_and_validate(_PAR_CERT_SPEC)
+        exec_step = spec.flows["main"].steps[1]
+        assert exec_step.task_reasoning_template is not None
+        assert exec_step.task_reasoning_template["require_citations"] is True
+
+    def test_task_reasoning_template_applies_defaults(self):
+        """Missing sections → CERT_DEFAULT_SECTIONS applied."""
+        spec = parse_and_validate(_PAR_CERT_SPEC)
+        exec_step = spec.flows["main"].steps[1]
+        sections = exec_step.task_reasoning_template["sections"]
+        assert len(sections) == len(CERT_DEFAULT_SECTIONS)
+        assert [s["id"] for s in sections] == [s["id"] for s in CERT_DEFAULT_SECTIONS]
+
+    def test_task_reasoning_template_preserves_custom_sections(self):
+        """Custom sections preserved as-is."""
+        spec = parse_and_validate(_PAR_CERT_CUSTOM_SECTIONS_SPEC)
+        exec_step = spec.flows["main"].steps[1]
+        sections = exec_step.task_reasoning_template["sections"]
+        assert len(sections) == 1
+        assert sections[0]["id"] == "findings"
+
+    def test_task_reasoning_template_rejects_missing_section_fields(self):
+        """Section missing required field → IRSemanticError."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.3"
+            contracts:
+              TaskGraph:
+                tasks: {type: array}
+            flows:
+              main:
+                input: {}
+                steps:
+                  - id: analyze
+                    type: decompose
+                    agent: claude
+                    intent: "Break down"
+                    output_contract: TaskGraph
+                  - id: execute
+                    type: parallel_dispatch
+                    source: "$.steps.analyze.output.tasks"
+                    agent: claude
+                    require: all
+                    intent_template: "Do: {task.desc}"
+                    depends_on: [analyze]
+                    task_reasoning_template:
+                      sections:
+                        - label: Bad
+                          description: missing id
+        """)
+        with pytest.raises(IRSemanticError, match="task_reasoning_template"):
+            parse_and_validate(spec_yaml)
+
+    def test_task_reasoning_template_rejected_on_inline_step(self):
+        """task_reasoning_template only valid on parallel_dispatch."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: s1
+                    agent: claude
+                    intent: "Do work"
+                    task_reasoning_template:
+                      require_citations: false
+        """)
+        with pytest.raises(IRSemanticError, match="task_reasoning_template"):
+            parse_and_validate(spec_yaml)
+
+    def test_reasoning_template_still_rejected_on_parallel_dispatch(self):
+        """CERT-1 preserved: reasoning_template (non-task variant) still blocked."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.3"
+            contracts:
+              TaskGraph:
+                tasks: {type: array}
+            flows:
+              main:
+                input: {}
+                steps:
+                  - id: analyze
+                    type: decompose
+                    agent: claude
+                    intent: "Break down"
+                    output_contract: TaskGraph
+                  - id: execute
+                    type: parallel_dispatch
+                    source: "$.steps.analyze.output.tasks"
+                    agent: claude
+                    require: all
+                    intent_template: "Do: {task.desc}"
+                    depends_on: [analyze]
+                    reasoning_template:
+                      require_citations: false
+        """)
+        with pytest.raises(IRSemanticError, match="reasoning_template"):
+            parse_and_validate(spec_yaml)
+
+
+# ---------------------------------------------------------------------------
+# STRAT-CERT-PAR: claude-agent gate alignment (startswith('claude'))
+# Regression locks for the four gate sites.
+# ---------------------------------------------------------------------------
+
+class TestClaudeProfileAgentGating:
+    """After STRAT-CERT-PAR T2.2, claude-profile agents (e.g. claude:read-only-reviewer)
+    are validated, have certs injected, and are accepted by the on_fail viability check."""
+
+    def test_cert_validates_claude_profile_agents(self):
+        """Inline step with agent=claude:read-only-reviewer runs cert validation."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: s1
+                    agent: "claude:read-only-reviewer"
+                    intent: "Review"
+                    reasoning_template:
+                      require_citations: false
+        """)
+        spec = parse_and_validate(spec_yaml)
+        state = create_flow_state(spec, "main", {})
+        get_current_step_info(state)  # dispatch step to set attempts
+        # Result missing cert sections should fail validation
+        bad_result = {"artifact": "no headings at all"}
+        status, violations = process_step_result(state, "s1", bad_result)
+        assert status in ("ensure_failed", "retries_exhausted")
+        assert any("certificate" in v.lower() for v in violations)
+
+    def test_cert_injects_for_claude_profile_agents(self):
+        """Inline step with agent=claude:read-only-reviewer gets cert instructions injected."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: s1
+                    agent: "claude:read-only-reviewer"
+                    intent: "Review"
+                    reasoning_template:
+                      require_citations: false
+        """)
+        spec = parse_and_validate(spec_yaml)
+        state = create_flow_state(spec, "main", {})
+        step_info = get_current_step_info(state)
+        assert "## Premises" in step_info["intent"]
+        assert "## Trace" in step_info["intent"]
+        assert "## Conclusion" in step_info["intent"]
+
+    def test_on_fail_accepts_cert_as_validator_for_claude_profile(self):
+        """Parse-time on_fail viability check treats reasoning_template as validation
+        on claude-profile agents."""
+        spec_yaml = textwrap.dedent("""\
+            version: "0.2"
+            flows:
+              main:
+                input: {}
+                output: ""
+                steps:
+                  - id: s1
+                    agent: "claude:read-only-reviewer"
+                    intent: "Review"
+                    reasoning_template:
+                      require_citations: false
+                    on_fail: fallback
+                  - id: fallback
+                    agent: claude
+                    intent: "Fallback"
+        """)
+        # Should parse without raising (cert counts as validator for on_fail)
+        parse_and_validate(spec_yaml)

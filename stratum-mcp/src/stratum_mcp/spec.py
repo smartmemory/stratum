@@ -109,6 +109,8 @@ class IRStepDef:
     intent_template: str | None = None
     # STRAT-CERT: semi-formal reasoning certificate template
     reasoning_template: dict | None = None
+    # STRAT-CERT-PAR: per-task reasoning certificate template for parallel_dispatch steps
+    task_reasoning_template: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,7 @@ _IR_SCHEMA_V02: dict = {
                 "score_expr": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "reasoning_template": {"type": "object"},
+                "task_reasoning_template": {"type": "object"},
             }
         },
         "FlowDef": {
@@ -503,6 +506,7 @@ _IR_SCHEMA_V03: dict = {
                 "merge": {"type": "string", "enum": ["sequential_apply", "manual"]},
                 "intent_template": {"type": "string"},
                 "reasoning_template": {"type": "object"},
+                "task_reasoning_template": {"type": "object"},
             }
         },
         "TaskGraph": {
@@ -1009,9 +1013,13 @@ CERT_DEFAULT_SECTIONS: list[dict] = [
 ]
 
 
-def _apply_cert_defaults(s: dict) -> None:
-    """Apply default sections to reasoning_template if sections not specified."""
-    template = s.get("reasoning_template")
+def _apply_cert_defaults(s: dict, field_name: str = "reasoning_template") -> None:
+    """Apply default sections to a reasoning certificate template if sections not specified.
+
+    STRAT-CERT-PAR: field_name parameter allows the same defaulting/validation logic
+    to be reused for task_reasoning_template on parallel_dispatch steps.
+    """
+    template = s.get(field_name)
     if template is None:
         return
     if "sections" not in template:
@@ -1021,21 +1029,21 @@ def _apply_cert_defaults(s: dict) -> None:
     # Reject empty sections
     if not template.get("sections"):
         raise IRSemanticError(
-            "reasoning_template must have at least one section",
-            path="reasoning_template.sections"
+            f"{field_name} must have at least one section",
+            path=f"{field_name}.sections"
         )
     # Validate section structure
     for i, section in enumerate(template.get("sections", [])):
         if not isinstance(section, dict):
             raise IRSemanticError(
-                f"reasoning_template section {i} must be a mapping, got {type(section).__name__}",
-                path=f"reasoning_template.sections[{i}]"
+                f"{field_name} section {i} must be a mapping, got {type(section).__name__}",
+                path=f"{field_name}.sections[{i}]"
             )
         for required_field in ("id", "label", "description"):
             if required_field not in section:
                 raise IRSemanticError(
-                    f"reasoning_template section {i} is missing required field '{required_field}'",
-                    path=f"reasoning_template.sections[{i}]"
+                    f"{field_name} section {i} is missing required field '{required_field}'",
+                    path=f"{field_name}.sections[{i}]"
                 )
 
 
@@ -1049,6 +1057,8 @@ def _build_step(s: dict) -> IRStepDef:
         max_concurrent = 3
     # STRAT-CERT: apply default sections before constructing frozen dataclass
     _apply_cert_defaults(s)
+    # STRAT-CERT-PAR: apply defaults to per-task template as well (no-op when absent)
+    _apply_cert_defaults(s, "task_reasoning_template")
     return IRStepDef(
         id=s["id"],
         function=s.get("function", ""),
@@ -1088,6 +1098,7 @@ def _build_step(s: dict) -> IRStepDef:
         merge=s.get("merge"),
         intent_template=s.get("intent_template"),
         reasoning_template=s.get("reasoning_template"),
+        task_reasoning_template=s.get("task_reasoning_template"),
     )
 
 
@@ -1222,8 +1233,9 @@ def _validate_semantics(spec: IRSpec) -> None:
 
         for step in flow.steps:
             # --- v0.3 STRAT-PAR: decompose / parallel_dispatch validation ---
+            # STRAT-CERT-PAR: task_reasoning_template is parallel_dispatch-only (like source/isolation/require/merge)
             _parallel_dispatch_only = (
-                "source", "isolation", "require", "merge",
+                "source", "isolation", "require", "merge", "task_reasoning_template",
             )
             if step.step_type in ("decompose", "parallel_dispatch"):
                 if step.step_type == "decompose":
@@ -1268,12 +1280,14 @@ def _validate_semantics(spec: IRSpec) -> None:
                             f"parallel_dispatch step '{step.id}' must have 'intent_template'",
                             path=f"flows.{flow_name}.steps.{step.id}.intent_template"
                         )
-                    # CERT-1: reasoning_template not valid on parallel_dispatch
+                    # CERT-1: reasoning_template validates step result, not per-task output.
+                    # For per-task cert validation on parallel_dispatch, use task_reasoning_template.
                     if step.reasoning_template:
                         raise IRSemanticError(
                             f"Step '{step.id}' in flow '{flow_name}' has 'reasoning_template' "
                             f"which is not valid on parallel_dispatch steps. "
-                            f"Use it on inline or decompose steps only.",
+                            f"Use 'task_reasoning_template' for per-task cert validation, "
+                            f"or move the template to an inline/decompose step.",
                             path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
                         )
 
@@ -1456,8 +1470,9 @@ def _validate_semantics(spec: IRSpec) -> None:
                     has_ensure = bool(fn and fn.ensure)
                     has_guardrails = bool(fn and fn.guardrails)
                 # Only count reasoning_template as validation for claude-agent steps
-                # (codex-agent steps silently skip cert at runtime)
-                has_cert = bool(step.reasoning_template) and (step.agent or "claude") in ("claude", "")
+                # (codex-agent steps silently skip cert at runtime).
+                # STRAT-CERT-PAR T2.2: startswith('claude') matches profile agents like 'claude:read-only-reviewer'.
+                has_cert = bool(step.reasoning_template) and (step.agent or "claude").startswith("claude")
                 has_validation = has_ensure or has_guardrails or bool(step.output_schema) or has_cert
                 if step.on_fail and not has_validation:
                     raise IRSemanticError(

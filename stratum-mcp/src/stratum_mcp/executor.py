@@ -143,9 +143,13 @@ def inject_cert_instructions(intent: str, template: dict) -> str:
 def validate_certificate(template: dict, result: dict) -> list[str]:
     """Validate agent output contains required reasoning sections.
 
+    STRAT-CERT-PAR: reads from result["artifact"], falling back to result["reasoning"]
+    for compatibility with consumers that inject cert instructions expecting a
+    reasoning field.
+
     Returns list of violations (empty = pass).
     """
-    artifact = result.get("artifact", "")
+    artifact = result.get("artifact") or result.get("reasoning") or ""
     violations = []
 
     for section in template.get("sections", []):
@@ -1147,7 +1151,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
         # STRAT-CERT: inject structured reasoning format for claude-agent steps
         intent = step.intent or ""
-        if step.reasoning_template and (step.agent or 'claude') in ('claude', ''):
+        if step.reasoning_template and (step.agent or 'claude').startswith('claude'):
             intent = inject_cert_instructions(intent, step.reasoning_template)
         return {
             "status": "execute_step",
@@ -1172,7 +1176,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
         # STRAT-CERT: inject structured reasoning format for claude-agent steps
         intent = step.intent or ""
-        if step.reasoning_template and (step.agent or 'claude') in ('claude', ''):
+        if step.reasoning_template and (step.agent or 'claude').startswith('claude'):
             intent = inject_cert_instructions(intent, step.reasoning_template)
         return {
             "status": "execute_step",
@@ -1359,7 +1363,7 @@ def process_step_result(
 
     # STRAT-CERT: validate reasoning certificate before ensure expressions
     # Only for claude-agent steps with a reasoning_template
-    if step.reasoning_template and (step.agent or 'claude') in ('claude', ''):
+    if step.reasoning_template and (step.agent or 'claude').startswith('claude'):
         cert_violations = validate_certificate(step.reasoning_template, result)
         if cert_violations:
             if attempt >= max_retries:

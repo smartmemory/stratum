@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### stratum-mcp — STRAT-CERT-PAR
+
+- **`task_reasoning_template` IR field** on `parallel_dispatch` steps — per-task certificate validation template. CERT-1 restriction on `reasoning_template` (step-result validator) preserved; use `task_reasoning_template` for per-task validation.
+- **`_apply_cert_defaults()` refactor** — accepts `field_name` parameter so the same defaulting/validation logic handles both `reasoning_template` and `task_reasoning_template`.
+- **`_parallel_dispatch_only` tuple** — `task_reasoning_template` added, automatically forbidden on decompose and legacy step types.
+- **Claude-agent gate alignment** — 4 sites updated from exact-match `in ('claude', '')` to `startswith('claude')` so profile agents (e.g. `claude:read-only-reviewer`) are consistently validated, have certs injected, and pass on_fail viability checks:
+  - `executor.py` inline cert injection
+  - `executor.py` decompose cert injection
+  - `executor.py` inline cert validation in `process_step_result`
+  - `spec.py` `on_fail` viability check
+- **`validate_certificate()` reasoning fallback** — reads from `result["artifact"]`, falls back to `result["reasoning"]` for consumer compatibility.
+- **Per-task cert validation in `stratum_parallel_done`** — runs before require/merge evaluation, flips cert-failed tasks to `status="failed"` so they count against the require threshold naturally. Violations collected once and merged into every failure-response path (require-fail, merge-conflict, ensure-failed on aggregate, on_fail_routed, retries_exhausted).
+- 18 new tests, 647 total passing.
+
 ### stratum-mcp — STRAT-SCORE
 
 - **`score_expr` field on `IRStepDef`**: optional numeric scoring expression for iteration loops (requires `max_iterations`)

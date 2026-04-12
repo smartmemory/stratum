@@ -30,6 +30,7 @@ from .executor import (
     commit_checkpoint,
     revert_checkpoint,
     verify_spec_integrity,
+    validate_certificate,
 )
 from .spec import parse_and_validate
 
@@ -375,6 +376,28 @@ async def stratum_parallel_done(
             ),
         }
 
+    # STRAT-CERT-PAR: per-task certificate validation before require evaluation.
+    # Only for claude-agent steps with a task_reasoning_template.
+    # Cert-failed tasks are flipped to status="failed" so they count against the
+    # require threshold naturally. Violations are collected here and merged into
+    # every failure-response path below.
+    task_template = cur_step.task_reasoning_template
+    per_task_cert_strs: list[str] = []
+    if task_template and (cur_step.agent or 'claude').startswith('claude'):
+        for task in task_results:
+            if task.get("status") != "complete":
+                continue  # already failed — skip cert check
+            task_result = task.get("result") or {}
+            cert_violations = validate_certificate(task_template, task_result)
+            if cert_violations:
+                task["status"] = "failed"
+                task["error"] = f"cert validation: {'; '.join(cert_violations)}"
+                task["cert_violations"] = cert_violations
+                task_id = task.get("task_id", "?")
+                per_task_cert_strs.append(
+                    f"task '{task_id}' cert: {'; '.join(cert_violations)}"
+                )
+
     # Build aggregate result
     completed = [t for t in task_results if t.get("status") == "complete"]
     failed = [t for t in task_results if t.get("status") != "complete"]
@@ -428,6 +451,9 @@ async def stratum_parallel_done(
             fail_reasons = ["merge conflict: merge_status='conflict'"]
         else:
             fail_reasons = [f"require='{require}' not satisfied: {len(completed)} completed, {len(failed)} failed"]
+        # STRAT-CERT-PAR: append per-task cert violations so they surface on both merge-conflict
+        # and require-failure paths.
+        fail_reasons.extend(per_task_cert_strs)
 
         if attempt >= max_retries:
             if cur_step.on_fail:
@@ -472,6 +498,7 @@ async def stratum_parallel_done(
         }
 
     # Standard status handling (same pattern as stratum_step_done)
+    # STRAT-CERT-PAR: merge per-task cert violations into every failure-response path.
     if status == "retries_exhausted":
         delete_persisted_flow(flow_id)
         _step = state.ordered_steps[state.current_idx]
@@ -483,7 +510,7 @@ async def stratum_parallel_done(
             "step_mode": _step_mode(_step),
             "agent": _step.agent,
             "message": f"Step '{step_id}' exhausted all retries",
-            "violations": violations,
+            "violations": violations + per_task_cert_strs,
         }
 
     if status == "on_fail_routed":
@@ -496,7 +523,7 @@ async def stratum_parallel_done(
         return {
             **(next_step or {}),
             "routed_from": step_id,
-            "violations": violations,
+            "violations": violations + per_task_cert_strs,
         }
 
     if status in ("ensure_failed", "schema_failed", "guardrail_blocked"):
@@ -508,7 +535,7 @@ async def stratum_parallel_done(
         return {
             **step_info,
             "status": status,
-            "violations": violations,
+            "violations": violations + per_task_cert_strs,
         }
 
     # "ok" — flow advanced
