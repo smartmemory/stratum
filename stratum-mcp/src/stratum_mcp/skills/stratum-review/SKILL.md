@@ -68,7 +68,7 @@ flows:
           sections:
             - id: premises
               label: "Premises"
-              description: "List every entry point, user input, external data source, auth check, and secret in the changed files. Cite file:line."
+              description: "List every entry point, user input, external data source, auth check, and secret in the changed files. Number each as [P1], [P2], etc. Cite file:line."
             - id: trace
               label: "Attack Trace"
               description: "For each entry point [P<n>], trace untrusted data through the call chain to its sink. Note each sanitization/validation step or lack thereof."
@@ -99,7 +99,7 @@ flows:
           sections:
             - id: premises
               label: "Premises"
-              description: "List each function's stated contract (params, return, side effects) and each branch/edge case in the changed code. Cite file:line."
+              description: "List each function's stated contract (params, return, side effects) and each branch/edge case in the changed code. Number each as [P1], [P2], etc. Cite file:line."
             - id: trace
               label: "Correctness Trace"
               description: "For each function [P<n>], walk through: null/empty inputs, boundary values, error paths, concurrent access. Does the implementation match the contract?"
@@ -122,13 +122,16 @@ flows:
           diff: "$.input.diff"
           context: "$.input.context"
         output_contract: PerformanceFindings
+        ensure:
+          - "result.findings is not None"
+          - "result.findings != ''"
         retries: 2
         reasoning_template:
           require_citations: true
           sections:
             - id: premises
               label: "Premises"
-              description: "List each loop, query, allocation, I/O call, and data structure choice in the changed code. Cite file:line. Note expected data scale if available."
+              description: "List each loop, query, allocation, I/O call, and data structure choice in the changed code. Number each as [P1], [P2], etc. Cite file:line. Note expected data scale if available."
             - id: trace
               label: "Scaling Trace"
               description: "For each premise, analyze: time complexity, memory growth, N+1 patterns, unnecessary copies, missing indices. State the scaling factor."
