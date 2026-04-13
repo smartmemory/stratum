@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -33,6 +34,7 @@ from .executor import (
     validate_certificate,
 )
 from .spec import parse_and_validate
+from .connectors import AgentConnector, ClaudeConnector, CodexConnector
 
 mcp = FastMCP(
     "stratum-mcp",
@@ -77,6 +79,103 @@ async def stratum_validate(spec: str, ctx: Context) -> dict[str, Any]:
         return {"valid": True, "errors": []}
     except (IRParseError, IRValidationError, IRSemanticError) as exc:
         return {"valid": False, "errors": [exception_to_mcp_error(exc)]}
+
+
+# ---------------------------------------------------------------------------
+# STRAT-CERT-PAR / T2-F5: agent_run — dispatch prompts to claude or codex
+# ---------------------------------------------------------------------------
+
+_VALID_AGENT_TYPES = frozenset({"claude", "codex"})
+
+
+def _make_agent_connector(
+    agent_type: str, model_id: Optional[str], cwd: Optional[str]
+) -> AgentConnector:
+    """Factory — raises ValueError on unknown type or bad codex model."""
+    if agent_type not in _VALID_AGENT_TYPES:
+        raise ValueError(
+            f"stratum_agent_run: unknown type '{agent_type}'. "
+            f"Valid types: {sorted(_VALID_AGENT_TYPES)}"
+        )
+    if agent_type == "codex":
+        return CodexConnector(model_id=model_id or "gpt-5.4", cwd=cwd)
+    kwargs: dict[str, Any] = {"cwd": cwd}
+    if model_id:
+        kwargs["model"] = model_id
+    return ClaudeConnector(**kwargs)
+
+
+_JSON_BLOCK_RE = re.compile(r"```json\s*\n([\s\S]*?)\n\s*```")
+
+
+def _extract_json_result(text: str) -> tuple[Optional[dict], Optional[str]]:
+    """Try to parse text as JSON; fall back to last ```json code block.
+
+    Mirrors compose/server/agent-mcp.js:81-98 extraction logic.
+    Returns (result, parse_error). Success: (dict, None). Failure: (None, reason).
+    """
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        pass
+    matches = _JSON_BLOCK_RE.findall(text)
+    if matches:
+        try:
+            return json.loads(matches[-1]), None
+        except json.JSONDecodeError:
+            pass
+    return None, "Response was not valid JSON"
+
+
+@mcp.tool(description=(
+    "Run a prompt against an AI agent (claude or codex). "
+    "Returns the full response text. If schema is provided, the agent is instructed "
+    "to return JSON matching the schema and the parsed result is included in the response. "
+    "Inputs: prompt (str, required); type ('claude'|'codex', default 'claude'); "
+    "schema (dict, optional JSON Schema for structured output); modelID (str, optional); "
+    "cwd (str, optional working directory). "
+    "Returns {text: str, result?: dict, parseError?: str}."
+))
+async def stratum_agent_run(
+    prompt: str,
+    ctx: Context,
+    type: str = "claude",  # noqa: A002 — shadows builtin; matches Node contract
+    schema: Optional[dict] = None,
+    modelID: Optional[str] = None,  # noqa: N803 — contract parity with Node
+    cwd: Optional[str] = None,
+) -> dict[str, Any]:
+    if not prompt or not prompt.strip():
+        raise ValueError("stratum_agent_run: prompt is required")
+
+    connector = _make_agent_connector(type, modelID, cwd)
+
+    parts: list[str] = []
+    final_result: Optional[str] = None
+    async for event in connector.run(prompt, schema=schema, model_id=modelID, cwd=cwd):
+        etype = event.get("type")
+        if etype == "assistant" and event.get("content"):
+            parts.append(event["content"])
+        elif etype == "result" and event.get("content"):
+            # Authoritative final text — fall back to this if no streaming
+            # assistant events were emitted (some connectors may batch).
+            final_result = event["content"]
+        elif etype == "error":
+            raise RuntimeError(
+                f"stratum_agent_run ({type}): "
+                f"{event.get('message', 'unknown error')}"
+            )
+
+    # Prefer the concatenated assistant stream (matches Node behavior); fall back
+    # to the result event when no assistant events were produced.
+    text = "".join(parts) if parts else (final_result or "")
+
+    if schema is not None:
+        result, parse_error = _extract_json_result(text)
+        if result is not None:
+            return {"text": text, "result": result}
+        return {"text": text, "result": None, "parseError": parse_error}
+
+    return {"text": text}
 
 
 @mcp.tool(description=(

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### stratum-mcp — T2-F5
+
+- **`stratum_agent_run` MCP tool** — dispatches prompts to claude or codex with a Node-compatible contract (`modelID`, `parseError`, errors raised as exceptions rather than wrapped in payloads). Schema mode injects JSON-Schema into the prompt and extracts the last ```json block from the response.
+- **`stratum_mcp.connectors` package** — new Python connectors ported from the Node.js originals:
+  - `AgentConnector` ABC with `inject_schema()` helper (byte-for-byte matches the Node `injectSchema()` output)
+  - `ClaudeConnector` — wraps `claude-agent-sdk` `query()`. Uses `{type: "preset", preset: "claude_code"}` tools by default so default behavior matches the Node connector's `claude_code` preset. Strips `CLAUDECODE` env var for nested execution.
+  - `OpencodeConnector` — spawns `opencode run --format json` asynchronously. Parses `text`, `tool_use`, and `step_finish` events into the shared envelope. Handles rate-limit/auth errors on stderr and stall detection on 120s silence. Yields a friendly error event when the `opencode` binary is missing.
+  - `CodexConnector` — extends `OpencodeConnector`, validates against `CODEX_MODEL_IDS` at both construction and run time.
+- **`claude-agent-sdk>=0.1.56,<0.2`** added to dependencies.
+- 27 new tests (connector unit + MCP tool integration + opt-in live smoke behind `STRATUM_LIVE_AGENT_TESTS=1`). 676 total passing.
+
 ### stratum-mcp — STRAT-CERT-PAR
 
 - **`task_reasoning_template` IR field** on `parallel_dispatch` steps — per-task certificate validation template. CERT-1 restriction on `reasoning_template` (step-result validator) preserved; use `task_reasoning_template` for per-task validation.
