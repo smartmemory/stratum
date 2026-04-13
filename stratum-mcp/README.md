@@ -134,6 +134,23 @@ stratum-mcp/contracts/
   audit-record.v1.schema.json
 ```
 
+### 5. Migration CLI
+
+```bash
+stratum-mcp migrate flow.stratum.yaml                # preview diff, prompt to apply
+stratum-mcp migrate flow.stratum.yaml --dry-run      # diff only, no write
+stratum-mcp migrate flow.stratum.yaml --yes          # apply without prompt
+stratum-mcp migrate flow.stratum.yaml --to 0.3       # pin target version
+stratum-mcp migrate flow.stratum.yaml --output new.yaml --force
+stratum-mcp migrate flow.stratum.yaml --backup       # save flow.stratum.yaml.bak alongside
+```
+
+Upgrades a spec across IR versions. Today the only registered transform is `0.2 → 0.3` (a pure version-string bump, since v0.3 is a backward-compatible superset of v0.2). The framework is extensible — future versions add a `Transform` entry in `stratum_mcp/migrate.py::TRANSFORMS` and get chained automatically.
+
+Formatting is preserved via `ruamel.yaml` round-trip with source-derived indent detection; comments, blank lines, and the spec's original indentation survive the migration.
+
+**Exit codes:** `0` success/no-op, `1` validation or I/O failure, `2` user declined, `3` unknown version or no transform path.
+
 ## Hooks
 
 `stratum-mcp install` registers three Claude Code hooks in `~/.stratum/hooks/`:

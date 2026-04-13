@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### stratum-mcp — T2-PAR-5
+
+- **`stratum-mcp migrate <file>` CLI** — upgrades a `.stratum.yaml` spec from its declared IR version to the latest registered version (or `--to VERSION` to pin). Preview-and-confirm by default; `--yes` to skip the prompt, `--dry-run` to preview only, `--interactive` to prompt per opportunistic upgrade.
+- **Transform registry architecture** — versioned `Transform` + optional `Upgrade` dataclasses in `stratum_mcp/migrate.py`. Registry is a graph of `from_version → to_version`; `walk_registry` does BFS with `UnknownVersion` / `NoTransformPath` distinguishing "version outside SCHEMAS" from "valid version, no migration chain". Numeric tuple version ordering (`0.10 > 0.9`).
+- **Today's only registered transform:** `0.2 → 0.3` as a pure version-string bump (v0.3 is a backward-compatible superset of v0.2). Framework is ready to accept structural transforms and opportunistic upgrades when v0.4+ lands — one registry entry + tests, no CLI changes.
+- **Formatting preserved** — uses `ruamel.yaml` in round-trip mode with source-derived indent detection (`_detect_sequence_style`, `_detect_mapping_indent`) so comments, blank lines, quote style, and both mapping and sequence indentation survive the migration. Tested against 4/2-indented and 2/0-indented specs, 2-space and 4-space mapping indent.
+- **`--output PATH`, `--backup`, `--force`** — divert the write to a new path, save a `.bak` next to the original, or allow overwriting an existing `--output` target. Atomic write (tempfile + `os.replace`) avoids partial writes on crash.
+- **Exit-code contract:** `0` success/no-op, `1` validation or I/O failure or flag misuse, `2` user declined, `3` unknown version or no transform path. Manual `argv` parsing to keep exit codes under control (stdlib `argparse` would exit 2 on flag misuse).
+- **Shape guard** handles non-mapping YAML roots (`[]`, scalars) and non-string `version` fields without leaking `AttributeError` from `parse_and_validate`.
+- **Dependency added:** `ruamel.yaml>=0.18` (side-by-side with `pyyaml`, no conflict).
+- 41 new tests (`tests/test_migrate.py`), 742 total passing.
+
 ### stratum-mcp — T2-F5
 
 - **`stratum_agent_run` MCP tool** — dispatches prompts to claude or codex with a Node-compatible contract (`modelID`, `parseError`, errors raised as exceptions rather than wrapped in payloads). Schema mode injects JSON-Schema into the prompt and extracts the last ```json block from the response.

@@ -2076,6 +2076,7 @@ def _cmd_help() -> None:
     print("  gate revise  <flow_id> <step_id>   Send back for revision")
     print("  validate <file>      Validate a .stratum.yaml spec file")
     print("  compile <dir>        Compile tasks/*.md files to .stratum.yaml")
+    print("  migrate <file>       Upgrade a .stratum.yaml spec to the latest IR version")
     print()
     print("Run with no arguments to start the stdio MCP server (for Claude Code).")
 
@@ -2105,6 +2106,10 @@ def main() -> None:
             return
         if cmd == "gate":
             _cmd_gate(sys.argv[2:])
+            return
+        if cmd == "migrate":
+            from . import migrate as _migrate
+            _migrate._cmd_migrate(sys.argv[2:])
             return
         print(f"Unknown command: {cmd}", file=sys.stderr)
         print("Run 'stratum-mcp --help' for usage.", file=sys.stderr)
