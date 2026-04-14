@@ -75,6 +75,7 @@ class CodexConnector(OpencodeConnector):
         provider_id: Optional[str] = None,  # ignored — always 'openai'
         cwd: Optional[str] = None,
         tools: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
     ) -> AsyncIterator[Event]:
         resolved = model_id or self._default_model_id
         _assert_codex_model(resolved)
@@ -85,5 +86,6 @@ class CodexConnector(OpencodeConnector):
             provider_id=_DEFAULT_PROVIDER_ID,
             cwd=cwd,
             tools=tools,
+            env=env,
         ):
             yield event

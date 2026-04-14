@@ -16,7 +16,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import TextBlock, ToolUseBlock
 
-from .base import AgentConnector, Event, inject_schema
+from .base import SENSITIVE_ENV_VARS, AgentConnector, Event, inject_schema
 
 DEFAULT_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
@@ -47,7 +47,16 @@ class ClaudeConnector(AgentConnector):
         provider_id: Optional[str] = None,  # unused for claude
         cwd: Optional[str] = None,
         tools: Optional[list[str]] = None,  # use __init__ allowed_tools instead
+        env: Optional[dict[str, str]] = None,
     ) -> AsyncIterator[Event]:
+        """Run a prompt against the Claude agent SDK.
+
+        Args:
+            env: Optional environment mapping used as the baseline for the
+                SDK options. When ``None``, inherits ``os.environ``. Regardless
+                of source, :data:`SENSITIVE_ENV_VARS` are always scrubbed from
+                the env handed to the SDK (defense-in-depth).
+        """
         if self._active:
             raise RuntimeError("ClaudeConnector: run() already active")
 
@@ -55,8 +64,9 @@ class ClaudeConnector(AgentConnector):
         active_model = model_id or self._model
         active_cwd = cwd or self._cwd
 
-        clean_env = dict(os.environ)
-        clean_env.pop("CLAUDECODE", None)
+        clean_env = dict(env) if env is not None else dict(os.environ)
+        for var in SENSITIVE_ENV_VARS:
+            clean_env.pop(var, None)
 
         options_kwargs: dict[str, Any] = {
             "cwd": active_cwd,

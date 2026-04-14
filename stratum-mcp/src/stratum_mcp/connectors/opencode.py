@@ -13,7 +13,7 @@ import sys
 import time
 from typing import Any, AsyncIterator, Optional
 
-from .base import AgentConnector, Event, inject_schema
+from .base import SENSITIVE_ENV_VARS, AgentConnector, Event, inject_schema
 
 RATE_LIMIT_MARKERS = (
     "rate limit",
@@ -60,7 +60,16 @@ class OpencodeConnector(AgentConnector):
         provider_id: Optional[str] = None,
         cwd: Optional[str] = None,
         tools: Optional[list[str]] = None,  # unused
+        env: Optional[dict[str, str]] = None,
     ) -> AsyncIterator[Event]:
+        """Spawn `opencode run` for the prompt.
+
+        Args:
+            env: Optional environment mapping used as the baseline for the
+                spawned subprocess. When ``None``, inherits ``os.environ``.
+                Regardless of source, :data:`SENSITIVE_ENV_VARS` are always
+                scrubbed from the env handed to the subprocess.
+        """
         if self._proc is not None:
             raise RuntimeError(f"{self._agent_name}: run() already active")
 
@@ -76,8 +85,9 @@ class OpencodeConnector(AgentConnector):
             "model": f"{resolved_provider}/{resolved_model}",
         }
 
-        clean_env = dict(os.environ)
-        clean_env.pop("OPENAI_API_KEY", None)
+        clean_env = dict(env) if env is not None else dict(os.environ)
+        for var in SENSITIVE_ENV_VARS:
+            clean_env.pop(var, None)
 
         try:
             self._proc = await asyncio.create_subprocess_exec(
