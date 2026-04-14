@@ -2494,7 +2494,41 @@ def main() -> None:
         sys.exit(1)
 
     _self_install_hooks_on_startup()
-    mcp.run(transport="stdio")
+
+    # T14 — startup resume: flip any persisted parallel_tasks still in the
+    # 'running' state (from a prior crashed/killed server) to 'failed' so
+    # consumers observe the interruption instead of a stuck status.
+    from .executor import _FLOWS_DIR
+    from .parallel_exec import (
+        resume_interrupted_parallel_tasks,
+        shutdown_all as _parallel_shutdown_all,
+    )
+    try:
+        resume_interrupted_parallel_tasks(_FLOWS_DIR)
+    except Exception as exc:
+        # Never let a startup best-effort fixup block the server from
+        # coming up.
+        print(
+            f"stratum-mcp: warning: resume_interrupted_parallel_tasks "
+            f"failed: {exc}",
+            file=sys.stderr,
+        )
+
+    # T14 — shutdown: cancel every registered parallel-executor task so
+    # pending work doesn't leak across server shutdown. Wrapped in
+    # try/finally around ``mcp.run`` so FastMCP's own signal handling is
+    # preserved; we just run cleanup after its loop exits (for any reason
+    # — EOF, KeyboardInterrupt, exception).
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        try:
+            _parallel_shutdown_all(_RUNNING_EXECUTORS)
+        except Exception as exc:
+            print(
+                f"stratum-mcp: warning: shutdown_all failed: {exc}",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":

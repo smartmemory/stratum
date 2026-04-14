@@ -21,7 +21,9 @@ Event envelope:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -382,3 +384,96 @@ class ParallelExecutor:
             # unsatisfiable in light of this task's terminal state.
             if self._require_unsatisfiable():
                 self._cancel_siblings()
+
+
+# ---------------------------------------------------------------------------
+# T14 — lifecycle hooks: startup resume + shutdown cancel
+# ---------------------------------------------------------------------------
+
+RESUME_INTERRUPTED_ERROR = "server restart interrupted task"
+
+
+def resume_interrupted_parallel_tasks(flow_root: Path | str) -> None:
+    """Walk persisted flows and mark interrupted parallel tasks as failed.
+
+    On stdio server startup, any flow whose ``parallel_tasks`` contains
+    entries with ``state == "running"`` has those entries flipped to
+    ``state="failed"`` with ``error="server restart interrupted task"``
+    and ``finished_at`` set to the current wall-clock time. This makes
+    interrupted tasks observable to consumers rather than leaving them
+    stuck in the running state across a restart.
+
+    Real reparenting (resuming an executor against a live child process)
+    is tracked separately as T2-F5-RESUME.
+
+    Best-effort: missing/empty flow roots are no-ops, and corrupt JSON
+    files are skipped rather than raising. Writes a warning to stderr
+    for each file that couldn't be read. The server continues starting
+    regardless of what's found here.
+    """
+    root = Path(flow_root)
+    if not root.exists():
+        return
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            print(
+                f"stratum-mcp: warning: could not read persisted flow "
+                f"'{path.name}' during resume: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if not isinstance(payload, dict):
+            continue
+        parallel_tasks = payload.get("parallel_tasks")
+        if not isinstance(parallel_tasks, dict) or not parallel_tasks:
+            continue
+        now = time.time()
+        touched = False
+        for tid, t in parallel_tasks.items():
+            if isinstance(t, dict) and t.get("state") == "running":
+                t["state"] = "failed"
+                t["error"] = RESUME_INTERRUPTED_ERROR
+                if t.get("finished_at") is None:
+                    t["finished_at"] = now
+                touched = True
+        if touched:
+            try:
+                path.write_text(json.dumps(payload, indent=2))
+            except OSError as exc:
+                print(
+                    f"stratum-mcp: warning: could not persist resume fixup "
+                    f"for '{path.name}': {exc}",
+                    file=sys.stderr,
+                )
+
+
+def shutdown_all(
+    registry: dict[tuple[str, str], asyncio.Task] | None = None,
+) -> None:
+    """Cancel every registered parallel-executor task.
+
+    Called from the stdio server shutdown path (signal handler or
+    try/finally around ``mcp.run``) to make sure pending parallel work
+    doesn't leak across restart. Idempotent — already-done tasks are
+    left alone, and repeated calls after all tasks finish are no-ops.
+
+    The registry argument is the caller's ``dict`` of
+    ``(flow_id, step_id) -> asyncio.Task``. It's taken as a parameter
+    rather than imported to keep this module free of a dependency on
+    ``server.py`` (which is where the registry lives).
+    """
+    if not registry:
+        return
+    for handle in list(registry.values()):
+        if handle is None:
+            continue
+        if handle.done():
+            continue
+        try:
+            handle.cancel()
+        except Exception:
+            # Best-effort — a failed cancel on one task must not prevent
+            # cancellation of the others.
+            pass

@@ -434,3 +434,164 @@ async def test_worktree_failure_marks_task_failed(monkeypatch, tmp_path):
     ts = state.parallel_tasks["t1"]
     assert ts.state == "failed"
     assert "worktree setup failed" in (ts.error or "")
+
+
+# ---------------------------------------------------------------------------
+# T14 — resume hook + shutdown hook
+# ---------------------------------------------------------------------------
+
+
+def test_resume_marks_running_tasks_failed(tmp_path):
+    """Persisted flows with state='running' parallel_tasks get flipped to
+    'failed' on startup, while 'complete' tasks stay untouched."""
+    import json
+    from stratum_mcp.parallel_exec import resume_interrupted_parallel_tasks
+
+    flow_path = tmp_path / "flow-abc.json"
+    payload = {
+        "flow_id": "flow-abc",
+        "parallel_tasks": {
+            "t1": {
+                "task_id": "t1",
+                "state": "running",
+                "started_at": 1.0,
+                "finished_at": None,
+                "result": None,
+                "error": None,
+                "cert_violations": None,
+                "worktree_path": None,
+            },
+            "t2": {
+                "task_id": "t2",
+                "state": "running",
+                "started_at": 2.0,
+                "finished_at": None,
+                "result": None,
+                "error": None,
+                "cert_violations": None,
+                "worktree_path": None,
+            },
+            "t3": {
+                "task_id": "t3",
+                "state": "complete",
+                "started_at": 1.5,
+                "finished_at": 3.5,
+                "result": {"ok": True},
+                "error": None,
+                "cert_violations": None,
+                "worktree_path": None,
+            },
+        },
+    }
+    flow_path.write_text(json.dumps(payload))
+
+    resume_interrupted_parallel_tasks(tmp_path)
+
+    reloaded = json.loads(flow_path.read_text())
+    pts = reloaded["parallel_tasks"]
+
+    # Both running tasks flipped to failed with the expected error message.
+    assert pts["t1"]["state"] == "failed"
+    assert pts["t1"]["error"] == "server restart interrupted task"
+    assert pts["t1"]["finished_at"] is not None
+    assert pts["t2"]["state"] == "failed"
+    assert pts["t2"]["error"] == "server restart interrupted task"
+    assert pts["t2"]["finished_at"] is not None
+
+    # The complete task is left unchanged.
+    assert pts["t3"]["state"] == "complete"
+    assert pts["t3"]["result"] == {"ok": True}
+    assert pts["t3"]["finished_at"] == 3.5
+
+
+def test_resume_handles_missing_or_empty_flow_root(tmp_path):
+    """Non-existent flow root is a no-op; empty flow root is a no-op."""
+    from stratum_mcp.parallel_exec import resume_interrupted_parallel_tasks
+
+    # Non-existent directory — should not raise.
+    resume_interrupted_parallel_tasks(tmp_path / "does-not-exist")
+
+    # Empty directory — should not raise.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    resume_interrupted_parallel_tasks(empty)
+
+
+def test_resume_skips_files_without_parallel_tasks(tmp_path):
+    """Flows without parallel_tasks (e.g., legacy persisted state) are untouched."""
+    import json
+    from stratum_mcp.parallel_exec import resume_interrupted_parallel_tasks
+
+    flow_path = tmp_path / "flow-legacy.json"
+    payload = {"flow_id": "flow-legacy"}  # no parallel_tasks key
+    flow_path.write_text(json.dumps(payload))
+
+    resume_interrupted_parallel_tasks(tmp_path)
+
+    # Round-trips unchanged.
+    assert json.loads(flow_path.read_text()) == payload
+
+
+def test_resume_tolerates_corrupt_json(tmp_path):
+    """A corrupt .json file in the flow root does not crash resume."""
+    from stratum_mcp.parallel_exec import resume_interrupted_parallel_tasks
+
+    (tmp_path / "broken.json").write_text("{not valid json")
+
+    # Must not raise.
+    resume_interrupted_parallel_tasks(tmp_path)
+
+
+async def test_shutdown_all_cancels_registered_tasks():
+    """shutdown_all cancels every registered asyncio.Task and is idempotent."""
+    from stratum_mcp.parallel_exec import shutdown_all
+
+    async def _long():
+        await asyncio.sleep(60)
+
+    t1 = asyncio.create_task(_long())
+    t2 = asyncio.create_task(_long())
+    # Let the tasks enter the running state before cancelling.
+    await asyncio.sleep(0)
+
+    registry: dict = {("f1", "s1"): t1, ("f1", "s2"): t2}
+    shutdown_all(registry)
+
+    # Drive the loop until cancellation is observable.
+    for _ in range(5):
+        if t1.done() and t2.done():
+            break
+        await asyncio.sleep(0)
+
+    assert t1.cancelled() or (t1.done() and isinstance(t1.exception(), asyncio.CancelledError))
+    assert t2.cancelled() or (t2.done() and isinstance(t2.exception(), asyncio.CancelledError))
+
+    # Idempotent — second call (tasks already done) must not raise.
+    shutdown_all(registry)
+
+
+async def test_shutdown_all_no_registry_is_safe():
+    """Calling shutdown_all with no registry is a no-op."""
+    from stratum_mcp.parallel_exec import shutdown_all
+
+    shutdown_all()  # None/default → no-op
+    shutdown_all({})  # empty → no-op
+
+
+async def test_shutdown_all_skips_already_done_tasks():
+    """Already-done tasks in the registry are left alone (no cancel-on-done)."""
+    from stratum_mcp.parallel_exec import shutdown_all
+
+    async def _noop():
+        return 42
+
+    t = asyncio.create_task(_noop())
+    await t  # let it complete
+    assert t.done() and not t.cancelled()
+
+    registry: dict = {("f1", "s1"): t}
+    shutdown_all(registry)  # must not raise
+
+    # Done task is still not cancelled after shutdown_all.
+    assert not t.cancelled()
+    assert t.result() == 42
