@@ -402,6 +402,94 @@ async def stratum_step_done(
     return next_step
 
 
+# ---------------------------------------------------------------------------
+# T13: shared parallel-result evaluation + server-dispatch registry
+# ---------------------------------------------------------------------------
+
+# Module-level registry of in-flight parallel executors, keyed by
+# (flow_id, step_id). T14 adds the shutdown hook; T13 only populates it.
+_RUNNING_EXECUTORS: dict[tuple[str, str], Any] = {}
+
+
+def _evaluate_parallel_results(
+    state: FlowState,
+    step: Any,
+    task_results: list[dict[str, Any]],
+    merge_status: str = "clean",
+) -> tuple[bool, dict[str, Any]]:
+    """Evaluate whether a parallel_dispatch step can advance.
+
+    Extracted from ``stratum_parallel_done`` so ``stratum_parallel_poll`` can
+    reuse the same cert + require + merge semantics. Mutates ``task_results``
+    in place to flip cert-failed tasks to ``status="failed"`` — same behavior
+    as the pre-extraction inline code.
+
+    Returns ``(can_advance, evaluation)`` where ``evaluation`` contains:
+      - ``aggregate``: the dict passed to ``process_step_result``
+      - ``per_task_cert_strs``: per-task cert violation strings
+      - ``require``: the resolved require policy
+      - ``completed`` / ``failed``: partitioned task lists
+      - ``require_satisfied``: require policy check
+      - ``merge_ok``: merge_status != 'conflict'
+    """
+    # STRAT-CERT-PAR: per-task certificate validation before require evaluation.
+    # Only for claude-agent steps with a task_reasoning_template.
+    # Cert-failed tasks are flipped to status="failed" so they count against the
+    # require threshold naturally. Violations are collected and surfaced in
+    # every failure-response path.
+    task_template = step.task_reasoning_template
+    per_task_cert_strs: list[str] = []
+    if task_template and (step.agent or 'claude').startswith('claude'):
+        for task in task_results:
+            if task.get("status") != "complete":
+                continue  # already failed — skip cert check
+            task_result = task.get("result") or {}
+            cert_violations = validate_certificate(task_template, task_result)
+            if cert_violations:
+                task["status"] = "failed"
+                task["error"] = f"cert validation: {'; '.join(cert_violations)}"
+                task["cert_violations"] = cert_violations
+                task_id = task.get("task_id", "?")
+                per_task_cert_strs.append(
+                    f"task '{task_id}' cert: {'; '.join(cert_violations)}"
+                )
+
+    completed = [t for t in task_results if t.get("status") == "complete"]
+    failed = [t for t in task_results if t.get("status") != "complete"]
+
+    require = step.require or "all"
+    if require == "all":
+        require_satisfied = len(failed) == 0
+    elif require == "any":
+        require_satisfied = len(completed) > 0
+    elif isinstance(require, int):
+        require_satisfied = len(completed) >= require
+    else:
+        require_satisfied = len(failed) == 0  # default to "all"
+
+    merge_ok = merge_status != "conflict"
+
+    aggregate = {
+        "tasks": task_results,
+        "merge_status": merge_status,
+        "completed": completed,
+        "failed": failed,
+        "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
+    }
+
+    can_advance = require_satisfied and merge_ok
+    evaluation = {
+        "aggregate": aggregate,
+        "per_task_cert_strs": per_task_cert_strs,
+        "require": require,
+        "completed": completed,
+        "failed": failed,
+        "require_satisfied": require_satisfied,
+        "merge_ok": merge_ok,
+    }
+    return can_advance, evaluation
+
+
 @mcp.tool(description=(
     "Report results for a completed parallel_dispatch step. "
     "Inputs: flow_id (str), step_id (str), "
@@ -461,54 +549,18 @@ async def stratum_parallel_done(
             ),
         }
 
-    # STRAT-CERT-PAR: per-task certificate validation before require evaluation.
-    # Only for claude-agent steps with a task_reasoning_template.
-    # Cert-failed tasks are flipped to status="failed" so they count against the
-    # require threshold naturally. Violations are collected here and merged into
-    # every failure-response path below.
-    task_template = cur_step.task_reasoning_template
-    per_task_cert_strs: list[str] = []
-    if task_template and (cur_step.agent or 'claude').startswith('claude'):
-        for task in task_results:
-            if task.get("status") != "complete":
-                continue  # already failed — skip cert check
-            task_result = task.get("result") or {}
-            cert_violations = validate_certificate(task_template, task_result)
-            if cert_violations:
-                task["status"] = "failed"
-                task["error"] = f"cert validation: {'; '.join(cert_violations)}"
-                task["cert_violations"] = cert_violations
-                task_id = task.get("task_id", "?")
-                per_task_cert_strs.append(
-                    f"task '{task_id}' cert: {'; '.join(cert_violations)}"
-                )
-
-    # Build aggregate result
-    completed = [t for t in task_results if t.get("status") == "complete"]
-    failed = [t for t in task_results if t.get("status") != "complete"]
-
-    # Check require semantics
-    require = cur_step.require or "all"
-    if require == "all":
-        all_passed = len(failed) == 0
-    elif require == "any":
-        all_passed = len(completed) > 0
-    elif isinstance(require, int):
-        all_passed = len(completed) >= require
-    else:
-        all_passed = len(failed) == 0  # default to "all"
-
-    aggregate = {
-        "tasks": task_results,
-        "merge_status": merge_status,
-        "completed": completed,
-        "failed": failed,
-        "outcome": "complete" if (all_passed and merge_status != "conflict") else "failed",
-    }
-
-    # Check merge_status
-    if merge_status == "conflict":
-        aggregate["outcome"] = "failed"
+    # T13: shared cert + require + aggregate evaluation (used by both
+    # stratum_parallel_done and stratum_parallel_poll). Mutates task_results
+    # in place to flip cert-failed tasks → status="failed" (byte-identical to
+    # the pre-extraction behavior).
+    can_advance, evaluation = _evaluate_parallel_results(
+        state, cur_step, task_results, merge_status=merge_status,
+    )
+    per_task_cert_strs = evaluation["per_task_cert_strs"]
+    require = evaluation["require"]
+    completed = evaluation["completed"]
+    failed = evaluation["failed"]
+    aggregate = evaluation["aggregate"]
 
     # Process through process_step_result (handles ensure, retries, on_fail)
     try:
@@ -651,6 +703,346 @@ async def stratum_parallel_done(
 
     persist_flow(state)
     return next_step
+
+
+# ---------------------------------------------------------------------------
+# T13: stratum_parallel_start + stratum_parallel_poll
+# ---------------------------------------------------------------------------
+
+
+def _resolve_dispatch_tasks(state: FlowState, step: Any) -> list[dict]:
+    """Resolve the task list for a parallel_dispatch step.
+
+    Follows the same resolution path as ``get_current_step_info`` so
+    start-side task materialization matches what the dispatch object
+    already advertised to the caller.
+    """
+    from .executor import resolve_ref
+    assert step.source is not None, "parallel_dispatch step must have source"
+    return list(resolve_ref(step.source, state.inputs, state.step_outputs) or [])
+
+
+async def _advance_after_parallel(
+    state: FlowState,
+    step_id: str,
+    aggregate: dict[str, Any],
+) -> dict[str, Any]:
+    """Run a completed parallel step's aggregate through process_step_result
+    and return the next-step dispatch (or flow-complete payload).
+
+    Mirrors the "ok" / non-ok handling in ``stratum_parallel_done`` — enough
+    to cover the path taken by ``stratum_parallel_poll`` when all tasks
+    settle. Errors surface as structured dicts, not exceptions.
+    """
+    try:
+        status, violations = process_step_result(state, step_id, aggregate)
+    except MCPExecutionError as exc:
+        return {"status": "error", **exception_to_mcp_error(exc)}
+
+    if status == "retries_exhausted":
+        delete_persisted_flow(state.flow_id)
+        _step = state.ordered_steps[state.current_idx]
+        return {
+            "status": "error",
+            "error_type": "retries_exhausted",
+            "flow_id": state.flow_id,
+            "step_id": step_id,
+            "step_mode": _step_mode(_step),
+            "agent": _step.agent,
+            "message": f"Step '{step_id}' exhausted all retries",
+            "violations": violations,
+        }
+    if status == "on_fail_routed":
+        try:
+            next_step = get_current_step_info(state)
+            next_step = _apply_policy_loop(state, next_step)
+        except MCPExecutionError as exc:
+            return {"status": "error", **exception_to_mcp_error(exc)}
+        persist_flow(state)
+        return {
+            **(next_step or {}),
+            "routed_from": step_id,
+            "violations": violations,
+        }
+    if status in ("ensure_failed", "schema_failed", "guardrail_blocked"):
+        try:
+            step_info = get_current_step_info(state)
+        except MCPExecutionError as exc:
+            return {"status": "error", **exception_to_mcp_error(exc)}
+        persist_flow(state)
+        return {
+            **step_info,
+            "status": status,
+            "violations": violations,
+        }
+    # "ok" — flow advanced
+    state.iteration_outcome.pop(step_id, None)
+    try:
+        next_step = get_current_step_info(state)
+        next_step = _apply_policy_loop(state, next_step)
+    except MCPExecutionError as exc:
+        return {"status": "error", **exception_to_mcp_error(exc)}
+    if next_step is not None and next_step.get("status") == "complete":
+        delete_persisted_flow(state.flow_id)
+        return next_step
+    if next_step is None:
+        delete_persisted_flow(state.flow_id)
+        total_ms = int((time.monotonic() - state.flow_start) * 1000)
+        output = next(
+            (state.step_outputs[s.id] for s in reversed(state.ordered_steps)
+             if s.id in state.step_outputs and state.step_outputs[s.id] is not None),
+            None,
+        )
+        return {
+            "status": state.terminal_status or "complete",
+            "flow_id": state.flow_id,
+            "output": output,
+            "trace": [dataclasses.asdict(r) for r in state.records],
+            "total_duration_ms": total_ms,
+        }
+    persist_flow(state)
+    return next_step
+
+
+@mcp.tool(description=(
+    "Start server-dispatched execution of a parallel_dispatch step. "
+    "Inputs: flow_id (str), step_id (str). "
+    "Spawns a ParallelExecutor that drives all tasks concurrently. "
+    "Use stratum_parallel_poll to observe progress and advance the flow."
+))
+async def stratum_parallel_start(
+    flow_id: str,
+    step_id: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    import asyncio as _asyncio
+    from .parallel_exec import DEFAULT_TASK_TIMEOUT, ParallelExecutor
+
+    state = _flows.get(flow_id)
+    if state is None:
+        state = restore_flow(flow_id)
+        if state is None:
+            return {
+                "status": "error",
+                "error_type": "flow_not_found",
+                "message": f"No active flow with id '{flow_id}'",
+            }
+        _flows[flow_id] = state
+
+    if state.current_idx >= len(state.ordered_steps):
+        return {
+            "error": "flow_complete",
+            "message": "Flow is already complete",
+        }
+
+    cur_step = state.ordered_steps[state.current_idx]
+    if cur_step.id != step_id:
+        return {
+            "error": "step_mismatch",
+            "message": f"Expected step '{cur_step.id}', got '{step_id}'",
+        }
+
+    mode = _step_mode(cur_step)
+    if mode != "parallel_dispatch":
+        return {
+            "error": "wrong_step_type",
+            "message": (
+                f"Step '{step_id}' is a {mode} step, not parallel_dispatch."
+            ),
+        }
+
+    isolation = cur_step.isolation or "worktree"
+    if isolation == "branch":
+        return {
+            "error": (
+                "branch-mode isolation is not yet supported in server-side "
+                "parallel dispatch (see roadmap T2-F5-BRANCH). Use "
+                "'worktree' or 'none'."
+            ),
+        }
+
+    # Reject re-start: any task already past pending means we're mid-flight or
+    # finished; caller should use stratum_parallel_poll.
+    already = [
+        tid for tid, ts in state.parallel_tasks.items()
+        if ts.state in ("running", "complete", "failed", "cancelled")
+    ]
+    if already or (flow_id, step_id) in _RUNNING_EXECUTORS:
+        return {
+            "error": "already_started",
+            "message": (
+                f"Step '{step_id}' already dispatched; use stratum_parallel_poll."
+            ),
+        }
+
+    try:
+        tasks = _resolve_dispatch_tasks(state, cur_step)
+    except Exception as exc:
+        return {
+            "error": "source_resolution_failed",
+            "message": f"Could not resolve tasks for step '{step_id}': {exc}",
+        }
+    if not tasks:
+        return {
+            "error": "no_tasks",
+            "message": f"Step '{step_id}' source resolved to zero tasks.",
+        }
+
+    # Seed per-task state so a poll immediately after start sees entries.
+    from .executor import ParallelTaskState as _PTS
+    for t in tasks:
+        tid = t["id"]
+        if tid not in state.parallel_tasks:
+            state.parallel_tasks[tid] = _PTS(task_id=tid)
+    persist_flow(state)
+
+    task_timeout = cur_step.task_timeout or DEFAULT_TASK_TIMEOUT
+
+    executor = ParallelExecutor(
+        state=state,
+        step_id=step_id,
+        tasks=tasks,
+        max_concurrent=cur_step.max_concurrent or 3,
+        isolation=isolation,
+        task_timeout=task_timeout,
+        agent=cur_step.agent,
+        intent_template=cur_step.intent_template or "",
+        task_reasoning_template=cur_step.task_reasoning_template,
+        require=cur_step.require or "all",
+    )
+    handle = _asyncio.create_task(executor.run())
+    _RUNNING_EXECUTORS[(flow_id, step_id)] = handle
+
+    return {
+        "status": "started",
+        "flow_id": flow_id,
+        "step_id": step_id,
+        "task_count": len(tasks),
+        "tasks": [t["id"] for t in tasks],
+    }
+
+
+@mcp.tool(description=(
+    "Poll the state of a server-dispatched parallel_dispatch step. "
+    "Inputs: flow_id (str), step_id (str). "
+    "Returns a summary of per-task states and, once all tasks settle, "
+    "advances the flow and includes the outcome. Safe to call at any cadence."
+))
+async def stratum_parallel_poll(
+    flow_id: str,
+    step_id: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    state = _flows.get(flow_id)
+    if state is None:
+        state = restore_flow(flow_id)
+        if state is None:
+            return {
+                "error": "flow_not_found",
+                "message": f"No active flow with id '{flow_id}'",
+            }
+        _flows[flow_id] = state
+
+    # If the step has already advanced past parallel_dispatch (idempotent poll
+    # after completion), we still want to report a sensible final view.
+    step: Any = None
+    for s in state.ordered_steps:
+        if s.id == step_id:
+            step = s
+            break
+    if step is None:
+        return {
+            "error": "unknown_step",
+            "message": f"Step '{step_id}' not found in flow",
+        }
+
+    # Collect the per-task entries that belong to this step. ParallelExecutor
+    # seeds them for every task in the step's task list at start time, so
+    # "no entries" means start was never called.
+    try:
+        expected_task_ids = {t["id"] for t in _resolve_dispatch_tasks(state, step)}
+    except Exception:
+        expected_task_ids = set()
+    ts_map = {
+        tid: ts for tid, ts in state.parallel_tasks.items()
+        if tid in expected_task_ids
+    }
+    if not ts_map:
+        return {
+            "error": (
+                f"step '{step_id}' not dispatched yet; call "
+                "stratum_parallel_start first"
+            ),
+        }
+
+    # Build summary counts.
+    summary = {"pending": 0, "running": 0, "complete": 0, "failed": 0, "cancelled": 0}
+    for ts in ts_map.values():
+        if ts.state in summary:
+            summary[ts.state] += 1
+
+    all_terminal = all(
+        ts.state in ("complete", "failed", "cancelled") for ts in ts_map.values()
+    )
+
+    # Idempotent advance: only run process_step_result when (a) all tasks are
+    # terminal AND (b) current_idx still points at this step. A prior poll
+    # may have already advanced the flow — in that case we just report the
+    # final state without re-running the aggregate through process_step_result.
+    outcome: dict[str, Any] | None = None
+    require_satisfied = False
+    can_advance = False
+
+    cur_step = None
+    if state.current_idx < len(state.ordered_steps):
+        cur_step = state.ordered_steps[state.current_idx]
+
+    step_still_pending = (cur_step is not None and cur_step.id == step_id)
+
+    if all_terminal:
+        # Convert ParallelTaskState entries → done-style task_results.
+        task_results = [
+            {
+                "task_id": tid,
+                "result": ts.result,
+                "status": "complete" if ts.state == "complete" else "failed",
+            }
+            for tid, ts in ts_map.items()
+        ]
+        # cert validation on poll-side results is a no-op (the executor has
+        # already flipped cert-failed tasks to state="failed"), but running
+        # the shared helper keeps aggregate construction in one place.
+        can_advance, evaluation = _evaluate_parallel_results(
+            state, step, task_results, merge_status="clean",
+        )
+        require_satisfied = evaluation["require_satisfied"]
+
+        if step_still_pending:
+            advance_result = await _advance_after_parallel(
+                state, step_id, evaluation["aggregate"],
+            )
+            outcome = advance_result
+            # If the flow advanced, drop the executor handle from the registry
+            # so we don't double-advance on subsequent polls.
+            _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
+        else:
+            # Already advanced — report the aggregate without re-processing.
+            outcome = {
+                "status": "already_advanced",
+                "aggregate": evaluation["aggregate"],
+            }
+    # Build tasks serialization.
+    tasks_out = {tid: dataclasses.asdict(ts) for tid, ts in ts_map.items()}
+
+    return {
+        "flow_id": flow_id,
+        "step_id": step_id,
+        "summary": summary,
+        "tasks": tasks_out,
+        "require_satisfied": require_satisfied,
+        "can_advance": can_advance,
+        "outcome": outcome,
+    }
 
 
 @mcp.tool(description=(
