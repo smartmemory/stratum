@@ -53,7 +53,11 @@ def _assert_codex_model(model_id: str) -> None:
 
 
 class CodexConnector(OpencodeConnector):
-    """OpencodeConnector locked to OpenAI Codex models."""
+    """OpencodeConnector locked to OpenAI Codex models.
+
+    Inherits :meth:`OpencodeConnector.interrupt` unchanged — SIGTERM with a
+    5-second grace period before SIGKILL. No Codex-specific cancellation logic.
+    """
 
     def __init__(
         self, *, model_id: str = _DEFAULT_MODEL_ID, cwd: Optional[str] = None

@@ -106,6 +106,12 @@ class ClaudeConnector(AgentConnector):
         finally:
             self._active = False
 
+    def interrupt(self) -> None:
+        """No-op. Claude's SDK has no cancel API today — asyncio cancellation
+        still unwinds the coroutine but the in-flight network call is not
+        propagated. Tracked for follow-up as T2-F5-CLAUDE-CANCEL.
+        """
+
     @property
     def is_running(self) -> bool:
         return self._active

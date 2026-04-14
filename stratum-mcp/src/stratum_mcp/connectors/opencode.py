@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import sys
 import time
 from typing import Any, AsyncIterator, Optional
@@ -198,11 +199,37 @@ class OpencodeConnector(AgentConnector):
             self._proc = None
 
     def interrupt(self) -> None:
-        if self._proc is not None and self._proc.returncode is None:
-            try:
-                self._proc.terminate()
-            except ProcessLookupError:
-                pass
+        """Send SIGTERM; schedule SIGKILL after a 5-second grace period.
+
+        Idempotent: safe to call when no process is running, safe to call
+        multiple times. Used by the parallel executor to tear down a
+        long-running task that hit task_timeout or was cancelled by the
+        require cascade.
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        if proc.returncode is not None:
+            return
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+        async def _grace_then_kill() -> None:
+            await asyncio.sleep(5)
+            if proc.returncode is None:
+                try:
+                    proc.kill()  # SIGKILL
+                except ProcessLookupError:
+                    pass
+
+        try:
+            asyncio.get_running_loop().create_task(_grace_then_kill())
+        except RuntimeError:
+            # No running loop — SIGTERM has been delivered; caller is
+            # responsible for any follow-up SIGKILL in sync contexts.
+            pass
 
     @property
     def is_running(self) -> bool:
