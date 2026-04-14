@@ -35,6 +35,7 @@ from .executor import (
 )
 from .spec import parse_and_validate
 from .connectors import AgentConnector, ClaudeConnector, CodexConnector
+from .connectors.factory import make_agent_connector as _make_agent_connector
 
 mcp = FastMCP(
     "stratum-mcp",
@@ -84,26 +85,6 @@ async def stratum_validate(spec: str, ctx: Context) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # STRAT-CERT-PAR / T2-F5: agent_run — dispatch prompts to claude or codex
 # ---------------------------------------------------------------------------
-
-_VALID_AGENT_TYPES = frozenset({"claude", "codex"})
-
-
-def _make_agent_connector(
-    agent_type: str, model_id: Optional[str], cwd: Optional[str]
-) -> AgentConnector:
-    """Factory — raises ValueError on unknown type or bad codex model."""
-    if agent_type not in _VALID_AGENT_TYPES:
-        raise ValueError(
-            f"stratum_agent_run: unknown type '{agent_type}'. "
-            f"Valid types: {sorted(_VALID_AGENT_TYPES)}"
-        )
-    if agent_type == "codex":
-        return CodexConnector(model_id=model_id or "gpt-5.4", cwd=cwd)
-    kwargs: dict[str, Any] = {"cwd": cwd}
-    if model_id:
-        kwargs["model"] = model_id
-    return ClaudeConnector(**kwargs)
-
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*\n([\s\S]*?)\n\s*```")
 
