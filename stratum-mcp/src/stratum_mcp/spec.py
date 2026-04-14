@@ -111,6 +111,8 @@ class IRStepDef:
     reasoning_template: dict | None = None
     # STRAT-CERT-PAR: per-task reasoning certificate template for parallel_dispatch steps
     task_reasoning_template: dict | None = None
+    # T2-F5-ENFORCE: per-task timeout (seconds) for parallel_dispatch steps
+    task_timeout: int | None = None
 
 
 @dataclass(frozen=True)
@@ -507,6 +509,7 @@ _IR_SCHEMA_V03: dict = {
                 "intent_template": {"type": "string"},
                 "reasoning_template": {"type": "object"},
                 "task_reasoning_template": {"type": "object"},
+                "task_timeout": {"type": ["integer", "null"], "minimum": 1},
             }
         },
         "TaskGraph": {
@@ -1099,6 +1102,7 @@ def _build_step(s: dict) -> IRStepDef:
         intent_template=s.get("intent_template"),
         reasoning_template=s.get("reasoning_template"),
         task_reasoning_template=s.get("task_reasoning_template"),
+        task_timeout=s.get("task_timeout"),
     )
 
 
@@ -1236,6 +1240,7 @@ def _validate_semantics(spec: IRSpec) -> None:
             # STRAT-CERT-PAR: task_reasoning_template is parallel_dispatch-only (like source/isolation/require/merge)
             _parallel_dispatch_only = (
                 "source", "isolation", "require", "merge", "task_reasoning_template",
+                "task_timeout", "max_concurrent",
             )
             if step.step_type in ("decompose", "parallel_dispatch"):
                 if step.step_type == "decompose":
