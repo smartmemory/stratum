@@ -685,6 +685,24 @@ def _record_from_dict(r: dict) -> StepRecord | GateRecord | SkipRecord | PolicyR
 
 
 @dataclass
+class ParallelTaskState:
+    """Per-task state for parallel step execution (T2-F5-ENFORCE).
+
+    Tracks lifecycle of a single task within a parallel step: lifecycle state
+    machine (pending → running → complete/failed/cancelled), timing, result or
+    error, and certificate violations detected on completion.
+    """
+    task_id: str
+    state: str = "pending"              # pending|running|complete|failed|cancelled
+    started_at: float | None = None
+    finished_at: float | None = None
+    result: Any = None
+    error: str | None = None
+    cert_violations: list | None = None
+    worktree_path: str | None = None
+
+
+@dataclass
 class FlowState:
     flow_id: str
     flow_name: str
@@ -720,6 +738,13 @@ class FlowState:
     # Verified at every step transition to detect in-memory tampering.
     # Empty string = legacy flow (no checksum); skips verification.
     spec_checksum: str = ""
+    # T2-F5-ENFORCE: per-task state for parallel step execution.
+    # Keyed by task_id. Empty dict for non-parallel flows.
+    parallel_tasks: dict[str, ParallelTaskState] = field(default_factory=dict)
+    # T2-F5-ENFORCE: working directory captured when the flow was created.
+    # Used by parallel executor to resolve relative paths for worktrees.
+    # Empty string = legacy flow created before this field existed.
+    cwd: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -862,6 +887,8 @@ def persist_flow(state: FlowState) -> None:
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       state.child_audits,
         "spec_checksum":      state.spec_checksum,
+        "parallel_tasks":     {tid: dataclasses.asdict(t) for tid, t in state.parallel_tasks.items()},
+        "cwd":                state.cwd,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -893,6 +920,10 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         return None
     ordered = _topological_sort(flow_def)
     records = [_record_from_dict(r) for r in payload.get("records", [])]
+    parallel_tasks = {
+        tid: ParallelTaskState(**t) if isinstance(t, dict) else t
+        for tid, t in (payload.get("parallel_tasks") or {}).items()
+    }
     return FlowState(
         flow_id=payload["flow_id"],
         flow_name=payload["flow_name"],
@@ -921,6 +952,8 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         active_child_flow_id=payload.get("active_child_flow_id"),
         child_audits=payload.get("child_audits", {}),
         spec_checksum=payload.get("spec_checksum", ""),
+        parallel_tasks=parallel_tasks,
+        cwd=payload.get("cwd", ""),
     )
 
 

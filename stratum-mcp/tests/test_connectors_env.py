@@ -1,11 +1,11 @@
-"""Tests for AgentConnector.run() env parameter and SENSITIVE_ENV_VARS (T2-F5-ENFORCE T2).
+"""Tests for AgentConnector.run() env parameter and SENSITIVE_ENV_VARS (T2-F5-ENFORCE).
 
 These tests pin the public contract of the base connector:
   - run() accepts a keyword-only `env` parameter that defaults to None
   - SENSITIVE_ENV_VARS is a tuple with the exact expected shape
 
-Concrete-connector scrubbing behavior (claude/codex/opencode honoring the env
-baseline + scrubbing SENSITIVE_ENV_VARS) is T5 and is tested separately.
+T5 adds concrete-connector behavior (claude/codex/opencode honor the env baseline
+and scrub the full SENSITIVE_ENV_VARS list).
 """
 from __future__ import annotations
 
@@ -79,3 +79,209 @@ def test_sensitive_env_vars_tuple_shape():
         "CLAUDE_API_KEY",
         "CLAUDECODE",
     )
+
+
+# ---------------------------------------------------------------------------
+# T5 — concrete connector env plumbing + full SENSITIVE_ENV_VARS scrub
+# ---------------------------------------------------------------------------
+
+
+from unittest.mock import patch
+
+from stratum_mcp.connectors import (
+    ClaudeConnector,
+    CodexConnector,
+    OpencodeConnector,
+)
+
+
+class _FakeStream:
+    async def readline(self):
+        return b""
+
+
+class _FakeProc:
+    stdout = _FakeStream()
+    stderr = _FakeStream()
+    returncode = 0
+
+    async def wait(self):
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_opencode_subprocess_receives_stratum_env_vars():
+    """env= kwarg is forwarded to create_subprocess_exec as the baseline env."""
+    captured: dict = {}
+
+    async def _fake_create(*args, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        return _FakeProc()
+
+    with patch(
+        "stratum_mcp.connectors.opencode.asyncio.create_subprocess_exec",
+        side_effect=_fake_create,
+    ):
+        conn = OpencodeConnector(provider_id="openai", model_id="gpt-5.4")
+        await _collect(
+            conn.run(
+                prompt="hi",
+                env={
+                    "STRATUM_TASK_ID": "t1",
+                    "STRATUM_FLOW_ID": "f1",
+                    "PATH": "/usr/bin",
+                },
+            )
+        )
+
+    env = captured["env"]
+    assert env.get("STRATUM_TASK_ID") == "t1"
+    assert env.get("STRATUM_FLOW_ID") == "f1"
+    assert env.get("PATH") == "/usr/bin"
+
+
+@pytest.mark.asyncio
+async def test_opencode_subprocess_does_not_receive_sensitive_vars(monkeypatch):
+    """Full SENSITIVE_ENV_VARS scrub applies regardless of env source."""
+    captured: dict = {}
+
+    async def _fake_create(*args, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        return _FakeProc()
+
+    # Plant a sensitive var in os.environ (covers the default/inherit path
+    # even though we pass env= here — defense-in-depth).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+
+    with patch(
+        "stratum_mcp.connectors.opencode.asyncio.create_subprocess_exec",
+        side_effect=_fake_create,
+    ):
+        conn = OpencodeConnector(provider_id="openai", model_id="gpt-5.4")
+        await _collect(
+            conn.run(
+                prompt="hi",
+                env={
+                    "STRATUM_TASK_ID": "t1",
+                    "ANTHROPIC_API_KEY": "leaked",
+                    "OPENAI_API_KEY": "leaked",
+                    "CLAUDE_API_KEY": "leaked",
+                    "CLAUDECODE": "1",
+                },
+            )
+        )
+
+    env = captured["env"]
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "CLAUDE_API_KEY" not in env
+    assert "CLAUDECODE" not in env
+    # STRATUM vars preserved
+    assert env.get("STRATUM_TASK_ID") == "t1"
+
+
+@pytest.mark.asyncio
+async def test_opencode_default_path_scrubs_all_sensitive_vars(monkeypatch):
+    """When env=None, baseline is os.environ but all SENSITIVE_ENV_VARS still scrubbed."""
+    captured: dict = {}
+
+    async def _fake_create(*args, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        return _FakeProc()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("OPENAI_API_KEY", "b")
+    monkeypatch.setenv("CLAUDE_API_KEY", "c")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    with patch(
+        "stratum_mcp.connectors.opencode.asyncio.create_subprocess_exec",
+        side_effect=_fake_create,
+    ):
+        conn = OpencodeConnector(provider_id="openai", model_id="gpt-5.4")
+        await _collect(conn.run(prompt="hi"))
+
+    env = captured["env"]
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "CLAUDE_API_KEY" not in env
+    assert "CLAUDECODE" not in env
+
+
+async def _async_gen(items):
+    for item in items:
+        yield item
+
+
+@pytest.mark.asyncio
+async def test_claude_env_scrub_covers_all_sensitive_vars_default_path(monkeypatch):
+    """ClaudeConnector scrubs all SENSITIVE_ENV_VARS when env=None (os.environ baseline)."""
+    captured: dict = {}
+
+    def _fake_query(*, prompt, options):
+        captured["env"] = options.env
+        return _async_gen([])
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("OPENAI_API_KEY", "b")
+    monkeypatch.setenv("CLAUDE_API_KEY", "c")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    with patch("stratum_mcp.connectors.claude.query", side_effect=_fake_query):
+        conn = ClaudeConnector()
+        await _collect(conn.run("x"))
+
+    env = captured["env"]
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"):
+        assert var not in env, f"{var} leaked into claude SDK env"
+
+
+@pytest.mark.asyncio
+async def test_claude_env_scrub_covers_all_sensitive_vars_with_env_kwarg():
+    """ClaudeConnector scrubs all SENSITIVE_ENV_VARS when env= kwarg is passed."""
+    captured: dict = {}
+
+    def _fake_query(*, prompt, options):
+        captured["env"] = options.env
+        return _async_gen([])
+
+    with patch("stratum_mcp.connectors.claude.query", side_effect=_fake_query):
+        conn = ClaudeConnector()
+        await _collect(
+            conn.run(
+                "x",
+                env={
+                    "STRATUM_TASK_ID": "t1",
+                    "ANTHROPIC_API_KEY": "leaked",
+                    "OPENAI_API_KEY": "leaked",
+                    "CLAUDE_API_KEY": "leaked",
+                    "CLAUDECODE": "1",
+                },
+            )
+        )
+
+    env = captured["env"]
+    assert env.get("STRATUM_TASK_ID") == "t1"
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"):
+        assert var not in env, f"{var} leaked into claude SDK env"
+
+
+@pytest.mark.asyncio
+async def test_codex_override_forwards_env_to_super(monkeypatch):
+    """CodexConnector.run() forwards env= through super().run()."""
+    captured: dict = {}
+
+    async def _recording_super_run(self, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        # Yield nothing — we only care about the forwarded kwargs
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(OpencodeConnector, "run", _recording_super_run)
+
+    conn = CodexConnector(model_id="gpt-5.4")
+    await _collect(conn.run(prompt="hi", env={"X": "1"}))
+
+    assert captured["prompt"] == "hi"
+    assert captured["kwargs"].get("env") == {"X": "1"}

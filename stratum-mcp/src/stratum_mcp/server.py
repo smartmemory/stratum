@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import sys
 import time
@@ -180,6 +181,10 @@ async def stratum_plan(
         state = create_flow_state(ir_spec, flow, inputs, raw_spec=spec)
     except MCPExecutionError as exc:
         return {"status": "error", **exception_to_mcp_error(exc)}
+
+    # T2-F5-ENFORCE: capture caller's cwd at plan time so parallel executor
+    # can resolve relative paths for worktrees later in the flow lifecycle.
+    state.cwd = os.getcwd()
 
     _flows[state.flow_id] = state
     try:
