@@ -1056,6 +1056,102 @@ async def stratum_parallel_poll(
 
 
 @mcp.tool(description=(
+    "Advance a parallel_dispatch step whose spec declared defer_advance: true. "
+    "Inputs: flow_id (str), step_id (str), merge_status ('clean' | 'conflict'). "
+    "Call after observing 'awaiting_consumer_advance' from stratum_parallel_poll. "
+    "Feeds merge_status into _evaluate_parallel_results and advances the flow. "
+    "Idempotent: returns {status: 'already_advanced', step_id} if the flow has "
+    "already moved past step_id."
+))
+async def stratum_parallel_advance(
+    flow_id: str,
+    step_id: str,
+    merge_status: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    state = _flows.get(flow_id)
+    if state is None:
+        state = restore_flow(flow_id)
+        if state is None:
+            return {"error": "flow_not_found", "message": f"No active flow with id '{flow_id}'"}
+        _flows[flow_id] = state
+
+    # STRAT-IMMUTABLE gate — mirrors stratum_parallel_done / stratum_step_done
+    _flow_def = state.spec.flows.get(state.flow_name)
+    if _flow_def is not None:
+        _integrity_err = verify_spec_integrity(_flow_def, state)
+        if _integrity_err is not None:
+            return _integrity_err
+
+    step = next((s for s in state.ordered_steps if s.id == step_id), None)
+    if step is None:
+        return {"error": "unknown_step", "message": f"Step '{step_id}' not found in flow"}
+    if getattr(step, "step_type", None) != "parallel_dispatch":
+        return {"error": "wrong_step_type", "message": f"Step '{step_id}' is not a parallel_dispatch step"}
+    if not getattr(step, "defer_advance", False):
+        return {
+            "error": "advance_not_deferred",
+            "message": (
+                f"Step '{step_id}' does not have defer_advance: true. "
+                f"Auto-advance fires from stratum_parallel_poll; this tool is a no-op."
+            ),
+        }
+    if merge_status not in ("clean", "conflict"):
+        return {
+            "error": "invalid_merge_status",
+            "message": f"merge_status must be 'clean' or 'conflict', got {merge_status!r}",
+        }
+
+    # Idempotency check — if the flow has moved past this step, return minimal envelope
+    cur_step = None
+    if state.current_idx < len(state.ordered_steps):
+        cur_step = state.ordered_steps[state.current_idx]
+    if cur_step is None or cur_step.id != step_id:
+        return {"status": "already_advanced", "step_id": step_id}
+
+    # Verify all tasks are terminal
+    try:
+        expected_task_ids = {t["id"] for t in _resolve_dispatch_tasks(state, step)}
+    except Exception:
+        expected_task_ids = set()
+    ts_map = {
+        tid: ts for tid, ts in state.parallel_tasks.items()
+        if tid in expected_task_ids
+    }
+    if not ts_map:
+        return {
+            "error": "step_not_dispatched",
+            "message": f"Step '{step_id}' not dispatched yet; call stratum_parallel_start first",
+        }
+    if not all(ts.state in ("complete", "failed", "cancelled") for ts in ts_map.values()):
+        return {
+            "error": "tasks_not_terminal",
+            "message": (
+                f"Step '{step_id}' still has running tasks. "
+                f"Poll until outcome.status == 'awaiting_consumer_advance' before calling advance."
+            ),
+        }
+
+    # Advance
+    task_results = [
+        {
+            "task_id": tid,
+            "result": ts.result,
+            "status": "complete" if ts.state == "complete" else "failed",
+        }
+        for tid, ts in ts_map.items()
+    ]
+    _, evaluation = _evaluate_parallel_results(
+        state, step, task_results, merge_status=merge_status,
+    )
+    advance_result = await _advance_after_parallel(
+        state, step_id, evaluation["aggregate"],
+    )
+    _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
+    return advance_result
+
+
+@mcp.tool(description=(
     "Return execution trace for a flow. "
     "Input: flow_id (str) from stratum_plan. "
     "Returns step-by-step trace with attempt counts and durations."

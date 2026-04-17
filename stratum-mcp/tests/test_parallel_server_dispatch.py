@@ -23,6 +23,7 @@ from stratum_mcp.executor import (
 )
 from stratum_mcp.server import (
     _evaluate_parallel_results,
+    stratum_parallel_advance,
     stratum_parallel_done,
     stratum_parallel_poll,
     stratum_parallel_start,
@@ -555,3 +556,230 @@ async def test_awaiting_consumer_advance_status_unique_to_defer_path(monkeypatch
     finally:
         server_mod._RUNNING_EXECUTORS.pop((flow_id_aa, "execute"), None)
         _flows.pop(flow_id_aa, None)
+
+
+# ---------------------------------------------------------------------------
+# T2-F5-DEFER-ADVANCE: stratum_parallel_advance tool tests
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_run_complete():
+    """Return a fake ParallelExecutor.run that immediately marks all tasks complete."""
+    async def fake_run(self):
+        import time as _time
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "complete"
+            ts.result = {"ok": True}
+            ts.started_at = _time.time()
+            ts.finished_at = _time.time()
+        self._persist_callable(self.state)
+    return fake_run
+
+
+async def _setup_deferred_to_sentinel(monkeypatch, num_tasks: int = 2) -> str:
+    """Plan a deferred flow, drive tasks to terminal, wait for executor, return flow_id.
+
+    After this helper, stratum_parallel_poll returns awaiting_consumer_advance.
+    """
+    monkeypatch.setattr(parallel_exec_mod.ParallelExecutor, "run", _make_fake_run_complete())
+    flow_id = await _dispatch_to_parallel(_SPEC_DEFER, num_tasks=num_tasks)
+    await stratum_parallel_start(flow_id=flow_id, step_id="execute", ctx=None)
+    task = server_mod._RUNNING_EXECUTORS.get((flow_id, "execute"))
+    if task is not None:
+        await task
+    return flow_id
+
+
+async def test_advance_with_clean_merge_status_advances_flow(monkeypatch):
+    """Happy path: defer + poll sentinel → advance('clean') → flow moves forward."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    state = _flows[flow_id]
+    idx_before = state.current_idx
+    try:
+        # Confirm we're at the sentinel first.
+        poll_result = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+        assert poll_result["outcome"]["status"] == "awaiting_consumer_advance"
+
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="clean", ctx=None,
+        )
+
+        # Result must NOT be the sentinel — it should be a real next-step dispatch or flow-done.
+        assert result.get("status") != "awaiting_consumer_advance"
+        assert "error" not in result
+        # Flow must have advanced.
+        assert state.current_idx > idx_before
+        # Executor registry must be cleaned up.
+        assert (flow_id, "execute") not in server_mod._RUNNING_EXECUTORS
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_with_conflict_blocks_advance(monkeypatch):
+    """merge_status='conflict' → _evaluate_parallel_results can_advance=False → ensure_failed path."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    state = _flows[flow_id]
+    try:
+        poll_result = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+        assert poll_result["outcome"]["status"] == "awaiting_consumer_advance"
+
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="conflict", ctx=None,
+        )
+
+        # Must NOT be the clean advance outcome.
+        assert result.get("status") != "awaiting_consumer_advance"
+        # conflict routes through on_fail / ensure_failed — result has an error or
+        # a non-clean outcome status; it must NOT be an invalid_merge_status error.
+        assert result.get("error") != "invalid_merge_status"
+        # Registry must be cleaned (advance ran its full path).
+        assert (flow_id, "execute") not in server_mod._RUNNING_EXECUTORS
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_before_poll_terminal_returns_tasks_not_terminal(monkeypatch):
+    """Calling advance while tasks are still running returns tasks_not_terminal."""
+    gate = asyncio.Event()
+
+    async def fake_run_gated(self):
+        import time as _time
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "running"
+            ts.started_at = _time.time()
+        self._persist_callable(self.state)
+        await gate.wait()
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "complete"
+            ts.result = {"ok": True}
+            ts.finished_at = _time.time()
+        self._persist_callable(self.state)
+
+    monkeypatch.setattr(parallel_exec_mod.ParallelExecutor, "run", fake_run_gated)
+
+    flow_id = await _dispatch_to_parallel(_SPEC_DEFER, num_tasks=2)
+    try:
+        await stratum_parallel_start(flow_id=flow_id, step_id="execute", ctx=None)
+        # Wait until tasks are running.
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if any(ts.state == "running" for ts in _flows[flow_id].parallel_tasks.values()):
+                break
+
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="clean", ctx=None,
+        )
+        assert result.get("error") == "tasks_not_terminal"
+
+        gate.set()
+        task = server_mod._RUNNING_EXECUTORS.get((flow_id, "execute"))
+        if task is not None:
+            await task
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_on_non_deferred_step_returns_advance_not_deferred(monkeypatch):
+    """Step without defer_advance → advance_not_deferred."""
+    # Use _SPEC_NONE (no defer_advance) and call advance while tasks haven't run.
+    flow_id = await _dispatch_to_parallel(_SPEC_NONE, num_tasks=2)
+    try:
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="clean", ctx=None,
+        )
+        assert result.get("error") == "advance_not_deferred"
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_invalid_merge_status_returns_error(monkeypatch):
+    """merge_status not in ('clean', 'conflict') → invalid_merge_status."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    try:
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="broken", ctx=None,
+        )
+        assert result.get("error") == "invalid_merge_status"
+        # Registry entry must still be present (early error path doesn't pop).
+        assert (flow_id, "execute") in server_mod._RUNNING_EXECUTORS
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_idempotent_after_first_call(monkeypatch):
+    """Second advance call returns {status: 'already_advanced', step_id}, no aggregate."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    try:
+        r1 = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="clean", ctx=None,
+        )
+        assert "error" not in r1
+        assert r1.get("status") != "awaiting_consumer_advance"
+
+        # Second call with a DIFFERENT merge_status.
+        r2 = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="conflict", ctx=None,
+        )
+        assert r2 == {"status": "already_advanced", "step_id": "execute"}
+        # No aggregate key — proves _evaluate_parallel_results was NOT re-run.
+        assert "aggregate" not in r2
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_on_unknown_flow_returns_flow_not_found():
+    """flow_id not in registry → flow_not_found."""
+    result = await stratum_parallel_advance(
+        flow_id="nonexistent-flow-xyz", step_id="execute", merge_status="clean", ctx=None,
+    )
+    assert result.get("error") == "flow_not_found"
+
+
+async def test_advance_on_unknown_step_returns_unknown_step(monkeypatch):
+    """step_id not in flow → unknown_step."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    try:
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="no-such-step", merge_status="clean", ctx=None,
+        )
+        assert result.get("error") == "unknown_step"
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_fails_on_tampered_spec(monkeypatch):
+    """STRAT-IMMUTABLE: tampered spec → spec_integrity_violation."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    state = _flows[flow_id]
+    try:
+        # Confirm sentinel first.
+        poll_result = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+        assert poll_result["outcome"]["status"] == "awaiting_consumer_advance"
+
+        # Tamper the in-memory IRStepDef to invalidate the integrity check.
+        # Use object.__setattr__ to bypass the frozen dataclass and flip the
+        # intent of the 'analyze' step — this changes the fingerprint.
+        flow_def = state.spec.flows.get(state.flow_name)
+        for step_def in flow_def.steps:
+            if step_def.id == "analyze":
+                object.__setattr__(step_def, "intent", "TAMPERED")
+                break
+
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="clean", ctx=None,
+        )
+        # verify_spec_integrity returns {"status": "spec_modified", "error": ...}
+        assert result.get("status") == "spec_modified"
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
