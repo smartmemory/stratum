@@ -85,6 +85,32 @@ _SPEC_BRANCH = textwrap.dedent("""\
 """)
 
 
+_SPEC_DEFER = textwrap.dedent("""\
+    version: "0.3"
+    contracts:
+      TaskGraph:
+        tasks: {type: array}
+    flows:
+      main:
+        input: {}
+        steps:
+          - id: analyze
+            type: decompose
+            agent: claude
+            intent: "Break down"
+            output_contract: TaskGraph
+          - id: execute
+            type: parallel_dispatch
+            source: "$.steps.analyze.output.tasks"
+            agent: claude
+            isolation: none
+            require: all
+            defer_advance: true
+            intent_template: "Do: {desc}"
+            depends_on: [analyze]
+""")
+
+
 _SPEC_INLINE_ONLY = textwrap.dedent("""\
     version: "0.3"
     contracts:
@@ -377,3 +403,155 @@ async def test_evaluate_parallel_results_shared_across_done_and_poll():
     finally:
         _flows.pop(fid_a, None)
         _flows.pop(fid_b, None)
+
+
+# ---------------------------------------------------------------------------
+# T2-F5-DEFER-ADVANCE: defer_advance sentinel tests
+# ---------------------------------------------------------------------------
+
+
+async def test_poll_with_defer_advance_returns_awaiting_consumer_advance(monkeypatch):
+    """defer_advance:true — poll on terminal emits sentinel, no auto-advance."""
+    async def fake_run(self):
+        import time as _time
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "complete"
+            ts.result = {"ok": True}
+            ts.started_at = _time.time()
+            ts.finished_at = _time.time()
+        self._persist_callable(self.state)
+
+    monkeypatch.setattr(parallel_exec_mod.ParallelExecutor, "run", fake_run)
+
+    flow_id = await _dispatch_to_parallel(_SPEC_DEFER, num_tasks=2)
+    state = _flows[flow_id]
+    try:
+        await stratum_parallel_start(flow_id=flow_id, step_id="execute", ctx=None)
+        task = server_mod._RUNNING_EXECUTORS.get((flow_id, "execute"))
+        if task is not None:
+            await task
+
+        result = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+
+        assert result["outcome"] is not None
+        assert result["outcome"]["status"] == "awaiting_consumer_advance"
+        assert "aggregate" in result["outcome"]
+        # Flow must NOT have advanced.
+        cur_step = state.ordered_steps[state.current_idx]
+        assert cur_step.id == "execute", "flow advanced unexpectedly"
+        # Executor registry entry must still be present.
+        assert (flow_id, "execute") in server_mod._RUNNING_EXECUTORS
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_poll_without_defer_advance_auto_advances_as_before(monkeypatch):
+    """Regression: steps without defer_advance auto-advance as today."""
+    async def fake_run(self):
+        import time as _time
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "complete"
+            ts.result = {"ok": True}
+            ts.started_at = _time.time()
+            ts.finished_at = _time.time()
+        self._persist_callable(self.state)
+
+    monkeypatch.setattr(parallel_exec_mod.ParallelExecutor, "run", fake_run)
+
+    flow_id = await _dispatch_to_parallel(_SPEC_NONE, num_tasks=2)
+    state = _flows[flow_id]
+    step_idx_before = state.current_idx
+    try:
+        await stratum_parallel_start(flow_id=flow_id, step_id="execute", ctx=None)
+        task = server_mod._RUNNING_EXECUTORS.get((flow_id, "execute"))
+        if task is not None:
+            await task
+
+        result = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+
+        assert result["outcome"] is not None
+        assert result["outcome"].get("status") != "awaiting_consumer_advance"
+        # Flow must have advanced past the parallel step.
+        assert state.current_idx > step_idx_before
+        # Executor registry entry must be gone.
+        assert (flow_id, "execute") not in server_mod._RUNNING_EXECUTORS
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_awaiting_consumer_advance_status_unique_to_defer_path(monkeypatch):
+    """The sentinel status must not be emitted by any other poll outcome path."""
+    gate = asyncio.Event()
+
+    async def fake_run_inflight(self):
+        import time as _time
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "running"
+            ts.started_at = _time.time()
+        self._persist_callable(self.state)
+        await gate.wait()
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "complete"
+            ts.result = {"ok": True}
+            ts.finished_at = _time.time()
+        self._persist_callable(self.state)
+
+    monkeypatch.setattr(parallel_exec_mod.ParallelExecutor, "run", fake_run_inflight)
+
+    flow_id_inflight = await _dispatch_to_parallel(_SPEC_NONE, num_tasks=2)
+    try:
+        await stratum_parallel_start(flow_id=flow_id_inflight, step_id="execute", ctx=None)
+        # Wait until at least one task is running.
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if any(ts.state == "running" for ts in _flows[flow_id_inflight].parallel_tasks.values()):
+                break
+
+        mid = await stratum_parallel_poll(flow_id=flow_id_inflight, step_id="execute", ctx=None)
+        assert mid["outcome"] is None  # in-flight: no outcome yet
+        gate.set()
+        task = server_mod._RUNNING_EXECUTORS.get((flow_id_inflight, "execute"))
+        if task is not None:
+            await task
+
+        final = await stratum_parallel_poll(flow_id=flow_id_inflight, step_id="execute", ctx=None)
+        assert final["outcome"] is not None
+        assert final["outcome"].get("status") != "awaiting_consumer_advance"
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id_inflight, "execute"), None)
+        _flows.pop(flow_id_inflight, None)
+
+    # Already-advanced path returns "already_advanced", not the sentinel.
+    async def fake_run_complete(self):
+        import time as _time
+        for t in self.tasks:
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.state = "complete"
+            ts.result = {"ok": True}
+            ts.started_at = _time.time()
+            ts.finished_at = _time.time()
+        self._persist_callable(self.state)
+
+    monkeypatch.setattr(parallel_exec_mod.ParallelExecutor, "run", fake_run_complete)
+
+    flow_id_aa = await _dispatch_to_parallel(_SPEC_NONE, num_tasks=2)
+    try:
+        await stratum_parallel_start(flow_id=flow_id_aa, step_id="execute", ctx=None)
+        task = server_mod._RUNNING_EXECUTORS.get((flow_id_aa, "execute"))
+        if task is not None:
+            await task
+
+        r1 = await stratum_parallel_poll(flow_id=flow_id_aa, step_id="execute", ctx=None)
+        r2 = await stratum_parallel_poll(flow_id=flow_id_aa, step_id="execute", ctx=None)
+
+        assert r1["outcome"].get("status") != "awaiting_consumer_advance"
+        assert r2["outcome"]["status"] == "already_advanced"
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id_aa, "execute"), None)
+        _flows.pop(flow_id_aa, None)

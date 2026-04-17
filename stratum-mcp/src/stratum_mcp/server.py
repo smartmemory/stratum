@@ -1019,13 +1019,22 @@ async def stratum_parallel_poll(
         require_satisfied = evaluation["require_satisfied"]
 
         if step_still_pending:
-            advance_result = await _advance_after_parallel(
-                state, step_id, evaluation["aggregate"],
-            )
-            outcome = advance_result
-            # If the flow advanced, drop the executor handle from the registry
-            # so we don't double-advance on subsequent polls.
-            _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
+            if getattr(step, "defer_advance", False):
+                # T2-F5-DEFER-ADVANCE: hold advance for consumer. Leave
+                # _RUNNING_EXECUTORS in place; stratum_parallel_advance pops
+                # it on successful advance.
+                outcome = {
+                    "status": "awaiting_consumer_advance",
+                    "aggregate": evaluation["aggregate"],
+                }
+            else:
+                advance_result = await _advance_after_parallel(
+                    state, step_id, evaluation["aggregate"],
+                )
+                outcome = advance_result
+                # If the flow advanced, drop the executor handle from the
+                # registry so we don't double-advance on subsequent polls.
+                _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
         else:
             # Already advanced — report the aggregate without re-processing.
             outcome = {
