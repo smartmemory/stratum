@@ -789,6 +789,8 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
             "require": step.require,
             "max_iterations": step.max_iterations,
             "exit_criterion": step.exit_criterion,
+            "capture_diff": getattr(step, "capture_diff", False),
+            "defer_advance": getattr(step, "defer_advance", False),
         }
 
     def _fn_fingerprint(fn_name: str) -> dict | None:

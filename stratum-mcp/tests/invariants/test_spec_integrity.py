@@ -291,3 +291,48 @@ async def test_parallel_done_returns_spec_modified_on_tamper():
 
     # Cleanup
     _flows.pop(state.flow_id, None)
+
+
+# ---------------------------------------------------------------------------
+# _step_fingerprint covers capture_diff and defer_advance (security fix)
+# ---------------------------------------------------------------------------
+
+def _mk_minimal_step(**overrides):
+    """Return an IRStepDef with only required fields set, plus any overrides."""
+    from stratum_mcp.spec import IRStepDef
+    defaults = dict(
+        id="s1",
+        function="execute",
+        inputs={},
+        depends_on=[],
+        capture_diff=False,
+        defer_advance=False,
+    )
+    defaults.update(overrides)
+    return IRStepDef(**defaults)
+
+
+def test_step_fingerprint_includes_capture_diff():
+    """Fingerprint must differ when capture_diff flag differs — closes pre-existing gap."""
+    from stratum_mcp.executor import compute_spec_checksum
+    from stratum_mcp.spec import IRFlowDef
+
+    def _checksum_for(capture_diff: bool) -> str:
+        step = _mk_minimal_step(capture_diff=capture_diff)
+        flow = IRFlowDef(name="f", input_schema={}, output_contract="R", budget=None, steps=[step])
+        return compute_spec_checksum(flow)
+
+    assert _checksum_for(False) != _checksum_for(True)
+
+
+def test_step_fingerprint_includes_defer_advance():
+    """Fingerprint must differ when defer_advance flag differs — security-critical gate."""
+    from stratum_mcp.executor import compute_spec_checksum
+    from stratum_mcp.spec import IRFlowDef
+
+    def _checksum_for(defer_advance: bool) -> str:
+        step = _mk_minimal_step(defer_advance=defer_advance)
+        flow = IRFlowDef(name="f", input_schema={}, output_contract="R", budget=None, steps=[step])
+        return compute_spec_checksum(flow)
+
+    assert _checksum_for(False) != _checksum_for(True)
