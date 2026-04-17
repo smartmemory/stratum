@@ -517,6 +517,271 @@ def test_resume_handles_missing_or_empty_flow_root(tmp_path):
     resume_interrupted_parallel_tasks(empty)
 
 
+# ---------------------------------------------------------------------------
+# T2-F5-DIFF-EXPORT: diff capture in _run_one finally block
+# ---------------------------------------------------------------------------
+
+
+def _make_executor_with_diff(
+    *,
+    tasks,
+    state=None,
+    isolation="worktree",
+    capture_diff=False,
+    monkeypatch,
+    tmp_path,
+    stubs,
+    create_side_effect=None,
+    remove_side_effect=None,
+):
+    """Helper: builds an executor with worktree mocks installed and capture_diff wired."""
+    create_calls: list = []
+    remove_calls: list = []
+
+    def fake_create(flow_id, task_id, base_cwd):
+        target = tmp_path / flow_id / task_id
+        target.mkdir(parents=True, exist_ok=True)
+        create_calls.append((flow_id, task_id, base_cwd))
+        if create_side_effect is not None:
+            create_side_effect(target)
+        return target
+
+    def fake_remove(path, force=True):
+        remove_calls.append(path)
+
+    monkeypatch.setattr(parallel_exec_mod, "create_worktree", fake_create)
+    monkeypatch.setattr(parallel_exec_mod, "remove_worktree", fake_remove)
+
+    _install_stub_factory(monkeypatch, stubs)
+
+    _state = state or FakeFlowState(flow_id="dflow", cwd=str(tmp_path))
+
+    ex = ParallelExecutor(
+        state=_state,
+        step_id="s1",
+        tasks=tasks,
+        max_concurrent=3,
+        isolation=isolation,
+        task_timeout=30,
+        agent="claude",
+        intent_template="run {id}",
+        task_reasoning_template=None,
+        require="all",
+        persist_callable=lambda s: None,
+        capture_diff=capture_diff,
+    )
+    return ex, _state, create_calls, remove_calls
+
+
+async def test_capture_diff_flag_false_leaves_diff_none(monkeypatch, tmp_path):
+    """capture_diff=False → ts.diff and ts.diff_error stay None after task completes."""
+    tasks = [{"id": "t1"}]
+    stubs = [StubConnector(result="ok")]
+
+    captured_diffs: list = []
+
+    def fake_capture(path):
+        captured_diffs.append(path)
+        return "diff --git a/a.txt ..."
+
+    monkeypatch.setattr(parallel_exec_mod, "capture_worktree_diff", fake_capture)
+
+    ex, state, _, _ = _make_executor_with_diff(
+        tasks=tasks,
+        isolation="worktree",
+        capture_diff=False,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        stubs=stubs,
+    )
+    await ex.run()
+
+    ts = state.parallel_tasks["t1"]
+    assert ts.state == "complete"
+    assert ts.diff is None
+    assert ts.diff_error is None
+    # capture_worktree_diff must NOT have been invoked
+    assert captured_diffs == []
+
+
+async def test_capture_diff_flag_true_populates_diff(monkeypatch, tmp_path):
+    """capture_diff=True, task writes a.txt → ts.diff contains 'a.txt' and file content."""
+    tasks = [{"id": "t1"}]
+
+    class WritingConnector:
+        async def run(self, prompt, *, cwd=None, env=None, **kw):
+            # Write a file to the worktree directory
+            if cwd:
+                (Path(cwd) / "a.txt").write_text("hello diff\n")
+            yield {"type": "result", "output": "done"}
+
+        def interrupt(self):
+            pass
+
+    stubs = [WritingConnector()]
+
+    def fake_capture(path):
+        # Return a realistic-looking diff showing a.txt
+        return f"+++ b/a.txt\n+hello diff\n"
+
+    monkeypatch.setattr(parallel_exec_mod, "capture_worktree_diff", fake_capture)
+
+    ex, state, _, _ = _make_executor_with_diff(
+        tasks=tasks,
+        isolation="worktree",
+        capture_diff=True,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        stubs=stubs,
+    )
+    await ex.run()
+
+    ts = state.parallel_tasks["t1"]
+    assert ts.state == "complete"
+    assert ts.diff is not None
+    assert "a.txt" in ts.diff
+    assert ts.diff_error is None
+
+
+async def test_capture_diff_on_failed_task(monkeypatch, tmp_path):
+    """Task writes a file then raises → ts.state=='failed', ts.diff captures partial write."""
+    tasks = [{"id": "t1"}]
+
+    class FailingWritingConnector:
+        async def run(self, prompt, *, cwd=None, env=None, **kw):
+            if cwd:
+                (Path(cwd) / "a.txt").write_text("partial\n")
+            raise RuntimeError("agent crashed")
+            yield  # make it an async generator
+
+        def interrupt(self):
+            pass
+
+    stubs = [FailingWritingConnector()]
+
+    def fake_capture(path):
+        return "+++ b/a.txt\n+partial\n"
+
+    monkeypatch.setattr(parallel_exec_mod, "capture_worktree_diff", fake_capture)
+
+    ex, state, _, _ = _make_executor_with_diff(
+        tasks=tasks,
+        isolation="worktree",
+        capture_diff=True,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        stubs=stubs,
+    )
+    await ex.run()
+
+    ts = state.parallel_tasks["t1"]
+    assert ts.state == "failed"
+    assert ts.diff is not None
+    assert "a.txt" in ts.diff
+
+
+async def test_capture_diff_isolation_none_no_op(monkeypatch, tmp_path):
+    """isolation='none', capture_diff=False in executor → ts.diff stays None."""
+    tasks = [{"id": "t1"}]
+    stubs = [StubConnector(result="ok")]
+
+    captured_diffs: list = []
+
+    def fake_capture(path):
+        captured_diffs.append(path)
+        return "should not be called"
+
+    monkeypatch.setattr(parallel_exec_mod, "capture_worktree_diff", fake_capture)
+
+    # With isolation=none, no worktree is created, so capture never fires
+    state = FakeFlowState(flow_id="noiso", cwd=str(tmp_path))
+    _install_stub_factory(monkeypatch, stubs)
+    ex = ParallelExecutor(
+        state=state,
+        step_id="s1",
+        tasks=tasks,
+        max_concurrent=3,
+        isolation="none",
+        task_timeout=30,
+        agent="claude",
+        intent_template="run {id}",
+        task_reasoning_template=None,
+        require="all",
+        persist_callable=lambda s: None,
+        capture_diff=False,
+    )
+    await ex.run()
+
+    ts = state.parallel_tasks["t1"]
+    assert ts.state == "complete"
+    assert ts.diff is None
+    assert ts.diff_error is None
+    assert captured_diffs == []
+
+
+async def test_capture_diff_connector_setup_failure_is_clean(monkeypatch, tmp_path):
+    """Connector factory raises → task fails pre-execution → ts.diff and ts.diff_error are None.
+
+    The inline remove in the connector-setup-failure path should null worktree_path_obj
+    so the finally block's capture is skipped entirely.
+    """
+    tasks = [{"id": "t1"}]
+
+    captured_diffs: list = []
+
+    def fake_capture(path):
+        captured_diffs.append(path)
+        return "should not be captured"
+
+    monkeypatch.setattr(parallel_exec_mod, "capture_worktree_diff", fake_capture)
+
+    create_calls: list = []
+    remove_calls: list = []
+
+    def fake_create(flow_id, task_id, base_cwd):
+        target = tmp_path / flow_id / task_id
+        target.mkdir(parents=True, exist_ok=True)
+        create_calls.append(target)
+        return target
+
+    def fake_remove(path, force=True):
+        remove_calls.append(path)
+
+    monkeypatch.setattr(parallel_exec_mod, "create_worktree", fake_create)
+    monkeypatch.setattr(parallel_exec_mod, "remove_worktree", fake_remove)
+
+    def failing_factory(agent_type, model_id, cwd):
+        raise RuntimeError("connector setup exploded")
+
+    monkeypatch.setattr(parallel_exec_mod, "make_agent_connector", failing_factory)
+
+    state = FakeFlowState(flow_id="csfail", cwd=str(tmp_path))
+    ex = ParallelExecutor(
+        state=state,
+        step_id="s1",
+        tasks=tasks,
+        max_concurrent=3,
+        isolation="worktree",
+        task_timeout=30,
+        agent="claude",
+        intent_template="run {id}",
+        task_reasoning_template=None,
+        require="all",
+        persist_callable=lambda s: None,
+        capture_diff=True,
+    )
+    await ex.run()
+
+    ts = state.parallel_tasks["t1"]
+    assert ts.state == "failed"
+    assert ts.diff is None
+    assert ts.diff_error is None
+    # Worktree was created and removed inline; capture must not have fired
+    assert len(create_calls) == 1
+    assert len(remove_calls) == 1
+    assert captured_diffs == []
+
+
 def test_resume_skips_files_without_parallel_tasks(tmp_path):
     """Flows without parallel_tasks (e.g., legacy persisted state) are untouched."""
     import json

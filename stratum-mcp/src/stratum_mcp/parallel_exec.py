@@ -36,7 +36,7 @@ from .executor import (
     persist_flow,
     validate_certificate,
 )
-from .worktree import create_worktree, remove_worktree
+from .worktree import capture_worktree_diff, create_worktree, remove_worktree
 
 DEFAULT_TASK_TIMEOUT = 1800  # seconds
 
@@ -306,6 +306,7 @@ class ParallelExecutor:
                             remove_worktree(worktree_path_obj)
                         except Exception:
                             pass
+                        worktree_path_obj = None  # T2-F5-DIFF-EXPORT: prevent finally from touching deleted path
                     await self._persist()
                     return
 
@@ -371,6 +372,15 @@ class ParallelExecutor:
             if ts.finished_at is None:
                 ts.finished_at = time.time()
             if worktree_path_obj is not None:
+                # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in)
+                if self.capture_diff:
+                    try:
+                        ts.diff = await asyncio.to_thread(
+                            capture_worktree_diff, worktree_path_obj,
+                        )
+                    except Exception as exc:
+                        ts.diff = None
+                        ts.diff_error = f"{type(exc).__name__}: {exc}"
                 try:
                     remove_worktree(worktree_path_obj)
                 except Exception:
