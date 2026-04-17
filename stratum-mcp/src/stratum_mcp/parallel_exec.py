@@ -115,6 +115,7 @@ class ParallelExecutor:
         require: Any,                 # "all" | "any" | int
         model_id: Optional[str] = None,
         persist_callable: Optional[Callable[[FlowState], None]] = None,
+        capture_diff: bool = False,
     ) -> None:
         self.state = state
         self.step_id = step_id
@@ -128,6 +129,7 @@ class ParallelExecutor:
         self.require = require
         self.model_id = model_id
         self._persist_callable = persist_callable or persist_flow
+        self.capture_diff = capture_diff
 
         # Handle + connector registries for cascade cancel.
         self._task_handles: dict[str, asyncio.Task] = {}

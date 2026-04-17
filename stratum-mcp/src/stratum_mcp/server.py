@@ -909,6 +909,7 @@ async def stratum_parallel_start(
         intent_template=cur_step.intent_template or "",
         task_reasoning_template=cur_step.task_reasoning_template,
         require=cur_step.require or "all",
+        capture_diff=cur_step.capture_diff and isolation == "worktree",
     )
     handle = _asyncio.create_task(executor.run())
     _RUNNING_EXECUTORS[(flow_id, step_id)] = handle
