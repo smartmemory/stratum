@@ -631,11 +631,31 @@ async def test_advance_with_conflict_blocks_advance(monkeypatch):
 
         # Must NOT be the clean advance outcome.
         assert result.get("status") != "awaiting_consumer_advance"
-        # conflict routes through on_fail / ensure_failed — result has an error or
-        # a non-clean outcome status; it must NOT be an invalid_merge_status error.
+        # Must NOT be an input-validation error — the call itself was valid.
         assert result.get("error") != "invalid_merge_status"
         # Registry must be cleaned (advance ran its full path).
         assert (flow_id, "execute") not in server_mod._RUNNING_EXECUTORS
+        # Pin the contract: the conflict signal must surface in the advance result
+        # (either via a top-level failure-routing status for mid-flow steps, or via
+        # the aggregate's `outcome: "failed"` / `merge_status: "conflict"` when the
+        # step was the final step in the flow).
+        FAILURE_STATUSES = {
+            "ensure_failed", "schema_failed", "guardrail_blocked",
+            "on_fail_routed", "retries_exhausted", "error",
+        }
+        status = result.get("status")
+        output = result.get("output") or {}
+        surfaced_failure = (
+            status in FAILURE_STATUSES
+            or result.get("error")
+            or output.get("outcome") == "failed"
+            or output.get("merge_status") == "conflict"
+        )
+        assert surfaced_failure, (
+            f"conflict merge_status should produce a failure signal "
+            f"(status in {FAILURE_STATUSES}, error set, or output.outcome/merge_status "
+            f"indicating failure); got {result!r}"
+        )
     finally:
         server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
         _flows.pop(flow_id, None)
