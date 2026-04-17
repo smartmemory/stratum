@@ -700,6 +700,13 @@ class ParallelTaskState:
     error: str | None = None
     cert_violations: list | None = None
     worktree_path: str | None = None
+    # T2-F5-DIFF-EXPORT: unified diff of task's worktree vs HEAD at terminal time.
+    # None = capture not requested or worktree was gone when finally ran;
+    # "" = captured, no changes; non-empty = captured with changes.
+    diff: str | None = None
+    # T2-F5-DIFF-EXPORT: error string if diff capture raised (kept separate from
+    # `error` which carries task-execution error semantics).
+    diff_error: str | None = None
 
 
 @dataclass
