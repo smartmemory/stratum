@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### stratum-mcp — T2-F5-DIFF-EXPORT
+
+- **`capture_diff: bool` field on `parallel_dispatch` steps** — opt-in per-task diff capture for server-dispatched parallel steps. Default `false`; silently ignored when `isolation: "none"` (gated in `stratum_parallel_start` with `cur_step.capture_diff and isolation == "worktree"`). Rejected at parse time if non-bool (JSON schema layer fires `IRValidationError` before `_build_step`'s defense-in-depth guard).
+- **`ParallelTaskState.diff` / `.diff_error`** — new fields on the terminal state dataclass. `diff` is `None` when not requested or when the worktree was already gone; `""` when captured with no changes; non-empty unified-diff text otherwise. `diff_error` carries a short `{ExceptionType}: {message}` string when capture raised, kept separate from `error` so a successful task whose diff capture fails doesn't look "failed" to consumers. Both auto-serialize through `dataclasses.asdict()` in `persist_flow`.
+- **`capture_worktree_diff(path)`** in `worktree.py` — runs `git -c core.hooksPath=/dev/null add -A` then `git -c core.hooksPath=/dev/null diff --cached HEAD` in the worktree, 30s timeout each, `errors="replace"` decode for binary-safe output. Hooks-path override prevents parent-repo pre-commit hooks from firing in the ephemeral worktree. `.gitignore` is respected (no `node_modules`, no `.env` leaks into flow state JSON).
+- **Capture site in `_run_one` finally** — `await asyncio.to_thread(capture_worktree_diff, worktree_path_obj)` runs before `remove_worktree` when `self.capture_diff` is truthy. Exceptions are swallowed into `diff_error`. Sibling tasks aren't blocked because the subprocess runs in a thread.
+- **Connector-setup failure path fix** — `worktree_path_obj = None` after the inline `remove_worktree` so the finally block skips its capture attempt on a deleted path (previously would have populated a spurious `diff_error` on every pre-execution failure when `capture_diff=True`).
+- **Unblocks T2-F5-COMPOSE-MIGRATE for `isolation: "worktree"` paths.** Compose will read `tasks[task_id].diff` from the poll response and hand it to its existing topological-merge logic; the Compose consumer extension ships as a separate follow-up feature.
+- 13 new tests (5 `test_worktree.py` unit tests including binary + gitignore behavior, 3 `test_parallel_schema.py` accept/default/reject tests, 5 `test_parallel_exec.py` integration tests including the connector-setup-failure-is-clean case). **825 total passing, 2 skipped.**
+
 ### stratum-mcp — T2-F5-ENFORCE
 
 - **`stratum_parallel_start` / `stratum_parallel_poll` MCP tools** — server-side dispatch for `parallel_dispatch` steps. `_start` schedules a `ParallelExecutor` via `asyncio.create_task`, registers the handle in `_RUNNING_EXECUTORS`, and returns immediately with a task list. `_poll` returns per-task state, summary counts, `require_satisfied`, `can_advance`, and advances the flow idempotently when all tasks are terminal. The legacy `stratum_parallel_done` path is preserved byte-identically via the extracted `_evaluate_parallel_results(state, step, task_results)` helper shared by both paths.
