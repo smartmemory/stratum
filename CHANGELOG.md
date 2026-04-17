@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### stratum-mcp — T2-F5-DEFER-ADVANCE
+
+- **`defer_advance: bool` IR field on `parallel_dispatch` steps** — opt-in, default false. When true, `stratum_parallel_poll` returns a sentinel `{status: "awaiting_consumer_advance", aggregate: {...}}` on terminal instead of auto-advancing. Validator rejects non-bool at parse time via `IRValidationError`.
+- **`stratum_parallel_advance(flow_id, step_id, merge_status)` MCP tool** — consumer-driven advance. Feeds `merge_status` ('clean' | 'conflict') into `_evaluate_parallel_results` before calling `_advance_after_parallel`, then pops `(flow_id, step_id)` from `_RUNNING_EXECUTORS`. STRAT-IMMUTABLE-gated (mirrors `stratum_parallel_done` / `stratum_step_done`). Idempotent — returns minimal `{status: "already_advanced", step_id}` if the flow moved past. Enumerated errors: `flow_not_found`, `unknown_step`, `wrong_step_type`, `advance_not_deferred`, `invalid_merge_status`, `step_not_dispatched`, `tasks_not_terminal`, plus the existing `spec_modified` integrity envelope on tampered specs.
+- **`_step_fingerprint` fixed** — now covers `capture_diff` (pre-existing gap) and `defer_advance`. Both fields gate consumer input into `process_step_result`, so a spec tamper flipping either between plan and advance must invalidate the integrity check. No baseline-hash test updates needed (existing fixtures don't set either flag so their checksums are unchanged via `getattr(..., False)` defaults).
+- **Unblocks T2-F5-CONSUMER-MERGE-STATUS-COMPOSE** — Compose consumer extension that routes `isolation: "worktree"` + `capture_diff: true` through defer-advance, reporting merge_status back properly and fixing the `buildStatus='complete'` regression from T2-F5-COMPOSE-MIGRATE-WORKTREE W1.
+- **14 new tests** (3 schema + 3 poll-sentinel + 2 fingerprint + 9 advance-tool including STRAT-IMMUTABLE tamper detection), **843 total passing**. 2 rounds of design review, 0 blockers at implementation.
+
 ### stratum-mcp — T2-F5-DIFF-EXPORT
 
 - **`capture_diff: bool` field on `parallel_dispatch` steps** — opt-in per-task diff capture for server-dispatched parallel steps. Default `false`; silently ignored when `isolation: "none"` (gated in `stratum_parallel_start` with `cur_step.capture_diff and isolation == "worktree"`). Rejected at parse time if non-bool (JSON schema layer fires `IRValidationError` before `_build_step`'s defense-in-depth guard).
