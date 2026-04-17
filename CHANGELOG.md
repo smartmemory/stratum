@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### stratum-mcp — T2-F5-DEPENDS-ON
+
+- **`ParallelExecutor` now respects `task.depends_on`** at dispatch time. Previously ignored — all tasks fanned out immediately under `asyncio.gather`. Now: dependent tasks wait on per-task `asyncio.Event`s until their upstreams reach a terminal state. Dep-wait happens outside the semaphore (waiting tasks don't consume concurrency slots) but inside the outer `try` (early returns on unknown-dep or upstream-failure unwind through the existing finally, invoking `_require_unsatisfiable` / `_cancel_siblings` correctly).
+- **Upstream failure → dependent cancels** with `state="cancelled"` and an error naming the upstream task and its terminal state. Under `require: "all"`, this cascades via the existing unsatisfiable check.
+- **Cycle detection via DFS** (`_detect_dependency_cycle`, WHITE/GRAY/BLACK) runs before `asyncio.gather`. Direct or transitive cycles fail all tasks with `error="dependency cycle detected: A -> B -> A"`; no task handles are created. Unknown task_id references in `depends_on` (typos, stale decompose output) are NOT flagged as cycles — they're caught at wait-time with a clearer per-task error.
+- **Event-set placement is load-bearing**: `_task_done[tid].set()` fires at the top of the outer `finally`, immediately after state normalization, BEFORE any await that might raise `CancelledError` (diff capture via `asyncio.to_thread`, persist under per-flow lock). Downstream waiters always unblock, even if we're cancelled mid-cleanup.
+- **12 new tests** covering linear chains, diamonds, direct + transitive cycles, unknown-deps-aren't-cycles, cascade-on-dep-failure (require:all), and semaphore-starvation regression (max_concurrent=1 linear chain). **855 total passing.**
+- **Out of scope (by design):** cross-worktree state propagation. A dependent task that needs an upstream's filesystem output still gets a fresh worktree from HEAD; it won't see the upstream's changes without explicit diff application by the consumer (Compose does this via T2-F5-DIFF-EXPORT + client-side topological merge).
+
 ### stratum-mcp — T2-F5-DEFER-ADVANCE
 
 - **`defer_advance: bool` IR field on `parallel_dispatch` steps** — opt-in, default false. When true, `stratum_parallel_poll` returns a sentinel `{status: "awaiting_consumer_advance", aggregate: {...}}` on terminal instead of auto-advancing. Validator rejects non-bool at parse time via `IRValidationError`.
