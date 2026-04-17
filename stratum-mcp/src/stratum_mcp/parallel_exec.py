@@ -97,6 +97,42 @@ def _task_env(flow_id: str, step_id: str, task_id: str) -> dict[str, str]:
     return env
 
 
+def _detect_dependency_cycle(tasks: list[dict[str, Any]]) -> Optional[list[str]]:
+    """Return the first cycle found as an ordered list of task_ids, or None.
+
+    Uses DFS with WHITE/GRAY/BLACK coloring. Unknown dep references (task_ids
+    that don't appear in the task list) are skipped — they're caught at
+    wait-time with a clearer per-task error.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {t["id"]: WHITE for t in tasks}
+    edges: dict[str, list[str]] = {t["id"]: (t.get("depends_on") or []) for t in tasks}
+
+    def dfs(node: str, path: list[str]) -> Optional[list[str]]:
+        color[node] = GRAY
+        path.append(node)
+        for dep in edges.get(node, []):
+            if dep not in color:
+                continue  # unknown dep — skip; not a cycle
+            if color[dep] == GRAY:
+                i = path.index(dep)
+                return path[i:] + [dep]
+            if color[dep] == WHITE:
+                cycle = dfs(dep, path)
+                if cycle:
+                    return cycle
+        path.pop()
+        color[node] = BLACK
+        return None
+
+    for t in tasks:
+        if color[t["id"]] == WHITE:
+            cycle = dfs(t["id"], [])
+            if cycle:
+                return cycle
+    return None
+
+
 class ParallelExecutor:
     """Run a parallel_dispatch step's task list to completion."""
 
@@ -135,6 +171,12 @@ class ParallelExecutor:
         self._task_handles: dict[str, asyncio.Task] = {}
         self._connectors: dict[str, AgentConnector] = {}
 
+        # T2-F5-DEPENDS-ON: per-task done-events + terminal-state record
+        self._task_done: dict[str, asyncio.Event] = {
+            t["id"]: asyncio.Event() for t in self.tasks
+        }
+        self._task_terminal_state: dict[str, str] = {}
+
         # Seed per-task state so pollers see "pending" from the start.
         for t in tasks:
             tid = t["id"]
@@ -153,6 +195,21 @@ class ParallelExecutor:
         ``require`` policy unsatisfiable) calls ``handle.cancel()`` on siblings
         — the cancellation path inside ``_run_one`` handles cleanup.
         """
+        # T2-F5-DEPENDS-ON: cycle check before fan-out
+        cycle = _detect_dependency_cycle(self.tasks)
+        if cycle is not None:
+            msg = f"dependency cycle detected: {' -> '.join(cycle)}"
+            for t in self.tasks:
+                tid = t["id"]
+                ts = self.state.parallel_tasks[tid]
+                ts.state = "failed"
+                ts.error = msg
+                ts.finished_at = time.time()
+                self._task_terminal_state[tid] = "failed"
+                self._task_done[tid].set()
+            await self._persist()
+            return
+
         sem = asyncio.Semaphore(self.max_concurrent)
         tasks = [asyncio.create_task(self._run_one(sem, t)) for t in self.tasks]
         for t, handle in zip(self.tasks, tasks):
@@ -270,6 +327,28 @@ class ParallelExecutor:
         connector: Optional[AgentConnector] = None
 
         try:
+            # T2-F5-DEPENDS-ON: wait for upstream dependencies before acquiring
+            # semaphore. Waiters don't hold concurrency slots. Early-returns here
+            # unwind through the existing finally, which runs cascade-cancel via
+            # _require_unsatisfiable.
+            deps = task.get("depends_on") or []
+            for dep_id in deps:
+                done_evt = self._task_done.get(dep_id)
+                if done_evt is None:
+                    ts.state = "failed"
+                    ts.error = f"depends_on references unknown task_id '{dep_id}'"
+                    ts.finished_at = time.time()
+                    return
+                await done_evt.wait()
+                if self._task_terminal_state.get(dep_id) != "complete":
+                    ts.state = "cancelled"
+                    ts.error = (
+                        f"upstream task '{dep_id}' did not complete "
+                        f"(state={self._task_terminal_state.get(dep_id)!r})"
+                    )
+                    ts.finished_at = time.time()
+                    return
+
             async with sem:
                 # ---------- worktree setup (isolation="worktree" only) -----
                 try:
@@ -371,6 +450,11 @@ class ParallelExecutor:
                 ts.error = ts.error or "unexpected exit without terminal state"
             if ts.finished_at is None:
                 ts.finished_at = time.time()
+            # T2-F5-DEPENDS-ON: commit terminal state + unblock waiters BEFORE
+            # any await that could raise CancelledError. Downstream tasks must
+            # always unblock, even if we're cancelled mid-cleanup.
+            self._task_terminal_state[tid] = ts.state
+            self._task_done[tid].set()
             if worktree_path_obj is not None:
                 # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in).
                 # CancelledError is caught here so cascade-cancel / shutdown

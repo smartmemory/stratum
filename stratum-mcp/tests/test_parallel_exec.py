@@ -928,3 +928,260 @@ async def test_shutdown_all_skips_already_done_tasks():
     # Done task is still not cancelled after shutdown_all.
     assert not t.cancelled()
     assert t.result() == 42
+
+
+# ---------------------------------------------------------------------------
+# T2-F5-DEPENDS-ON tests
+# ---------------------------------------------------------------------------
+
+async def test_depends_on_dependent_waits_for_upstream_complete(monkeypatch):
+    """B depends on A; B's started_at must be >= A's finished_at."""
+    tasks = [
+        {"id": "a"},
+        {"id": "b", "depends_on": ["a"]},
+    ]
+    stubs = [
+        StubConnector(result={"v": 1}, delay=0.05),
+        StubConnector(result={"v": 2}),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=2)
+    await ex.run()
+
+    ts_a = state.parallel_tasks["a"]
+    ts_b = state.parallel_tasks["b"]
+    assert ts_a.state == "complete"
+    assert ts_b.state == "complete"
+    assert ts_b.started_at >= ts_a.finished_at
+
+
+async def test_depends_on_dependent_cancels_on_upstream_failure(monkeypatch):
+    """A fails; B depends on A → B should be cancelled with descriptive error."""
+    tasks = [
+        {"id": "a"},
+        {"id": "b", "depends_on": ["a"]},
+    ]
+    stubs = [
+        StubConnector(raise_exc=RuntimeError("boom")),
+        StubConnector(result={"v": 2}),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=2, require="any")
+    await ex.run()
+
+    ts_b = state.parallel_tasks["b"]
+    assert ts_b.state == "cancelled"
+    assert "upstream task 'a' did not complete" in (ts_b.error or "")
+    assert ts_b.worktree_path is None
+    assert ts_b.started_at is None
+
+
+async def test_depends_on_dependent_cancels_on_upstream_cancellation(monkeypatch):
+    """A gets cascade-cancelled; B depends on A → B should also be cancelled."""
+    tasks = [
+        {"id": "x"},
+        {"id": "a", "depends_on": []},
+        {"id": "b", "depends_on": ["a"]},
+    ]
+    # x fails immediately, triggering cascade-cancel of "a" under require=all
+    stubs = [
+        StubConnector(raise_exc=RuntimeError("x fails")),
+        StubConnector(result={"v": 1}, hang=True),
+        StubConnector(result={"v": 2}),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=3, require="all")
+    await ex.run()
+
+    ts_b = state.parallel_tasks["b"]
+    assert ts_b.state == "cancelled"
+    # B was cancelled — either by cascade-cancel arriving while awaiting A's
+    # done-event, or by the dep-check seeing A's terminal state. Either way B
+    # must never have started running.
+    assert ts_b.started_at is None
+
+
+async def test_depends_on_unknown_task_id_fails_task(monkeypatch):
+    """B declares depends_on a task id not in the task list → B fails with unknown-dep error."""
+    tasks = [
+        {"id": "b", "depends_on": ["does-not-exist"]},
+    ]
+    stubs = [StubConnector(result={"v": 2})]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state)
+    await ex.run()
+
+    ts_b = state.parallel_tasks["b"]
+    assert ts_b.state == "failed"
+    assert "does-not-exist" in (ts_b.error or "")
+
+
+async def test_depends_on_chain(monkeypatch):
+    """A → B → C linear chain: all complete in timestamp order."""
+    tasks = [
+        {"id": "a"},
+        {"id": "b", "depends_on": ["a"]},
+        {"id": "c", "depends_on": ["b"]},
+    ]
+    stubs = [
+        StubConnector(result={"v": 1}, delay=0.03),
+        StubConnector(result={"v": 2}, delay=0.03),
+        StubConnector(result={"v": 3}),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=3)
+    await ex.run()
+
+    ts_a = state.parallel_tasks["a"]
+    ts_b = state.parallel_tasks["b"]
+    ts_c = state.parallel_tasks["c"]
+    for ts in (ts_a, ts_b, ts_c):
+        assert ts.state == "complete"
+    assert ts_b.started_at >= ts_a.finished_at
+    assert ts_c.started_at >= ts_b.finished_at
+
+
+async def test_depends_on_diamond(monkeypatch):
+    """A → {B, C} → D diamond: all complete."""
+    tasks = [
+        {"id": "a"},
+        {"id": "b", "depends_on": ["a"]},
+        {"id": "c", "depends_on": ["a"]},
+        {"id": "d", "depends_on": ["b", "c"]},
+    ]
+    stubs = [
+        StubConnector(result={"v": 1}, delay=0.02),
+        StubConnector(result={"v": 2}),
+        StubConnector(result={"v": 3}),
+        StubConnector(result={"v": 4}),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=4)
+    await ex.run()
+
+    for tid in ("a", "b", "c", "d"):
+        assert state.parallel_tasks[tid].state == "complete"
+    ts_a = state.parallel_tasks["a"]
+    ts_d = state.parallel_tasks["d"]
+    assert ts_d.started_at >= ts_a.finished_at
+
+
+async def test_depends_on_independent_tasks_run_concurrently(monkeypatch):
+    """Regression: no depends_on, max_concurrent=2 — 2 tasks start nearly simultaneously."""
+    tasks = [{"id": "t1"}, {"id": "t2"}]
+    stubs = [
+        StubConnector(result={"v": 1}, delay=0.05),
+        StubConnector(result={"v": 2}, delay=0.05),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=2)
+    await ex.run()
+
+    ts1 = state.parallel_tasks["t1"]
+    ts2 = state.parallel_tasks["t2"]
+    assert ts1.state == "complete"
+    assert ts2.state == "complete"
+    # Both started within 20ms of each other (concurrent, not sequential)
+    assert abs(ts1.started_at - ts2.started_at) < 0.02
+
+
+async def test_depends_on_direct_cycle_fails_all_tasks(monkeypatch):
+    """A depends on B, B depends on A → cycle detected → all tasks fail."""
+    tasks = [
+        {"id": "a", "depends_on": ["b"]},
+        {"id": "b", "depends_on": ["a"]},
+    ]
+    stubs = [StubConnector(result={}), StubConnector(result={})]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state)
+    await ex.run()
+
+    for tid in ("a", "b"):
+        ts = state.parallel_tasks[tid]
+        assert ts.state == "failed"
+        assert "cycle" in (ts.error or "").lower()
+
+
+async def test_depends_on_transitive_cycle_fails_all_tasks(monkeypatch):
+    """A→B→C→A transitive cycle → all tasks fail."""
+    tasks = [
+        {"id": "a", "depends_on": ["c"]},
+        {"id": "b", "depends_on": ["a"]},
+        {"id": "c", "depends_on": ["b"]},
+    ]
+    stubs = [StubConnector(result={}), StubConnector(result={}), StubConnector(result={})]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state)
+    await ex.run()
+
+    for tid in ("a", "b", "c"):
+        ts = state.parallel_tasks[tid]
+        assert ts.state == "failed"
+        assert "cycle" in (ts.error or "").lower()
+
+
+async def test_depends_on_dependent_cancel_triggers_sibling_cascade_when_require_all(monkeypatch):
+    """A fails → B (depends on A) cancels → C (independent) should also cancel under require=all."""
+    tasks = [
+        {"id": "a"},
+        {"id": "b", "depends_on": ["a"]},
+        {"id": "c"},
+    ]
+    stubs = [
+        StubConnector(raise_exc=RuntimeError("a fails")),
+        StubConnector(result={"v": 2}),
+        StubConnector(result={"v": 3}, hang=True),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=3, require="all")
+    await ex.run()
+
+    assert state.parallel_tasks["a"].state == "failed"
+    assert state.parallel_tasks["b"].state == "cancelled"
+    assert state.parallel_tasks["c"].state == "cancelled"
+
+
+async def test_depends_on_unknown_id_not_flagged_as_cycle(monkeypatch):
+    """B depends on 'ghost' (not in task list) → fails with unknown-dep, not cycle error."""
+    tasks = [{"id": "b", "depends_on": ["ghost"]}]
+    stubs = [StubConnector(result={})]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state)
+    await ex.run()
+
+    ts_b = state.parallel_tasks["b"]
+    assert ts_b.state == "failed"
+    assert "cycle" not in (ts_b.error or "").lower()
+    assert "ghost" in (ts_b.error or "")
+
+
+async def test_waiting_tasks_do_not_consume_semaphore_slots(monkeypatch):
+    """max_concurrent=1, A→B→C chain. All complete; waits must not consume the slot."""
+    tasks = [
+        {"id": "a"},
+        {"id": "b", "depends_on": ["a"]},
+        {"id": "c", "depends_on": ["b"]},
+    ]
+    stubs = [
+        StubConnector(result={"v": 1}),
+        StubConnector(result={"v": 2}),
+        StubConnector(result={"v": 3}),
+    ]
+    _install_stub_factory(monkeypatch, stubs)
+    state = FakeFlowState()
+    ex = _make_executor(tasks=tasks, state=state, max_concurrent=1)
+    await asyncio.wait_for(ex.run(), timeout=5.0)
+
+    for tid in ("a", "b", "c"):
+        assert state.parallel_tasks[tid].state == "complete", f"{tid} not complete"
