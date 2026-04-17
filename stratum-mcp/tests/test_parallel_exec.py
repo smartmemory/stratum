@@ -782,6 +782,74 @@ async def test_capture_diff_connector_setup_failure_is_clean(monkeypatch, tmp_pa
     assert captured_diffs == []
 
 
+async def test_capture_diff_cancellation_still_cleans_worktree(monkeypatch, tmp_path):
+    """CancelledError during asyncio.to_thread must not leak the worktree.
+
+    If a sibling task's failure triggers cascade-cancel while this task is in
+    the middle of diff capture, CancelledError propagates into the finally
+    block's await. Cleanup must still run, and cancellation must still propagate.
+    """
+    tasks = [{"id": "t1"}]
+
+    create_calls: list = []
+    remove_calls: list = []
+
+    def fake_create(flow_id, task_id, base_cwd):
+        target = tmp_path / flow_id / task_id
+        target.mkdir(parents=True, exist_ok=True)
+        create_calls.append(target)
+        return target
+
+    def fake_remove(path, force=True):
+        remove_calls.append(path)
+
+    def fake_capture(path):
+        # Simulate a slow subprocess that gets interrupted before completion.
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(parallel_exec_mod, "create_worktree", fake_create)
+    monkeypatch.setattr(parallel_exec_mod, "remove_worktree", fake_remove)
+    monkeypatch.setattr(parallel_exec_mod, "capture_worktree_diff", fake_capture)
+
+    class CompletingConnector:
+        def __init__(self, *args, **kwargs): pass
+        async def run(self, prompt, cwd=None, env=None, **_):
+            yield {"type": "result", "content": "ok"}
+        def interrupt(self): pass
+
+    monkeypatch.setattr(
+        parallel_exec_mod, "make_agent_connector",
+        lambda agent_type, model_id, cwd: CompletingConnector(),
+    )
+
+    state = FakeFlowState(flow_id="fcanc", cwd=str(tmp_path))
+    ex = ParallelExecutor(
+        state=state,
+        step_id="s1",
+        tasks=tasks,
+        max_concurrent=3,
+        isolation="worktree",
+        task_timeout=30,
+        agent="claude",
+        intent_template="run {id}",
+        task_reasoning_template=None,
+        require="all",
+        persist_callable=lambda s: None,
+        capture_diff=True,
+    )
+    # Drive one task to completion; the fake_capture will raise CancelledError
+    # inside the diff step. We run via .run() which wraps in gather(return_exceptions=True),
+    # so the CancelledError is absorbed and we just assert on the end state.
+    await ex.run()
+
+    ts = state.parallel_tasks["t1"]
+    # Cleanup must have run despite the cancellation during capture.
+    assert len(remove_calls) == 1, f"worktree leaked: {remove_calls}"
+    # Error signal is surfaced.
+    assert ts.diff is None
+    assert ts.diff_error == "cancelled during diff capture"
+
+
 def test_resume_skips_files_without_parallel_tasks(tmp_path):
     """Flows without parallel_tasks (e.g., legacy persisted state) are untouched."""
     import json

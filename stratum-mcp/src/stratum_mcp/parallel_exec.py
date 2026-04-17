@@ -372,19 +372,39 @@ class ParallelExecutor:
             if ts.finished_at is None:
                 ts.finished_at = time.time()
             if worktree_path_obj is not None:
-                # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in)
+                # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in).
+                # CancelledError is caught here so cascade-cancel / shutdown
+                # cannot leak the worktree — cleanup must always run.
+                cancelled_during_capture = False
                 if self.capture_diff:
                     try:
                         ts.diff = await asyncio.to_thread(
                             capture_worktree_diff, worktree_path_obj,
                         )
+                    except asyncio.CancelledError:
+                        ts.diff = None
+                        ts.diff_error = "cancelled during diff capture"
+                        cancelled_during_capture = True
                     except Exception as exc:
                         ts.diff = None
-                        ts.diff_error = f"{type(exc).__name__}: {exc}"
+                        stderr = getattr(exc, "stderr", None)
+                        if isinstance(stderr, (bytes, bytearray)):
+                            detail = stderr.decode("utf-8", errors="replace").strip()
+                        elif isinstance(stderr, str):
+                            detail = stderr.strip()
+                        else:
+                            detail = ""
+                        ts.diff_error = (
+                            f"{type(exc).__name__}: {exc}"
+                            + (f" | stderr: {detail}" if detail else "")
+                        )
                 try:
                     remove_worktree(worktree_path_obj)
                 except Exception:
                     pass
+                if cancelled_during_capture:
+                    # Re-raise so cancellation still propagates after cleanup ran.
+                    raise asyncio.CancelledError()
             try:
                 await self._persist()
             except asyncio.CancelledError:
