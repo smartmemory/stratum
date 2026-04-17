@@ -113,6 +113,9 @@ class IRStepDef:
     task_reasoning_template: dict | None = None
     # T2-F5-ENFORCE: per-task timeout (seconds) for parallel_dispatch steps
     task_timeout: int | None = None
+    # T2-F5-DIFF-EXPORT: opt-in per-task diff capture for parallel_dispatch steps
+    # with isolation=worktree. Silently ignored for isolation=none.
+    capture_diff: bool = False
 
 
 @dataclass(frozen=True)
@@ -510,6 +513,8 @@ _IR_SCHEMA_V03: dict = {
                 "reasoning_template": {"type": "object"},
                 "task_reasoning_template": {"type": "object"},
                 "task_timeout": {"type": ["integer", "null"], "minimum": 1},
+                # T2-F5-DIFF-EXPORT: opt-in diff capture for worktree isolation
+                "capture_diff": {"type": "boolean"},
             }
         },
         "TaskGraph": {
@@ -1058,6 +1063,12 @@ def _build_step(s: dict) -> IRStepDef:
     max_concurrent = s.get("max_concurrent")
     if step_type == "parallel_dispatch" and max_concurrent is None:
         max_concurrent = 3
+    # T2-F5-DIFF-EXPORT: validate capture_diff is a bool if present
+    if "capture_diff" in s and not isinstance(s["capture_diff"], bool):
+        raise IRSemanticError(
+            f"step '{s['id']}': capture_diff must be a boolean, got "
+            f"{type(s['capture_diff']).__name__} ({s['capture_diff']!r})"
+        )
     # STRAT-CERT: apply default sections before constructing frozen dataclass
     _apply_cert_defaults(s)
     # STRAT-CERT-PAR: apply defaults to per-task template as well (no-op when absent)
@@ -1103,6 +1114,7 @@ def _build_step(s: dict) -> IRStepDef:
         reasoning_template=s.get("reasoning_template"),
         task_reasoning_template=s.get("task_reasoning_template"),
         task_timeout=s.get("task_timeout"),
+        capture_diff=s.get("capture_diff", False),
     )
 
 

@@ -342,3 +342,48 @@ def test_step_mode_decompose():
     assert _step_mode(steps["analyze"]) == "decompose"
     assert _step_mode(steps["execute"]) == "parallel_dispatch"
     assert _step_mode(steps["do_work"]) == "function"
+
+
+# ---------------------------------------------------------------------------
+# T2-F5-DIFF-EXPORT: capture_diff field on parallel_dispatch steps
+# ---------------------------------------------------------------------------
+
+def test_parallel_dispatch_capture_diff_accepts_bool():
+    """capture_diff: true and capture_diff: false both parse."""
+    spec_true = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        capture_diff: true\n",
+    )
+    ir = parse_and_validate(spec_true)
+    steps = {s.id: s for s in ir.flows["build"].steps}
+    assert steps["execute"].capture_diff is True
+
+    spec_false = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        capture_diff: false\n",
+    )
+    ir2 = parse_and_validate(spec_false)
+    steps2 = {s.id: s for s in ir2.flows["build"].steps}
+    assert steps2["execute"].capture_diff is False
+
+
+def test_parallel_dispatch_capture_diff_omitted_defaults_to_false():
+    """Specs without capture_diff parse and the step has capture_diff=False."""
+    spec = parse_and_validate(_VALID_V03_SPEC)
+    steps = {s.id: s for s in spec.flows["build"].steps}
+    assert steps["execute"].capture_diff is False
+
+
+def test_parallel_dispatch_capture_diff_rejects_non_bool():
+    """capture_diff must be a bool — the string 'true' is rejected at parse time.
+
+    The JSON schema layer raises IRValidationError before _build_step runs;
+    the error message includes 'boolean' to describe the expected type.
+    """
+    from stratum_mcp.errors import IRValidationError as _IRValidationError
+    spec_bad = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        capture_diff: \"true\"\n",
+    )
+    with pytest.raises(_IRValidationError, match="boolean"):
+        parse_and_validate(spec_bad)
