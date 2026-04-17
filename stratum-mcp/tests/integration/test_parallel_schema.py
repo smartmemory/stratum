@@ -387,3 +387,48 @@ def test_parallel_dispatch_capture_diff_rejects_non_bool():
     )
     with pytest.raises(_IRValidationError, match="boolean"):
         parse_and_validate(spec_bad)
+
+
+# ---------------------------------------------------------------------------
+# T2-F5-DEFER-ADVANCE: defer_advance field on parallel_dispatch steps
+# ---------------------------------------------------------------------------
+
+def test_parallel_dispatch_defer_advance_accepts_bool():
+    """defer_advance: true and defer_advance: false both parse."""
+    spec_true = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        defer_advance: true\n",
+    )
+    ir = parse_and_validate(spec_true)
+    steps = {s.id: s for s in ir.flows["build"].steps}
+    assert steps["execute"].defer_advance is True
+
+    spec_false = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        defer_advance: false\n",
+    )
+    ir2 = parse_and_validate(spec_false)
+    steps2 = {s.id: s for s in ir2.flows["build"].steps}
+    assert steps2["execute"].defer_advance is False
+
+
+def test_parallel_dispatch_defer_advance_omitted_defaults_to_false():
+    """Specs without defer_advance parse and the step has defer_advance=False."""
+    spec = parse_and_validate(_VALID_V03_SPEC)
+    steps = {s.id: s for s in spec.flows["build"].steps}
+    assert steps["execute"].defer_advance is False
+
+
+def test_parallel_dispatch_defer_advance_rejects_non_bool():
+    """defer_advance must be a bool — the string 'true' is rejected at parse time.
+
+    The JSON schema layer raises IRValidationError before _build_step runs;
+    the error message includes 'boolean' to describe the expected type.
+    """
+    from stratum_mcp.errors import IRValidationError as _IRValidationError
+    spec_bad = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        defer_advance: \"true\"\n",
+    )
+    with pytest.raises(_IRValidationError, match="boolean"):
+        parse_and_validate(spec_bad)

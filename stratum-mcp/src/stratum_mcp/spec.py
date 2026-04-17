@@ -116,6 +116,11 @@ class IRStepDef:
     # T2-F5-DIFF-EXPORT: opt-in per-task diff capture for parallel_dispatch steps
     # with isolation=worktree. Silently ignored for isolation=none.
     capture_diff: bool = False
+    # T2-F5-DEFER-ADVANCE: opt-in deferred flow advance for parallel_dispatch.
+    # When true, stratum_parallel_poll returns a sentinel outcome on terminal
+    # ({status: "awaiting_consumer_advance"}) instead of auto-advancing;
+    # consumer must call stratum_parallel_advance(flow_id, step_id, merge_status).
+    defer_advance: bool = False
 
 
 @dataclass(frozen=True)
@@ -515,6 +520,8 @@ _IR_SCHEMA_V03: dict = {
                 "task_timeout": {"type": ["integer", "null"], "minimum": 1},
                 # T2-F5-DIFF-EXPORT: opt-in diff capture for worktree isolation
                 "capture_diff": {"type": "boolean"},
+                # T2-F5-DEFER-ADVANCE: opt-in deferred flow advance
+                "defer_advance": {"type": "boolean"},
             }
         },
         "TaskGraph": {
@@ -1069,6 +1076,12 @@ def _build_step(s: dict) -> IRStepDef:
             f"step '{s['id']}': capture_diff must be a boolean, got "
             f"{type(s['capture_diff']).__name__} ({s['capture_diff']!r})"
         )
+    # T2-F5-DEFER-ADVANCE: validate defer_advance is a bool if present
+    if "defer_advance" in s and not isinstance(s["defer_advance"], bool):
+        raise IRSemanticError(
+            f"step '{s['id']}': defer_advance must be a boolean, got "
+            f"{type(s['defer_advance']).__name__} ({s['defer_advance']!r})"
+        )
     # STRAT-CERT: apply default sections before constructing frozen dataclass
     _apply_cert_defaults(s)
     # STRAT-CERT-PAR: apply defaults to per-task template as well (no-op when absent)
@@ -1115,6 +1128,7 @@ def _build_step(s: dict) -> IRStepDef:
         task_reasoning_template=s.get("task_reasoning_template"),
         task_timeout=s.get("task_timeout"),
         capture_diff=s.get("capture_diff", False),
+        defer_advance=s.get("defer_advance", False),
     )
 
 
