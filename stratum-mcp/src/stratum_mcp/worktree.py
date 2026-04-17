@@ -75,3 +75,35 @@ def remove_worktree(path: Path, force: bool = True) -> None:
             shutil.rmtree(path, ignore_errors=True)
     except Exception:
         shutil.rmtree(path, ignore_errors=True)
+
+
+def capture_worktree_diff(path: Path) -> str:
+    """Return a unified diff of a worktree vs HEAD, including untracked files.
+
+    Runs ``git add -A`` (to stage all working-tree changes) then
+    ``git diff --cached HEAD``. Both calls use ``-c core.hooksPath=/dev/null``
+    to prevent parent-repo pre-commit hooks from firing in the ephemeral worktree.
+
+    ``git add -A`` respects ``.gitignore`` — files matching parent-repo ignore
+    rules are excluded.
+
+    Returns empty string if there are no changes. Raises CalledProcessError
+    or TimeoutExpired on subprocess failure; caller is responsible for
+    swallowing exceptions if needed.
+    """
+    common = ["-c", "core.hooksPath=/dev/null"]
+    subprocess.run(
+        ["git", *common, "add", "-A"],
+        cwd=path,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    result = subprocess.run(
+        ["git", *common, "diff", "--cached", "HEAD"],
+        cwd=path,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    return result.stdout.decode("utf-8", errors="replace")
