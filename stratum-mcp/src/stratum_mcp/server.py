@@ -114,6 +114,8 @@ def _extract_json_result(text: str) -> tuple[Optional[dict], Optional[str]]:
     "Returns the full response text. If schema is provided, the agent is instructed "
     "to return JSON matching the schema and the parsed result is included in the response. "
     "Inputs: prompt (str, required); type ('claude'|'codex', default 'claude'); "
+    "context (str, optional — prepended verbatim to prompt; callers build their own "
+    "context strings, Stratum does no file reading or feature-code detection); "
     "schema (dict, optional JSON Schema for structured output); modelID (str, optional); "
     "cwd (str, optional working directory). "
     "Returns {text: str, result?: dict, parseError?: str}."
@@ -122,6 +124,7 @@ async def stratum_agent_run(
     prompt: str,
     ctx: Context,
     type: str = "claude",  # noqa: A002 — shadows builtin; matches Node contract
+    context: Optional[str] = None,
     schema: Optional[dict] = None,
     modelID: Optional[str] = None,  # noqa: N803 — contract parity with Node
     cwd: Optional[str] = None,
@@ -129,11 +132,13 @@ async def stratum_agent_run(
     if not prompt or not prompt.strip():
         raise ValueError("stratum_agent_run: prompt is required")
 
+    full_prompt = f"{context}\n\n{prompt}" if context and context.strip() else prompt
+
     connector = _make_agent_connector(type, modelID, cwd)
 
     parts: list[str] = []
     final_result: Optional[str] = None
-    async for event in connector.run(prompt, schema=schema, model_id=modelID, cwd=cwd):
+    async for event in connector.run(full_prompt, schema=schema, model_id=modelID, cwd=cwd):
         etype = event.get("type")
         if etype == "assistant" and event.get("content"):
             parts.append(event["content"])

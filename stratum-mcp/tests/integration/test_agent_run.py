@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import pytest
 
@@ -170,3 +170,47 @@ async def test_agent_run_codex_validates_model():
     """Unknown codex model surfaces as ValueError (matches Node behavior)."""
     with pytest.raises(ValueError, match="not a supported Codex model"):
         await _run(prompt="hi", type="codex", modelID="gpt-fake-9000")
+
+
+class _PromptCapturingConnector(AgentConnector):
+    """Captures the prompt it receives so tests can assert on concatenation."""
+
+    def __init__(self):
+        self.received_prompt: Optional[str] = None
+
+    async def run(self, prompt, **_ignored) -> AsyncIterator[dict]:
+        self.received_prompt = prompt
+        yield {"type": "assistant", "content": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_agent_run_prepends_context_when_provided(monkeypatch):
+    captured = _PromptCapturingConnector()
+    monkeypatch.setattr(
+        "stratum_mcp.server._make_agent_connector",
+        lambda *_a, **_k: captured,
+    )
+    await _run(prompt="do the thing", context="you are reviewing FEAT-1")
+    assert captured.received_prompt == "you are reviewing FEAT-1\n\ndo the thing"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_omits_context_when_blank(monkeypatch):
+    captured = _PromptCapturingConnector()
+    monkeypatch.setattr(
+        "stratum_mcp.server._make_agent_connector",
+        lambda *_a, **_k: captured,
+    )
+    await _run(prompt="do the thing", context="   \n  ")
+    assert captured.received_prompt == "do the thing"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_no_context_passes_prompt_through(monkeypatch):
+    captured = _PromptCapturingConnector()
+    monkeypatch.setattr(
+        "stratum_mcp.server._make_agent_connector",
+        lambda *_a, **_k: captured,
+    )
+    await _run(prompt="do the thing")
+    assert captured.received_prompt == "do the thing"
