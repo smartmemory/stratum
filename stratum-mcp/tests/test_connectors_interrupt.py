@@ -1,7 +1,9 @@
 """Tests for connector interrupt() semantics (T2-F5 T6).
 
 OpencodeConnector.interrupt() sends SIGTERM, then schedules SIGKILL after a
-5-second grace period. CodexConnector inherits this behavior unchanged.
+5-second grace period. CodexConnector (direct `codex exec` CLI) sends SIGTERM
+only — it does not inherit the grace-and-SIGKILL dance, matching the JS
+reference at compose/server/connectors/codex-connector.js:217-222.
 ClaudeConnector.interrupt() is a documented no-op (SDK lacks a cancel API).
 """
 from __future__ import annotations
@@ -155,11 +157,8 @@ def test_claude_interrupt_is_noop():
 # ---------------------------------------------------------------------------
 
 
-def test_codex_inherits_opencode_interrupt():
-    """CodexConnector must expose the same SIGTERM behavior via inheritance."""
-    # Sanity: no override of interrupt() on the subclass.
-    assert CodexConnector.interrupt is OpencodeConnector.interrupt
-
+def test_codex_interrupt_sigterm_on_running_proc():
+    """CodexConnector sends SIGTERM to its own subprocess (no opencode inheritance)."""
     conn = CodexConnector(model_id="gpt-5.4")
     fake = _FakeProc(returncode=None)
     conn._proc = fake
@@ -167,3 +166,29 @@ def test_codex_inherits_opencode_interrupt():
     conn.interrupt()
 
     fake.send_signal.assert_called_once_with(signal.SIGTERM)
+    assert conn.is_running is False or conn._proc is fake
+
+
+def test_codex_interrupt_idempotent_not_running():
+    """No subprocess → interrupt is a no-op."""
+    conn = CodexConnector(model_id="gpt-5.4")
+    conn._proc = None
+    conn.interrupt()  # must not raise
+
+
+def test_codex_interrupt_skips_exited_proc():
+    """Already-exited process → interrupt must not send_signal."""
+    conn = CodexConnector(model_id="gpt-5.4")
+    fake = _FakeProc(returncode=0)
+    conn._proc = fake
+    conn.interrupt()
+    fake.send_signal.assert_not_called()
+
+
+def test_codex_interrupt_swallows_process_lookup_error():
+    """PID already reaped → ProcessLookupError is swallowed."""
+    conn = CodexConnector(model_id="gpt-5.4")
+    fake = _FakeProc(returncode=None)
+    fake.send_signal.side_effect = ProcessLookupError
+    conn._proc = fake
+    conn.interrupt()  # must not raise

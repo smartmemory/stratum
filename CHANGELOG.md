@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### stratum-mcp — fix(codex): port JS codex-connector rewrite to Python (removes opencode dep)
+
+- **`CodexConnector` no longer inherits from `OpencodeConnector`.** Spawns `codex exec --json` directly, parses the CLI's own JSONL event stream (`item.completed` → `agent_message` / `command_execution` / `file_change` / `reasoning`; `turn.completed` → usage). Ports `compose/server/connectors/codex-connector.js` (commit `f552c7f`, 2026-04-18) to Python — that rewrite was applied to the JS side only, leaving `stratum_agent_run type="codex"` shelling out to `opencode run` indefinitely since we stopped using opencode for codex. Every codex review through the MCP tool hung waiting for events that couldn't arrive.
+- **Model-ID effort suffix** — `<model>/<effort>` (e.g. `gpt-5.4/high`) is split: base model goes to `-m`, effort becomes `-c model_reasoning_effort="<effort>"`. Matches JS.
+- **Env scrubbing deviates from opencode** — `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, `CLAUDECODE` are scrubbed; `OPENAI_API_KEY` is **kept** because codex uses it as fallback auth when OAuth credentials are absent. Opencode's connector still scrubs all four because opencode's OAuth path doesn't want the raw key.
+- **Interrupt is SIGTERM-only** (no grace+SIGKILL dance) — matches JS `codex-connector.js:217-222`. Simpler process model; the CLI terminates cleanly.
+- **Stall detection preserved** — warns via stderr every 30s after 120s silence. Does not kill; caller can `interrupt()` if needed.
+- **Tests refactored** — dropped `test_codex_inherits_opencode_interrupt` and `test_codex_override_forwards_env_to_super` (both asserted the now-gone opencode inheritance). Added `_translate_codex_event` event-taxonomy tests, direct-subprocess env-forwarding test, `OPENAI_API_KEY`-kept / cross-provider-creds-scrubbed test, `codex` binary-missing friendly-error test. **872 passing, 2 skipped.** Live smoke confirmed against real `codex exec --json` on 2026-04-19 — round-trip ~5s, events stream correctly.
+
 ### stratum-mcp — T2-F5-DEPENDS-ON
 
 - **`ParallelExecutor` now respects `task.depends_on`** at dispatch time. Previously ignored — all tasks fanned out immediately under `asyncio.gather`. Now: dependent tasks wait on per-task `asyncio.Event`s until their upstreams reach a terminal state. Dep-wait happens outside the semaphore (waiting tasks don't consume concurrency slots) but inside the outer `try` (early returns on unknown-dep or upstream-failure unwind through the existing finally, invoking `_require_unsatisfiable` / `_cancel_siblings` correctly).

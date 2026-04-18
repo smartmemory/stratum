@@ -18,6 +18,7 @@ from stratum_mcp.connectors import (
     OpencodeConnector,
     inject_schema,
 )
+from stratum_mcp.connectors.codex import _translate_codex_event
 from stratum_mcp.connectors.opencode import _translate_opencode_event
 
 
@@ -307,3 +308,137 @@ def test_codex_model_ids_snapshot():
     # Non-members
     assert "gpt-4" not in CODEX_MODEL_IDS
     assert "claude-opus-4-6" not in CODEX_MODEL_IDS
+
+
+# ---------------------------------------------------------------------------
+# CodexConnector — event translation (`codex exec --json` → envelope events)
+# ---------------------------------------------------------------------------
+
+
+def test_translate_codex_agent_message_becomes_assistant_event():
+    events = _translate_codex_event(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}},
+        "gpt-5.4",
+    )
+    assert events == [{"type": "assistant", "content": "hi"}]
+
+
+def test_translate_codex_empty_agent_message_is_dropped():
+    assert _translate_codex_event(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": ""}},
+        "gpt-5.4",
+    ) == []
+
+
+def test_translate_codex_command_execution_emits_tool_use_and_summary():
+    events = _translate_codex_event(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "ls /tmp",
+                "aggregated_output": "a\nb\nc",
+            },
+        },
+        "gpt-5.4",
+    )
+    assert events[0] == {
+        "type": "tool_use",
+        "tool": "bash",
+        "input": {"command": "ls /tmp"},
+    }
+    assert events[1]["type"] == "tool_use_summary"
+    assert events[1]["summary"] == "a\nb\nc"
+    assert events[1]["output"] == "a\nb\nc"
+
+
+def test_translate_codex_command_execution_truncates_long_output():
+    long_out = "x" * 5000
+    events = _translate_codex_event(
+        {
+            "type": "item.completed",
+            "item": {"type": "command_execution", "command": "ls", "output": long_out},
+        },
+        "gpt-5.4",
+    )
+    assert len(events) == 2
+    assert events[1]["summary"].endswith("...")
+    assert len(events[1]["summary"]) == 80
+    assert len(events[1]["output"]) == 2048
+
+
+def test_translate_codex_file_change_becomes_edit_tool_use():
+    events = _translate_codex_event(
+        {
+            "type": "item.completed",
+            "item": {"type": "file_change", "path": "src/foo.py"},
+        },
+        "gpt-5.4",
+    )
+    assert events == [
+        {"type": "tool_use", "tool": "edit", "input": {"path": "src/foo.py"}}
+    ]
+
+
+def test_translate_codex_reasoning_surfaces_as_assistant():
+    events = _translate_codex_event(
+        {"type": "item.completed", "item": {"type": "reasoning", "text": "hmm"}},
+        "gpt-5.4",
+    )
+    assert events == [{"type": "assistant", "content": "hmm"}]
+
+
+def test_translate_codex_turn_completed_emits_usage():
+    events = _translate_codex_event(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 42,
+                "cached_input_tokens": 10,
+            },
+        },
+        "gpt-5.4/high",
+    )
+    assert events == [
+        {
+            "type": "usage",
+            "input_tokens": 100,
+            "output_tokens": 42,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 10,
+            "cost_usd": 0,
+            "model": "gpt-5.4/high",
+        }
+    ]
+
+
+def test_translate_codex_error_event_forwards_message():
+    assert _translate_codex_event(
+        {"type": "error", "message": "boom"}, "gpt-5.4"
+    ) == [{"type": "error", "message": "boom"}]
+
+
+def test_translate_codex_ignores_unknown_types():
+    assert _translate_codex_event({"type": "thread.started"}, "gpt-5.4") == []
+    assert _translate_codex_event({"type": "turn.started"}, "gpt-5.4") == []
+    assert _translate_codex_event({"type": "unknown.type"}, "gpt-5.4") == []
+
+
+@pytest.mark.asyncio
+async def test_codex_missing_binary_yields_friendly_error():
+    """codex binary not on PATH → yields error event with install hint."""
+    async def _raise_file_not_found(*args, **kwargs):
+        raise FileNotFoundError("codex")
+
+    with patch(
+        "stratum_mcp.connectors.codex.asyncio.create_subprocess_exec",
+        _raise_file_not_found,
+    ):
+        conn = CodexConnector(model_id="gpt-5.4")
+        events = await _collect(conn.run("hi"))
+
+    errors = [e for e in events if e["type"] == "error"]
+    assert len(errors) == 1
+    assert "codex binary not found" in errors[0]["message"]
+    assert "npm i -g @openai/codex" in errors[0]["message"]

@@ -267,21 +267,89 @@ async def test_claude_env_scrub_covers_all_sensitive_vars_with_env_kwarg():
 
 
 @pytest.mark.asyncio
-async def test_codex_override_forwards_env_to_super(monkeypatch):
-    """CodexConnector.run() forwards env= through super().run()."""
+async def test_codex_subprocess_receives_stratum_env_vars():
+    """env= kwarg is forwarded to create_subprocess_exec as the baseline env.
+
+    Direct subprocess spawn — no more delegation through OpencodeConnector.
+    """
     captured: dict = {}
 
-    async def _recording_super_run(self, prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured["kwargs"] = kwargs
-        # Yield nothing — we only care about the forwarded kwargs
-        if False:
-            yield  # pragma: no cover
+    class _FakeStdin:
+        def write(self, data):
+            pass
 
-    monkeypatch.setattr(OpencodeConnector, "run", _recording_super_run)
+        async def drain(self):
+            pass
 
-    conn = CodexConnector(model_id="gpt-5.4")
-    await _collect(conn.run(prompt="hi", env={"X": "1"}))
+        def close(self):
+            pass
 
-    assert captured["prompt"] == "hi"
-    assert captured["kwargs"].get("env") == {"X": "1"}
+    class _FakeProcWithStdin(_FakeProc):
+        stdin = _FakeStdin()
+
+    async def _fake_create(*args, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        captured["args"] = args
+        return _FakeProcWithStdin()
+
+    with patch(
+        "stratum_mcp.connectors.codex.asyncio.create_subprocess_exec",
+        side_effect=_fake_create,
+    ):
+        conn = CodexConnector(model_id="gpt-5.4")
+        await _collect(
+            conn.run(
+                prompt="hi",
+                env={
+                    "STRATUM_TASK_ID": "t1",
+                    "STRATUM_FLOW_ID": "f1",
+                    "PATH": "/usr/bin",
+                },
+            )
+        )
+
+    env = captured["env"]
+    assert env.get("STRATUM_TASK_ID") == "t1"
+    assert env.get("STRATUM_FLOW_ID") == "f1"
+    # codex binary invoked (positional arg 0)
+    assert captured["args"][0] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_codex_scrubs_cross_provider_creds_but_keeps_openai_api_key(monkeypatch):
+    """OPENAI_API_KEY must pass through (codex uses it); ANTHROPIC/CLAUDE must not."""
+    captured: dict = {}
+
+    class _FakeStdin:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakeProcWithStdin(_FakeProc):
+        stdin = _FakeStdin()
+
+    async def _fake_create(*args, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        return _FakeProcWithStdin()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("CLAUDE_API_KEY", "claude-secret")
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    with patch(
+        "stratum_mcp.connectors.codex.asyncio.create_subprocess_exec",
+        side_effect=_fake_create,
+    ):
+        conn = CodexConnector(model_id="gpt-5.4")
+        await _collect(conn.run(prompt="hi"))
+
+    env = captured["env"]
+    assert env.get("OPENAI_API_KEY") == "openai-secret", "codex needs OPENAI_API_KEY"
+    for var in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"):
+        assert var not in env, f"{var} leaked into codex env"
