@@ -11,6 +11,12 @@
 - **Stall detection preserved** — warns via stderr every 30s after 120s silence. Does not kill; caller can `interrupt()` if needed.
 - **Tests refactored** — dropped `test_codex_inherits_opencode_interrupt` and `test_codex_override_forwards_env_to_super` (both asserted the now-gone opencode inheritance). Added `_translate_codex_event` event-taxonomy tests, direct-subprocess env-forwarding test, `OPENAI_API_KEY`-kept / cross-provider-creds-scrubbed test, `codex` binary-missing friendly-error test. **872 passing, 2 skipped.** Live smoke confirmed against real `codex exec --json` on 2026-04-19 — round-trip ~5s, events stream correctly.
 
+### stratum-mcp — test: cross-repo drift guard for codex connector (STRAT-DEDUP-AGENTRUN interim)
+
+- **New test `tests/test_codex_connector_sync.py`** asserts Python and Compose's JS codex connectors stay aligned until STRAT-DEDUP-AGENTRUN v3 ships. Two checks: (1) JS side still uses direct `codex exec` (not opencode), (2) `CODEX_MODEL_IDS` sets are identical across languages.
+- **Skipped when Compose isn't adjacent** so stratum-only clones and partial-repo CI don't fail. In normal dev trees (both repos as siblings under `forge/`) the guard runs every `pytest` invocation.
+- **Why now:** the 2026-04-19 codex hang was caused by the JS connector migrating to direct `codex exec --json` while the Python connector stayed on opencode. That class of drift would have been caught in seconds by this guard. Band-aid until the final v3 refactor eliminates the two-trees invariant. Retire this file when v3 lands. **874 passing, 2 skipped.**
+
 ### stratum-mcp — T2-F5-DEPENDS-ON
 
 - **`ParallelExecutor` now respects `task.depends_on`** at dispatch time. Previously ignored — all tasks fanned out immediately under `asyncio.gather`. Now: dependent tasks wait on per-task `asyncio.Event`s until their upstreams reach a terminal state. Dep-wait happens outside the semaphore (waiting tasks don't consume concurrency slots) but inside the outer `try` (early returns on unknown-dep or upstream-failure unwind through the existing finally, invoking `_require_unsatisfiable` / `_cancel_siblings` correctly).
