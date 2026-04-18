@@ -55,6 +55,12 @@ class InferSpec:
     threshold: int | None
     return_type: Any
     parameters: dict[str, Any]
+    # Claude adaptive thinking + effort controls (Opus 4.6/4.7, Sonnet 4.6).
+    # thinking: None = provider/model default. "adaptive" = {"type": "adaptive"}.
+    #   "off" = {"type": "disabled"}. A dict is passed through as-is.
+    # effort: "low" | "medium" | "high" | "xhigh" | "max" (xhigh/max = Opus-only).
+    thinking: str | dict | None = None
+    effort: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +321,26 @@ async def execute_infer(
         }
         if spec.temperature is not None:
             call_kwargs["temperature"] = spec.temperature
+
+        # Claude thinking + effort controls — Anthropic backend only.
+        if _is_anthropic:
+            if spec.thinking is not None:
+                if isinstance(spec.thinking, dict):
+                    call_kwargs["thinking"] = spec.thinking
+                elif spec.thinking == "adaptive":
+                    call_kwargs["thinking"] = {"type": "adaptive"}
+                elif spec.thinking == "off":
+                    call_kwargs["thinking"] = {"type": "disabled"}
+                else:
+                    raise ValueError(
+                        f"Invalid thinking value: {spec.thinking!r} "
+                        "(must be 'adaptive', 'off', or a dict)"
+                    )
+            if spec.effort is not None:
+                # litellm passes unknown kwargs to the provider; Anthropic reads
+                # effort from output_config.effort.
+                existing = call_kwargs.get("output_config") or {}
+                call_kwargs["output_config"] = {**existing, "effort": spec.effort}
 
         try:
             if timeout_secs is not None:

@@ -49,6 +49,8 @@ def infer(
     quorum: int | None = None,
     agree_on: str | None = None,
     threshold: int | None = None,
+    thinking: str | dict | None = None,
+    effort: str | None = None,
 ) -> Callable:
     """
     Decorator that marks a function as an LLM-backed inference step.
@@ -107,6 +109,8 @@ def infer(
             threshold=threshold,
             return_type=return_type,
             parameters=params,
+            thinking=thinking,
+            effort=effort,
         )
 
         @functools.wraps(fn)
@@ -353,6 +357,8 @@ def refine(
                     threshold=base_spec.threshold,
                     return_type=base_spec.return_type,
                     parameters=base_spec.parameters,
+                    thinking=base_spec.thinking,
+                    effort=base_spec.effort,
                 )
 
                 result = await execute_infer(current_spec, kwargs, flow_budget, flow_id)

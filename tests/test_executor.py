@@ -646,3 +646,90 @@ class TestPromptCache:
         assert isinstance(captured["messages"][0]["content"], str)
         assert isinstance(captured["messages"][1]["content"], str)
         assert "cache_control" not in captured["tools"][0]
+
+
+# ---------------------------------------------------------------------------
+# Thinking + effort support (Claude Opus 4.6/4.7, Sonnet 4.6)
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingEffort:
+    @pytest.mark.asyncio
+    async def test_adaptive_thinking_passed_as_adaptive_config(self):
+        clear_traces()
+        captured = {}
+
+        @infer(intent="t", model="claude-opus-4-7", thinking="adaptive", effort="xhigh")
+        def fn_adaptive(text: str) -> _CacheOut: ...
+
+        async def capture(**kwargs):
+            captured.update(kwargs)
+            return _make_response({"value": "ok"})
+
+        with patch("litellm.acompletion", new=capture):
+            with patch("litellm.completion_cost", return_value=0.0):
+                await fn_adaptive(text="hi")
+
+        assert captured["thinking"] == {"type": "adaptive"}
+        assert captured["output_config"] == {"effort": "xhigh"}
+
+    @pytest.mark.asyncio
+    async def test_thinking_off_sends_disabled(self):
+        clear_traces()
+        captured = {}
+
+        @infer(intent="t", model="claude-haiku-4-5", thinking="off")
+        def fn_off(text: str) -> _CacheOut: ...
+
+        async def capture(**kwargs):
+            captured.update(kwargs)
+            return _make_response({"value": "ok"})
+
+        with patch("litellm.acompletion", new=capture):
+            with patch("litellm.completion_cost", return_value=0.0):
+                await fn_off(text="hi")
+
+        assert captured["thinking"] == {"type": "disabled"}
+        assert "output_config" not in captured
+
+    @pytest.mark.asyncio
+    async def test_no_thinking_on_non_anthropic_model(self):
+        """thinking/effort must NOT be sent to OpenAI models."""
+        clear_traces()
+        captured = {}
+
+        @infer(intent="t", model="gpt-4o", thinking="adaptive", effort="high")
+        def fn_openai(text: str) -> _CacheOut: ...
+
+        async def capture(**kwargs):
+            captured.update(kwargs)
+            return _make_response({"value": "ok"})
+
+        with patch("litellm.acompletion", new=capture):
+            with patch("litellm.completion_cost", return_value=0.0):
+                await fn_openai(text="hi")
+
+        assert "thinking" not in captured
+        assert "output_config" not in captured
+
+    @pytest.mark.asyncio
+    async def test_dict_thinking_passed_through(self):
+        clear_traces()
+        captured = {}
+
+        @infer(
+            intent="t",
+            model="claude-opus-4-7",
+            thinking={"type": "adaptive"},
+        )
+        def fn_dict(text: str) -> _CacheOut: ...
+
+        async def capture(**kwargs):
+            captured.update(kwargs)
+            return _make_response({"value": "ok"})
+
+        with patch("litellm.acompletion", new=capture):
+            with patch("litellm.completion_cost", return_value=0.0):
+                await fn_dict(text="hi")
+
+        assert captured["thinking"] == {"type": "adaptive"}
