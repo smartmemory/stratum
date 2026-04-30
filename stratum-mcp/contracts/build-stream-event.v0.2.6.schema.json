@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stratum.regression.io/contracts/build-stream-event.v0.2.6.schema.json",
+  "title": "BuildStreamEvent",
+  "description": "Wire envelope for MCP progress notifications (CONTRACT v0.2.6). Producer: stratum-mcp. Consumer: compose/lib/stratum-mcp-client.js#dispatchEvent. Schema bump from v0.2.5: closes metadata blocks for 6 legacy kinds (additionalProperties: false); adds optional top-level reply_required boolean (Option A, STRAT-PAR-STREAM-CONSUMER-VALIDATE design).",
+  "_source": "STRAT-PAR-STREAM-LEGACY-CLOSE",
+  "_roadmap": "STRAT-PAR-STREAM > STRAT-PAR-STREAM-LEGACY-CLOSE",
+  "type": "object",
+  "required": ["schema_version", "flow_id", "step_id", "seq", "ts", "kind", "metadata"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "0.2.6" },
+    "flow_id":        { "type": "string" },
+    "step_id":        { "type": "string" },
+    "seq":            { "type": "integer", "minimum": 0 },
+    "ts":             { "type": "string" },
+    "kind":           { "type": "string" },
+    "task_id":        { "type": "string" },
+    "reply_required": {
+      "type": "boolean",
+      "description": "Option A (STRAT-PAR-STREAM-CONSUMER-VALIDATE): true for kinds that expect a reply (gate/permission/question future kinds). Currently none of the live 6 kinds set this; reserved for future use."
+    },
+    "metadata":       {
+      "description": "Kind-discriminated metadata block. Closed (additionalProperties: false) for the 6 legacy kinds.",
+      "oneOf": [
+        { "$ref": "#/$defs/metadata_capability_profile" },
+        { "$ref": "#/$defs/metadata_capability_violation" },
+        { "$ref": "#/$defs/metadata_step_usage" },
+        { "$ref": "#/$defs/metadata_gate_tier_result" },
+        { "$ref": "#/$defs/metadata_health_score" },
+        { "$ref": "#/$defs/metadata_build_end" },
+        { "$ref": "#/$defs/metadata_open" }
+      ]
+    }
+  },
+  "$defs": {
+    "metadata_capability_profile": {
+      "title": "capability_profile metadata",
+      "description": "Emitted by BuildStreamWriter.writeCapabilityProfile. Informational — never blocks.",
+      "type": "object",
+      "required": ["agent", "template"],
+      "additionalProperties": false,
+      "properties": {
+        "agent":           { "type": "string", "description": "Full agent string, e.g. 'claude:read-only-reviewer'" },
+        "template":        { "type": ["string", "null"], "description": "Template name from resolveAgentConfig" },
+        "allowedTools":    { "type": ["array", "null"], "items": { "type": "string" } },
+        "disallowedTools": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    },
+    "metadata_capability_violation": {
+      "title": "capability_violation metadata",
+      "description": "Emitted by BuildStreamWriter.writeViolation. One event per offending tool.",
+      "type": "object",
+      "required": ["agent", "template", "detail", "severity"],
+      "additionalProperties": false,
+      "properties": {
+        "agent":    { "type": "string" },
+        "template": { "type": ["string", "null"] },
+        "detail":   { "type": "string", "description": "Human-readable violation description" },
+        "severity": { "type": "string", "enum": ["violation", "warning"] }
+      }
+    },
+    "metadata_step_usage": {
+      "title": "step_usage metadata",
+      "description": "Emitted by BuildStreamWriter.writeUsage after each step completes.",
+      "type": "object",
+      "required": ["stepId", "input_tokens", "output_tokens", "cost_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "stepId":                        { "type": "string" },
+        "input_tokens":                  { "type": "number", "minimum": 0 },
+        "output_tokens":                 { "type": "number", "minimum": 0 },
+        "cache_creation_input_tokens":   { "type": "number", "minimum": 0 },
+        "cache_read_input_tokens":       { "type": "number", "minimum": 0 },
+        "cost_usd":                      { "type": "number", "minimum": 0 },
+        "model":                         { "type": ["string", "null"] }
+      }
+    },
+    "metadata_gate_tier_result": {
+      "title": "gate_tier_result metadata",
+      "description": "Emitted by BuildStreamWriter.writeGateTier for each tier classification.",
+      "type": "object",
+      "required": ["stepId", "tierId", "passed"],
+      "additionalProperties": false,
+      "properties": {
+        "stepId":   { "type": "string" },
+        "tierId":   { "type": "string" },
+        "passed":   { "type": "boolean" },
+        "details":  { "type": ["string", "null"] }
+      }
+    },
+    "metadata_health_score": {
+      "title": "health_score metadata",
+      "description": "Emitted by BuildStreamWriter.writeHealthScore after build_end.",
+      "type": "object",
+      "required": ["score", "breakdown"],
+      "additionalProperties": false,
+      "properties": {
+        "score":     { "type": "number", "minimum": 0, "maximum": 100 },
+        "breakdown": { "type": "object", "additionalProperties": { "type": "number" } },
+        "missing":   { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "metadata_build_end": {
+      "title": "build_end metadata",
+      "description": "Emitted by BuildStreamWriter.close(). Terminal event for a build.",
+      "type": "object",
+      "required": ["status", "featureCode"],
+      "additionalProperties": false,
+      "properties": {
+        "status":               { "type": "string", "enum": ["complete", "killed", "crashed", "failed"] },
+        "featureCode":          { "type": "string" },
+        "total_input_tokens":   { "type": "number", "minimum": 0 },
+        "total_output_tokens":  { "type": "number", "minimum": 0 },
+        "total_cost_usd":       { "type": "number", "minimum": 0 }
+      }
+    },
+    "metadata_open": {
+      "title": "open metadata (all other kinds)",
+      "description": "Catch-all for kinds not yet closed (agent_relay, tool_use_summary, agent_started, build_step_start, build_step_done, etc.). additionalProperties is open intentionally.",
+      "type": "object"
+    }
+  }
+}
