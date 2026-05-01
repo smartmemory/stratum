@@ -1060,7 +1060,7 @@ async def analyse_batch(texts: list[str]) -> list[SentimentResult]:
 
 ## Examples
 
-Working examples in [`examples/`](https://github.com/regression-io/stratum/tree/main/examples):
+Working examples in [`examples/`](https://github.com/smartmemory/stratum/tree/main/examples):
 
 | File | What it demonstrates |
 |---|---|
@@ -1076,7 +1076,7 @@ Working examples in [`examples/`](https://github.com/regression-io/stratum/tree/
 ## Development
 
 ```bash
-git clone https://github.com/regression-io/stratum
+git clone https://github.com/smartmemory/stratum
 cd stratum
 git config core.hooksPath .githooks
 ```
