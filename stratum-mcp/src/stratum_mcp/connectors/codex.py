@@ -22,6 +22,7 @@ import sys
 import time
 from typing import Any, AsyncIterator, Optional
 
+from ..events import INTERNAL_RESULT_KIND, ConnectorEvent
 from .base import AgentConnector, Event, inject_schema
 
 CODEX_MODEL_IDS: frozenset[str] = frozenset(
@@ -75,6 +76,42 @@ _AUTH_ERROR_MARKERS = (
 
 STALL_TIMEOUT_SECONDS = 120
 STALL_CHECK_INTERVAL_SECONDS = 30
+
+
+def _resolve_stdout_limit() -> int:
+    """Buffer ceiling for the codex subprocess StreamReader.
+
+    The asyncio default of 64 KiB is too small for codex's ``--json`` preamble:
+    its first line includes the resolved model config, sandbox profile, cwd,
+    and the full prompt echo, which routinely exceeds 64 KiB and triggers
+    ``LimitOverrunError`` before any agent event is yielded
+    (STRAT-MCP-CHUNK-SIZE).
+    """
+    raw = os.environ.get("STRATUM_CODEX_STREAM_LIMIT_BYTES")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 4 * 1024 * 1024
+    else:
+        value = 4 * 1024 * 1024
+    return max(value, 64 * 1024)
+
+
+_CODEX_STDOUT_LIMIT = _resolve_stdout_limit()
+_CHUNK_OVERRUN_HINT = (
+    "codex stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES "
+    f"(current limit {_CODEX_STDOUT_LIMIT} bytes). Raise the env knob and retry."
+)
+
+
+def _is_limit_error(exc: BaseException) -> bool:
+    """asyncio.StreamReader.readline() wraps LimitOverrunError as ValueError
+    in Python 3.12+, preserving the original message. Match on either path."""
+    if isinstance(exc, asyncio.LimitOverrunError):
+        return True
+    msg = str(exc).lower()
+    return "chunk" in msg and "limit" in msg
 
 
 def _assert_codex_model(model_id: str) -> None:
@@ -155,6 +192,7 @@ class CodexConnector(AgentConnector):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=_CODEX_STDOUT_LIMIT,
             )
         except FileNotFoundError:
             yield {
@@ -207,8 +245,15 @@ class CodexConnector(AgentConnector):
 
         try:
             assert proc.stdout is not None
+            overrun = False
             while True:
-                line_bytes = await proc.stdout.readline()
+                try:
+                    line_bytes = await proc.stdout.readline()
+                except (asyncio.LimitOverrunError, ValueError) as exc:
+                    if not _is_limit_error(exc):
+                        raise
+                    overrun = True
+                    break
                 if not line_bytes:
                     break
                 line = line_bytes.decode("utf-8", errors="replace").strip()
@@ -227,6 +272,18 @@ class CodexConnector(AgentConnector):
                         if content:
                             text_parts.append(content)
                     yield envelope_event
+
+            if overrun:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+                yield {
+                    "type": "error",
+                    "message": _CHUNK_OVERRUN_HINT,
+                }
+                return
 
             exit_code = await proc.wait()
 
@@ -253,6 +310,205 @@ class CodexConnector(AgentConnector):
                     await t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            self._proc = None
+
+    async def stream_events(
+        self,
+        prompt: str,
+        *,
+        schema: Optional[dict] = None,
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        cwd: Optional[str] = None,
+        tools: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> AsyncIterator[ConnectorEvent]:
+        # NOTE: parallel duplication of the codex JSONL driver from run();
+        # marked for cleanup under STRAT-DEDUP-AGENTRUN-V3.
+        if self._proc is not None:
+            raise RuntimeError(
+                f"{_AGENT_NAME}: stream_events() already active. Call interrupt() first."
+            )
+
+        resolved_model_id = model_id or self._default_model_id
+        _assert_codex_model(resolved_model_id)
+        resolved_cwd = cwd or self._cwd
+        actual_prompt = inject_schema(prompt, schema) if schema else prompt
+
+        base_model, _, effort = resolved_model_id.partition("/")
+
+        args = [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "-m",
+            base_model,
+            "-C",
+            resolved_cwd,
+        ]
+        if effort:
+            args.extend(["-c", f'model_reasoning_effort="{effort}"'])
+        args.append("-")
+
+        clean_env = dict(env) if env is not None else dict(os.environ)
+        for var in _CODEX_SCRUB_VARS:
+            clean_env.pop(var, None)
+
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                "codex",
+                *args,
+                cwd=resolved_cwd,
+                env=clean_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_CODEX_STDOUT_LIMIT,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"{_AGENT_NAME}: codex binary not found on PATH. "
+                "Install with: npm i -g @openai/codex  (or: brew install codex)"
+            )
+        proc = self._proc
+        assert proc.stdin is not None
+        proc.stdin.write(actual_prompt.encode("utf-8"))
+        await proc.stdin.drain()
+        proc.stdin.close()
+
+        text_parts: list[str] = []
+        stderr_chunks: list[bytes] = []
+
+        async def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            while True:
+                chunk = await proc.stderr.readline()
+                if not chunk:
+                    break
+                stderr_chunks.append(chunk)
+
+        stderr_task = asyncio.create_task(_drain_stderr())
+        try:
+            assert proc.stdout is not None
+            agent_started_yielded = False
+            while True:
+                try:
+                    line_bytes = await proc.stdout.readline()
+                except (asyncio.LimitOverrunError, ValueError) as exc:
+                    if not _is_limit_error(exc):
+                        raise
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    raise RuntimeError(
+                        f"{_AGENT_NAME}: {_CHUNK_OVERRUN_HINT}"
+                    ) from exc
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                etype = event.get("type")
+
+                if etype == "thread.started" and not agent_started_yielded:
+                    agent_started_yielded = True
+                    yield ConnectorEvent(
+                        kind="agent_started",
+                        metadata={
+                            "agent": _AGENT_NAME,
+                            "model": resolved_model_id,
+                            "prompt_chars": len(prompt),
+                        },
+                    )
+                    continue
+
+                if etype == "item.completed" and event.get("item"):
+                    item = event["item"]
+                    itype = item.get("type")
+                    if itype == "agent_message":
+                        text = item.get("text") or ""
+                        if text:
+                            text_parts.append(text)
+                            yield ConnectorEvent(
+                                kind="agent_relay",
+                                metadata={"text": text, "role": "assistant"},
+                            )
+                    elif itype == "command_execution":
+                        cmd = item.get("command")
+                        if cmd is None:
+                            cmd = (item.get("input") or {}).get("command") or ""
+                        cmd_s = str(cmd)
+                        summary = cmd_s if len(cmd_s) <= 80 else cmd_s[:77] + "..."
+                        exit_code = item.get("exit_code")
+                        ok = exit_code == 0 if exit_code is not None else True
+                        yield ConnectorEvent(
+                            kind="tool_use_summary",
+                            metadata={
+                                "tool": "bash",
+                                "summary": summary,
+                                "ok": bool(ok),
+                                "duration_ms": int(item.get("duration_ms") or 0),
+                            },
+                        )
+                    elif itype == "reasoning":
+                        text = item.get("text") or ""
+                        if text:
+                            yield ConnectorEvent(
+                                kind="agent_relay",
+                                metadata={"text": text, "role": "system"},
+                            )
+                    elif itype == "file_change":
+                        path = item.get("path") or ""
+                        yield ConnectorEvent(
+                            kind="tool_use_summary",
+                            metadata={
+                                "tool": "edit",
+                                "summary": f"edit {path}"[:80],
+                                "ok": True,
+                                "duration_ms": 0,
+                            },
+                        )
+                elif etype == "turn.completed" and event.get("usage"):
+                    u = event["usage"]
+                    yield ConnectorEvent(
+                        kind="step_usage",
+                        metadata={
+                            "input_tokens": u.get("input_tokens") or 0,
+                            "output_tokens": u.get("output_tokens") or 0,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": u.get("cached_input_tokens") or 0,
+                            "cost_usd": 0,
+                            "model": resolved_model_id,
+                        },
+                    )
+                elif etype == "error":
+                    raise RuntimeError(event.get("message") or "codex error")
+
+            exit_code = await proc.wait()
+            if exit_code != 0 and not text_parts:
+                stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    stderr_text or f"codex exited with code {exit_code}"
+                )
+            full_text = "".join(text_parts)
+            if full_text:
+                yield ConnectorEvent(
+                    kind=INTERNAL_RESULT_KIND,
+                    metadata={"content": full_text},
+                )
+        finally:
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
             self._proc = None
 
     def interrupt(self) -> None:

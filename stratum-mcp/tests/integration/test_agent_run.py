@@ -23,7 +23,7 @@ class _FakeConnector(AgentConnector):
 
 
 def _install_fake_connector(monkeypatch, events):
-    def _factory(agent_type, model_id, cwd):
+    def _factory(agent_type, model_id, cwd, **_kwargs):
         return _FakeConnector(events)
 
     monkeypatch.setattr(
@@ -62,7 +62,8 @@ async def test_agent_run_claude_returns_text(monkeypatch):
         [{"type": "assistant", "content": "hello"}],
     )
     result = await _run(prompt="hi", type="claude")
-    assert result == {"text": "hello"}
+    assert result["text"] == "hello"
+    assert "correlation_id" in result
 
 
 @pytest.mark.asyncio
@@ -75,7 +76,7 @@ async def test_agent_run_concatenates_multiple_assistant_events(monkeypatch):
         ],
     )
     result = await _run(prompt="hi", type="claude")
-    assert result == {"text": "hello world"}
+    assert result["text"] == "hello world"
 
 
 @pytest.mark.asyncio
@@ -147,7 +148,7 @@ async def test_agent_run_result_only_connector_uses_result_as_fallback(monkeypat
         [{"type": "result", "content": "final answer"}],
     )
     result = await _run(prompt="hi", type="claude")
-    assert result == {"text": "final answer"}
+    assert result["text"] == "final answer"
 
 
 @pytest.mark.asyncio
@@ -162,7 +163,7 @@ async def test_agent_run_assistant_takes_precedence_over_result(monkeypatch):
         ],
     )
     result = await _run(prompt="hi", type="claude")
-    assert result == {"text": "streamed"}
+    assert result["text"] == "streamed"
 
 
 @pytest.mark.asyncio

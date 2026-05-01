@@ -30,6 +30,12 @@ from typing import Any, Callable, Optional
 
 from .connectors.base import AgentConnector, SENSITIVE_ENV_VARS
 from .connectors.factory import make_agent_connector
+from .events import (
+    INTERNAL_RESULT_KIND,
+    BuildStreamEvent,
+    TaskSeqCounter,
+    now_iso,
+)
 from .executor import (
     FlowState,
     ParallelTaskState,
@@ -152,6 +158,7 @@ class ParallelExecutor:
         model_id: Optional[str] = None,
         persist_callable: Optional[Callable[[FlowState], None]] = None,
         capture_diff: bool = False,
+        ctx: Any = None,
     ) -> None:
         self.state = state
         self.step_id = step_id
@@ -166,6 +173,11 @@ class ParallelExecutor:
         self.model_id = model_id
         self._persist_callable = persist_callable or persist_flow
         self.capture_diff = capture_diff
+        self._ctx = ctx
+        self._seq_counter = TaskSeqCounter()
+        self._emit_failed: dict[str, bool] = {}
+        self.events: asyncio.Queue[BuildStreamEvent] = asyncio.Queue(maxsize=1000)
+        self._dropped_warned = False
 
         # Handle + connector registries for cascade cancel.
         self._task_handles: dict[str, asyncio.Task] = {}
@@ -291,6 +303,81 @@ class ParallelExecutor:
                     ts.finished_at = time.time()
                 handle.cancel()
 
+    def _mint(
+        self, task_id: str, kind: str, metadata: dict[str, Any]
+    ) -> BuildStreamEvent:
+        return BuildStreamEvent(
+            flow_id=self.state.flow_id,
+            step_id=self.step_id,
+            task_id=task_id,
+            seq=self._seq_counter.next(self.state.flow_id, self.step_id, task_id),
+            ts=now_iso(),
+            kind=kind,
+            metadata=metadata,
+        )
+
+    async def _emit(self, task_id: str, envelope: BuildStreamEvent) -> None:
+        # STRAT-PAR-STREAM transport: enqueue on the executor's bounded buffer.
+        # The poll handler drains this queue under its own live ctx — the
+        # parallel_start request that constructed this executor has long since
+        # returned and its ctx is dead.
+        try:
+            self.events.put_nowait(envelope)
+        except asyncio.QueueFull:
+            try:
+                self.events.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.events.put_nowait(envelope)
+            except asyncio.QueueFull:
+                pass
+            if not self._dropped_warned:
+                self._dropped_warned = True
+                print(
+                    f"stratum-mcp: warning: event queue overflow on "
+                    f"flow={self.state.flow_id} step={self.step_id}; "
+                    f"dropping oldest events.",
+                    file=sys.stderr,
+                )
+
+    async def _consume_streaming(
+        self,
+        connector: AgentConnector,
+        task_id: str,
+        prompt: str,
+        cwd: Optional[str],
+        env: dict[str, str],
+    ) -> Any:
+        """Drain ``connector.stream_events()`` and forward to ``ctx.report_progress``.
+
+        The agent_started envelope is minted by the caller before invocation.
+        Connector-yielded ``_result`` (INTERNAL_RESULT_KIND) events carry the
+        final agent text and are NOT pushed to the wire.
+        """
+        stream = getattr(connector, "stream_events", None)
+        if stream is None:
+            return await self._consume(connector, prompt, cwd, env)
+        final: Any = None
+        produced_event = False
+        produced_result_sentinel = False
+        async for ev in stream(prompt=prompt, cwd=cwd, env=env):
+            produced_event = True
+            if ev.kind == INTERNAL_RESULT_KIND:
+                produced_result_sentinel = True
+                final = ev.metadata.get("content")
+                continue
+            envelope = self._mint(task_id, ev.kind, dict(ev.metadata))
+            await self._emit(task_id, envelope)
+        if not produced_event:
+            return await self._consume(connector, prompt, cwd, env)
+        if not produced_result_sentinel:
+            raise RuntimeError(
+                "connector stream_events() yielded events but no _result sentinel; "
+                "task output is unrecoverable"
+            )
+        return final
+
     async def _consume(
         self,
         connector: AgentConnector,
@@ -392,10 +479,14 @@ class ParallelExecutor:
                 env = _task_env(self.state.flow_id, self.step_id, tid)
                 prompt = self._render_prompt(task)
 
+                # STRAT-PAR-STREAM: agent_started is sourced from the
+                # connector's stream_events() (which knows the resolved model).
+                # Synthetic mint here would emit a duplicate with empty model.
+
                 # ---------- run + terminal-state resolution ----------
                 try:
                     result = await asyncio.wait_for(
-                        self._consume(connector, prompt, cwd, env),
+                        self._consume_streaming(connector, tid, prompt, cwd, env),
                         timeout=self.task_timeout,
                     )
                 except asyncio.TimeoutError:

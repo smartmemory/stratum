@@ -10,6 +10,8 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Optional
 
+from ..events import ConnectorEvent
+
 SENSITIVE_ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -40,6 +42,12 @@ Shape (matches Node agent-connector.js envelope):
 Schema mode: if run() is called with schema=..., the connector injects it into
 the prompt as instructions. JSON parsing happens at the MCP tool layer, never
 inside connectors.
+
+STRAT-PAR-STREAM: connectors may also expose ``stream_events()`` yielding
+``ConnectorEvent`` for parallel-dispatch consumers that want per-event
+narration without the legacy envelope shape. The default base implementation
+yields nothing (callers see an empty stream) so subclasses that don't
+implement it (e.g. opencode) don't raise AttributeError.
 """
 
 
@@ -82,6 +90,26 @@ class AgentConnector(ABC):
             Envelope events matching the shape documented on :data:`Event`.
         """
         ...  # pragma: no cover
+
+    async def stream_events(
+        self,
+        prompt: str,
+        *,
+        schema: Optional[dict] = None,
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        cwd: Optional[str] = None,
+        tools: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> AsyncIterator[ConnectorEvent]:
+        """Yield connector-local events as the agent works.
+
+        Default impl yields nothing — subclasses that do not implement
+        per-event narration (opencode) get an empty stream rather than an
+        AttributeError.
+        """
+        return
+        yield  # pragma: no cover  # unreachable; satisfies async-generator typing
 
     def interrupt(self) -> None:
         """No-op if not running."""

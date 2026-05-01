@@ -17,7 +17,14 @@ _VALID_AGENT_TYPES = frozenset({"claude", "codex"})
 
 
 def make_agent_connector(
-    agent_type: str, model_id: Optional[str], cwd: Optional[str]
+    agent_type: str,
+    model_id: Optional[str],
+    cwd: Optional[str],
+    *,
+    allowed_tools: Optional[list[str]] = None,
+    disallowed_tools: Optional[list[str]] = None,
+    thinking: Optional[dict] = None,
+    effort: Optional[str] = None,
 ) -> AgentConnector:
     """Factory — raises ValueError on unknown type or bad codex model.
 
@@ -36,8 +43,20 @@ def make_agent_connector(
             f"Valid types: {sorted(_VALID_AGENT_TYPES)}"
         )
     if agent_type == "codex":
-        return CodexConnector(model_id=model_id or "gpt-5.4", cwd=cwd)
+        codex_kwargs: dict[str, Any] = {
+            "model_id": model_id or "gpt-5.4",
+            "cwd": cwd,
+        }
+        return CodexConnector(**codex_kwargs)
     kwargs: dict[str, Any] = {"cwd": cwd}
     if model_id:
         kwargs["model"] = model_id
+    if allowed_tools is not None:
+        kwargs["allowed_tools"] = allowed_tools
+    if disallowed_tools is not None:
+        kwargs["disallowed_tools"] = disallowed_tools
+    if thinking is not None:
+        kwargs["thinking"] = thinking
+    if effort is not None:
+        kwargs["effort"] = effort
     return ClaudeConnector(**kwargs)

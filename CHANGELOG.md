@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### stratum-mcp — fix(codex): raise stdout buffer ceiling (STRAT-MCP-CHUNK-SIZE)
+
+- **`CodexConnector` now passes `limit=4 MiB` to `asyncio.create_subprocess_exec`** in both `run()` and `stream_events()`. The asyncio default 64 KiB `StreamReader` buffer was too small for codex's `--json` preamble (resolved model config, sandbox profile, cwd, full prompt echo), causing the first `proc.stdout.readline()` to raise `LimitOverrunError` ("Separator is not found, and chunk exceed the limit") before any agent event reached the caller. `mcp__stratum__stratum_agent_run(type="codex")` would deterministically fail before the agent ran.
+- **Env knob `STRATUM_CODEX_STREAM_LIMIT_BYTES`** — overrides the 4 MiB default, clamped to a 64 KiB floor so a misconfigured value can't silently re-enable the bug.
+- **Graceful failure path** — if a line still exceeds the configured limit, `run()` yields an `{"type":"error", message:...}` envelope and `stream_events()` raises `RuntimeError`. Both messages name the env knob so callers can self-recover. Python 3.12's `readline()` wraps `LimitOverrunError` as `ValueError` with the original message — both paths are matched via a small message-text helper.
+- **Tests** — new `tests/test_codex_chunk_size.py` (9 cases): constant defined, env override honored, floor clamp, real-subprocess 200 KiB line read OK, asyncio default sanity-repro of original bug, graceful-failure messages on both code paths. **898 passing, 2 skipped.**
+
+### stratum-mcp — feat(STRAT-PAR-STREAM): stream_events rolled out to all connectors
+
+- **`AgentConnector.stream_events()`** added to base — default impl yields nothing so subclasses (opencode) don't raise `AttributeError`.
+- **`ClaudeConnector.stream_events()`** added — yields `ConnectorEvent` per assistant block / tool call for parallel-dispatch consumers. Adds `thinking` and `effort` constructor params.
+- **`CodexConnector.stream_events()`** added — parallel JSONL driver, marked for de-dup under `STRAT-DEDUP-AGENTRUN-V3`.
+- **`make_agent_connector`** now accepts `allowed_tools` / `disallowed_tools` / `thinking` / `effort` for Claude.
+- **Server + parallel-exec wiring** — `_emit` envelope path consumes per-connector streams without breaking the legacy envelope contract.
+- **Drop `tests/test_codex_connector_sync.py`** — STRAT-DEDUP cross-repo drift guard retired now that codex's connector is being rewritten upstream.
+
 ### stratum-mcp — fix(codex): port JS codex-connector rewrite to Python (removes opencode dep)
 
 - **`CodexConnector` no longer inherits from `OpencodeConnector`.** Spawns `codex exec --json` directly, parses the CLI's own JSONL event stream (`item.completed` → `agent_message` / `command_execution` / `file_change` / `reasoning`; `turn.completed` → usage). Ports `compose/server/connectors/codex-connector.js` (commit `f552c7f`, 2026-04-18) to Python — that rewrite was applied to the JS side only, leaving `stratum_agent_run type="codex"` shelling out to `opencode run` indefinitely since we stopped using opencode for codex. Every codex review through the MCP tool hung waiting for events that couldn't arrive.

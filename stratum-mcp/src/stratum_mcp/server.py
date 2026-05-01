@@ -37,6 +37,16 @@ from .executor import (
 from .spec import parse_and_validate
 from .connectors import AgentConnector, ClaudeConnector, CodexConnector
 from .connectors.factory import make_agent_connector as _make_agent_connector
+from .events import (
+    BuildStreamEvent,
+    INTERNAL_RESULT_KIND,
+    TaskSeqCounter,
+    now_iso,
+)
+import asyncio
+import uuid as _uuid
+
+_AGENT_RUN_TASKS: "dict[str, asyncio.Task[Any]]" = {}
 
 mcp = FastMCP(
     "stratum-mcp",
@@ -127,42 +137,133 @@ async def stratum_agent_run(
     context: Optional[str] = None,
     schema: Optional[dict] = None,
     modelID: Optional[str] = None,  # noqa: N803 — contract parity with Node
+    model_id: Optional[str] = None,
+    allowed_tools: Optional[list[str]] = None,
+    disallowed_tools: Optional[list[str]] = None,
+    thinking: Optional[dict] = None,
+    effort: Optional[str] = None,
     cwd: Optional[str] = None,
+    correlation_id: Optional[str] = None,
 ) -> dict[str, Any]:
     if not prompt or not prompt.strip():
         raise ValueError("stratum_agent_run: prompt is required")
 
+    active_model_id = modelID if modelID is not None else model_id
+
     full_prompt = f"{context}\n\n{prompt}" if context and context.strip() else prompt
 
-    connector = _make_agent_connector(type, modelID, cwd)
+    connector = _make_agent_connector(
+        type,
+        active_model_id,
+        cwd,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        thinking=thinking,
+        effort=effort,
+    )
+
+    flow_id = correlation_id or str(_uuid.uuid4())
+    step_id = "_agent_run"
+    seq_counter = TaskSeqCounter()
 
     parts: list[str] = []
     final_result: Optional[str] = None
-    async for event in connector.run(full_prompt, schema=schema, model_id=modelID, cwd=cwd):
-        etype = event.get("type")
-        if etype == "assistant" and event.get("content"):
-            parts.append(event["content"])
-        elif etype == "result" and event.get("content"):
-            # Authoritative final text — fall back to this if no streaming
-            # assistant events were emitted (some connectors may batch).
-            final_result = event["content"]
-        elif etype == "error":
-            raise RuntimeError(
-                f"stratum_agent_run ({type}): "
-                f"{event.get('message', 'unknown error')}"
-            )
 
-    # Prefer the concatenated assistant stream (matches Node behavior); fall back
-    # to the result event when no assistant events were produced.
-    text = "".join(parts) if parts else (final_result or "")
+    cls = connector.__class__
+    base_stream = AgentConnector.stream_events
+    own_stream = getattr(cls, "stream_events", None)
+    supports_stream = own_stream is not None and own_stream is not base_stream
+
+    current = asyncio.current_task()
+    if current is not None:
+        _AGENT_RUN_TASKS[flow_id] = current
+
+    async def _emit(envelope: BuildStreamEvent) -> None:
+        if ctx is None:
+            return
+        try:
+            await ctx.report_progress(
+                progress=envelope.seq, message=envelope.to_json()
+            )
+        except Exception:
+            pass
+
+    try:
+        if supports_stream:
+            async for cev in connector.stream_events(
+                full_prompt, schema=schema, model_id=active_model_id, cwd=cwd
+            ):
+                if cev.kind == INTERNAL_RESULT_KIND:
+                    final_result = cev.metadata.get("content")
+                    continue
+                envelope = BuildStreamEvent(
+                    flow_id=flow_id,
+                    step_id=step_id,
+                    task_id=None,
+                    seq=seq_counter.next(flow_id, step_id, None),
+                    ts=now_iso(),
+                    kind=cev.kind,
+                    metadata=dict(cev.metadata),
+                )
+                await _emit(envelope)
+                if cev.kind == "agent_relay" and cev.metadata.get("role") == "assistant":
+                    text = cev.metadata.get("text", "")
+                    if text:
+                        parts.append(text)
+        else:
+            async for event in connector.run(
+                full_prompt, schema=schema, model_id=active_model_id, cwd=cwd
+            ):
+                etype = event.get("type")
+                if etype == "assistant" and event.get("content"):
+                    parts.append(event["content"])
+                elif etype == "result" and event.get("content"):
+                    final_result = event["content"]
+                elif etype == "error":
+                    raise RuntimeError(
+                        f"stratum_agent_run ({type}): "
+                        f"{event.get('message', 'unknown error')}"
+                    )
+    finally:
+        _AGENT_RUN_TASKS.pop(flow_id, None)
+
+    if supports_stream:
+        # Streaming connectors: prefer the _result sentinel (authoritative final
+        # text from the SDK); fall back to concatenated assistant relays.
+        text = final_result if final_result is not None else "".join(parts)
+    else:
+        # Legacy run() path: assistant events are authoritative when present.
+        text = "".join(parts) if parts else (final_result or "")
 
     if schema is not None:
         result, parse_error = _extract_json_result(text)
         if result is not None:
-            return {"text": text, "result": result}
-        return {"text": text, "result": None, "parseError": parse_error}
+            return {"text": text, "result": result, "correlation_id": flow_id}
+        return {
+            "text": text,
+            "result": None,
+            "parseError": parse_error,
+            "correlation_id": flow_id,
+        }
 
-    return {"text": text}
+    return {"text": text, "correlation_id": flow_id}
+
+
+@mcp.tool(description=(
+    "Cancel an in-flight stratum_agent_run identified by correlation_id. "
+    "Idempotent: returns {status: 'not_found'} if no matching task exists. "
+    "Input: correlation_id (str). "
+    "Returns {status: 'cancelled'|'not_found', correlation_id: str}."
+))
+async def stratum_cancel_agent_run(
+    correlation_id: str,
+    ctx: Context,
+) -> dict[str, Any]:
+    task = _AGENT_RUN_TASKS.get(correlation_id)
+    if task is None:
+        return {"status": "not_found", "correlation_id": correlation_id}
+    task.cancel()
+    return {"status": "cancelled", "correlation_id": correlation_id}
 
 
 @mcp.tool(description=(
@@ -414,6 +515,11 @@ async def stratum_step_done(
 # Module-level registry of in-flight parallel executors, keyed by
 # (flow_id, step_id). T14 adds the shutdown hook; T13 only populates it.
 _RUNNING_EXECUTORS: dict[tuple[str, str], Any] = {}
+
+# STRAT-PAR-STREAM: per-(flow_id, step_id) reference to the live ParallelExecutor
+# so stratum_parallel_poll can drain its event queue under the poll request's ctx.
+# parallel_start's ctx is dead by the time the background executor emits.
+_PARALLEL_EXECUTORS: dict[tuple[str, str], Any] = {}
 
 
 def _evaluate_parallel_results(
@@ -915,9 +1021,11 @@ async def stratum_parallel_start(
         task_reasoning_template=cur_step.task_reasoning_template,
         require=cur_step.require or "all",
         capture_diff=cur_step.capture_diff and isolation == "worktree",
+        ctx=ctx,
     )
     handle = _asyncio.create_task(executor.run())
     _RUNNING_EXECUTORS[(flow_id, step_id)] = handle
+    _PARALLEL_EXECUTORS[(flow_id, step_id)] = executor
 
     return {
         "status": "started",
@@ -939,6 +1047,23 @@ async def stratum_parallel_poll(
     step_id: str,
     ctx: Context,
 ) -> dict[str, Any]:
+    import asyncio as _asyncio
+    # STRAT-PAR-STREAM: drain the executor's event queue under THIS poll's live
+    # ctx. The parallel_start ctx that constructed the executor is long gone.
+    executor = _PARALLEL_EXECUTORS.get((flow_id, step_id))
+    if executor is not None:
+        drained = 0
+        while drained < 1000:
+            try:
+                ev = executor.events.get_nowait()
+            except _asyncio.QueueEmpty:
+                break
+            try:
+                await ctx.report_progress(progress=ev.seq, message=ev.to_json())
+            except Exception:
+                pass
+            drained += 1
+
     state = _flows.get(flow_id)
     if state is None:
         state = restore_flow(flow_id)
@@ -1040,6 +1165,19 @@ async def stratum_parallel_poll(
                 # If the flow advanced, drop the executor handle from the
                 # registry so we don't double-advance on subsequent polls.
                 _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
+                # STRAT-PAR-STREAM: drain any final tail events left in the
+                # queue after task termination but before we pop the executor.
+                final_exec = _PARALLEL_EXECUTORS.pop((flow_id, step_id), None)
+                if final_exec is not None:
+                    while True:
+                        try:
+                            ev = final_exec.events.get_nowait()
+                        except _asyncio.QueueEmpty:
+                            break
+                        try:
+                            await ctx.report_progress(progress=ev.seq, message=ev.to_json())
+                        except Exception:
+                            pass
         else:
             # Already advanced — report the aggregate without re-processing.
             outcome = {
@@ -1153,6 +1291,7 @@ async def stratum_parallel_advance(
         state, step_id, evaluation["aggregate"],
     )
     _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
+    _PARALLEL_EXECUTORS.pop((flow_id, step_id), None)
     return advance_result
 
 
