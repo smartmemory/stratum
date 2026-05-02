@@ -615,3 +615,169 @@ class TestInstallHooksFailFast:
         # settings.json was not created — registration never ran
         settings_file = tmp_path / ".claude" / "settings.json"
         assert not settings_file.exists()
+
+
+class TestProbeSetupPreconditions:
+    """T1: _probe_setup_preconditions raises before any project mutation."""
+
+    def test_probe_silent_on_happy_path(self, isolated_hooks_dir, capsys):
+        from stratum_mcp.server import _probe_setup_preconditions
+
+        _probe_setup_preconditions()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_probe_raises_on_missing_bundled_source(
+        self, tmp_path, isolated_hooks_dir, monkeypatch
+    ):
+        from stratum_mcp.server import _probe_setup_preconditions
+        import stratum_mcp.server as srv
+
+        empty_dir = tmp_path / "empty_bundle"
+        empty_dir.mkdir()
+        monkeypatch.setattr(srv, "_HOOKS_DIR", empty_dir)
+
+        with pytest.raises(OSError, match="bundled hook source files missing"):
+            _probe_setup_preconditions()
+
+    def test_probe_error_names_missing_paths(
+        self, tmp_path, isolated_hooks_dir, monkeypatch
+    ):
+        from stratum_mcp.server import _probe_setup_preconditions, _HOOK_SCRIPTS
+        import stratum_mcp.server as srv
+
+        empty_dir = tmp_path / "empty_bundle"
+        empty_dir.mkdir()
+        monkeypatch.setattr(srv, "_HOOKS_DIR", empty_dir)
+
+        with pytest.raises(OSError) as exc_info:
+            _probe_setup_preconditions()
+        for script_name in _HOOK_SCRIPTS.values():
+            assert script_name in str(exc_info.value)
+
+    def test_probe_creates_stratum_hooks_dir(
+        self, tmp_path, monkeypatch
+    ):
+        from stratum_mcp.server import _probe_setup_preconditions
+        import stratum_mcp.server as srv
+
+        new_dir = tmp_path / "new" / "stratum" / "hooks"
+        assert not new_dir.exists()
+        monkeypatch.setattr(srv, "_STRATUM_HOOKS_DIR", new_dir)
+
+        _probe_setup_preconditions()
+        assert new_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# Atomic setup: probe + hook copy run before project mutations (T2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_skills_home(tmp_path, monkeypatch):
+    """Redirect skills home to a temp dir so tests don't touch ~/.claude/skills/."""
+    skills_dir = tmp_path / ".skills-test"
+    skills_dir.mkdir()
+    import stratum_mcp.server as srv
+    monkeypatch.setattr(srv, "_SKILLS_HOME", skills_dir)
+    return skills_dir
+
+
+def _patch_bundle_missing(monkeypatch, tmp_path):
+    """Monkeypatch _HOOKS_DIR to an empty dir so the probe trips."""
+    import stratum_mcp.server as srv
+    empty_dir = tmp_path / "empty_bundle"
+    empty_dir.mkdir()
+    monkeypatch.setattr(srv, "_HOOKS_DIR", empty_dir)
+
+
+class TestAtomicSetupOrdering:
+    """T2: probe + hook copy precede mcp.json / CLAUDE.md / skills writes."""
+
+    def test_probe_failure_leaves_mcp_json_untouched(
+        self, tmp_path, isolated_hooks_dir, isolated_skills_home, monkeypatch
+    ):
+        _patch_bundle_missing(monkeypatch, tmp_path)
+        with pytest.raises(OSError, match="bundled hook source files missing"):
+            _run_setup(tmp_path)
+        assert not (tmp_path / ".claude" / "mcp.json").exists()
+
+    def test_probe_failure_leaves_claude_md_untouched(
+        self, tmp_path, isolated_hooks_dir, isolated_skills_home, monkeypatch
+    ):
+        claude_md = tmp_path / "CLAUDE.md"
+        original = "# My existing content\n\nSome notes.\n"
+        claude_md.write_text(original)
+
+        _patch_bundle_missing(monkeypatch, tmp_path)
+        with pytest.raises(OSError, match="bundled hook source files missing"):
+            _run_setup(tmp_path)
+
+        assert claude_md.read_text() == original
+
+    def test_probe_failure_does_not_create_claude_md(
+        self, tmp_path, isolated_hooks_dir, isolated_skills_home, monkeypatch
+    ):
+        _patch_bundle_missing(monkeypatch, tmp_path)
+        with pytest.raises(OSError):
+            _run_setup(tmp_path)
+        assert not (tmp_path / "CLAUDE.md").exists()
+
+    def test_probe_failure_leaves_skills_untouched(
+        self, tmp_path, isolated_hooks_dir, isolated_skills_home, monkeypatch
+    ):
+        # Pre-populate with a stale skill + manifest.
+        stale_skill = isolated_skills_home / "stale-skill"
+        stale_skill.mkdir()
+        stale_skill_md = stale_skill / "SKILL.md"
+        stale_skill_md.write_text("# Stale skill content\n")
+        manifest = isolated_skills_home / ".stratum-skills.json"
+        manifest.write_text('["stale-skill"]\n')
+
+        _patch_bundle_missing(monkeypatch, tmp_path)
+        with pytest.raises(OSError):
+            _run_setup(tmp_path)
+
+        # Stale skill survives — no shutil.rmtree ran.
+        assert stale_skill.exists()
+        assert stale_skill_md.read_text() == "# Stale skill content\n"
+        assert manifest.read_text() == '["stale-skill"]\n'
+        # No new skill SKILL.md files were written either.
+        for child in isolated_skills_home.iterdir():
+            if child.name == ".stratum-skills.json":
+                continue
+            assert child.name == "stale-skill"
+
+    def test_copy_failure_leaves_project_untouched(
+        self, tmp_path, isolated_hooks_dir, isolated_skills_home, monkeypatch
+    ):
+        # Pre-existing CLAUDE.md to verify it isn't modified.
+        claude_md = tmp_path / "CLAUDE.md"
+        original = "# Original\n"
+        claude_md.write_text(original)
+
+        scripts = list(_HOOK_SCRIPTS.values())
+        bad_script_name = scripts[0]
+
+        real_write_text = Path.write_text
+
+        def fake_write_text(self, data, *args, **kwargs):
+            if self.name == bad_script_name:
+                raise OSError("simulated copy failure")
+            return real_write_text(self, data, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+        with pytest.raises(OSError, match="failed to install hook scripts"):
+            _run_setup(tmp_path)
+
+        # mcp.json not created
+        assert not (tmp_path / ".claude" / "mcp.json").exists()
+        # CLAUDE.md untouched
+        assert claude_md.read_text() == original
+        # Skills not touched
+        for child in isolated_skills_home.iterdir():
+            assert False, f"skills dir should be empty, found {child}"
+        # settings.json not registered
+        assert not (tmp_path / ".claude" / "settings.json").exists()

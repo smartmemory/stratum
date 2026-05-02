@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### stratum-mcp — fix(setup): probe + reorder for atomic install (STRAT-SETUP-ATOMIC)
+
+- **`_cmd_setup` reordered to fail-fast before any project mutation.** New order: root detection → `_probe_setup_preconditions()` → `_copy_hook_scripts` (raise on per-script failures) → `.claude/mcp.json` → `CLAUDE.md` → skills sync → `_register_hooks_in_settings`. Previously `.claude/mcp.json`, `CLAUDE.md`, and `~/.claude/skills/` were written first; if `_install_hooks` then raised (missing bundled hook source or unwritable `~/.stratum/hooks/`), the project was left in a partial state.
+- **New `_probe_setup_preconditions()` helper** — checks every bundled hook source file in `_HOOK_SCRIPTS` exists; runs `_STRATUM_HOOKS_DIR.mkdir(parents=True, exist_ok=True)` as a writability test. Raises `OSError` with named missing paths on failure. Silent on success.
+- **`_install_hooks` function definition unchanged.** Still composes copy + register and raises on copy failures; still exercised by the existing `TestInstallHooksFailFast` regression. Just no longer called from `_cmd_setup` (which now invokes `_copy_hook_scripts` and `_register_hooks_in_settings` directly).
+- **New `_SKILLS_HOME` module-level constant** — extracted from a local resolution inside `_cmd_setup` so the new `isolated_skills_home` test fixture can monkeypatch it cleanly.
+- **Surviving non-atomic registration paths documented** — `_register_hooks_in_settings` can still raise mid-call (legacy-copy cleanup at server.py:2023, settings.json write at :2072). Deferred to potential STRAT-SETUP-ATOMIC-V2 if it surfaces in practice.
+- **Tests** — 9 new tests in `tests/integration/test_setup.py` covering probe behavior (silent on happy path, raises on missing source, error names paths, creates `~/.stratum/hooks/`) and atomic-ordering invariants (probe failure leaves mcp.json / CLAUDE.md / skills untouched; copy failure mid-stream leaves project untouched). **907 passing, 2 skipped.**
+
 ### stratum-mcp — fix(codex): raise stdout buffer ceiling (STRAT-MCP-CHUNK-SIZE)
 
 - **`CodexConnector` now passes `limit=4 MiB` to `asyncio.create_subprocess_exec`** in both `run()` and `stream_events()`. The asyncio default 64 KiB `StreamReader` buffer was too small for codex's `--json` preamble (resolved model config, sandbox profile, cwd, full prompt echo), causing the first `proc.stdout.readline()` to raise `LimitOverrunError` ("Separator is not found, and chunk exceed the limit") before any agent event reached the caller. `mcp__stratum__stratum_agent_run(type="codex")` would deterministically fail before the agent ran.

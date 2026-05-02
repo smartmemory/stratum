@@ -1940,6 +1940,38 @@ _HOOK_SCRIPTS: dict[str, str] = {
 
 _STRATUM_HOOKS_DIR = Path.home() / ".stratum" / "hooks"
 
+# Module-level so tests can monkeypatch the skills sync target without
+# patching Path.home for the entire interpreter.
+_SKILLS_HOME = Path.home() / ".claude" / "skills"
+
+
+def _probe_setup_preconditions() -> None:
+    """Fail fast before any project mutation in _cmd_setup.
+
+    Raises OSError if:
+      - a bundled hook source file is missing from the package, OR
+      - ~/.stratum/hooks/ cannot be created (permission, etc.).
+
+    Stays silent on success — matches the rest of _cmd_setup which only
+    prints on per-step progress.
+    """
+    missing: list[str] = []
+    for script_name in _HOOK_SCRIPTS.values():
+        src = _HOOKS_DIR / script_name
+        if not src.exists():
+            missing.append(str(src))
+    if missing:
+        raise OSError(
+            "stratum-mcp install: bundled hook source files missing from package: "
+            + "; ".join(missing)
+        )
+    try:
+        _STRATUM_HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise OSError(
+            f"stratum-mcp install: cannot create {_STRATUM_HOOKS_DIR}: {exc}"
+        ) from exc
+
 
 def _copy_hook_scripts(
     changed: list[str],
@@ -2235,6 +2267,22 @@ def _cmd_setup() -> None:
 
     changed: list[str] = []
 
+    # --- Probe + hook copy (atomic precondition) ---
+    # Run before any project mutation so a missing bundled source or an
+    # un-creatable ~/.stratum/hooks/ aborts BEFORE mcp.json / CLAUDE.md /
+    # skills are touched. Note: _install_hooks is no longer the composite
+    # entry from _cmd_setup — the copy half runs here, registration runs
+    # at the end (see _register_hooks_in_settings call below). Don't
+    # re-introduce a single _install_hooks call here.
+    _probe_setup_preconditions()
+    failures: list[str] = []
+    _copy_hook_scripts(changed, verbose=True, failures=failures)
+    if failures:
+        raise OSError(
+            "failed to install hook scripts to ~/.stratum/hooks/: "
+            + "; ".join(failures)
+        )
+
     # --- .claude/mcp.json ---
     mcp_dir = root / ".claude"
     mcp_file = mcp_dir / "mcp.json"
@@ -2276,7 +2324,7 @@ def _cmd_setup() -> None:
         changed.append("CLAUDE.md")
 
     # --- Skills (sync with manifest) ---
-    skills_home = Path.home() / ".claude" / "skills"
+    skills_home = _SKILLS_HOME
     pkg_skills = Path(__file__).parent / "skills"
     manifest_path = skills_home / ".stratum-skills.json"
 
@@ -2323,8 +2371,12 @@ def _cmd_setup() -> None:
         skills_home.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(current_skills, indent=2) + "\n")
 
-    # --- Hooks ---
-    _install_hooks(root, changed)
+    # --- Hooks (registration) ---
+    # Hook scripts already copied at the top of _cmd_setup. Only the
+    # settings.json registration runs here; _install_hooks is intentionally
+    # NOT called from _cmd_setup so a registration-only retry doesn't
+    # silently re-do the copy step.
+    _register_hooks_in_settings(root, changed)
 
     if changed:
         print("\nDone. Restart Claude Code to activate the Stratum MCP server.")
