@@ -165,12 +165,12 @@ Formatting is preserved via `ruamel.yaml` round-trip with source-derived indent 
 
 Claude writes `.stratum.yaml` specs internally — you never see them. You see plain English narration. The MCP server enforces postconditions on every step; if a step's output fails a check, Claude fixes it and retries before reporting success.
 
-Full documentation: [stratum-in-claude-code.md](https://github.com/regression-io/stratum/blob/main/blog/stratum-in-claude-code.md)
+Full documentation: [stratum-in-claude-code.md](https://github.com/smartmemory/stratum/blob/main/blog/stratum-in-claude-code.md)
 
-Tutorial: [claude-code-tutorial.md](https://github.com/regression-io/stratum/blob/main/blog/claude-code-tutorial.md)
+Tutorial: [claude-code-tutorial.md](https://github.com/smartmemory/stratum/blob/main/blog/claude-code-tutorial.md)
 
 ## License
 
 Apache 2.0
 
-<!-- mcp-name: io.github.ruze00/stratum-mcp -->
+<!-- mcp-name: io.github.smartmemory/stratum-mcp -->

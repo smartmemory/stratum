@@ -31,10 +31,10 @@ dependencies = [
 stratum-mcp = "stratum_mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/regression-io/stratum"
-Repository = "https://github.com/regression-io/stratum"
-Documentation = "https://github.com/regression-io/stratum/blob/main/blog/stratum-in-claude-code.md"
-"Bug Tracker" = "https://github.com/regression-io/stratum/issues"
+Homepage = "https://github.com/smartmemory/stratum"
+Repository = "https://github.com/smartmemory/stratum"
+Documentation = "https://github.com/smartmemory/stratum/blob/main/blog/stratum-in-claude-code.md"
+"Bug Tracker" = "https://github.com/smartmemory/stratum/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stratum_mcp"]

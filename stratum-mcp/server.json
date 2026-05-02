@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.ruze00/stratum-mcp",
+  "name": "io.github.smartmemory/stratum-mcp",
   "title": "Stratum MCP",
   "description": "Structured execution for Claude Code — contracts, postconditions, gates, guardrails.",
   "repository": {
-    "url": "https://github.com/regression-io/stratum",
+    "url": "https://github.com/smartmemory/stratum",
     "source": "github"
   },
-  "version": "0.2.6",
+  "version": "0.2.42",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "stratum-mcp",
-      "version": "0.2.6",
+      "version": "0.2.42",
       "transport": {
         "type": "stdio"
       }
