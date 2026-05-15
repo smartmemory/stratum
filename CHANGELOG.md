@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### stratum-mcp — feat(STRAT-GOAL-V1): goal orchestrator with 4 MCP tools
+
+- **4 new MCP tools:** `stratum_goal`, `stratum_goal_status`, `stratum_goal_decide`, `stratum_goal_archive`
+- **New `stratum.goal` package:** orchestrator with mode matrix (shadow-driven, shadow-observed, advisory, autonomous), worker dispatch with M17 Codex driven-mode safety guard, autonomy resolution with SmartMemory DI
+- **`FlowState.synthetic` field:** when `True`, `delete_persisted_flow` skips judge-tree cleanup (PRD M14) so the orchestrator can inspect judge audit artifacts after the synthetic flow completes; `stratum_goal_archive` handles teardown instead
+- **`delete_persisted_flow(*, synthetic=False)` guard:** STRAT-GOAL-aware signature; synthetic flows skip deletion of flow JSON and judge tree in `stratum_gate_resolve`, instead persisting terminal state for `stratum_goal_status` reads
+- **New schema fields:** `flow-state.v1.schema.json` and `query-flows.v1.schema.json` both add `synthetic: bool` so that Compose and external query consumers can distinguish goal-driven synthetic flows from real user flows
+- **Adversarial corpus (7 cases):** `tests/fixtures/goal-adversarial.jsonl` + `tests/test_goal_adversarial.py` for shadow-mode regression detection
+- **Tests:** `test_goal_kernel.py`, `test_goal_state.py`, `test_goal_prompts.py`, `test_goal_worker.py`, `test_goal_adversarial.py`, `test_goal_coverage_sweep.py`, `test_goal_e2e.py`, `test_goal_tool.py`
+- See `docs/features/STRAT-GOAL/` for full design
+
+### stratum-mcp — feat(STRAT-JUDGE-V1): tiered self-correction judge
+
+- **New `stratum.judge` package:** kernel, predicates, staging, verifier, errors, result — T1 + T2 tier dispatch with confidence-gated verdict normalization
+- **New MCP tool: `stratum_judge`** — STRAT-IMMUTABLE integrity checks enforce that predicate/stakes/budget payload matches the IR-declared `judge:` block; spec-level checksum verified before every invocation
+- **T1/T2 tier dispatch:** T1 evaluates deterministic predicates against staged artifacts; T2 dispatches a Claude verifier with read-only tools and citation-format enforcement
+- **Judge tree at `~/.stratum/judge/<flow_id>/`** — per-turn staging with `record_judge_turn` accumulating `judge_history` and `judge_outcome` on `FlowState`; cleared atomically with `delete_persisted_flow`
+- **Checksum coverage:** `compute_spec_checksum` includes `judge:` block (predicates, stakes, budget) so live flows can't have gate config altered mid-run undetected
+- **`get_current_step_info` judge mode:** returns caller-driven dispatch envelope so the executor never invokes MCP tools itself
+- **Tests:** `test_judge_kernel.py`, `test_judge_predicates.py`, `test_judge_schema.py`, `test_judge_staging.py`, `test_judge_verifier.py`, `test_judge_corpus.py`, `test_executor_judge.py`, `test_server_judge.py`, `test_spec_judge.py`
+- See `docs/features/STRAT-JUDGE/` for full design
+
 ### stratum-mcp — fix(setup): probe + reorder for atomic install (STRAT-SETUP-ATOMIC)
 
 - **`_cmd_setup` reordered to fail-fast before any project mutation.** New order: root detection → `_probe_setup_preconditions()` → `_copy_hook_scripts` (raise on per-script failures) → `.claude/mcp.json` → `CLAUDE.md` → skills sync → `_register_hooks_in_settings`. Previously `.claude/mcp.json`, `CLAUDE.md`, and `~/.claude/skills/` were written first; if `_install_hooks` then raised (missing bundled hook source or unwritable `~/.stratum/hooks/`), the project was left in a partial state.

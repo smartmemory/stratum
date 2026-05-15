@@ -55,6 +55,22 @@ class IRFunctionDef:
 
 
 @dataclass(frozen=True)
+class JudgeStepConfig:
+    """STRAT-JUDGE v1 — per-step judge configuration.
+
+    Mutually exclusive with ``function``/``intent``/``flow_ref`` on a step.
+    ``predicates`` is a list of dicts with at minimum ``id``, ``type``,
+    ``statement`` (matches the ``Predicate`` dataclass in
+    ``stratum.judge.result``). ``stakes`` defaults to ``"default"``; the
+    v2 ``"paranoid"`` tier ships with T3. ``budget`` is parsed into
+    ``stratum.judge.BudgetCaps`` by the MCP handler.
+    """
+    predicates: tuple[dict, ...] = ()
+    stakes: Literal["cheap", "default"] = "default"
+    budget: dict | None = None
+
+
+@dataclass(frozen=True)
 class IRStepDef:
     id: str
     # v0.2: function is optional — inline steps use intent, composed steps use flow_ref
@@ -121,6 +137,9 @@ class IRStepDef:
     # ({status: "awaiting_consumer_advance"}) instead of auto-advancing;
     # consumer must call stratum_parallel_advance(flow_id, step_id, merge_status).
     defer_advance: bool = False
+    # STRAT-JUDGE v1: tiered-judge step config — mutually exclusive with
+    # function/intent/flow_ref. None for non-judge steps.
+    judge: JudgeStepConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -362,6 +381,37 @@ _IR_SCHEMA_V02: dict = {
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "reasoning_template": {"type": "object"},
                 "task_reasoning_template": {"type": "object"},
+                # STRAT-JUDGE v1: tiered-judge step config
+                "judge": {
+                    "type": "object",
+                    "required": ["predicates"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "predicates": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["id", "type", "statement"],
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "type": {"enum": ["deterministic", "verified", "judged"]},
+                                    "statement": {"type": "string"},
+                                    "applied_gate": {"type": "integer", "minimum": 1, "maximum": 10},
+                                },
+                            },
+                        },
+                        "stakes": {"enum": ["cheap", "default"]},
+                        "budget": {
+                            "type": "object",
+                            "properties": {
+                                "max_turns": {"type": "integer", "minimum": 1},
+                                "max_dollars": {"type": "number", "minimum": 0},
+                                "max_wall_clock_s": {"type": "number", "minimum": 0},
+                            },
+                        },
+                    },
+                },
             }
         },
         "FlowDef": {
@@ -522,6 +572,38 @@ _IR_SCHEMA_V03: dict = {
                 "capture_diff": {"type": "boolean"},
                 # T2-F5-DEFER-ADVANCE: opt-in deferred flow advance
                 "defer_advance": {"type": "boolean"},
+                # STRAT-JUDGE v1: tiered-judge step config — mutually exclusive
+                # with function/intent/flow.
+                "judge": {
+                    "type": "object",
+                    "required": ["predicates"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "predicates": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["id", "type", "statement"],
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "type": {"enum": ["deterministic", "verified", "judged"]},
+                                    "statement": {"type": "string"},
+                                    "applied_gate": {"type": "integer", "minimum": 1, "maximum": 10},
+                                },
+                            },
+                        },
+                        "stakes": {"enum": ["cheap", "default"]},
+                        "budget": {
+                            "type": "object",
+                            "properties": {
+                                "max_turns": {"type": "integer", "minimum": 1},
+                                "max_dollars": {"type": "number", "minimum": 0},
+                                "max_wall_clock_s": {"type": "number", "minimum": 0},
+                            },
+                        },
+                    },
+                },
             }
         },
         "TaskGraph": {
@@ -1086,6 +1168,20 @@ def _build_step(s: dict) -> IRStepDef:
     _apply_cert_defaults(s)
     # STRAT-CERT-PAR: apply defaults to per-task template as well (no-op when absent)
     _apply_cert_defaults(s, "task_reasoning_template")
+    # STRAT-JUDGE v1: parse the nested judge: block into a JudgeStepConfig
+    judge_raw = s.get("judge")
+    if judge_raw is not None:
+        if not isinstance(judge_raw, dict):
+            raise IRSemanticError(
+                f"step '{s['id']}': judge must be an object, got {type(judge_raw).__name__}"
+            )
+        judge_cfg = JudgeStepConfig(
+            predicates=tuple(judge_raw.get("predicates", [])),
+            stakes=judge_raw.get("stakes", "default"),
+            budget=judge_raw.get("budget"),
+        )
+    else:
+        judge_cfg = None
     return IRStepDef(
         id=s["id"],
         function=s.get("function", ""),
@@ -1129,6 +1225,7 @@ def _build_step(s: dict) -> IRStepDef:
         task_timeout=s.get("task_timeout"),
         capture_diff=s.get("capture_diff", False),
         defer_advance=s.get("defer_advance", False),
+        judge=judge_cfg,
     )
 
 
@@ -1337,11 +1434,11 @@ def _validate_semantics(spec: IRSpec) -> None:
                     )
                 continue  # skip legacy mode checks
 
-            # --- 1. Mode exclusion: exactly one of function, intent, flow_ref ---
-            modes = [bool(step.function), bool(step.intent), bool(step.flow_ref)]
+            # --- 1. Mode exclusion: exactly one of function, intent, flow_ref, judge ---
+            modes = [bool(step.function), bool(step.intent), bool(step.flow_ref), bool(step.judge)]
             if sum(modes) != 1:
                 raise IRSemanticError(
-                    f"Step '{step.id}' must have exactly one of function, intent, or flow",
+                    f"Step '{step.id}' must have exactly one of function, intent, flow, or judge",
                     path=f"flows.{flow_name}.steps.{step.id}"
                 )
 

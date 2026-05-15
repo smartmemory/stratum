@@ -532,7 +532,7 @@ def _topological_sort(flow_def: IRFlowDef) -> list[IRStepDef]:
 
 
 def _step_mode(step) -> str:
-    """Return 'function', 'inline', 'flow', 'decompose', or 'parallel_dispatch'."""
+    """Return 'function', 'inline', 'flow', 'decompose', 'parallel_dispatch', or 'judge'."""
     if step.step_type == "decompose":
         return "decompose"
     if step.step_type == "parallel_dispatch":
@@ -543,6 +543,8 @@ def _step_mode(step) -> str:
         return "inline"
     if step.flow_ref:
         return "flow"
+    if getattr(step, "judge", None) is not None:
+        return "judge"
     raise MCPExecutionError(f"Step '{step.id}' has no execution mode")
 
 
@@ -577,6 +579,10 @@ def _clear_from(state: "FlowState", target_idx: int, preserve: set[str] | None =
     for sid in steps_to_clear:
         state.iteration_outcome.pop(sid, None)
         state.iteration_best.pop(sid, None)
+    # STRAT-JUDGE v1: clear judge audit state for affected steps
+    for sid in steps_to_clear:
+        state.judge_history.pop(sid, None)
+        state.judge_outcome.pop(sid, None)
     # Clear per-step iteration history for affected steps (ENG-4)
     for sid in steps_to_clear:
         state.iterations.pop(sid, None)
@@ -752,6 +758,61 @@ class FlowState:
     # Used by parallel executor to resolve relative paths for worktrees.
     # Empty string = legacy flow created before this field existed.
     cwd: str = ""
+    # STRAT-JUDGE v1: per-step judge audit state. Keyed by step_id.
+    #   judge_history: full per-(predicate, tier) records — enables replay,
+    #     resume inspection, and future tier-disagreement calibration.
+    #   judge_outcome: final JudgeOutcome-as-dict (met + predicate_results
+    #     with evidence + tier_history).
+    judge_history: dict[str, list[dict]] = field(default_factory=dict)
+    judge_outcome: dict[str, dict] = field(default_factory=dict)
+
+    def record_judge_turn(self, step_id: str, result) -> None:
+        """Record a JudgeResult into ``judge_history`` and ``judge_outcome``.
+
+        ``judge_history[step_id]`` accumulates one entry per ``(predicate, tier)``
+        pair across every invocation of the step. ``judge_outcome[step_id]``
+        always holds the most recent turn's full predicate_results.
+        """
+        turn_records: list[dict] = []
+        turn_no = result.budget_consumed.turns
+        for pr in result.predicates:
+            for tr in pr.tier_history:
+                turn_records.append({
+                    "turn": turn_no,
+                    "predicate_id": pr.id,
+                    "tier": tr.tier,
+                    "verdict": tr.verdict,
+                    "confidence": tr.confidence,
+                    "reason": tr.reason,
+                })
+        self.judge_history.setdefault(step_id, []).extend(turn_records)
+        self.judge_outcome[step_id] = {
+            "met": result.met,
+            "predicate_results": [
+                {
+                    "id": pr.id,
+                    "type": pr.type,
+                    "statement": pr.statement,
+                    "verdict": pr.verdict,
+                    "confidence": pr.confidence,
+                    "applied_gate": pr.applied_gate,
+                    "evidence": [
+                        {"source": e.source, "quote": e.quote, "tier": e.tier}
+                        for e in pr.evidence
+                    ],
+                    "tier_history": [
+                        {
+                            "tier": tr.tier,
+                            "verdict": tr.verdict,
+                            "confidence": tr.confidence,
+                            "reason": tr.reason,
+                        }
+                        for tr in pr.tier_history
+                    ],
+                }
+                for pr in result.predicates
+            ],
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -768,7 +829,7 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
     referenced by steps (intent, ensure, mode) to detect tampering of function defs.
     """
     def _step_fingerprint(step: "IRStepDef") -> dict:
-        return {
+        fp = {
             "id": step.id,
             "function": step.function,
             "intent": step.intent,
@@ -792,6 +853,16 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
             "capture_diff": getattr(step, "capture_diff", False),
             "defer_advance": getattr(step, "defer_advance", False),
         }
+        # STRAT-JUDGE v1: include judge payload in checksum so live flows
+        # can't have predicates/stakes/budget altered mid-run undetected.
+        judge_cfg = getattr(step, "judge", None)
+        if judge_cfg is not None:
+            fp["judge"] = {
+                "predicates": [dict(sorted(p.items())) for p in judge_cfg.predicates],
+                "stakes": judge_cfg.stakes,
+                "budget": dict(sorted(judge_cfg.budget.items())) if judge_cfg.budget else None,
+            }
+        return fp
 
     def _fn_fingerprint(fn_name: str) -> dict | None:
         """Return a fingerprint of a function def referenced by a step."""
@@ -898,6 +969,8 @@ def persist_flow(state: FlowState) -> None:
         "spec_checksum":      state.spec_checksum,
         "parallel_tasks":     {tid: dataclasses.asdict(t) for tid, t in state.parallel_tasks.items()},
         "cwd":                state.cwd,
+        "judge_history":      state.judge_history,
+        "judge_outcome":      state.judge_outcome,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -963,14 +1036,30 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         spec_checksum=payload.get("spec_checksum", ""),
         parallel_tasks=parallel_tasks,
         cwd=payload.get("cwd", ""),
+        judge_history=payload.get("judge_history", {}),
+        judge_outcome=payload.get("judge_outcome", {}),
     )
 
 
 def delete_persisted_flow(flow_id: str) -> None:
-    """Remove the persistence file for a completed flow."""
+    """Remove the persistence file for a completed flow.
+
+    STRAT-JUDGE v1: also removes the per-flow judge staging tree at
+    ``~/.stratum/judge/<flow_id>/`` so that judge audit artifacts share
+    the lifecycle of the flow record (design line 286).
+    """
     try:
         (_FLOWS_DIR / f"{flow_id}.json").unlink(missing_ok=True)
     except OSError:
+        pass
+    try:
+        import shutil as _shutil
+        from stratum.judge.staging import JUDGE_ROOT
+        judge_dir = JUDGE_ROOT / flow_id
+        if judge_dir.exists():
+            _shutil.rmtree(judge_dir, ignore_errors=True)
+    except Exception:
+        # Judge tree cleanup is best-effort; never block flow deletion.
         pass
 
 
@@ -1004,6 +1093,8 @@ def commit_checkpoint(state: FlowState, label: str) -> None:
         "iteration_best":     copy.deepcopy(state.iteration_best),
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       copy.deepcopy(state.child_audits),
+        "judge_history":      copy.deepcopy(state.judge_history),
+        "judge_outcome":      copy.deepcopy(state.judge_outcome),
     }
     persist_flow(state)
 
@@ -1033,6 +1124,8 @@ def revert_checkpoint(state: FlowState, label: str) -> bool:
     state.iteration_best     = copy.deepcopy(snap.get("iteration_best", {}))
     state.active_child_flow_id = snap.get("active_child_flow_id")
     state.child_audits       = copy.deepcopy(snap.get("child_audits", {}))
+    state.judge_history      = copy.deepcopy(snap.get("judge_history", {}))
+    state.judge_outcome      = copy.deepcopy(snap.get("judge_outcome", {}))
     persist_flow(state)
     return True
 
@@ -1210,6 +1303,26 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "ensure": step.step_ensure or [],
             "retries_remaining": max_retries - attempts_so_far,
             "model": step.step_model,
+        }
+
+    elif mode == "judge":
+        # STRAT-JUDGE v1: caller-driven dispatch. The executor never invokes
+        # MCP tools itself — it tells the caller "invoke stratum_judge with
+        # this configuration" and the caller reports back via stratum_step_done.
+        max_retries = step.step_retries or 1
+        return {
+            "status": "execute_step",
+            "flow_id": state.flow_id,
+            "step_number": state.current_idx + 1,
+            "total_steps": len(state.ordered_steps),
+            "step_id": step.id,
+            "step_mode": "judge",
+            "agent": step.agent,
+            "predicates": list(step.judge.predicates),
+            "stakes": step.judge.stakes,
+            "budget": step.judge.budget,
+            "ensure": step.step_ensure or [],
+            "retries_remaining": max_retries - attempts_so_far,
         }
 
     elif mode == "decompose":
