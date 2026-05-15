@@ -1,0 +1,172 @@
+[
+  {
+    "candidate_id": "4e14bb94-d392-456a-81b1-921054bf43ba:L24",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "b5eec791-b62f-4e2a-a881-fb279a0ec799:L14",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "b5eec791-b62f-4e2a-a881-fb279a0ec799:L156",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "b5eec791-b62f-4e2a-a881-fb279a0ec799:L376",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "bd795603-82ec-48d0-abdd-05642fddd415:L7",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "e86e979e-b52b-48ab-9e4c-e3773b9d693b:L260",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "e9d26780-a328-4f8d-b4b0-3cae5550213e:L21",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "6bfc5496-c4da-4a8b-9d11-aacd824bb0cb:L11",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "863a1cb4-e7e9-4689-8f3d-b412ea5f647b:L1290",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  },
+  {
+    "candidate_id": "863a1cb4-e7e9-4689-8f3d-b412ea5f647b:L1407",
+    "met": true,
+    "predicate_verdicts": [
+      {
+        "confidence": 10,
+        "id": "claim_artifact_exists",
+        "verdict": "met"
+      },
+      {
+        "confidence": 8,
+        "id": "claim_addresses_request",
+        "verdict": "met"
+      }
+    ],
+    "summary": "judge: 2/2 predicates met (T1+T2, claude); degraded_judged=false"
+  }
+]

@@ -765,6 +765,10 @@ class FlowState:
     #     with evidence + tier_history).
     judge_history: dict[str, list[dict]] = field(default_factory=dict)
     judge_outcome: dict[str, dict] = field(default_factory=dict)
+    # STRAT-GOAL v1: marks flows created synthetically by the goal orchestrator.
+    # When True, delete_persisted_flow skips judge-tree cleanup (PRD M14) so that
+    # the orchestrator can inspect judge audit artifacts after the synthetic flow completes.
+    synthetic: bool = False
 
     def record_judge_turn(self, step_id: str, result) -> None:
         """Record a JudgeResult into ``judge_history`` and ``judge_outcome``.
@@ -971,6 +975,7 @@ def persist_flow(state: FlowState) -> None:
         "cwd":                state.cwd,
         "judge_history":      state.judge_history,
         "judge_outcome":      state.judge_outcome,
+        "synthetic":          state.synthetic,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -1038,29 +1043,35 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         cwd=payload.get("cwd", ""),
         judge_history=payload.get("judge_history", {}),
         judge_outcome=payload.get("judge_outcome", {}),
+        synthetic=payload.get("synthetic", False),
     )
 
 
-def delete_persisted_flow(flow_id: str) -> None:
+def delete_persisted_flow(flow_id: str, *, synthetic: bool = False) -> None:
     """Remove the persistence file for a completed flow.
 
     STRAT-JUDGE v1: also removes the per-flow judge staging tree at
     ``~/.stratum/judge/<flow_id>/`` so that judge audit artifacts share
     the lifecycle of the flow record (design line 286).
+
+    STRAT-GOAL v1: when ``synthetic=True``, skip judge-tree cleanup (PRD M14).
+    The goal orchestrator reads judge audit artifacts after the synthetic flow
+    completes; they are cleaned up by ``stratum_goal_archive`` instead.
     """
     try:
         (_FLOWS_DIR / f"{flow_id}.json").unlink(missing_ok=True)
     except OSError:
         pass
-    try:
-        import shutil as _shutil
-        from stratum.judge.staging import JUDGE_ROOT
-        judge_dir = JUDGE_ROOT / flow_id
-        if judge_dir.exists():
-            _shutil.rmtree(judge_dir, ignore_errors=True)
-    except Exception:
-        # Judge tree cleanup is best-effort; never block flow deletion.
-        pass
+    if not synthetic:
+        try:
+            import shutil as _shutil
+            from stratum.judge.staging import JUDGE_ROOT
+            judge_dir = JUDGE_ROOT / flow_id
+            if judge_dir.exists():
+                _shutil.rmtree(judge_dir, ignore_errors=True)
+        except Exception:
+            # Judge tree cleanup is best-effort; never block flow deletion.
+            pass
 
 
 # ---------------------------------------------------------------------------

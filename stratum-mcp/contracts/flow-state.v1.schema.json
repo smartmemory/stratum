@@ -20,7 +20,8 @@
     "step_outputs":     { "type": "object" },
     "records":          { "type": "array", "items": { "$ref": "#/$defs/Record" } },
     "rounds":           { "type": "array", "items": { "type": "array" } },
-    "ordered_steps":    { "type": "array", "items": { "$ref": "#/$defs/StepSummary" } }
+    "ordered_steps":    { "type": "array", "items": { "$ref": "#/$defs/StepSummary" } },
+    "synthetic":        { "type": "boolean", "default": false }
   },
   "$defs": {
     "StepSummary": {

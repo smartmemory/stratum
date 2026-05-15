@@ -19,7 +19,8 @@
         "round":            { "type": "integer", "minimum": 0 },
         "step_count":       { "type": "integer", "minimum": 0 },
         "completed_steps":  { "type": "integer", "minimum": 0 },
-        "terminal_status":  { "type": ["string", "null"] }
+        "terminal_status":  { "type": ["string", "null"] },
+        "synthetic":        { "type": "boolean", "default": false }
       }
     }
   }
