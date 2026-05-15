@@ -151,8 +151,9 @@ def test_evidence_citation_format_enforced(validator: Draft7Validator) -> None:
     assert errors, "expected schema rejection for malformed citation"
 
 
-def test_predicates_minitems_enforced(validator: Draft7Validator) -> None:
-    """JudgeResult with empty predicates list should fail at the schema layer."""
+def test_predicates_empty_allowed_for_zero_turn_results(validator: Draft7Validator) -> None:
+    """Empty predicates list is permitted at the schema layer (STRAT-GOAL v1 loosening) —
+    zero-turn results from budget exhaustion before any judge call must serialise."""
     result = JudgeResult(
         clean=True,
         met=True,
@@ -165,7 +166,7 @@ def test_predicates_minitems_enforced(validator: Draft7Validator) -> None:
         judge_kernel_meta=JudgeKernelMeta(decomposer_mode="user"),
     )
     errors = list(validator.iter_errors(result.to_dict()))
-    assert errors, "expected schema rejection for empty predicates list"
+    assert not errors, f"expected no schema errors, got {errors}"
 
 
 # ----------------------------------------------------------------------------
