@@ -63,15 +63,54 @@ def test_t3_prompt_is_cold_no_t2_leak(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_evaluate_t3_dispatch_kwargs(tmp_path):
+async def test_evaluate_t3_dispatch_jailed_codex(tmp_path, monkeypatch):
+    """STRAT-JUDGE-T3-READJAIL: jail available → cross-model jailed Codex."""
+    import stratum.judge.verifier as vmod
+
+    monkeypatch.setattr(vmod, "read_jail_available", lambda: True)
     run = _CaptureRun(verdict="not_met")
     root = _stage(tmp_path)
-    await evaluate_t3(_pred(), root, run, ctx=None)
+    rec, _ = await evaluate_t3(_pred(), root, run, ctx=None)
+    kw = run.calls[0]
+    assert kw["type"] == "codex"
+    assert kw["read_jail"] == str(root)
+    assert kw["cwd"] == str(root)
+    assert rec.reason.startswith("[t3:codex_jailed] ")
+
+
+@pytest.mark.asyncio
+async def test_evaluate_t3_dispatch_claude_fallback(tmp_path, monkeypatch):
+    """Probe-time degrade: no jail → in-process Claude cold-read, honest tag."""
+    import stratum.judge.verifier as vmod
+
+    monkeypatch.setattr(vmod, "read_jail_available", lambda: False)
+    run = _CaptureRun(verdict="not_met")
+    root = _stage(tmp_path)
+    rec, _ = await evaluate_t3(_pred(), root, run, ctx=None)
     kw = run.calls[0]
     assert kw["type"] == "claude"
     assert kw["allowed_tools"] == T3_ALLOWED_TOOLS == ["Read", "Grep", "Glob"]
     assert "Bash" in kw["disallowed_tools"]
     assert kw["cwd"] == str(root)
+    assert rec.reason.startswith("[t3:claude_cold_fallback] ")
+
+
+@pytest.mark.asyncio
+async def test_evaluate_t3_jailed_error_not_silent_fallback(tmp_path, monkeypatch):
+    """Post-launch jailed failure → codex_jailed_error, NOT relabeled fallback."""
+    import stratum.judge.verifier as vmod
+
+    monkeypatch.setattr(vmod, "read_jail_available", lambda: True)
+
+    async def boom(**kw):
+        raise RuntimeError("sandbox-exec failed to start")
+
+    root = _stage(tmp_path)
+    rec, ev = await evaluate_t3(_pred(), root, boom, ctx=None)
+    assert rec.verdict == "ambiguous"
+    assert rec.reason.startswith("[t3:codex_jailed_error] ")
+    assert "claude_cold_fallback" not in rec.reason
+    assert ev == []
 
 
 @pytest.mark.asyncio
@@ -102,8 +141,10 @@ async def _run(stakes, t2_verdict, t3_verdict, ptype="judged", tmp=None, monkeyp
 
     async def fake_t3(p, root, run, ctx):
         t3_called["n"] += 1
+        # Real evaluate_t3 always tags the lane; probe is False today so
+        # the honest default lane is the Claude cold-read fallback.
         return TierRecord(tier="T3", verdict=t3_verdict, confidence=8,
-                          reason="adv"), []
+                          reason="[t3:claude_cold_fallback] adv"), []
 
     monkeypatch.setattr(kmod, "evaluate_t2", fake_t2)
     monkeypatch.setattr(kmod, "evaluate_t3", fake_t3)
@@ -144,6 +185,104 @@ async def test_paranoid_disagreement_to_ambiguous(tmp_path, monkeypatch):
 async def test_paranoid_t3_not_run_on_t2_not_met(tmp_path, monkeypatch):
     res, n_t3 = await _run("paranoid", "not_met", "met", tmp=tmp_path, monkeypatch=monkeypatch)
     assert n_t3 == 0  # adversary only attacks met claims
+
+
+@pytest.mark.asyncio
+async def test_per_predicate_t3_provenance_populated(tmp_path, monkeypatch):
+    """paranoid + T2 met → PredicateResult.t3 honest + descriptive."""
+    res, n = await _run("paranoid", "met", "met", tmp=tmp_path, monkeypatch=monkeypatch)
+    pr = res.predicates[0]
+    assert pr.t3 is not None
+    assert pr.t3.mode in ("codex_jailed", "claude_cold_fallback")
+    assert pr.t3.residual  # never empty, never rounded to "confined"
+    assert "confined" not in pr.t3.residual.lower()
+    # aggregate is a summary over per-predicate truth, not a flat label
+    s = res.meta["t3_summary"]
+    assert s["reached"] == 1 and sum(s["by_mode"].values()) == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_path_error_not_labeled_jailed(tmp_path, monkeypatch):
+    """A failure on the Claude fallback path must NOT claim a jailed
+    launch that never happened (review finding 1)."""
+    import stratum.judge.verifier as vmod
+
+    monkeypatch.setattr(vmod, "read_jail_available", lambda: False)
+
+    async def boom(**kw):
+        raise RuntimeError("claude transport died")
+
+    rec, _ = await evaluate_t3(_pred(), _stage(tmp_path), boom, ctx=None)
+    assert rec.reason.startswith("[t3:claude_cold_fallback] ")
+    assert "codex_jailed_error" not in rec.reason
+
+
+@pytest.mark.asyncio
+async def test_no_staged_evidence_yields_no_t3_provenance(tmp_path, monkeypatch):
+    """No adversary ran → PredicateResult.t3 is None, never a fabricated
+    lane inferred from an ambient probe (review finding 2)."""
+    async def fake_t2(p, root, run, ctx):
+        return TierRecord("T2", "met", 9, "r"), []
+
+    # real evaluate_t3: empty staging → untagged 't3_no_staged_evidence'
+    monkeypatch.setattr(kmod, "evaluate_t2", fake_t2)
+    res = await run_judge(
+        flow_id="f1", step_id="s1",
+        predicates=[Predicate(id="p1", type="judged", statement="x", applied_gate=7)],
+        artifacts={}, modified_files=[], stakes="paranoid",
+        budget=BudgetCaps(), workspace_root=tmp_path,
+        stratum_agent_run=_CaptureRun(), ctx=None,
+    )
+    # End-to-end honesty: meta, summary, degraded_judged and the
+    # disagreement list ALL agree no adversary ran.
+    assert res.predicates[0].t3 is None  # honest absence
+    assert res.meta["t3_summary"]["reached"] == 0
+    assert "T3" not in res.summary  # summary must not advertise T3
+    assert res.tier_disagreements == []  # no fabricated disagreement
+    assert res.judge_kernel_meta.degraded_judged is True  # judged, no adversary
+    assert res.predicates[0].verdict == "met"  # T2 stands, not faked-ambiguous
+    assert all(tr.tier != "T3" for tr in res.predicates[0].tier_history)
+
+
+@pytest.mark.asyncio
+async def test_inconclusive_t3_not_called_counterexample(tmp_path, monkeypatch):
+    """ambiguous T3 → disagreement resolution is t3_inconclusive, not a
+    fabricated adversary_counterexample (review finding 3)."""
+    res, _ = await _run("paranoid", "met", "ambiguous", tmp=tmp_path, monkeypatch=monkeypatch)
+    assert res.met is False
+    assert len(res.tier_disagreements) == 1
+    assert res.tier_disagreements[0]["resolution"] == "t3_inconclusive"
+
+
+@pytest.mark.asyncio
+async def test_mixed_predicates_t3_only_on_reached(tmp_path, monkeypatch):
+    """One predicate reaches T3 (T2 met), one does not (T2 not_met). The
+    per-predicate t3 is populated only on the first; the aggregate
+    reflects the mix rather than flattening it."""
+    async def fake_t2(p, root, run, ctx):
+        # p_yes -> met (reaches T3); p_no -> not_met (no T3)
+        v = "met" if p.id == "p_yes" else "not_met"
+        return TierRecord("T2", v, 9, "r"), []
+
+    async def fake_t3(p, root, run, ctx):
+        return TierRecord("T3", "met", 8, "[t3:codex_jailed] ok"), []
+
+    monkeypatch.setattr(kmod, "evaluate_t2", fake_t2)
+    monkeypatch.setattr(kmod, "evaluate_t3", fake_t3)
+    res = await run_judge(
+        flow_id="f1", step_id="s1",
+        predicates=[
+            Predicate(id="p_yes", type="judged", statement="x", applied_gate=7),
+            Predicate(id="p_no", type="judged", statement="y", applied_gate=7),
+        ],
+        artifacts={}, modified_files=[], stakes="paranoid",
+        budget=BudgetCaps(), workspace_root=tmp_path,
+        stratum_agent_run=_CaptureRun(), ctx=None,
+    )
+    by_id = {pr.id: pr for pr in res.predicates}
+    assert by_id["p_yes"].t3 is not None and by_id["p_yes"].t3.mode == "codex_jailed"
+    assert by_id["p_no"].t3 is None  # absence is the honest signal
+    assert res.meta["t3_summary"]["reached"] == 1
 
 
 @pytest.mark.asyncio

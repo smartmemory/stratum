@@ -25,6 +25,7 @@ def make_agent_connector(
     disallowed_tools: Optional[list[str]] = None,
     thinking: Optional[dict] = None,
     effort: Optional[str] = None,
+    read_jail: Optional[str] = None,
 ) -> AgentConnector:
     """Factory — raises ValueError on unknown type or bad codex model.
 
@@ -46,6 +47,7 @@ def make_agent_connector(
         codex_kwargs: dict[str, Any] = {
             "model_id": model_id or "gpt-5.4",
             "cwd": cwd,
+            "read_jail": read_jail,
         }
         return CodexConnector(**codex_kwargs)
     kwargs: dict[str, Any] = {"cwd": cwd}
