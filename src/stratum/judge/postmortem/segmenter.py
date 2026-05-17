@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from stratum.judge.postmortem.loader import Event, Session
+from stratum.judge.postmortem.llm_gate import (
+    GateVerdict,
+    SegmenterGate,
+    SegmentStats,
+)
 
 # --- Request detection -------------------------------------------------------
 
@@ -151,6 +156,7 @@ class Candidate:
     claim_marker: Event
     claim_kind: Literal["explicit", "structural"]
     post_claim_events: list[Event] = field(default_factory=list)
+    gate_verdict: GateVerdict | None = None
 
 
 def _is_request(event: Event) -> bool:
@@ -204,15 +210,21 @@ def _is_explicit_claim(event: Event) -> bool:
     return False
 
 
-def _last_assistant_text_before(events: list[Event], idx: int) -> Event | None:
-    """Walk backwards from idx-1 looking for the last assistant_text event."""
-    for j in range(idx - 1, -1, -1):
-        if events[j].kind == "assistant_text":
-            return events[j]
-    return None
+def _work_summary(work_span: list[Event]) -> str:
+    """One-line tool summary for the gate prompt (mirrors cli.py:62-65)."""
+    names = [ev.tool_name for ev in work_span if ev.kind == "tool_use" and ev.tool_name]
+    if not names:
+        return "(no tool activity)"
+    return ", ".join(names[:50])
 
 
-def segment(session: Session) -> list[Candidate]:
+def segment(
+    session: Session,
+    *,
+    gate: SegmenterGate | None = None,
+    gate_threshold: float = 0.7,
+    stats: SegmentStats | None = None,
+) -> list[Candidate]:
     """Produce candidate goals from a Session's event stream.
 
     Strategy: walk the events linearly. When a request is found, scan forward
@@ -220,6 +232,15 @@ def segment(session: Session) -> list[Candidate]:
     next request (structural boundary — the prior work was implicitly closed
     by the user moving on). The last assistant_text inside the span is treated
     as the structural claim marker.
+
+    If ``gate`` is provided it runs the recall→precision second stage: each
+    assembled candidate is checked for request↔claim coherence and dropped
+    only when the gate is confident they are *different* tasks
+    (``applied and not same_task and confidence >= gate_threshold``).
+    Fail-open verdicts (``applied=False``) never drop. ``gate=None``
+    preserves pre-v2.1 *segmenter behavior* (candidate identity, span,
+    claim); the serialized JSONL legitimately changes — schema is now 1.1
+    with an always-present ``gate`` key (null when the gate is off).
     """
     events = session.events
     candidates: list[Candidate] = []
@@ -286,20 +307,41 @@ def segment(session: Session) -> list[Candidate]:
         post_claim = events[claim_idx + 1 : post_end]
 
         cand_id = f"{session.session_id}:L{req_event.line_no}"
-        candidates.append(
-            Candidate(
-                session_id=session.session_id,
-                candidate_id=cand_id,
-                request_text=req_event.text,
-                request_line=req_event.line_no,
-                request_index=i,
-                work_span=work_span,
-                claim_marker=claim_marker,
-                claim_kind=claim_kind,
-                post_claim_events=post_claim,
-            )
+        cand = Candidate(
+            session_id=session.session_id,
+            candidate_id=cand_id,
+            request_text=req_event.text,
+            request_line=req_event.line_no,
+            request_index=i,
+            work_span=work_span,
+            claim_marker=claim_marker,
+            claim_kind=claim_kind,
+            post_claim_events=post_claim,
         )
 
+        drop = False
+        if gate is not None:
+            verdict = gate.check(
+                req_event.text or "",
+                claim_marker.text or "",
+                _work_summary(work_span),
+            )
+            cand.gate_verdict = verdict
+            if stats is not None:
+                stats.gate_checked += 1
+            if (
+                verdict.applied
+                and verdict.same_task is False
+                and verdict.confidence >= gate_threshold
+            ):
+                drop = True
+                if stats is not None:
+                    stats.gate_rejected += 1
+
+        if not drop:
+            candidates.append(cand)
+
         # Advance past the claim so we don't double-count overlapping requests
+        # (unconditional — a gate-dropped span must not be re-segmented).
         i = claim_idx + 1
     return candidates

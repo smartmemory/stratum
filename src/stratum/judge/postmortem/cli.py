@@ -21,6 +21,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
+from stratum.judge.postmortem.llm_gate import (
+    DEFAULT_GATE_MODEL,
+    DEFAULT_GATE_THRESHOLD,
+    LiteLLMGate,
+    SegmentStats,
+)
 from stratum.judge.postmortem.loader import iter_sessions
 from stratum.judge.postmortem.segmenter import Candidate, segment
 from stratum.judge.postmortem.signals import CandidateLabel, label_candidate
@@ -29,7 +35,7 @@ DEFAULT_PROJECT = Path.home() / ".claude/projects/-Users-ruze-reg-my-forge"
 DEFAULT_PROJECTS_ROOT = Path.home() / ".claude/projects"
 DEFAULT_OUT = Path(".stratum/postmortem/candidates.jsonl")
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 def _event_to_dict(ev) -> dict[str, Any]:
@@ -68,7 +74,17 @@ def _candidate_to_dict(c: Candidate, lab: CandidateLabel, project: str = "") -> 
         "label_confidence": lab.confidence,
         "label_rationale": lab.rationale,
         "signal_hits": [dataclasses.asdict(h) for h in lab.hits],
+        "gate": (dataclasses.asdict(c.gate_verdict) if c.gate_verdict else None),
     }
+
+
+def _unit_float(raw: str) -> float:
+    """argparse type: a float in [0.0, 1.0]. Out-of-range silently distorts
+    the corpus (>1 disables rejection, <0 over-rejects), so reject early."""
+    v = float(raw)
+    if not (0.0 <= v <= 1.0):
+        raise argparse.ArgumentTypeError(f"must be in [0.0, 1.0], got {v}")
+    return v
 
 
 def _resolve_out(out: Path) -> Path:
@@ -101,6 +117,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
     sessions_seen = 0
     per_project: dict[str, int] = {}
     empties = 0
+
+    gate = None
+    seg_stats: SegmentStats | None = None
+    if getattr(args, "llm_gate", False):
+        gate = LiteLLMGate(model=args.gate_model)
+        seg_stats = SegmentStats()
     with out_path.open("w", encoding="utf-8") as fh:
         for pdir in project_dirs:
             if not pdir.exists() or not pdir.is_dir():
@@ -109,7 +131,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
             project_count = 0
             for sess in iter_sessions(pdir):
                 sessions_seen += 1
-                cands = segment(sess)
+                cands = segment(
+                    sess,
+                    gate=gate,
+                    gate_threshold=getattr(args, "gate_threshold", DEFAULT_GATE_THRESHOLD),
+                    stats=seg_stats,
+                )
                 if not cands:
                     empties += 1
                 for c in cands:
@@ -127,6 +154,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
     print(f"extracted {total} candidates from {sessions_seen} sessions across {len(per_project)} projects")
     print(f"  per-session avg: {total / max(sessions_seen, 1):.2f}")
     print(f"  sessions with 0 candidates: {empties}")
+    if seg_stats is not None:
+        print(
+            f"  llm-gate: on model={args.gate_model} "
+            f"checked={seg_stats.gate_checked} rejected={seg_stats.gate_rejected}"
+        )
+    else:
+        print("  llm-gate: off")
     print(f"  written to: {out_path}")
     top = sorted(per_project.items(), key=lambda x: -x[1])[:10]
     if top and top[0][1] > 0:
@@ -256,6 +290,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"Parent of project dirs when --all is used (default: {DEFAULT_PROJECTS_ROOT})")
     pe.add_argument("--out", type=Path, default=DEFAULT_OUT,
                     help=f"Output JSONL (default: {DEFAULT_OUT})")
+    pe.add_argument("--llm-gate", action="store_true",
+                    help="Run the cheap-SLM request/claim same-task gate (opt-in; costs API spend)")
+    pe.add_argument("--gate-model", default=DEFAULT_GATE_MODEL,
+                    help=f"litellm model for the gate (default: {DEFAULT_GATE_MODEL})")
+    pe.add_argument("--gate-threshold", type=_unit_float, default=DEFAULT_GATE_THRESHOLD,
+                    help=f"Min confidence to drop a mismatched candidate (default: {DEFAULT_GATE_THRESHOLD})")
     pe.set_defaults(func=cmd_extract)
 
     ps = sub.add_parser("sample", help="Print N random candidates for hand-review.")

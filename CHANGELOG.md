@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-JUDGE-POSTMORTEM-v2.1): LLM-augmented segmenter gate
+
+- **New `stratum.judge.postmortem.llm_gate`:** opt-in request↔claim same-task gate that runs after the regex segmenter (recall) as a precision pass. `SegmenterGate` Protocol, pure `build_gate_prompt`/`parse_gate_response`, concrete `LiteLLMGate`, `GateVerdict`, `SegmentStats`.
+- **Routed through the declared `litellm` dependency** (not the undeclared `anthropic` SDK); default model `claude-haiku-4-5`.
+- **Fail-open contract:** any gate error, malformed JSON, semantically-invalid output (pydantic `StrictBool` + `[0,1]` confidence), or non-string `message.content` keeps the candidate (`applied=False`) — a calibration corpus never silently shrinks.
+- **`segment()`** gains keyword-only `gate`/`gate_threshold`/`stats`; `Candidate.gate_verdict`; `gate=None` preserves pre-v2.1 segmenter behavior. Removed dead `_last_assistant_text_before`.
+- **CLI:** `extract --llm-gate`, `--gate-model`, `--gate-threshold` (range-validated to `[0,1]`); summary reports `checked`/`rejected`.
+- **Schema 1.0 → 1.1:** additive `gate` key on each candidate record (null when off).
+- **25 tests** in `tests/test_postmortem_gate.py`. 3 Codex review rounds → CLEAN.
+
 ### stratum-mcp — feat(STRAT-GOAL-V1): goal orchestrator with 4 MCP tools
 
 - **4 new MCP tools:** `stratum_goal`, `stratum_goal_status`, `stratum_goal_decide`, `stratum_goal_archive`
