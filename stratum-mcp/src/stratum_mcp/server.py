@@ -143,6 +143,7 @@ async def stratum_agent_run(
     thinking: Optional[dict] = None,
     effort: Optional[str] = None,
     cwd: Optional[str] = None,
+    read_jail: Optional[str] = None,
     correlation_id: Optional[str] = None,
 ) -> dict[str, Any]:
     if not prompt or not prompt.strip():
@@ -160,6 +161,7 @@ async def stratum_agent_run(
         disallowed_tools=disallowed_tools,
         thinking=thinking,
         effort=effort,
+        read_jail=read_jail,
     )
 
     flow_id = correlation_id or str(_uuid.uuid4())

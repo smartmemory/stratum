@@ -15,12 +15,17 @@ as ``-c model_reasoning_effort="<effort>"``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import time
 from typing import Any, AsyncIterator, Optional
+
+from stratum.judge.sandbox import build_seatbelt_profile
 
 from ..events import INTERNAL_RESULT_KIND, ConnectorEvent
 from .base import AgentConnector, Event, inject_schema
@@ -127,12 +132,76 @@ class CodexConnector(AgentConnector):
     """Spawns the `codex` CLI directly per prompt."""
 
     def __init__(
-        self, *, model_id: str = _DEFAULT_MODEL_ID, cwd: Optional[str] = None
+        self,
+        *,
+        model_id: str = _DEFAULT_MODEL_ID,
+        cwd: Optional[str] = None,
+        read_jail: Optional[str] = None,
     ):
         _assert_codex_model(model_id)
         self._default_model_id = model_id
         self._cwd = cwd or os.getcwd()
         self._proc: Optional[asyncio.subprocess.Process] = None
+        # STRAT-JUDGE-T3-READJAIL: when set, the codex subprocess is wrapped
+        # in `sandbox-exec -f <profile>` confining filesystem reads to this
+        # path (the staged turn tree). None = no jail (every existing
+        # caller is byte-for-byte unchanged).
+        self._read_jail = read_jail
+        self._jail_profile: Optional[str] = None
+        self._jail_scratch: Optional[str] = None
+
+    def _build_codex_cmd(self, args: list[str]) -> list[str]:
+        """Return argv to spawn. With a read-jail active, prepend
+        `sandbox-exec -f <profile>` and add `--ephemeral` (primary
+        candidate for read-only ~/.codex — see design; the live smoke
+        gate decides if a writable subset is also required).
+
+        Materializes the profile + a scratch dir as a side effect; both
+        are torn down by :meth:`_cleanup_jail` after the child exits.
+        """
+        if not self._read_jail:
+            return ["codex", *args]
+        self._jail_scratch = tempfile.mkdtemp(prefix="stratum-readjail-scratch-")
+        fd, profile = tempfile.mkstemp(suffix=".sb", prefix="stratum-readjail-")
+        with os.fdopen(fd, "w") as f:
+            f.write(build_seatbelt_profile(self._read_jail, self._jail_scratch))
+        self._jail_profile = profile
+        # `--ephemeral` is an `exec` subcommand flag, not a top-level one —
+        # it MUST follow the `exec` token (args[0]). (Verified by the live
+        # gate: `codex --ephemeral exec` errors "unexpected argument".)
+        if args and args[0] == "exec":
+            jailed_args = [args[0], "--ephemeral", *args[1:]]
+        else:
+            jailed_args = ["--ephemeral", *args]
+        return ["sandbox-exec", "-f", profile, "codex", *jailed_args]
+
+    async def _cleanup_jail(
+        self, proc: Optional[asyncio.subprocess.Process]
+    ) -> None:
+        """Terminate+await the confined child BEFORE removing the profile.
+
+        `sandbox-exec` reads the `.sb` for the lifetime of the wrapped
+        process; unlinking it while codex is still alive would break the
+        jail. Safe to call on every path including FileNotFoundError
+        (proc may be None) and is idempotent.
+        """
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+        if self._jail_profile:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(self._jail_profile)
+            self._jail_profile = None
+        if self._jail_scratch:
+            shutil.rmtree(self._jail_scratch, ignore_errors=True)
+            self._jail_scratch = None
 
     async def run(
         self,
@@ -183,10 +252,10 @@ class CodexConnector(AgentConnector):
         for var in _CODEX_SCRUB_VARS:
             clean_env.pop(var, None)
 
+        codex_cmd = self._build_codex_cmd(args)
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                "codex",
-                *args,
+                *codex_cmd,
                 cwd=resolved_cwd,
                 env=clean_env,
                 stdin=asyncio.subprocess.PIPE,
@@ -195,6 +264,7 @@ class CodexConnector(AgentConnector):
                 limit=_CODEX_STDOUT_LIMIT,
             )
         except FileNotFoundError:
+            await self._cleanup_jail(None)
             yield {
                 "type": "error",
                 "message": (
@@ -310,6 +380,7 @@ class CodexConnector(AgentConnector):
                     await t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            await self._cleanup_jail(proc)
             self._proc = None
 
     async def stream_events(
@@ -356,10 +427,10 @@ class CodexConnector(AgentConnector):
         for var in _CODEX_SCRUB_VARS:
             clean_env.pop(var, None)
 
+        codex_cmd = self._build_codex_cmd(args)
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                "codex",
-                *args,
+                *codex_cmd,
                 cwd=resolved_cwd,
                 env=clean_env,
                 stdin=asyncio.subprocess.PIPE,
@@ -368,6 +439,7 @@ class CodexConnector(AgentConnector):
                 limit=_CODEX_STDOUT_LIMIT,
             )
         except FileNotFoundError:
+            await self._cleanup_jail(None)
             raise RuntimeError(
                 f"{_AGENT_NAME}: codex binary not found on PATH. "
                 "Install with: npm i -g @openai/codex  (or: brew install codex)"
@@ -509,6 +581,7 @@ class CodexConnector(AgentConnector):
                 await stderr_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+            await self._cleanup_jail(proc)
             self._proc = None
 
     def interrupt(self) -> None:

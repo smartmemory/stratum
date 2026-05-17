@@ -28,6 +28,7 @@ from pathlib import Path
 
 from .errors import CitationFormatError
 from .result import Evidence, Predicate, TierRecord
+from .sandbox import read_jail_available
 
 # Canonical citation regex — single source of truth, mirrored in
 # compose/contracts/judge-result.json (evidence.source.pattern).
@@ -63,7 +64,17 @@ For each predicate you receive, return JSON:
 # "## v2 slice 1" / STRAT-JUDGE-T3-READJAIL.
 T3_ALLOWED_TOOLS = ["Read", "Grep", "Glob"]
 T3_DISALLOWED_TOOLS = T2_DISALLOWED_TOOLS  # already includes Bash
-T3_DEFAULT_MODEL = T2_DEFAULT_MODEL  # same family; cold context + adversarial framing differentiate
+# STRAT-JUDGE-T3-READJAIL: T3 is now a true cross-model adversary —
+# jailed Codex when an OS read-jail is available, else the v1 in-process
+# Claude cold-read as the honest probe-time degrade.
+T3_DEFAULT_MODEL = "gpt-5.4"  # codex (cross-model) when jailed
+T3_FALLBACK_MODEL = T2_DEFAULT_MODEL  # claude cold-read degrade
+
+# Machine tag prefixed onto the T3 TierRecord.reason so the kernel can
+# record honest per-predicate provenance without changing the 2-tuple
+# return contract (and without re-deriving the lane). Stripped before the
+# reason is shown to a human.
+_T3_MODE_TAG_RE = re.compile(r"^\[t3:(codex_jailed|codex_jailed_error|claude_cold_fallback)\] ")
 
 T3_SYSTEM_PROMPT = """\
 You are an ADVERSARY. A worker has claimed a predicate is met. Your job is
@@ -249,29 +260,64 @@ async def evaluate_t3(
         )
 
     prompt = _build_t3_prompt(predicate, staging_root)
-    response = await stratum_agent_run(
-        prompt=prompt,
-        ctx=ctx,
-        type="claude",
-        model_id=T3_DEFAULT_MODEL,
-        allowed_tools=T3_ALLOWED_TOOLS,
-        disallowed_tools=T3_DISALLOWED_TOOLS,
-        cwd=str(staging_root),
-    )
-    if isinstance(response, dict):
-        response_text = response.get("text", "")
-    else:
-        response_text = response
-    parsed = _parse_t2_json(response_text)  # format-generic parser, reused
-    evidence = [Evidence(**e) for e in parsed.get("evidence", [])]
-    _validate_citations(evidence, staging_root)
+    jailed = read_jail_available()
+    mode = "codex_jailed" if jailed else "claude_cold_fallback"
+
+    try:
+        if jailed:
+            # True cross-model adversary, OS read-jailed to the staged
+            # turn tree. read_jail is codex-only (claude runs in-process,
+            # unjailable). --ephemeral is added by the connector.
+            response = await stratum_agent_run(
+                prompt=prompt,
+                ctx=ctx,
+                type="codex",
+                model_id=T3_DEFAULT_MODEL,
+                cwd=str(staging_root),
+                read_jail=str(staging_root),
+            )
+        else:
+            # Probe-time degrade (NOT post-launch): in-process Claude
+            # cold-read. Honest label; reasoning-isolation + ordering only.
+            response = await stratum_agent_run(
+                prompt=prompt,
+                ctx=ctx,
+                type="claude",
+                model_id=T3_FALLBACK_MODEL,
+                allowed_tools=T3_ALLOWED_TOOLS,
+                disallowed_tools=T3_DISALLOWED_TOOLS,
+                cwd=str(staging_root),
+            )
+        if isinstance(response, dict):
+            response_text = response.get("text", "")
+        else:
+            response_text = response
+        parsed = _parse_t2_json(response_text)  # format-generic parser, reused
+        evidence = [Evidence(**e) for e in parsed.get("evidence", [])]
+        _validate_citations(evidence, staging_root)
+    except Exception as exc:  # noqa: BLE001
+        # Honest by lane: a jailed-Codex post-launch failure is
+        # codex_jailed_error (NEVER silently relabeled to a weaker
+        # guarantee). A failure on the Claude fallback path is just a
+        # degraded-fallback error — it must NOT claim a jailed launch
+        # that never happened. Either way the kernel resolves ambiguous.
+        err_tag = "codex_jailed_error" if jailed else "claude_cold_fallback"
+        return (
+            TierRecord(
+                tier="T3",
+                verdict="ambiguous",
+                confidence=0,
+                reason=f"[t3:{err_tag}] {type(exc).__name__}: {exc}",
+            ),
+            [],
+        )
 
     return (
         TierRecord(
             tier="T3",
             verdict=parsed["verdict"],
             confidence=int(parsed["confidence"]),
-            reason=parsed.get("reason", ""),
+            reason=f"[t3:{mode}] " + parsed.get("reason", ""),
         ),
         evidence,
     )

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Optional
 
 from .errors import (
     BudgetExceededError,
@@ -38,10 +39,18 @@ from .result import (
     JudgeResult,
     Predicate,
     PredicateResult,
+    T3Provenance,
     TierRecord,
+    make_t3_provenance,
 )
 from .staging import stage_turn
-from .verifier import evaluate_t2, evaluate_t3
+from .verifier import (
+    T3_DEFAULT_MODEL,
+    T3_FALLBACK_MODEL,
+    _T3_MODE_TAG_RE,
+    evaluate_t2,
+    evaluate_t3,
+)
 
 
 async def run_judge(
@@ -102,6 +111,7 @@ async def run_judge(
         # predicates/turns remain on disk — a hard jail is
         # STRAT-JUDGE-T3-READJAIL; this is the cheap correct mitigation.)
         pending_logs: list[dict] = []
+        t3_prov: Optional[T3Provenance] = None
 
         # Tiers run inside try/finally: pending_logs is flushed in
         # `finally` so (a) same-predicate rows never hit disk before
@@ -148,18 +158,50 @@ async def run_judge(
                     t3, t3_ev = await evaluate_t3(
                         p, turn_dir, stratum_agent_run, ctx
                     )
-                    ran_t3 = True
-                    history.append(t3)
-                    evidence.extend(t3_ev)
-                    pending_logs.append(
-                        {
-                            "predicate_id": p.id,
-                            "tier": "T3",
-                            "verdict": t3.verdict,
-                            "confidence": t3.confidence,
-                        }
-                    )
-                    if t3.verdict == "met":
+                    # Honest provenance ONLY when an adversary actually
+                    # ran a lane and said so via its machine tag. Untagged
+                    # reasons (the no-staged-evidence fail-safe, or a test
+                    # fake) mean NO adversary ran — t3_prov stays None, the
+                    # predicate is NOT credited with adversarial review
+                    # (ran_t3 stays False ⇒ judged ⇒ degraded_judged), and
+                    # nothing is framed as "adversary:".
+                    _m = _T3_MODE_TAG_RE.match(t3.reason or "")
+                    if _m:
+                        _mode = _m.group(1)
+                        t3 = TierRecord(
+                            tier=t3.tier,
+                            verdict=t3.verdict,
+                            confidence=t3.confidence,
+                            reason=_T3_MODE_TAG_RE.sub("", t3.reason, count=1),
+                        )
+                        t3_prov = make_t3_provenance(
+                            _mode,
+                            codex_model=T3_DEFAULT_MODEL,
+                            claude_model=T3_FALLBACK_MODEL,
+                        )
+                        ran_t3 = True
+                        # Only a real adversary run is recorded as a T3
+                        # tier (history + audit). The untagged
+                        # no-staged-evidence fail-safe is NOT a tier that
+                        # executed — recording it would make _build_summary
+                        # advertise "T3" while meta/degraded say none ran.
+                        history.append(t3)
+                        evidence.extend(t3_ev)
+                        pending_logs.append(
+                            {
+                                "predicate_id": p.id,
+                                "tier": "T3",
+                                "verdict": t3.verdict,
+                                "confidence": t3.confidence,
+                            }
+                        )
+                    if not ran_t3:
+                        # No adversary actually ran (e.g. no staged
+                        # evidence). T2's verdict stands as-is; the
+                        # judged-degradation is signalled via
+                        # degraded_judged, not by faking an adversary.
+                        final = t2
+                    elif t3.verdict == "met":
                         final = t2  # adversary tried and failed — met stands
                     else:
                         # not_met or ambiguous: T4 quorum is deferred, so we do
@@ -172,11 +214,20 @@ async def run_judge(
                             confidence=t3.confidence or 0,
                             reason=f"adversary: {t3.reason}",
                         )
+                        # Honest resolution label: only a real not_met is a
+                        # counterexample. ambiguous T3 (incl. error) is
+                        # inconclusive — claiming a counterexample there
+                        # would overstate the adversary.
+                        _resolution = (
+                            "adversary_counterexample"
+                            if t3.verdict == "not_met"
+                            else "t3_inconclusive"
+                        )
                         disagreements.append(
                             {
                                 "predicate": p.id,
                                 "tiers": ["T2", "T3"],
-                                "resolution": "adversary_counterexample",
+                                "resolution": _resolution,
                                 "t2_verdict": t2.verdict,
                                 "t3_verdict": t3.verdict,
                             }
@@ -206,6 +257,7 @@ async def run_judge(
                 applied_gate=p.applied_gate,
                 evidence=evidence,
                 tier_history=history,
+                t3=t3_prov,
             )
         )
 
@@ -222,14 +274,37 @@ async def run_judge(
     findings = _findings_from_predicates(predicate_results)
     t1_only = all(pr.type == "deterministic" for pr in predicate_results)
     agent_type = "judge" if t1_only else "claude"
+    # NB: meta.model_id is the T1/T2 worker-lane identity ONLY. When a
+    # paranoid T3 ran it may be a jailed cross-model Codex adversary — the
+    # authoritative T3 model is per-predicate `PredicateResult.t3.model_id`,
+    # never this top-level field (STRAT-JUDGE-T3-READJAIL).
     model_id = None if t1_only else "claude-sonnet-4-6"
     summary = _build_summary(met, predicate_results, degraded_judged, agent_type)
+
+    # Per-predicate T3 provenance rolled up as a SUMMARY (never a single
+    # flattened mode) — descriptive of what actually ran across the mix.
+    _t3s = [pr.t3 for pr in predicate_results if pr.t3 is not None]
+    t3_summary = {
+        "reached": len(_t3s),
+        "by_mode": {
+            m: sum(1 for t in _t3s if t.mode == m)
+            for m in sorted({t.mode for t in _t3s})
+        },
+        "all_jailed": bool(_t3s) and all(t.mode == "codex_jailed" for t in _t3s),
+        "any_degraded": any(
+            t.mode != "codex_jailed" for t in _t3s
+        ),
+    }
 
     return JudgeResult(
         clean=met,
         summary=summary,
         findings=findings,
-        meta={"agent_type": agent_type, "model_id": model_id},
+        meta={
+            "agent_type": agent_type,
+            "model_id": model_id,
+            "t3_summary": t3_summary,
+        },
         judge_version="1.0",
         met=met,
         stakes=stakes,
