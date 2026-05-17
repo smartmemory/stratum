@@ -55,6 +55,40 @@ For each predicate you receive, return JSON:
 }
 """
 
+# --- T3: cold-read adversary (STRAT-JUDGE v2 slice 1) ----------------------
+# Security boundary is REASONING-isolation (this function's signature does not
+# accept the T2 TierRecord/Evidence — it cannot leak what it never receives).
+# Tool-allowlist + cwd-outside-repo + no-Bash are blast-radius hardening, NOT
+# a filesystem read-jail (the connector stack provides none). See design
+# "## v2 slice 1" / STRAT-JUDGE-T3-READJAIL.
+T3_ALLOWED_TOOLS = ["Read", "Grep", "Glob"]
+T3_DISALLOWED_TOOLS = T2_DISALLOWED_TOOLS  # already includes Bash
+T3_DEFAULT_MODEL = T2_DEFAULT_MODEL  # same family; cold context + adversarial framing differentiate
+
+T3_SYSTEM_PROMPT = """\
+You are an ADVERSARY. A worker has claimed a predicate is met. Your job is
+to BREAK that claim: find a concrete counterexample, in the staged evidence,
+showing the predicate is NOT met. You have NOT seen the worker's reasoning
+or any prior verification — only the predicate and the staged tree. Do not
+assume good faith; assume the claim is wrong until the evidence forces
+otherwise. Cite every claim with a path under artifacts/ or modified/ in
+this exact format: <bucket>/<path>:<line>.
+
+Return JSON:
+{
+  "predicate_id": "<id>",
+  "verdict": "not_met" | "met" | "ambiguous",
+  "confidence": <integer 1-10>,
+  "reason": "<the counterexample, or why you could not find one>",
+  "evidence": [
+    {"source": "modified/foo.py:42", "quote": "...", "tier": "T3"}
+  ]
+}
+Reply "not_met" if you found a real counterexample; "met" ONLY if you
+genuinely tried and the evidence withstands the attack; "ambiguous" if the
+staged evidence is insufficient to attack or defend.
+"""
+
 
 async def evaluate_t2(
     predicate: Predicate,
@@ -163,3 +197,81 @@ def _validate_citations(evidence: list[Evidence], staging_root: Path) -> None:
             raise CitationFormatError(
                 f"citation path missing in staging tree: {e.source!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# T3 — cold-read adversary
+# ---------------------------------------------------------------------------
+
+
+def _build_t3_prompt(predicate: Predicate, staging_root: Path) -> str:
+    # Mirrors _build_t2_prompt. Deliberately takes NO T2 record/evidence —
+    # cold-read is enforced by this signature, not by prompt wording.
+    return (
+        f"{T3_SYSTEM_PROMPT}\n"
+        f"You are operating against the staging tree at {staging_root}.\n"
+        f"Predicate id: {predicate.id}\n"
+        f"Predicate type: {predicate.type}\n"
+        f"Predicate statement: {predicate.statement}\n"
+        f"Applied gate (confidence floor for 'met'): {predicate.applied_gate}\n"
+    )
+
+
+def _t3_has_staged_evidence(staging_root: Path) -> bool:
+    for bucket in ("artifacts", "modified"):
+        d = staging_root / bucket
+        if d.is_dir() and any(d.iterdir()):
+            return True
+    return False
+
+
+async def evaluate_t3(
+    predicate: Predicate,
+    staging_root: Path,
+    stratum_agent_run,
+    ctx,
+) -> tuple[TierRecord, list[Evidence]]:
+    """Dispatch a cold-read Claude adversary against the staged turn tree.
+
+    Same shape as :func:`evaluate_t2`. The signature intentionally excludes
+    any T2 ``TierRecord``/``Evidence`` — reasoning-isolation is the security
+    boundary and is enforced structurally here, not by prompt text.
+    """
+    if not staging_root or not _t3_has_staged_evidence(Path(staging_root)):
+        return (
+            TierRecord(
+                tier="T3",
+                verdict="ambiguous",
+                confidence=0,
+                reason="t3_no_staged_evidence",
+            ),
+            [],
+        )
+
+    prompt = _build_t3_prompt(predicate, staging_root)
+    response = await stratum_agent_run(
+        prompt=prompt,
+        ctx=ctx,
+        type="claude",
+        model_id=T3_DEFAULT_MODEL,
+        allowed_tools=T3_ALLOWED_TOOLS,
+        disallowed_tools=T3_DISALLOWED_TOOLS,
+        cwd=str(staging_root),
+    )
+    if isinstance(response, dict):
+        response_text = response.get("text", "")
+    else:
+        response_text = response
+    parsed = _parse_t2_json(response_text)  # format-generic parser, reused
+    evidence = [Evidence(**e) for e in parsed.get("evidence", [])]
+    _validate_citations(evidence, staging_root)
+
+    return (
+        TierRecord(
+            tier="T3",
+            verdict=parsed["verdict"],
+            confidence=int(parsed["confidence"]),
+            reason=parsed.get("reason", ""),
+        ),
+        evidence,
+    )

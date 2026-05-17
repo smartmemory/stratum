@@ -61,12 +61,13 @@ class JudgeStepConfig:
     Mutually exclusive with ``function``/``intent``/``flow_ref`` on a step.
     ``predicates`` is a list of dicts with at minimum ``id``, ``type``,
     ``statement`` (matches the ``Predicate`` dataclass in
-    ``stratum.judge.result``). ``stakes`` defaults to ``"default"``; the
-    v2 ``"paranoid"`` tier ships with T3. ``budget`` is parsed into
-    ``stratum.judge.BudgetCaps`` by the MCP handler.
+    ``stratum.judge.result``). ``stakes`` defaults to ``"default"``;
+    ``"paranoid"`` is live as of STRAT-JUDGE v2 slice 1 — it escalates every
+    interpretive ``met`` through the T3 cold-read adversary. ``budget`` is
+    parsed into ``stratum.judge.BudgetCaps`` by the MCP handler.
     """
     predicates: tuple[dict, ...] = ()
-    stakes: Literal["cheap", "default"] = "default"
+    stakes: Literal["cheap", "default", "paranoid"] = "default"
     budget: dict | None = None
 
 
@@ -401,7 +402,7 @@ _IR_SCHEMA_V02: dict = {
                                 },
                             },
                         },
-                        "stakes": {"enum": ["cheap", "default"]},
+                        "stakes": {"enum": ["cheap", "default", "paranoid"]},
                         "budget": {
                             "type": "object",
                             "properties": {
@@ -593,7 +594,7 @@ _IR_SCHEMA_V03: dict = {
                                 },
                             },
                         },
-                        "stakes": {"enum": ["cheap", "default"]},
+                        "stakes": {"enum": ["cheap", "default", "paranoid"]},
                         "budget": {
                             "type": "object",
                             "properties": {

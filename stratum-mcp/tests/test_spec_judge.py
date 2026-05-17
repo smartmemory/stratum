@@ -196,11 +196,13 @@ class TestJudgeSchema:
                   - id: verify
                     agent: claude
                     judge:
-                      stakes: paranoid
+                      stakes: extreme
                       predicates:
                         - id: p1
                           type: deterministic
                           statement: "True"
             """)
+        # 'paranoid' is valid as of STRAT-JUDGE v2 slice 1; 'extreme' is a
+        # genuinely-unknown stakes value and must still be rejected.
         with pytest.raises(IRValidationError):
             parse_and_validate(yaml_text)

@@ -16,7 +16,6 @@ from stratum.judge import staging as staging_mod
 from stratum.judge.errors import (
     BudgetExceededError,
     EmptyPredicateListError,
-    StakesNotAvailableError,
     StakesPredicateMismatchError,
 )
 from stratum.judge.kernel import (
@@ -75,15 +74,18 @@ async def test_empty_predicates_raises(isolated_judge_root, workspace):
 
 
 @pytest.mark.asyncio
-async def test_paranoid_stakes_raises(isolated_judge_root, workspace):
+async def test_paranoid_stakes_accepted(isolated_judge_root, workspace):
+    """STRAT-JUDGE v2 slice 1: paranoid no longer raises. A deterministic
+    predicate is T1-terminal, so T3 is never reached and no agent runs —
+    the point here is purely that paranoid is now an accepted stakes."""
     p = Predicate(id="d", type="deterministic", statement="True")
-    with pytest.raises(StakesNotAvailableError):
-        await run_judge(
-            flow_id="F", step_id="S", predicates=[p],
-            artifacts={}, modified_files=[], stakes="paranoid",
-            budget=None, workspace_root=workspace,
-            stratum_agent_run=AsyncMock(), ctx=None,
-        )
+    res = await run_judge(
+        flow_id="F", step_id="S", predicates=[p],
+        artifacts={}, modified_files=[], stakes="paranoid",
+        budget=None, workspace_root=workspace,
+        stratum_agent_run=AsyncMock(), ctx=None,
+    )
+    assert res.stakes == "paranoid"
 
 
 @pytest.mark.asyncio

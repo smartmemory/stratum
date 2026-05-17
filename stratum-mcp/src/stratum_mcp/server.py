@@ -1678,7 +1678,7 @@ async def stratum_iteration_report(
     "SmartMemory wiring. "
     "Inputs: flow_id (str), step_id (str), predicates (list[dict] with id/type/statement), "
     "artifacts (dict[str, str]), modified_files (list[str], optional), "
-    "stakes ('cheap'|'default', default 'default'), budget (dict, optional). "
+    "stakes ('cheap'|'default'|'paranoid', default 'default'; paranoid adds the T3 cold-read adversary), budget (dict, optional). "
     "Returns the JudgeResult dict (validates against compose/contracts/judge-result.json)."
 ))
 async def stratum_judge(
@@ -1917,7 +1917,7 @@ def _goal_awaiting_since_ms(goal_state) -> Optional[int]:
     "id/type/statement/applied_gate), mode ('shadow'|'advisory'|'autonomous'), "
     "prompt (str, initial worker task), artifact_contract (list[dict], optional), "
     "worker (dict, optional passthrough to stratum_agent_run), "
-    "stakes ('cheap'|'default', default 'default'), budget (dict, optional: "
+    "stakes ('cheap'|'default'|'paranoid', default 'default'; paranoid adds the T3 cold-read adversary), budget (dict, optional: "
     "{max_turns, max_dollars, max_wall_clock_s}), autonomy (dict, optional per-call "
     "override: {deterministic, verified, judged} → bool), "
     "shadow_source ('driven'|'observed', default 'driven'), "

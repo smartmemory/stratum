@@ -27,7 +27,6 @@ from pathlib import Path
 from .errors import (
     BudgetExceededError,
     EmptyPredicateListError,
-    StakesNotAvailableError,
     StakesPredicateMismatchError,
 )
 from .logging import append_turn_log
@@ -42,7 +41,7 @@ from .result import (
     TierRecord,
 )
 from .staging import stage_turn
-from .verifier import evaluate_t2
+from .verifier import evaluate_t2, evaluate_t3
 
 
 async def run_judge(
@@ -60,10 +59,8 @@ async def run_judge(
     # --- 1. Input validation ------------------------------------------------
     if not predicates:
         raise EmptyPredicateListError("predicates list must be non-empty")
-    if stakes == "paranoid":
-        raise StakesNotAvailableError(
-            "'paranoid' stakes require T3 adversary; ships in v2"
-        )
+    # 'paranoid' is live as of STRAT-JUDGE v2 slice 1 (T3 cold-read
+    # adversary). It escalates every interpretive `met` through T3.
     if stakes == "cheap":
         non_det = [p for p in predicates if p.type != "deterministic"]
         if non_det:
@@ -90,45 +87,108 @@ async def run_judge(
     started_at = time.time()
     predicate_results: list[PredicateResult] = []
     degraded_judged = False
+    disagreements: list[dict] = []
 
     for p in predicates:
         history: list[TierRecord] = []
         evidence: list[Evidence] = []
 
-        # T1 always runs.
-        t1 = evaluate_t1(p, str(turn_dir), artifacts, modified_files)
-        history.append(t1)
-        append_turn_log(
-            flow_id, step_id, turn,
-            {
-                "predicate_id": p.id,
-                "tier": "T1",
-                "verdict": t1.verdict,
-                "confidence": t1.confidence,
-            },
-        )
+        # Cold-read isolation hardening (STRAT-JUDGE v2 slice 1): buffer this
+        # predicate's tier rows and flush them only AFTER T3 has run for the
+        # same predicate. cwd is not a read-jail, so writing T1/T2 verdicts
+        # to the shared turns.jsonl before T3 would let a Read/Grep adversary
+        # walk to them. Deferring the writes makes same-predicate
+        # reasoning-isolation real by ordering. (Residual: rows from OTHER
+        # predicates/turns remain on disk — a hard jail is
+        # STRAT-JUDGE-T3-READJAIL; this is the cheap correct mitigation.)
+        pending_logs: list[dict] = []
 
-        if p.type == "deterministic":
-            final = t1
-        elif stakes == "cheap":
-            # Defensive — cheap+nondet should have been rejected above.
-            final = t1
-        else:
-            if p.type == "judged":
-                degraded_judged = True
-            t2, t2_ev = await evaluate_t2(p, turn_dir, stratum_agent_run, ctx)
-            history.append(t2)
-            evidence.extend(t2_ev)
-            append_turn_log(
-                flow_id, step_id, turn,
+        # Tiers run inside try/finally: pending_logs is flushed in
+        # `finally` so (a) same-predicate rows never hit disk before
+        # T3 (cold-read ordering) and (b) audit completeness survives
+        # a mid-predicate verifier exception.
+        try:
+            # T1 always runs.
+            t1 = evaluate_t1(p, str(turn_dir), artifacts, modified_files)
+            history.append(t1)
+            pending_logs.append(
                 {
                     "predicate_id": p.id,
-                    "tier": "T2",
-                    "verdict": t2.verdict,
-                    "confidence": t2.confidence,
-                },
+                    "tier": "T1",
+                    "verdict": t1.verdict,
+                    "confidence": t1.confidence,
+                }
             )
-            final = t2
+
+            if p.type == "deterministic":
+                final = t1
+            elif stakes == "cheap":
+                # Defensive — cheap+nondet should have been rejected above.
+                final = t1
+            else:
+                t2, t2_ev = await evaluate_t2(p, turn_dir, stratum_agent_run, ctx)
+                history.append(t2)
+                evidence.extend(t2_ev)
+                pending_logs.append(
+                    {
+                        "predicate_id": p.id,
+                        "tier": "T2",
+                        "verdict": t2.verdict,
+                        "confidence": t2.confidence,
+                    }
+                )
+                final = t2
+
+                # T3 cold-read adversary — paranoid-only (STRAT-JUDGE v2 slice 1).
+                # default/cheap stay byte-for-byte v1. T3 runs only over a T2
+                # `met`: the adversary's job is to break met claims, not re-judge
+                # not-met ones.
+                ran_t3 = False
+                if stakes == "paranoid" and t2.verdict == "met":
+                    t3, t3_ev = await evaluate_t3(
+                        p, turn_dir, stratum_agent_run, ctx
+                    )
+                    ran_t3 = True
+                    history.append(t3)
+                    evidence.extend(t3_ev)
+                    pending_logs.append(
+                        {
+                            "predicate_id": p.id,
+                            "tier": "T3",
+                            "verdict": t3.verdict,
+                            "confidence": t3.confidence,
+                        }
+                    )
+                    if t3.verdict == "met":
+                        final = t2  # adversary tried and failed — met stands
+                    else:
+                        # not_met or ambiguous: T4 quorum is deferred, so we do
+                        # NOT silently pick a side — surface as ambiguous and
+                        # record the disagreement (acceptable: paranoid is
+                        # opt-in maximum scrutiny).
+                        final = TierRecord(
+                            tier="T3",
+                            verdict="ambiguous",
+                            confidence=t3.confidence or 0,
+                            reason=f"adversary: {t3.reason}",
+                        )
+                        disagreements.append(
+                            {
+                                "predicate": p.id,
+                                "tiers": ["T2", "T3"],
+                                "resolution": "adversary_counterexample",
+                                "t2_verdict": t2.verdict,
+                                "t3_verdict": t3.verdict,
+                            }
+                        )
+
+                # `degraded_judged` = a judged predicate did NOT receive
+                # adversarial (T3) verification. True only when T3 did not run.
+                if p.type == "judged" and not ran_t3:
+                    degraded_judged = True
+        finally:
+            for row in pending_logs:
+                append_turn_log(flow_id, step_id, turn, row)
 
         # --- 4. Per-predicate normalization -------------------------------
         verdict = final.verdict
@@ -174,7 +234,7 @@ async def run_judge(
         met=met,
         stakes=stakes,
         predicates=predicate_results,
-        tier_disagreements=[],
+        tier_disagreements=disagreements,
         budget_consumed=BudgetConsumed(
             turns=turn,
             dollars=0.0,

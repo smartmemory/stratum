@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-JUDGE-v2-slice1): T3 cold-read adversary (paranoid-only)
+
+- **`paranoid` stakes is live.** Every interpretive `met` is cross-checked by a T3 adversary asked to falsify it. `default`/`cheap` unchanged (byte-for-byte v1). `spec.py` stakes Literal + both JSON-schema enums admit `paranoid`; the kernel no longer raises `StakesNotAvailableError`.
+- **`evaluate_t3`** (`verifier.py`): cold by signature — does not accept the T2 `TierRecord`/`Evidence`; adversary/falsifier prompt; Claude, Read/Grep/Glob only, Bash disallowed, `cwd=staging_root`; reuses T2 citation/parse discipline; fail-safe `ambiguous`/`t3_no_staged_evidence` on empty staging (never fabricates `met`).
+- **Disagreement:** T2 `met` + T3 `not_met`/`ambiguous` → final `ambiguous` + a `tier_disagreements` record (T4 quorum deferred — surfaced, never a silent pick). T2 `met` + T3 `met` → `met`.
+- **`degraded_judged`** redefined: "a `judged` predicate did not receive adversarial (T3) verification" — `False` once T3 ran.
+- **Cold-read isolation is best-effort, stated honestly** (three Codex rounds killed two isolation overclaims): the connector stack provides no filesystem read-jail. Real guarantee = T3 is not *handed* prior reasoning (structural) + per-predicate tier rows are buffered and flushed in a `finally` *after* T3 (closes the shared-`turns.jsonl` side channel for the same predicate; preserves audit completeness on mid-predicate exception). Accepted residual + hard read-jail tracked as STRAT-JUDGE-T3-READJAIL.
+- 11 new `tests/test_judge_t3.py`; 3 stale-contract tests updated; contract docs (`compose/contracts/judge-result.json`, MCP tool descriptions) reconciled. 6 Codex rounds (3 design + 3 impl) → CLEAN.
+
 ### stratum — feat(STRAT-JUDGE-POSTMORTEM-v2.2): corpus-quality fixes + replay harness
 
 - **#2 acceptance/topic-shift discrimination** (`signals.py`): `_is_genuine_acceptance` gates the acceptance signal behind `_FORWARD_PIVOT_PATTERNS` + a symmetric `_token_overlap` check — "thanks, now let's Y" is a pivot, not acknowledgement. Conservative: only softens `true_met→ambiguous`, never flips a label.

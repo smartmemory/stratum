@@ -121,8 +121,9 @@ async def test_stratum_judge_predicates_mismatch_rejected(flow_state):
 
 @pytest.mark.asyncio
 async def test_stratum_judge_paranoid_stakes_mismatch_rejected(flow_state):
-    """Stakes override is also rejected at the boundary, before the kernel
-    can see 'paranoid' and raise StakesNotAvailableError."""
+    """A stakes override that does not match the IR-declared stakes is
+    rejected at the boundary (stakes_mismatch). 'paranoid' is now a valid
+    stakes value but still must match the IR declaration."""
     response = await stratum_judge(
         flow_id=flow_state.flow_id,
         step_id="verify",
