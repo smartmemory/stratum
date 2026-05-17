@@ -157,6 +157,7 @@ class Candidate:
     claim_kind: Literal["explicit", "structural"]
     post_claim_events: list[Event] = field(default_factory=list)
     gate_verdict: GateVerdict | None = None
+    predicates: list | None = None  # v2.2 #3 — list[Predicate] when --decompose
 
 
 def _is_request(event: Event) -> bool:

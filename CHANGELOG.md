@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-JUDGE-POSTMORTEM-v2.2): corpus-quality fixes + replay harness
+
+- **#2 acceptance/topic-shift discrimination** (`signals.py`): `_is_genuine_acceptance` gates the acceptance signal behind `_FORWARD_PIVOT_PATTERNS` + a symmetric `_token_overlap` check — "thanks, now let's Y" is a pivot, not acknowledgement. Conservative: only softens `true_met→ambiguous`, never flips a label.
+- **#3 predicate decomposition** (`decompose.py`, new): `LiteLLMDecomposer` back-decomposes `request_text` into `result.Predicate` lists in the kernel's real `deterministic|verified|judged` taxonomy. Mirrors the `llm_gate` seam — litellm-routed, pydantic-validated, fail-open = empty list (never fabricates predicates). CLI `--decompose`; schema **1.1 → 1.2** additive `predicates` key.
+- **#4 replay harness** (`replay.py`, new + `replay` CLI subcommand): runs a faithful judge subset over the corpus at moment-of-claim, scoring per-tier false-met/false-not-met vs ground truth. Taxonomy-faithful routing (deterministic→T1 only if transcript-decidable & not a result/output claim; verified→T2 only with a post-claim `tool_result`; else `unreplayable`); moment-of-claim respected (T1 reads work-span tools only); empty/all-unreplayable → explicit unscorable (never `all([])→true_met`); abstention + coverage first-class; sha1 20% holdout with smoke-only caveat; schema-versioned scorecard JSON.
+- **65 postmortem tests**; full core-lib suite 629 passed (14 pre-existing `test_e2e` live-inference timeouts only). 3 Codex implementation-review rounds → CLEAN.
+
 ### stratum — feat(STRAT-JUDGE-POSTMORTEM-v2.1): LLM-augmented segmenter gate
 
 - **New `stratum.judge.postmortem.llm_gate`:** opt-in request↔claim same-task gate that runs after the regex segmenter (recall) as a precision pass. `SegmenterGate` Protocol, pure `build_gate_prompt`/`parse_gate_response`, concrete `LiteLLMGate`, `GateVerdict`, `SegmentStats`.

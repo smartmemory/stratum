@@ -227,13 +227,13 @@ def test_candidate_dict_schema_1_1_and_gate_key():
     gate = _FakeGate(GateVerdict(same_task=True, confidence=0.8, reason="ok", model="m"))
     cand = segment(sess, gate=gate)[0]
     rec = _candidate_to_dict(cand, label_candidate(cand), project="p")
-    assert rec["_schema_version"] == "1.1"
+    assert rec["_schema_version"] == "1.2"
     assert rec["gate"] is not None
     assert rec["gate"]["same_task"] is True and rec["gate"]["applied"] is True
 
     plain = segment(sess)[0]
     rec2 = _candidate_to_dict(plain, label_candidate(plain), project="p")
-    assert rec2["_schema_version"] == "1.1" and rec2["gate"] is None
+    assert rec2["_schema_version"] == "1.2" and rec2["gate"] is None
 
 
 # --- cmd_extract wiring ------------------------------------------------------
@@ -289,7 +289,7 @@ def test_cmd_extract_gate_off_default(tmp_path, capsys):
     assert args.func(args) == 0
     assert "llm-gate: off" in capsys.readouterr().out
     rec = _json.loads(out.read_text().strip().splitlines()[0])
-    assert rec["_schema_version"] == "1.1" and rec["gate"] is None
+    assert rec["_schema_version"] == "1.2" and rec["gate"] is None
 
 
 def test_gate_threshold_rejects_out_of_range():

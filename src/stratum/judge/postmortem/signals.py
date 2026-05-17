@@ -370,20 +370,78 @@ def _is_revert_tool_use(ev: Event) -> bool:
     return any(p.search(cmd) for p in _REVERT_COMMAND_PATTERNS)
 
 
+_OVERLAP_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "with",
+    "is", "it", "this", "that",
+}
+
+# Forward-pivot markers (STRAT-JUDGE-POSTMORTEM v2.2 #2). When one of these
+# appears in a post-claim user turn, a leading pleasantry is a pivot to new
+# work ("thanks, now let's …"), not acknowledgement of the prior work.
+_FORWARD_PIVOT_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\b(now|next|then)\b",
+        r"\blet'?s\b",
+        r"\blet us\b",
+        r"\bmove on\b",
+        r"\banother\b",
+        r"\balso\b",
+        r"\bone more\b",
+        r"\bwhile you'?re\b",
+        r"\bcan you (also|now)\b",
+    )
+]
+
+
+def _token_overlap(text_a: str, text_b: str, *, symmetric: bool = False) -> float | None:
+    """Stopword-filtered token overlap. Returns None when either side is
+    empty after filtering (no signal).
+
+    Default normalises by ``len(a)`` — preserves the shipped
+    `_is_topic_shift` semantics (a = request side). ``symmetric=True``
+    normalises by the larger side (stricter; used by the conservative
+    acceptance gate so a short request can't make a long unrelated reply
+    look like acknowledgement).
+    """
+    a = set(re.findall(r"[a-z0-9]+", (text_a or "").lower())) - _OVERLAP_STOPWORDS
+    b = set(re.findall(r"[a-z0-9]+", (text_b or "").lower())) - _OVERLAP_STOPWORDS
+    if not a or not b:
+        return None
+    denom = max(len(a), len(b)) if symmetric else max(len(a), 1)
+    return len(a & b) / denom
+
+
 def _is_topic_shift(next_user: Event, request_text: str) -> bool:
     """Cheap word-overlap heuristic: <20% token overlap = topic shift."""
-    a = set(re.findall(r"[a-z0-9]+", (request_text or "").lower()))
-    b = set(re.findall(r"[a-z0-9]+", (next_user.text or "").lower()))
-    if not a or not b:
+    ov = _token_overlap(request_text, next_user.text or "")
+    return ov is not None and ov < 0.2
+
+
+def _is_genuine_acceptance(text: str, request_text: str) -> bool:
+    """v2.2 #2 — distinguish "thanks for X" from "thanks, now Y".
+
+    A post-claim pleasantry counts as acceptance only when it neither
+    pivots forward to new work nor reads as a topic shift away from the
+    request. Conservative: when unsure, NOT acceptance — losing a true
+    acceptance only softens the label (true_met → ambiguous via
+    `_aggregate`); it can never flip a label or create a negative.
+    """
+    t = (text or "").strip()
+    if any(p.search(t) for p in _FORWARD_PIVOT_PATTERNS):
         return False
-    # Drop very common stopwords for the comparison
-    stop = {"the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "with", "is", "it", "this", "that"}
-    a -= stop
-    b -= stop
-    if not a or not b:
+    # A short pure pleasantry ("thanks", "perfect", "lgtm") is acceptance by
+    # nature — too little content to *be* a topic shift. Only apply the
+    # overlap test once the reply is substantive enough to be "about"
+    # something else (mirrors _is_topic_shift needing real content).
+    content = set(re.findall(r"[a-z0-9]+", t.lower())) - _OVERLAP_STOPWORDS
+    if len(content) <= 4:
+        return True
+    ov = _token_overlap(request_text, t, symmetric=True)
+    # Low overlap on a substantive reply → topic shift, not acknowledgement.
+    if ov is not None and ov < 0.2:
         return False
-    overlap = len(a & b) / max(len(a), 1)
-    return overlap < 0.2
+    return True
 
 
 def label_candidate(cand: Candidate) -> CandidateLabel:
@@ -415,8 +473,11 @@ def label_candidate(cand: Candidate) -> CandidateLabel:
                         )
                     )
                     break
-            # Acceptance (only if no correction fired)
-            if not any(h.kind == "direct_correction" for h in hits):
+            # Acceptance (only if no correction fired AND it's a genuine
+            # acknowledgement, not a "thanks, now do Y" forward-pivot — v2.2 #2)
+            if not any(h.kind == "direct_correction" for h in hits) and (
+                _is_genuine_acceptance(text, cand.request_text)
+            ):
                 for pat in _ACCEPTANCE_PATTERNS:
                     if pat.search(text.strip()):
                         hits.append(

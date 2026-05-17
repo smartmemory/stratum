@@ -27,7 +27,16 @@ from stratum.judge.postmortem.llm_gate import (
     LiteLLMGate,
     SegmentStats,
 )
+from stratum.judge.postmortem.decompose import (
+    DEFAULT_DECOMPOSE_MODEL,
+    LiteLLMDecomposer,
+)
 from stratum.judge.postmortem.loader import iter_sessions
+from stratum.judge.postmortem.replay import (
+    DEFAULT_REPLAY_MODEL,
+    LiteLLMReplayJudge,
+    run_replay,
+)
 from stratum.judge.postmortem.segmenter import Candidate, segment
 from stratum.judge.postmortem.signals import CandidateLabel, label_candidate
 
@@ -35,7 +44,7 @@ DEFAULT_PROJECT = Path.home() / ".claude/projects/-Users-ruze-reg-my-forge"
 DEFAULT_PROJECTS_ROOT = Path.home() / ".claude/projects"
 DEFAULT_OUT = Path(".stratum/postmortem/candidates.jsonl")
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 def _event_to_dict(ev) -> dict[str, Any]:
@@ -75,6 +84,15 @@ def _candidate_to_dict(c: Candidate, lab: CandidateLabel, project: str = "") -> 
         "label_rationale": lab.rationale,
         "signal_hits": [dataclasses.asdict(h) for h in lab.hits],
         "gate": (dataclasses.asdict(c.gate_verdict) if c.gate_verdict else None),
+        "predicates": (
+            [
+                {"id": p.id, "type": p.type, "statement": p.statement,
+                 "applied_gate": p.applied_gate}
+                for p in c.predicates
+            ]
+            if c.predicates
+            else None
+        ),
     }
 
 
@@ -123,6 +141,10 @@ def cmd_extract(args: argparse.Namespace) -> int:
     if getattr(args, "llm_gate", False):
         gate = LiteLLMGate(model=args.gate_model)
         seg_stats = SegmentStats()
+
+    decomposer = None
+    if getattr(args, "decompose", False):
+        decomposer = LiteLLMDecomposer(model=args.decompose_model)
     with out_path.open("w", encoding="utf-8") as fh:
         for pdir in project_dirs:
             if not pdir.exists() or not pdir.is_dir():
@@ -140,6 +162,16 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 if not cands:
                     empties += 1
                 for c in cands:
+                    if decomposer is not None:
+                        dres = decomposer.decompose(
+                            c.request_text or "",
+                            ", ".join(
+                                ev.tool_name
+                                for ev in c.work_span
+                                if ev.kind == "tool_use" and ev.tool_name
+                            )[:800] or "(no tool activity)",
+                        )
+                        c.predicates = list(dres.predicates) or None
                     lab = label_candidate(c)
                     fh.write(
                         json.dumps(
@@ -272,6 +304,29 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    in_path = _resolve_out(args.input)
+    if not in_path.exists():
+        print(f"no candidates file at {in_path}; run `extract` first", file=sys.stderr)
+        return 2
+    judge = LiteLLMReplayJudge(model=args.model)
+    decomposer = LiteLLMDecomposer(model=args.decompose_model)
+    out_path = Path(args.out) if getattr(args, "out", None) else None
+    sc = run_replay(in_path, judge, decomposer, out_path=out_path)
+    print(f"replay over {sc.n_candidates} candidates (schema {sc.schema_version})")
+    print(f"  scored={sc.n_scored} abstained={sc.n_abstained} "
+          f"unreplayable={sc.n_unreplayable} no_predicates={sc.n_no_predicates}")
+    print(f"  coverage={sc.coverage:.2f}")
+    print(f"  false_met={sc.false_met}  false_not_met={sc.false_not_met}")
+    print("  by deciding tier:")
+    for tier, n in sorted(sc.by_tier.items()):
+        print(f"    {tier:12s} {n:4d}")
+    print(f"  train={sc.train}")
+    print(f"  holdout={sc.holdout}")
+    print(f"  ⚠ {sc.holdout_caveat}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m stratum.judge.postmortem",
@@ -296,6 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"litellm model for the gate (default: {DEFAULT_GATE_MODEL})")
     pe.add_argument("--gate-threshold", type=_unit_float, default=DEFAULT_GATE_THRESHOLD,
                     help=f"Min confidence to drop a mismatched candidate (default: {DEFAULT_GATE_THRESHOLD})")
+    pe.add_argument("--decompose", action="store_true",
+                    help="Back-decompose each candidate's request into predicates (opt-in; API spend)")
+    pe.add_argument("--decompose-model", default=DEFAULT_DECOMPOSE_MODEL,
+                    help=f"litellm model for decomposition (default: {DEFAULT_DECOMPOSE_MODEL})")
     pe.set_defaults(func=cmd_extract)
 
     ps = sub.add_parser("sample", help="Print N random candidates for hand-review.")
@@ -314,6 +373,16 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("candidate_id")
     pi.add_argument("--input", type=Path, default=DEFAULT_OUT)
     pi.set_defaults(func=cmd_inspect)
+
+    pr = sub.add_parser("replay", help="Replay the judge subset over the corpus and score vs ground truth.")
+    pr.add_argument("--input", type=Path, default=DEFAULT_OUT)
+    pr.add_argument("--model", default=DEFAULT_REPLAY_MODEL,
+                    help=f"litellm model for the T2 replay judge (default: {DEFAULT_REPLAY_MODEL})")
+    pr.add_argument("--decompose-model", default=DEFAULT_DECOMPOSE_MODEL,
+                    help="litellm model for on-the-fly decomposition of un-decomposed candidates")
+    pr.add_argument("--out", type=Path, default=None,
+                    help="Scorecard JSON output path (default: <input dir>/replay-scorecard.json)")
+    pr.set_defaults(func=cmd_replay)
 
     return p
 
