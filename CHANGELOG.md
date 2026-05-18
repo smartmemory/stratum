@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### stratum — fix(STRAT-TEST-EVENTLOOP-HYGIENE): combined-suite event-loop pollution
+
+- Running `tests/` + `stratum-mcp/tests/` in one pytest process produced ~64 order-dependent failures (`65 failed, 1024 passed` in the bounded repro) — 9 `stratum-mcp/tests/integration/` files each defined an identical `def _run(coro): return asyncio.get_event_loop().run_until_complete(coro)` bridge that drove the **process-global** loop, which a prior `tests/` test leaves closed under pytest-asyncio `asyncio_mode = "auto"`. Per-directory runs were green only by ordering luck; no production code implicated (library `run()` was already loop-hardened in `a875ba7`).
+- **Fix:** all 9 `_run` helper bodies → `asyncio.run(coro)` (private per-call loop, immune to prior loop state). Signature unchanged → **zero call-site edits**; diff is 9 files × 1 line. The ticket's larger `@pytest.mark.asyncio` migration alternative was intentionally not done (unnecessary to close the defect).
+- **Verified:** same bounded repro post-fix `1 failed, 1088 passed` — the sole residual is the unrelated, pre-existing, environment-dependent `test_judge_jail_docker.py::test_live_gate_A_real_model_turn_through_connector` (real Docker+model), explicitly out of scope. Regression guard: full `stratum-mcp/tests/` standalone `982 passed, 0 failed`. `docs/bugs/STRAT-TEST-EVENTLOOP-HYGIENE/{description,repro,diagnosis,report}.md`.
+- Follow-ups filed in report (not fixed here, out of scope): a test mutating committed fixture `tests/fixtures/judge_corpus_smoke.json` as a side-effect; pre-existing `tests/test_e2e.py` hangs; optional combined-run CI guard.
+
 ### stratum — feat(STRAT-JUDGE-v2-slice2): decomposer modes (`auto` + two-phase `hybrid`; `ask` skill-only)
 
 - **Closes the `user`-only decomposer cut** (design.md v1 cut #2). `run_judge` gains a trailing defaulted `decomposer_mode: str = "user"` param threaded into the single `JudgeKernelMeta` stamp site (was a hardcoded literal); every existing caller is byte-for-byte unaffected. `GoalState` gains an additive `decomposer_mode` field (old state files load as `"user"`) made immutable on resume via a third `restore_goal_state` check mirroring the `mode` check.
