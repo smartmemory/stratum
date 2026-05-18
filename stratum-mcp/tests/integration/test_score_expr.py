@@ -668,7 +668,7 @@ from stratum_mcp.server import (
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_e2e_scored_iteration_via_mcp():

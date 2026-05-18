@@ -21,7 +21,7 @@ from stratum_mcp.spec import parse_and_validate
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
