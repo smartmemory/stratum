@@ -25,15 +25,34 @@ def set_version(path: str, old: str, new: str) -> None:
 
 
 # Only bump when pushing to main
-pushing_to_main = False
+ZERO = "0" * 40
+main_local = main_remote = None
 for line in sys.stdin.read().splitlines():
     parts = line.strip().split()
     if len(parts) >= 4 and parts[2] in ("refs/heads/main", "main"):
-        pushing_to_main = True
+        main_local, main_remote = parts[1], parts[3]
         break
 
-if not pushing_to_main:
+if main_local is None:
     sys.exit(0)
+
+# Loop guard: this hook creates a commit, but a commit made during pre-push
+# can never be part of the push that triggered it — so it lands unpushed and
+# the next push re-triggers the hook forever. Break the cycle: if every commit
+# being pushed to main is already a `chore: bump` commit (i.e. nothing real
+# changed since the last bump), do not bump again.
+if main_remote and ZERO not in (main_remote, main_local):
+    try:
+        out = subprocess.run(
+            ["git", "log", "--format=%s", f"{main_remote}..{main_local}"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        subjects = [s for s in out.splitlines() if s.strip()]
+        if subjects and all(s.startswith("chore: bump to ") for s in subjects):
+            print("pre-push: only bump commits pending — skipping bump (loop guard)")
+            sys.exit(0)
+    except subprocess.CalledProcessError:
+        pass  # safe default: fall through and bump as before
 
 current = read_version(MCP_TOML)
 if not current:

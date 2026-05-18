@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### stratum — fix: test-hygiene follow-ups from STRAT-TEST-EVENTLOOP-HYGIENE
+
+- **`.githooks/pre-push` self-perpetuating bump loop.** The pre-push hook auto-commits `chore: bump to 0.2.N` when pushing to `main`, but a commit created during pre-push can never be part of *that* push — it lands unpushed and the next push re-triggers the hook, forever (`0.2.47`→`0.2.48`→…). Added a loop guard: capture the main ref's local/remote oids and skip bumping when every commit in `remote..local` is already a `chore: bump` commit (nothing real changed since the last bump). Real-work pushes still bump exactly once; the bump path itself is unchanged. Verified live: bump-only push now prints `skipping bump (loop guard)`, exits 0, creates no commit.
+- **`test_judge_corpus.py` mutated a tracked fixture every run.** `test_kernel_runs_on_10_corpus_candidates` unconditionally rewrote `tests/fixtures/judge_corpus_smoke.json` (whose `candidate_id`s vary with corpus regen — a human diff aid, not an assertion oracle). Guarded the write behind `STRATUM_UPDATE_CORPUS_FIXTURE=1`; a normal run no longer touches the tracked file. No equality assertion added (would be flaky); the per-candidate behavioural asserts are unchanged. Verified: test passes, fixture stays clean post-run.
+
 ### stratum — fix(STRAT-TEST-EVENTLOOP-HYGIENE): combined-suite event-loop pollution
 
 - Running `tests/` + `stratum-mcp/tests/` in one pytest process produced ~64 order-dependent failures (`65 failed, 1024 passed` in the bounded repro) — 9 `stratum-mcp/tests/integration/` files each defined an identical `def _run(coro): return asyncio.get_event_loop().run_until_complete(coro)` bridge that drove the **process-global** loop, which a prior `tests/` test leaves closed under pytest-asyncio `asyncio_mode = "auto"`. Per-directory runs were green only by ordering luck; no production code implicated (library `run()` was already loop-hardened in `a875ba7`).
