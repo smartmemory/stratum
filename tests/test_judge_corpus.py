@@ -11,15 +11,17 @@ This is not a judgement-quality benchmark — the corpus labels (mostly
 the calibration corpus is consumed by future work that tunes prompts and
 priors.
 
-Snapshot of results is written to ``tests/fixtures/judge_corpus_smoke.json``
-so regressions in citation format, schema shape, or finding emission are
-diff-able.
+A results snapshot can be refreshed into ``tests/fixtures/judge_corpus_smoke.json``
+for human diffing of citation format / schema shape / finding emission, but
+ONLY when ``STRATUM_UPDATE_CORPUS_FIXTURE=1`` — a normal test run never mutates
+the tracked fixture.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -215,11 +217,16 @@ async def test_kernel_runs_on_10_corpus_candidates(
             }
         )
 
-    # Write fixture snapshot so future regressions are diff-able.
-    FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    (FIXTURES_DIR / "judge_corpus_smoke.json").write_text(
-        json.dumps(snapshot, indent=2, sort_keys=True)
-    )
+    # Refresh the committed snapshot ONLY when explicitly regenerating.
+    # A normal test run must not mutate a tracked fixture (the snapshot's
+    # candidate_ids vary with corpus regen, so it is a human diff aid, not an
+    # assertion oracle — asserting equality here would be flaky). The real
+    # behavioural guarantees are the per-candidate asserts above.
+    if os.getenv("STRATUM_UPDATE_CORPUS_FIXTURE") == "1":
+        FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
+        (FIXTURES_DIR / "judge_corpus_smoke.json").write_text(
+            json.dumps(snapshot, indent=2, sort_keys=True)
+        )
 
     # All 10 succeeded.
     assert len(snapshot) == 10
