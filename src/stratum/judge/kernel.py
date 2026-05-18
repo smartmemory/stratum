@@ -64,6 +64,7 @@ async def run_judge(
     workspace_root: Path,
     stratum_agent_run,
     ctx,
+    decomposer_mode: str = "user",
 ) -> JudgeResult:
     # --- 1. Input validation ------------------------------------------------
     if not predicates:
@@ -316,7 +317,7 @@ async def run_judge(
             wall_clock_s=time.time() - started_at,
         ),
         judge_kernel_meta=JudgeKernelMeta(
-            decomposer_mode="user",
+            decomposer_mode=decomposer_mode,
             smartmemory_priors_consulted=0,
             degraded_judged=degraded_judged,
         ),

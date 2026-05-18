@@ -1175,3 +1175,181 @@ class TestResumedBudgetRegression:
             f"but worker was called {turns_dispatched} time(s). "
             f"Double-count bug would cause 0 turns."
         )
+
+
+# ---------------------------------------------------------------------------
+# v2 slice 2 — decomposer modes (T4: _resolve_predicates + run_goal wiring).
+# ---------------------------------------------------------------------------
+
+
+class _FakeDecomposer:
+    """Stand-in for LiteLLMDecomposer; .decompose is sync (to_thread-wrapped)."""
+    calls = 0
+
+    def __init__(self, *a, **k):
+        pass
+
+    def decompose(self, request_text, work_summary):
+        from stratum.judge.postmortem.decompose import DecomposeResult
+        from stratum.judge.result import Predicate
+        type(self).calls += 1
+        return DecomposeResult(
+            predicates=[Predicate(id="p1", type="deterministic",
+                                  statement="auto stmt", applied_gate=7)],
+            applied=True, reason="", model="fake",
+        )
+
+
+def _patch_decomposer(monkeypatch, cls):
+    import stratum.judge.postmortem.decompose as dmod
+    cls.calls = 0
+    monkeypatch.setattr(dmod, "LiteLLMDecomposer", cls)
+
+
+async def _noop_worker(prompt, worker_spec, correlation_id, *, ctx=None):
+    nonce = prompt.split("===ARTIFACT-")[1].split(":")[0] if "===ARTIFACT-" in prompt else "x"
+    return (f"===ARTIFACT-{nonce}:a1===\nc\n===END===", "cid")
+
+
+async def _judge_met(**kwargs):
+    # Echo the decomposer_mode the orchestrator passed, for assertions.
+    r = _make_judge_result(met=True)
+    r.judge_kernel_meta.decomposer_mode = kwargs.get("decomposer_mode", "user")
+    return r
+
+
+def _common_kwargs(tmp_path):
+    return dict(
+        dispatch_worker_callable=_noop_worker,
+        run_judge_callable=_judge_met,
+        stratum_agent_run_callable=AsyncMock(return_value={"text": "", "correlation_id": "x"}),
+        stratum_gate_resolve_callable=AsyncMock(return_value={}),
+        smart_memory_search_callable=None,
+        ctx=None,
+        artifact_contract=[{"name": "a1", "required": True, "description": ""}],
+        budget={"max_turns": 3},
+        goal_state_root=tmp_path / "g",
+        flow_state_root=tmp_path / "f",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_goal_invalid_decomposer_direct(tmp_path):
+    from stratum.goal.errors import InvalidDecomposerError
+    from stratum.goal.orchestrator import run_goal
+    with pytest.raises(InvalidDecomposerError):
+        await run_goal(goal_id="g", predicates=_make_predicates(), mode="shadow",
+                       prompt="x", decomposer="ask", **_common_kwargs(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_auto_predicates_conflict(tmp_path):
+    from stratum.goal.errors import AutoPredicatesConflict
+    from stratum.goal.orchestrator import run_goal
+    with pytest.raises(AutoPredicatesConflict):
+        await run_goal(goal_id="g", predicates=_make_predicates(), mode="shadow",
+                       prompt="x", decomposer="auto", **_common_kwargs(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_auto_fresh_decomposes_and_stamps(tmp_path, monkeypatch):
+    from stratum.goal.orchestrator import run_goal
+    from stratum.goal.state import restore_goal_state
+    _patch_decomposer(monkeypatch, _FakeDecomposer)
+    result = await run_goal(goal_id="ga", predicates=[], mode="shadow",
+                            prompt="build X", decomposer="auto",
+                            **_common_kwargs(tmp_path))
+    assert _FakeDecomposer.calls == 1
+    assert result.status == "met"
+    st = restore_goal_state("ga", root=tmp_path / "g")
+    assert st.decomposer_mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_auto_decompose_failopen_raises(tmp_path, monkeypatch):
+    from stratum.goal.errors import DecomposeFailed
+    from stratum.goal.orchestrator import run_goal
+
+    class _FailDec(_FakeDecomposer):
+        def decompose(self, request_text, work_summary):
+            from stratum.judge.postmortem.decompose import DecomposeResult
+            return DecomposeResult(predicates=[], applied=False,
+                                   reason="decompose_error:ValueError", model="f")
+    _patch_decomposer(monkeypatch, _FailDec)
+    with pytest.raises(DecomposeFailed):
+        await run_goal(goal_id="gf", predicates=[], mode="shadow",
+                       prompt="x", decomposer="auto", **_common_kwargs(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_uses_persisted_no_redecompose(tmp_path, monkeypatch):
+    from stratum.goal.orchestrator import run_goal
+    _patch_decomposer(monkeypatch, _FakeDecomposer)
+    kw = _common_kwargs(tmp_path)
+    await run_goal(goal_id="gr", predicates=[], mode="shadow",
+                   prompt="x", decomposer="auto", **kw)
+    assert _FakeDecomposer.calls == 1
+    # Resume: same goal_id, empty predicates, auto → persisted reused, NO re-decompose.
+    result = await run_goal(goal_id="gr", predicates=[], mode="shadow",
+                            prompt="x", decomposer="auto", **kw)
+    assert _FakeDecomposer.calls == 1  # not incremented
+    assert result.status == "met"
+
+
+@pytest.mark.asyncio
+async def test_resume_changed_predicates_still_raises(tmp_path):
+    """Phase-5 #1: non-auto resume with changed caller predicates is NOT
+    silently substituted — immutability gate still fires."""
+    from stratum.goal.errors import GoalImmutabilityError
+    from stratum.goal.orchestrator import run_goal
+    kw = _common_kwargs(tmp_path)
+    await run_goal(goal_id="gi", predicates=_make_predicates(["p1"]),
+                   mode="shadow", prompt="x", decomposer="user", **kw)
+    with pytest.raises(GoalImmutabilityError):
+        await run_goal(goal_id="gi", predicates=_make_predicates(["p1", "p2"]),
+                       mode="shadow", prompt="x", decomposer="user", **kw)
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_cheap_nondet_preflights(tmp_path, monkeypatch):
+    """Phase-5 #2: resumed auto goal with cheap stakes + persisted
+    non-deterministic predicate → AutoCheapMismatch before the loop."""
+    from stratum.goal.errors import AutoCheapMismatch
+    from stratum.goal.orchestrator import run_goal
+
+    class _NonDetDec(_FakeDecomposer):
+        def decompose(self, request_text, work_summary):
+            from stratum.judge.postmortem.decompose import DecomposeResult
+            from stratum.judge.result import Predicate
+            return DecomposeResult(
+                predicates=[Predicate(id="j1", type="judged",
+                                      statement="subjective", applied_gate=7)],
+                applied=True, reason="", model="f")
+    _patch_decomposer(monkeypatch, _NonDetDec)
+    kw = _common_kwargs(tmp_path)
+    # Fresh auto with default stakes persists a 'judged' predicate.
+    await run_goal(goal_id="gc", predicates=[], mode="shadow",
+                   prompt="x", decomposer="auto", stakes="default", **kw)
+    # Resume with stakes='cheap' → preflight on persisted set must reject.
+    with pytest.raises(AutoCheapMismatch):
+        await run_goal(goal_id="gc", predicates=[], mode="shadow",
+                       prompt="x", decomposer="auto", stakes="cheap", **kw)
+
+
+@pytest.mark.asyncio
+async def test_auto_empty_resume_of_user_goal_still_raises(tmp_path, monkeypatch):
+    """Codex review fix: a goal created 'user' cannot be resumed via the
+    auto+empty shortcut — the persisted decomposer_mode guard forces it
+    through the immutability gate."""
+    from stratum.goal.errors import GoalImmutabilityError
+    from stratum.goal.orchestrator import run_goal
+    _patch_decomposer(monkeypatch, _FakeDecomposer)
+    kw = _common_kwargs(tmp_path)
+    # Create as 'user' with real predicates.
+    await run_goal(goal_id="gu", predicates=_make_predicates(["p1"]),
+                   mode="shadow", prompt="x", decomposer="user", **kw)
+    # Attempt auto+empty resume → must NOT silently substitute; raises.
+    with pytest.raises(GoalImmutabilityError):
+        await run_goal(goal_id="gu", predicates=[], mode="shadow",
+                       prompt="x", decomposer="auto", **kw)
+    assert _FakeDecomposer.calls == 0  # never decomposed (existing goal)

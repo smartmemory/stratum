@@ -17,6 +17,7 @@ All callables (dispatch_worker, run_judge, stratum_gate_resolve) are injected
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import hashlib
 import json
@@ -29,7 +30,13 @@ from typing import Any, Callable, Optional
 import yaml
 
 from stratum.goal.autonomy import resolve_autonomy
-from stratum.goal.errors import GoalImmutabilityError
+from stratum.goal.errors import (
+    AutoCheapMismatch,
+    AutoPredicatesConflict,
+    DecomposeFailed,
+    GoalImmutabilityError,
+    InvalidDecomposerError,
+)
 from stratum.goal.prompts import build_turn_prompt, extract_artifacts, mk_turn_nonce
 from stratum.goal.result import GoalResult, PredicateOutcome
 from stratum.goal.state import (
@@ -314,6 +321,94 @@ def _advance_to_goal_decision(flow_state, *, flow_state_root: Path | None) -> No
 # GoalState helpers
 # ---------------------------------------------------------------------------
 
+def _cheap_preflight(predicates: list[Predicate], stakes: str) -> None:
+    """Auto-origin guard: ``run_judge`` raises StakesPredicateMismatchError for
+    any non-deterministic predicate under ``cheap`` (kernel.py), and the
+    judge-loop's broad except would swallow it into silent budget burn. Surface
+    it structurally *before* the loop. Applies to every auto-origin resolved
+    set (fresh decompose AND auto-resume of persisted predicates)."""
+    if stakes != "cheap":
+        return
+    bad = [p.id for p in predicates if p.type != "deterministic"]
+    if bad:
+        raise AutoCheapMismatch(
+            f"decomposer='auto' with stakes='cheap' produced non-deterministic "
+            f"predicate(s) {bad!r}; cheap stakes admits only 'deterministic' "
+            "predicates. Use stakes='default' or supply deterministic predicates."
+        )
+
+
+async def _resolve_predicates(
+    goal_id: str,
+    decomposer: str,
+    predicates: list[Predicate],
+    prompt: str | None,
+    stakes: str,
+    *,
+    goal_state_root: Path | None,
+) -> tuple[list[Predicate], str]:
+    """Resolve the effective predicate list + decomposer provenance, before
+    GoalState load. Narrow by design (Codex round-2 #1/#2):
+
+    - Resume + auto + caller gave NO predicates → reuse persisted predicates
+      and persisted decomposer_mode (the auto-resume hazard the design targets).
+      Re-run the cheap preflight against the resolved (persisted) set.
+    - Any OTHER resume (caller supplied predicates, or non-auto) → return the
+      caller's inputs UNCHANGED so the downstream restore_goal_state
+      immutability gate still fires on a real mismatch. No silent substitution.
+    - Fresh + auto → decompose now (fail-open → DecomposeFailed); reject
+      auto+predicates as AutoPredicatesConflict; cheap preflight.
+    - Fresh + user/hybrid → caller predicates, mode = decomposer.
+    """
+    # Existence probe — None expectations ⇒ no immutability raise here.
+    try:
+        existing = restore_goal_state(goal_id, root=goal_state_root)
+    except FileNotFoundError:
+        existing = None
+
+    if existing is not None:
+        # ONLY substitute persisted values when BOTH the caller asked for auto
+        # with no predicates AND the persisted goal was itself an auto goal.
+        # Otherwise (persisted user/hybrid, or caller changed inputs) fall
+        # through untouched so restore_goal_state's predicates_hash / mode /
+        # decomposer_mode immutability gate raises GoalImmutabilityError.
+        if (
+            decomposer == "auto"
+            and not predicates
+            and existing.decomposer_mode == "auto"
+        ):
+            resolved = [Predicate(**d) for d in existing.predicates]
+            _cheap_preflight(resolved, stakes)
+            return resolved, existing.decomposer_mode
+        # Every other resume: pass caller inputs through untouched so the
+        # downstream immutability gate can do its job.
+        return predicates, decomposer
+
+    # Fresh goal.
+    if decomposer == "auto":
+        if predicates:
+            raise AutoPredicatesConflict(
+                "decomposer='auto' derives predicates from prose; do not also "
+                "supply a 'predicates' list."
+            )
+        from stratum.judge.postmortem.decompose import LiteLLMDecomposer
+
+        result = await asyncio.to_thread(
+            LiteLLMDecomposer().decompose, prompt or "", ""
+        )
+        if not result.applied:
+            raise DecomposeFailed(
+                f"auto decomposition failed ({result.reason}); goal not run. "
+                "No predicates were fabricated."
+            )
+        resolved = list(result.predicates)
+        _cheap_preflight(resolved, stakes)
+        return resolved, "auto"
+
+    # user | hybrid: predicates supplied by caller; stamp the passed mode.
+    return predicates, decomposer
+
+
 def _load_or_create_goal_state(
     goal_id: str,
     predicates: list[Predicate],
@@ -322,6 +417,7 @@ def _load_or_create_goal_state(
     cwd: str,
     *,
     goal_state_root: Path | None,
+    decomposer_mode: str = "user",
 ) -> GoalState:
     """Load persisted GoalState or create fresh; enforce immutability on resume."""
     pred_dicts = [dataclasses.asdict(p) for p in predicates]
@@ -333,6 +429,7 @@ def _load_or_create_goal_state(
             root=goal_state_root,
             expected_predicates_hash=pred_hash,
             expected_mode=mode,
+            expected_decomposer_mode=decomposer_mode,
         )
         # Contract immutability check (C2 note: add inline here)
         if artifact_contract_dicts is not None:
@@ -354,6 +451,7 @@ def _load_or_create_goal_state(
             mode=mode,
             predicates=pred_dicts,
             predicates_hash=pred_hash,
+            decomposer_mode=decomposer_mode,
             artifact_contract=artifact_contract,
             cwd=cwd,
         )
@@ -581,6 +679,7 @@ async def _observed_shadow_path(
             workspace_root=Path(state.cwd) if state.cwd else Path.cwd(),
             stratum_agent_run=stratum_agent_run_callable,
             ctx=ctx,
+            decomposer_mode=state.decomposer_mode,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("shadow-observed judge failed: %s", exc)
@@ -657,6 +756,7 @@ async def run_goal(
     ctx: Any = None,
     # Goal config
     prompt: Optional[str] = None,
+    decomposer: str = "user",
     artifact_contract: Optional[list[dict]] = None,
     worker_spec: Optional[dict] = None,
     stakes: str = "default",
@@ -704,10 +804,27 @@ async def run_goal(
     max_rounds = max(1, max_turns - 1)
     effective_cwd = cwd or ""
 
+    # 0. Validate decomposer in-kernel (run_goal is a public entry point called
+    #    directly outside stratum_goal; 'ask' is skill-layer only).
+    if decomposer not in ("user", "auto", "hybrid"):
+        raise InvalidDecomposerError(
+            f"decomposer={decomposer!r} is invalid; expected one of "
+            "'user'|'auto'|'hybrid' ('ask' is a skill-layer concept, not a "
+            "kernel value)."
+        )
+
+    # 0b. Resolve effective predicates + decomposer provenance BEFORE state
+    #     load (auto decomposes once on a fresh goal; resumes reuse persisted).
+    predicates, resolved_decomposer_mode = await _resolve_predicates(
+        goal_id, decomposer, predicates, prompt, stakes,
+        goal_state_root=goal_state_root,
+    )
+
     # 1. Load or create GoalState (immutability enforced on resume)
     state = _load_or_create_goal_state(
         goal_id, predicates, mode, artifact_contract,
         effective_cwd, goal_state_root=goal_state_root,
+        decomposer_mode=resolved_decomposer_mode,
     )
 
     # 2. Restore or create the synthetic FlowState
@@ -843,6 +960,7 @@ async def run_goal(
                 workspace_root=Path(effective_cwd) if effective_cwd else Path.cwd(),
                 stratum_agent_run=stratum_agent_run_callable,
                 ctx=ctx,
+                decomposer_mode=state.decomposer_mode,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("judge failed on turn: %s", exc)
