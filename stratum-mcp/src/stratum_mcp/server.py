@@ -1917,7 +1917,12 @@ def _goal_awaiting_since_ms(goal_state) -> Optional[int]:
     "autonomous (auto-bind predicate classes whitelisted by autonomy gate). "
     "Inputs: goal_id (str, stable caller-supplied ID), predicates (list[dict] with "
     "id/type/statement/applied_gate), mode ('shadow'|'advisory'|'autonomous'), "
-    "prompt (str, initial worker task), artifact_contract (list[dict], optional), "
+    "prompt (str, initial worker task), "
+    "decomposer ('user'|'auto'|'hybrid', default 'user'; 'auto' decomposes the "
+    "prompt into predicates via the LLM decomposer on a fresh goal — supply an "
+    "empty predicates list; 'hybrid' = use stratum_decompose then pass the "
+    "edited list back here; 'ask' is a skill-layer concept and is rejected), "
+    "artifact_contract (list[dict], optional), "
     "worker (dict, optional passthrough to stratum_agent_run), "
     "stakes ('cheap'|'default'|'paranoid', default 'default'; paranoid adds the T3 cold-read adversary), budget (dict, optional: "
     "{max_turns, max_dollars, max_wall_clock_s}), autonomy (dict, optional per-call "
@@ -1935,6 +1940,7 @@ async def stratum_goal(
     mode: str,
     ctx: Context,
     prompt: Optional[str] = None,
+    decomposer: str = "user",
     artifact_contract: Optional[list[dict]] = None,
     worker: Optional[dict] = None,
     stakes: str = "default",
@@ -1945,7 +1951,13 @@ async def stratum_goal(
     observed_modified_files: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     global _SMART_MEMORY_SEARCH
-    from stratum.goal.errors import GoalError
+    from stratum.goal.errors import (
+        AutoCheapMismatch,
+        AutoPredicatesConflict,
+        DecomposeFailed,
+        GoalError,
+        InvalidDecomposerError,
+    )
     from stratum.goal.orchestrator import run_goal
     from stratum.goal.worker import dispatch_worker
     from stratum.judge.kernel import run_judge
@@ -1955,6 +1967,19 @@ async def stratum_goal(
     if _SMART_MEMORY_SEARCH == "unset":
         _SMART_MEMORY_SEARCH = _build_smart_memory_search()
     sm_callable = _SMART_MEMORY_SEARCH
+
+    # Validate decomposer at the boundary BEFORE predicate parsing so the
+    # invalid_decomposer contract is not order-dependent on payload validity
+    # ('ask' is a skill-layer concept, rejected here).
+    if decomposer not in ("user", "auto", "hybrid"):
+        return {
+            "status": "error",
+            "error_type": "invalid_decomposer",
+            "message": (
+                f"decomposer={decomposer!r} is invalid; expected one of "
+                "'user'|'auto'|'hybrid' ('ask' is a skill-layer concept)."
+            ),
+        }
 
     # Parse list[dict] → list[Predicate]
     try:
@@ -1984,6 +2009,7 @@ async def stratum_goal(
             smart_memory_search_callable=sm_callable,
             ctx=ctx,
             prompt=prompt,
+            decomposer=decomposer,
             artifact_contract=artifact_contract,
             worker_spec=worker,
             stakes=stakes,
@@ -1993,6 +2019,19 @@ async def stratum_goal(
             observed_artifacts=observed_artifacts,
             observed_modified_files=observed_modified_files,
         )
+    except (
+        DecomposeFailed,
+        AutoPredicatesConflict,
+        AutoCheapMismatch,
+        InvalidDecomposerError,
+    ) as exc:
+        # Explicit snake_case contract strings (the generic handler below would
+        # emit the PascalCase class name via type(exc).__name__).
+        return {
+            "status": "error",
+            "error_type": exc.error_type,
+            "message": str(exc),
+        }
     except GoalError as exc:
         return {
             "status": "error",
@@ -2001,6 +2040,43 @@ async def stratum_goal(
         }
 
     return result.to_dict()
+
+
+@mcp.tool(description=(
+    "STRAT-JUDGE v2: Stateless LLM predicate decomposer (the 'hybrid' phase-1 "
+    "primitive). Turns a prose task description into a draft predicate list so "
+    "a caller can present it, let the user edit, then pass the final list to "
+    "stratum_goal. Also usable to preview an 'auto' draft before committing. "
+    "No flow state, no persistence. Inputs: prompt (str, the task prose), "
+    "work_context (str, optional extra context), model (str, optional litellm "
+    "model id; default claude-haiku-4-5). Returns "
+    "{predicates: list[dict {id,type,statement,applied_gate}], applied: bool, "
+    "reason: str, model: str}. Fail-open: applied=false with empty predicates "
+    "and a reason on any LLM/parse failure — never fabricated predicates; the "
+    "caller must not proceed to stratum_goal on applied=false."
+))
+async def stratum_decompose(
+    prompt: str,
+    ctx: Context,
+    work_context: str = "",
+    model: Optional[str] = None,
+) -> dict[str, Any]:
+    import asyncio
+    import dataclasses
+
+    from stratum.judge.postmortem.decompose import (
+        DEFAULT_DECOMPOSE_MODEL,
+        LiteLLMDecomposer,
+    )
+
+    dec = LiteLLMDecomposer(model or DEFAULT_DECOMPOSE_MODEL)
+    res = await asyncio.to_thread(dec.decompose, prompt, work_context)
+    return {
+        "predicates": [dataclasses.asdict(p) for p in res.predicates],
+        "applied": res.applied,
+        "reason": res.reason,
+        "model": res.model,
+    }
 
 
 @mcp.tool(description=(
