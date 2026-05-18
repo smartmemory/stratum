@@ -63,10 +63,19 @@ T3Mode = Literal["codex_jailed", "codex_jailed_error", "claude_cold_fallback"]
 
 # Residual strings — verbatim from the design Problem statement. NEVER
 # round these up to "confined". STRAT-JUDGE-T3-READJAIL design.md.
+# STRAT-JUDGE-T3-READJAIL-CODEXNEST: the jail is now an ephemeral Docker
+# container whose only readable host path is the staged turn tree (a
+# single :ro bind). codex authenticates via an env-injected key, NOT a
+# readable ~/.codex host mount — so the residual is no longer "a readable
+# host credential file"; it is the in-environment credential + required
+# network egress. Stated truthfully; never rounded to "confined".
 RESIDUAL_CODEX_JAILED = (
-    "network egress is required for the model API (a compromised T3 could "
-    "exfiltrate anything in the read-allow set, which includes the Codex "
-    "credential under ~/.codex — narrower than v1 but NOT artifact-only)"
+    "network egress to the model API is required, and the model-API "
+    "credential is present in the container environment (a compromised T3 "
+    "could exfiltrate over the network) — but no host filesystem path "
+    "other than the staged turn tree is readable: NOT artifact-only, but "
+    "the repo, sibling turns.jsonl, and other turns are absent from the "
+    "container namespace"
 )
 RESIDUAL_CLAUDE_FALLBACK = (
     "no OS read-jail: other predicates'/turns' rows remain readable on disk, "

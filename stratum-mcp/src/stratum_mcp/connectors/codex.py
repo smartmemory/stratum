@@ -25,7 +25,12 @@ import tempfile
 import time
 from typing import Any, AsyncIterator, Optional
 
-from stratum.judge.sandbox import build_seatbelt_profile
+from stratum.judge.sandbox import (
+    JailDriver,
+    JailUnavailableError,
+    _terminate_child,
+    select_jail_driver,
+)
 
 from ..events import INTERNAL_RESULT_KIND, ConnectorEvent
 from .base import AgentConnector, Event, inject_schema
@@ -137,71 +142,68 @@ class CodexConnector(AgentConnector):
         model_id: str = _DEFAULT_MODEL_ID,
         cwd: Optional[str] = None,
         read_jail: Optional[str] = None,
+        jail_driver: Optional[JailDriver] = None,
     ):
         _assert_codex_model(model_id)
         self._default_model_id = model_id
         self._cwd = cwd or os.getcwd()
         self._proc: Optional[asyncio.subprocess.Process] = None
-        # STRAT-JUDGE-T3-READJAIL: when set, the codex subprocess is wrapped
-        # in `sandbox-exec -f <profile>` confining filesystem reads to this
-        # path (the staged turn tree). None = no jail (every existing
-        # caller is byte-for-byte unchanged).
+        # STRAT-JUDGE-T3-READJAIL[-CODEXNEST]: when set, the codex subprocess
+        # is confined by a non-nesting JailDriver (Docker) so it can read
+        # only the staged turn tree. None = no jail (every existing caller
+        # byte-for-byte unchanged). `jail_driver` is a test seam; in
+        # production the driver is resolved via `select_jail_driver()`.
         self._read_jail = read_jail
+        self._jail_driver: Optional[JailDriver] = jail_driver
+        # Retained for the no-jail backward-compat contract
+        # (test_build_cmd_no_jail_is_unchanged asserts `_jail_profile is
+        # None`); jail teardown is now owned by the driver.
         self._jail_profile: Optional[str] = None
         self._jail_scratch: Optional[str] = None
 
-    def _build_codex_cmd(self, args: list[str]) -> list[str]:
-        """Return argv to spawn. With a read-jail active, prepend
-        `sandbox-exec -f <profile>` and add `--ephemeral` (primary
-        candidate for read-only ~/.codex — see design; the live smoke
-        gate decides if a writable subset is also required).
+    def _build_codex_cmd(
+        self, args: list[str], env: Optional[dict] = None
+    ) -> list[str]:
+        """Return argv to spawn.
 
-        Materializes the profile + a scratch dir as a side effect; both
-        are torn down by :meth:`_cleanup_jail` after the child exits.
+        No read-jail → ``["codex", *args]`` byte-for-byte (every existing
+        caller unchanged). With a read-jail, dispatch to the selected
+        non-nesting :class:`JailDriver` (Docker), which returns the full
+        confined argv and owns its own teardown via :meth:`_cleanup_jail`.
+
+        If a jail was requested but no driver is selectable, that is an
+        operational failure of a *selected* lane — raise
+        :class:`JailUnavailableError` so it propagates and the verifier's
+        existing handler labels it ``codex_jailed_error`` (NEVER a silent
+        downgrade). In production this cannot happen: the verifier only
+        passes ``read_jail`` when ``read_jail_available()`` is True, which
+        means a driver is selectable.
         """
         if not self._read_jail:
             return ["codex", *args]
-        self._jail_scratch = tempfile.mkdtemp(prefix="stratum-readjail-scratch-")
-        fd, profile = tempfile.mkstemp(suffix=".sb", prefix="stratum-readjail-")
-        with os.fdopen(fd, "w") as f:
-            f.write(build_seatbelt_profile(self._read_jail, self._jail_scratch))
-        self._jail_profile = profile
-        # `--ephemeral` is an `exec` subcommand flag, not a top-level one —
-        # it MUST follow the `exec` token (args[0]). (Verified by the live
-        # gate: `codex --ephemeral exec` errors "unexpected argument".)
-        if args and args[0] == "exec":
-            jailed_args = [args[0], "--ephemeral", *args[1:]]
-        else:
-            jailed_args = ["--ephemeral", *args]
-        return ["sandbox-exec", "-f", profile, "codex", *jailed_args]
+        driver = self._jail_driver or select_jail_driver()
+        if driver is None:
+            raise JailUnavailableError(
+                "read_jail requested but no non-nesting jail driver is "
+                "available on this host"
+            )
+        self._jail_driver = driver
+        return driver.wrap_argv(args, read_root=self._read_jail, env=env)
 
     async def _cleanup_jail(
         self, proc: Optional[asyncio.subprocess.Process]
     ) -> None:
-        """Terminate+await the confined child BEFORE removing the profile.
+        """Tear the jail down after the confined child exits.
 
-        `sandbox-exec` reads the `.sb` for the lifetime of the wrapped
-        process; unlinking it while codex is still alive would break the
-        jail. Safe to call on every path including FileNotFoundError
-        (proc may be None) and is idempotent.
+        Delegates to the driver that ran (it owns child-exit-before-
+        artifact-teardown ordering + idempotency). No jail → just ensure a
+        still-running child is reaped (prior behaviour). Safe on every path
+        including ``proc is None``; idempotent.
         """
-        if proc is not None and proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await proc.wait()
-        if self._jail_profile:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(self._jail_profile)
-            self._jail_profile = None
-        if self._jail_scratch:
-            shutil.rmtree(self._jail_scratch, ignore_errors=True)
-            self._jail_scratch = None
+        if self._jail_driver is not None:
+            await self._jail_driver.cleanup(proc)
+            return
+        await _terminate_child(proc)
 
     async def run(
         self,
@@ -252,7 +254,7 @@ class CodexConnector(AgentConnector):
         for var in _CODEX_SCRUB_VARS:
             clean_env.pop(var, None)
 
-        codex_cmd = self._build_codex_cmd(args)
+        codex_cmd = self._build_codex_cmd(args, clean_env)
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *codex_cmd,
@@ -427,7 +429,7 @@ class CodexConnector(AgentConnector):
         for var in _CODEX_SCRUB_VARS:
             clean_env.pop(var, None)
 
-        codex_cmd = self._build_codex_cmd(args)
+        codex_cmd = self._build_codex_cmd(args, clean_env)
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *codex_cmd,
