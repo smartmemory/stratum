@@ -84,6 +84,7 @@ class GoalState:
     mode: str  # "shadow" | "advisory" | "autonomous"
     predicates: list[dict[str, Any]]
     predicates_hash: str
+    decomposer_mode: str = "user"  # "user" | "auto" | "hybrid" — provenance, immutable
     artifact_contract: list[ArtifactSpec] = dataclasses.field(default_factory=list)
     turns: list[TurnRecord] = dataclasses.field(default_factory=list)
     decision_gates: list[DecisionGateRecord] = dataclasses.field(default_factory=list)
@@ -187,6 +188,7 @@ def _state_to_dict(state: GoalState) -> dict:
         "mode": state.mode,
         "predicates": state.predicates,
         "predicates_hash": state.predicates_hash,
+        "decomposer_mode": state.decomposer_mode,
         "artifact_contract": [_artifact_spec_to_dict(a) for a in state.artifact_contract],
         "turns": [_turn_record_to_dict(t) for t in state.turns],
         "decision_gates": [_gate_record_to_dict(g) for g in state.decision_gates],
@@ -202,6 +204,7 @@ def _state_from_dict(d: dict) -> GoalState:
         mode=d["mode"],
         predicates=d.get("predicates", []),
         predicates_hash=d["predicates_hash"],
+        decomposer_mode=d.get("decomposer_mode", "user"),
         artifact_contract=[_artifact_spec_from_dict(a) for a in d.get("artifact_contract", [])],
         turns=[_turn_record_from_dict(t) for t in d.get("turns", [])],
         decision_gates=[_gate_record_from_dict(g) for g in d.get("decision_gates", [])],
@@ -249,6 +252,7 @@ def restore_goal_state(
     root: Path | None = None,
     expected_predicates_hash: str | None = None,
     expected_mode: str | None = None,
+    expected_decomposer_mode: str | None = None,
 ) -> GoalState:
     """Read GoalState from disk.
 
@@ -287,6 +291,14 @@ def restore_goal_state(
                 f"Mode mismatch for goal_id={goal_id!r}: "
                 f"persisted={state.mode!r}, expected={expected_mode!r}. "
                 "The mode cannot change across resumes (PRD M9)."
+            )
+
+    if expected_decomposer_mode is not None:
+        if state.decomposer_mode != expected_decomposer_mode:
+            raise GoalImmutabilityError(
+                f"Decomposer mode mismatch for goal_id={goal_id!r}: "
+                f"persisted={state.decomposer_mode!r}, expected={expected_decomposer_mode!r}. "
+                "The decomposer provenance cannot change across resumes."
             )
 
     return state

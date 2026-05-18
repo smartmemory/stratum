@@ -63,3 +63,44 @@ class ArtifactExtractionError(GoalError):
     extraction logic itself encounters an unrecoverable parse failure — e.g. a
     malformed fence that confuses the regex state machine.
     """
+
+
+# --- v2 slice 2: decomposer-mode failures ---------------------------------
+# Each carries an ``error_type`` class attribute holding the stable snake_case
+# string the MCP boundary emits (server.py maps these explicitly *before* the
+# generic ``except GoalError`` so the contract strings are not the PascalCase
+# class names ``type(exc).__name__`` would otherwise produce).
+
+
+class DecomposeFailed(GoalError):
+    """``decomposer='auto'`` but ``LiteLLMDecomposer.decompose`` returned
+    ``applied=False`` (fail-open: LLM/parse/validation failure). The goal does
+    NOT run — never on an empty/guessed predicate list."""
+
+    error_type = "decompose_failed"
+
+
+class AutoPredicatesConflict(GoalError):
+    """``decomposer='auto'`` was supplied together with a non-empty
+    ``predicates`` list. ``auto`` derives predicates from prose; supplying both
+    is a caller bug."""
+
+    error_type = "auto_predicates_conflict"
+
+
+class InvalidDecomposerError(GoalError):
+    """``decomposer`` was not one of ``{"user","auto","hybrid"}``. Validated
+    inside ``run_goal`` itself (not only the MCP wrapper) because ``run_goal``
+    is a public entry point called directly outside ``stratum_goal``. ``ask`` is
+    a skill-layer concept and is rejected here."""
+
+    error_type = "invalid_decomposer"
+
+
+class AutoCheapMismatch(GoalError):
+    """An ``auto``-origin resolved predicate set contains a non-``deterministic``
+    predicate under ``stakes='cheap'``. Surfaced before the loop instead of
+    letting ``run_judge`` raise ``StakesPredicateMismatchError`` mid-run (which
+    ``run_goal``'s broad judge-loop except would swallow into budget burn)."""
+
+    error_type = "auto_cheap_mismatch"

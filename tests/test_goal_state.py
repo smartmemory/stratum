@@ -1009,3 +1009,66 @@ class TestDecisionGateRecordNewFields:
         assert g.rejection_note == "please add unit tests for edge cases"
         assert g.outcome == "revise"
         assert g.resolved_at_ms == ts_resolved
+
+
+# ---------------------------------------------------------------------------
+# v2 slice 2 — GoalState.decomposer_mode provenance (T2).
+# ---------------------------------------------------------------------------
+
+
+def _ds_state(goal_id="t2-goal", decomposer_mode="user"):
+    from stratum.goal.state import GoalState
+    return GoalState(
+        goal_id=goal_id,
+        mode="advisory",
+        predicates=[{"id": "p1", "type": "deterministic",
+                     "statement": "x", "applied_gate": 7}],
+        predicates_hash="h1",
+        decomposer_mode=decomposer_mode,
+    )
+
+
+def test_decomposer_mode_default_user():
+    from stratum.goal.state import GoalState
+    s = GoalState(goal_id="g", mode="advisory", predicates=[], predicates_hash="h")
+    assert s.decomposer_mode == "user"
+
+
+def test_decomposer_mode_round_trips(tmp_path):
+    from stratum.goal.state import persist_goal_state, restore_goal_state
+    persist_goal_state(_ds_state(decomposer_mode="auto"), root=tmp_path)
+    restored = restore_goal_state("t2-goal", root=tmp_path)
+    assert restored.decomposer_mode == "auto"
+
+
+def test_old_state_without_decomposer_mode_loads_user(tmp_path):
+    """Pre-existing state.json with no decomposer_mode key → 'user' (back-compat)."""
+    import json
+    from stratum.goal.state import _goal_dir, restore_goal_state
+    d = _goal_dir("legacy-goal", tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "state.json").write_text(json.dumps({
+        "goal_id": "legacy-goal", "mode": "advisory",
+        "predicates": [], "predicates_hash": "h",
+        "artifact_contract": [], "turns": [], "decision_gates": [],
+        "round": 0, "cwd": "", "autonomy": {},
+    }))
+    restored = restore_goal_state("legacy-goal", root=tmp_path)
+    assert restored.decomposer_mode == "user"
+
+
+def test_decomposer_mode_mismatch_raises_immutability(tmp_path):
+    from stratum.goal.errors import GoalImmutabilityError
+    from stratum.goal.state import persist_goal_state, restore_goal_state
+    persist_goal_state(_ds_state(decomposer_mode="user"), root=tmp_path)
+    with pytest.raises(GoalImmutabilityError):
+        restore_goal_state("t2-goal", root=tmp_path,
+                            expected_decomposer_mode="hybrid")
+
+
+def test_decomposer_mode_match_ok(tmp_path):
+    from stratum.goal.state import persist_goal_state, restore_goal_state
+    persist_goal_state(_ds_state(decomposer_mode="auto"), root=tmp_path)
+    restored = restore_goal_state("t2-goal", root=tmp_path,
+                                  expected_decomposer_mode="auto")
+    assert restored.decomposer_mode == "auto"

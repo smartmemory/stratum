@@ -263,3 +263,33 @@ def test_build_summary_includes_agent_type():
 def test_next_turn_index_no_flow_returns_one():
     """When stratum_mcp.executor is unavailable or no flow exists, return 1."""
     assert _next_turn_index("nonexistent-flow-id-xyz", "step") == 1
+
+
+# ---------------------------------------------------------------------------
+# v2 slice 2 — decomposer_mode provenance param (T1).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decomposer_mode_defaults_to_user(isolated_judge_root, workspace):
+    """Omitting decomposer_mode → JudgeKernelMeta stamps 'user' (back-compat)."""
+    preds = [Predicate(id="d1", type="deterministic", statement="1 == 1")]
+    result = await run_judge(
+        flow_id="F", step_id="S", predicates=preds,
+        artifacts={}, modified_files=[], stakes="default", budget=None,
+        workspace_root=workspace, stratum_agent_run=AsyncMock(), ctx=None,
+    )
+    assert result.judge_kernel_meta.decomposer_mode == "user"
+
+
+@pytest.mark.asyncio
+async def test_decomposer_mode_passthrough_auto(isolated_judge_root, workspace):
+    """Passing decomposer_mode='auto' → stamped verbatim in the result meta."""
+    preds = [Predicate(id="d1", type="deterministic", statement="1 == 1")]
+    result = await run_judge(
+        flow_id="F", step_id="S", predicates=preds,
+        artifacts={}, modified_files=[], stakes="default", budget=None,
+        workspace_root=workspace, stratum_agent_run=AsyncMock(), ctx=None,
+        decomposer_mode="auto",
+    )
+    assert result.judge_kernel_meta.decomposer_mode == "auto"
