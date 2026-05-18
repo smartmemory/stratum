@@ -257,3 +257,44 @@ def test_ambiguous_predicate_emits_should_fix(validator: Draft7Validator) -> Non
     )
     errors = list(validator.iter_errors(result.to_dict()))
     assert errors == [], errors
+
+
+# ---------------------------------------------------------------------------
+# v2 slice 2 — decomposer_mode enum contract (T7).
+# ---------------------------------------------------------------------------
+
+
+def test_decomposer_mode_literal_unchanged_four_values():
+    """result.py JudgeKernelMeta.decomposer_mode Literal is the in-repo enum
+    authority and stays the shipped 4-value set (output back-compat)."""
+    import typing
+    from stratum.judge.result import JudgeKernelMeta
+
+    hints = typing.get_type_hints(JudgeKernelMeta, include_extras=False)
+    args = typing.get_args(hints["decomposer_mode"])
+    assert set(args) == {"user", "auto", "hybrid", "ask"}
+
+
+def test_only_producible_modes_are_enum_members():
+    """The three modes the kernel can actually produce are valid members;
+    'ask' remains a permanently-unproduced reserved member."""
+    import typing
+    from stratum.judge.result import JudgeKernelMeta
+
+    args = set(typing.get_args(
+        typing.get_type_hints(JudgeKernelMeta)["decomposer_mode"]))
+    for producible in ("user", "auto", "hybrid"):
+        assert producible in args
+    assert "ask" in args  # reserved, never produced
+
+
+def test_no_kernel_path_emits_ask():
+    """grep guard: no source under src/ stamps decomposer_mode='ask'."""
+    import pathlib
+    src = pathlib.Path(__file__).parent.parent / "src" / "stratum"
+    offenders = []
+    for py in src.rglob("*.py"):
+        text = py.read_text()
+        if 'decomposer_mode="ask"' in text or "decomposer_mode='ask'" in text:
+            offenders.append(str(py))
+    assert offenders == [], offenders

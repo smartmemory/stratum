@@ -897,3 +897,116 @@ class TestZeroTurnContractValidation:
         validator = jsonschema.Draft7Validator(outcomes_schema)
         errors = list(validator.iter_errors(instance))
         assert errors == [], f"Empty predicate_outcomes failed validation: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# v2 slice 2 — decomposer modes (T5: stratum_goal param; T6: stratum_decompose)
+# ---------------------------------------------------------------------------
+
+
+class _FakeDec:
+    def __init__(self, *a, **k):
+        pass
+
+    def decompose(self, request_text, work_summary):
+        from stratum.judge.postmortem.decompose import DecomposeResult
+        from stratum.judge.result import Predicate
+        return DecomposeResult(
+            predicates=[Predicate(id="p1", type="deterministic",
+                                  statement="auto", applied_gate=7)],
+            applied=True, reason="", model="fake")
+
+
+@pytest.mark.asyncio
+async def test_stratum_goal_forwards_decomposer():
+    import stratum_mcp.server as srv
+    captured = {}
+
+    async def capture_run_goal(goal_id, predicates, mode, **kwargs):
+        captured.update(kwargs)
+        from stratum.goal.result import GoalResult
+        from stratum.judge.result import BudgetConsumed, JudgeKernelMeta, JudgeResult
+        jr = JudgeResult(clean=True, met=True, summary="", findings=[],
+                         meta={"agent_type": "judge", "model_id": "n/a"},
+                         stakes="default", predicates=[],
+                         budget_consumed=BudgetConsumed(turns=0),
+                         judge_kernel_meta=JudgeKernelMeta())
+        return GoalResult(judge_result=jr, goal_id=goal_id, mode=mode,
+                          status="met", turns_run=0, worker_runs=[], round=0,
+                          predicate_outcomes=[])
+
+    with patch("stratum.goal.orchestrator.run_goal", new=capture_run_goal):
+        await srv.stratum_goal(goal_id="g", predicates=[], mode="shadow",
+                               ctx=_make_mock_ctx(), prompt="x",
+                               decomposer="auto")
+    assert captured["decomposer"] == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_name,expected", [
+    ("AutoCheapMismatch", "auto_cheap_mismatch"),
+    ("AutoPredicatesConflict", "auto_predicates_conflict"),
+    ("DecomposeFailed", "decompose_failed"),
+    ("InvalidDecomposerError", "invalid_decomposer"),
+])
+async def test_typed_errors_map_to_snake_case(exc_name, expected):
+    import stratum_mcp.server as srv
+    import stratum.goal.errors as errmod
+    exc_cls = getattr(errmod, exc_name)
+    with patch("stratum.goal.orchestrator.run_goal",
+               new=AsyncMock(side_effect=exc_cls("boom"))):
+        result = await srv.stratum_goal(goal_id="g", predicates=[],
+                                        mode="shadow", ctx=_make_mock_ctx(),
+                                        prompt="x", decomposer="auto")
+    assert result["status"] == "error"
+    assert result["error_type"] == expected   # NOT the PascalCase class name
+    assert "boom" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_ask_rejected_at_boundary():
+    """decomposer='ask' → run_goal raises InvalidDecomposerError → mapped."""
+    import stratum_mcp.server as srv
+    result = await srv.stratum_goal(goal_id="g-ask", predicates=[],
+                                    mode="shadow", ctx=_make_mock_ctx(),
+                                    prompt="x", decomposer="ask")
+    assert result["status"] == "error"
+    assert result["error_type"] == "invalid_decomposer"
+
+
+@pytest.mark.asyncio
+async def test_stratum_decompose_shape_and_roundtrip(monkeypatch):
+    import stratum_mcp.server as srv
+    import stratum.judge.postmortem.decompose as dmod
+    monkeypatch.setattr(dmod, "LiteLLMDecomposer", _FakeDec)
+
+    out = await srv.stratum_decompose(prompt="build X", ctx=_make_mock_ctx())
+    assert out["applied"] is True
+    assert out["model"] == "fake"
+    assert isinstance(out["predicates"], list) and len(out["predicates"]) == 1
+    p = out["predicates"][0]
+    assert set(p) == {"id", "type", "statement", "applied_gate"}
+
+    # Round-trip: feed decompose output straight into stratum_goal's parser.
+    from stratum.judge.result import Predicate
+    parsed = [Predicate(**d) for d in out["predicates"]]
+    assert parsed[0].id == "p1" and parsed[0].type == "deterministic"
+
+
+@pytest.mark.asyncio
+async def test_stratum_decompose_failopen_is_data_not_error(monkeypatch):
+    import stratum_mcp.server as srv
+    import stratum.judge.postmortem.decompose as dmod
+
+    class _FailDec:
+        def __init__(self, *a, **k): pass
+        def decompose(self, r, w):
+            from stratum.judge.postmortem.decompose import DecomposeResult
+            return DecomposeResult(predicates=[], applied=False,
+                                   reason="decompose_error:ValueError", model="f")
+    monkeypatch.setattr(dmod, "LiteLLMDecomposer", _FailDec)
+    out = await srv.stratum_decompose(prompt="x", ctx=_make_mock_ctx())
+    assert out["applied"] is False
+    assert out["predicates"] == []
+    assert out["reason"].startswith("decompose_error:")
+    assert "status" not in out  # fail-open is data, not an error envelope
