@@ -15,25 +15,63 @@ import pytest
 from stratum.judge import sandbox
 
 
-def test_read_jail_unavailable_today_even_on_darwin(monkeypatch):
-    """Honest by construction: the live gate falsified codex-exec under
-    sandbox-exec (nested Seatbelt), so the probe is False even where
-    sandbox-exec is present — paranoid degrades to Claude cold-read."""
+# ── STRAT-JUDGE-T3-READJAIL-CODEXNEST: probe semantics moved off the
+# falsified `sandbox-exec`-wrapping onto the JailDriver seam. These two
+# tests are RETARGETED (the asserted invariants are preserved verbatim on
+# the symbol that now owns them — SandboxExecJailDriver for the inert
+# Seatbelt semantics, DockerJailDriver / read_jail_available for the live
+# probe), never weakened.
+
+
+def test_sandbox_exec_driver_unavailable_even_on_darwin(monkeypatch):
+    """Verbatim old `test_read_jail_unavailable_today_even_on_darwin`
+    invariant, now on its owner: the Seatbelt driver is unavailable even
+    where sandbox-exec is present, because `_CODEX_READJAIL_VERIFIED`
+    stays False forever (the parent live gate falsified nested Seatbelt)."""
     monkeypatch.setattr(sandbox.sys, "platform", "darwin")
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/sandbox-exec")
     assert sandbox._sandbox_exec_present() is True
-    assert sandbox.read_jail_available() is False  # gated on verified flag
+    assert sandbox._CODEX_READJAIL_VERIFIED is False
+    assert sandbox.SandboxExecJailDriver().available() is False
+    # And it is never the selected codex driver regardless.
+    assert not isinstance(
+        sandbox.select_jail_driver(), sandbox.SandboxExecJailDriver
+    )
 
 
-def test_read_jail_true_only_when_verified_and_present(monkeypatch):
-    """When a non-nesting primitive lands and the flag flips, the probe
-    activates — wiring is correct, only empirically gated today."""
+def test_sandbox_exec_driver_semantics_when_flag_flipped(monkeypatch):
+    """Verbatim old darwin-True / linux-False Seatbelt semantics, now on
+    SandboxExecJailDriver — proves the wiring stayed correct even though
+    the flag is (and stays) False in production."""
     monkeypatch.setattr(sandbox.sys, "platform", "darwin")
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/sandbox-exec")
     monkeypatch.setattr(sandbox, "_CODEX_READJAIL_VERIFIED", True)
-    assert sandbox.read_jail_available() is True
+    assert sandbox.SandboxExecJailDriver().available() is True
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    assert sandbox.SandboxExecJailDriver().available() is False
+
+
+def test_read_jail_available_tracks_docker_driver(monkeypatch):
+    """`read_jail_available()` now reflects the selectable JailDriver
+    (Docker). False unless docker present AND the Docker-lane live-gate
+    flag is flipped; True only when both — and never via the inert
+    Seatbelt flag (proves the two flags are not conflated)."""
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/local/bin/docker")
+    # Seatbelt flag must NOT enable the Docker lane.
+    monkeypatch.setattr(sandbox, "_CODEX_READJAIL_VERIFIED", True)
+    monkeypatch.setattr(sandbox, "_docker_readjail_verified", lambda: False)
     assert sandbox.read_jail_available() is False
+    assert sandbox.select_jail_driver() is None
+
+    monkeypatch.setattr(sandbox, "_docker_readjail_verified", lambda: True)
+    assert sandbox.read_jail_available() is True
+    drv = sandbox.select_jail_driver()
+    assert isinstance(drv, sandbox.DockerJailDriver)
+
+    # No docker binary → unavailable again (static capability gate).
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: None)
+    assert sandbox.read_jail_available() is False
+    assert sandbox.select_jail_driver() is None
 
 
 def test_sandbox_exec_present_off_darwin(monkeypatch):
