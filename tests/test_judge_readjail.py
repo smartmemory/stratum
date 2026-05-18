@@ -21,6 +21,11 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "stratum-mcp", "src"),
 )
 
+from stratum.judge import sandbox  # noqa: E402
+from stratum.judge.sandbox import (  # noqa: E402
+    DockerJailDriver,
+    SandboxExecJailDriver,
+)
 from stratum_mcp.connectors.codex import CodexConnector  # noqa: E402
 from stratum_mcp.connectors.factory import make_agent_connector  # noqa: E402
 
@@ -51,10 +56,22 @@ def test_build_cmd_no_jail_is_unchanged():
     assert c._jail_profile is None
 
 
-def test_build_cmd_with_jail_wraps_and_adds_ephemeral(tmp_path):
+# ── STRAT-JUDGE-T3-READJAIL-CODEXNEST: the connector seam is now driver-
+# dispatched. The Seatbelt-shape invariant is asserted by INJECTING the
+# (inert, retained) SandboxExecJailDriver — verbatim shape, incl. the
+# load-bearing `--ephemeral`-after-`exec` ordering. A DockerJailDriver
+# analog asserts the live path's shape: one `codex` token (no double),
+# `--ephemeral`+bypass after `exec`, `--sandbox` stripped, `-C` repointed.
+
+
+def test_build_cmd_with_seatbelt_driver_wraps_and_adds_ephemeral(tmp_path):
     jail = tmp_path / "turn-1"
     jail.mkdir()
-    c = CodexConnector(model_id="gpt-5.4", read_jail=str(jail))
+    c = CodexConnector(
+        model_id="gpt-5.4",
+        read_jail=str(jail),
+        jail_driver=SandboxExecJailDriver(),
+    )
     cmd = c._build_codex_cmd(["exec", "--json", "-"])
     try:
         assert cmd[0] == "sandbox-exec"
@@ -62,16 +79,69 @@ def test_build_cmd_with_jail_wraps_and_adds_ephemeral(tmp_path):
         profile = cmd[2]
         assert os.path.exists(profile)
         assert cmd[3] == "codex"
+        # exactly one `codex` token (no double-token regression)
+        assert cmd.count("codex") == 1
         # --ephemeral is an `exec` subcommand flag → must follow `exec`
         assert cmd[4] == "exec"
         assert cmd[5] == "--ephemeral"
         assert cmd[6:] == ["--json", "-"]
-        assert c._jail_profile == profile
         assert os.path.realpath(str(jail)) in open(profile).read()
     finally:
         asyncio.run(c._cleanup_jail(None))
     assert not os.path.exists(profile)
-    assert c._jail_profile is None
+
+
+def test_build_cmd_with_docker_driver_shape(tmp_path, monkeypatch):
+    jail = tmp_path / "turn-1"
+    jail.mkdir()
+    # Don't touch a real docker daemon: stub the lazy image build.
+    monkeypatch.setattr(sandbox, "_ensure_image", lambda: "stratum-codexjail:test")
+    c = CodexConnector(
+        model_id="gpt-5.4",
+        read_jail=str(jail),
+        jail_driver=DockerJailDriver(),
+    )
+    args = ["exec", "--json", "--sandbox", "read-only",
+            "-m", "gpt-5.4", "-C", "/host/cwd", "-"]
+    cmd = c._build_codex_cmd(args, {"OPENAI_API_KEY": "sk-test", "FOO": "bar"})
+    try:
+        assert cmd[0:5] == ["docker", "run", "--rm", "-i", "--read-only"]
+        # staged tree mounted read-only; writable work tmpfs (not /tmp)
+        rr = os.path.realpath(str(jail))
+        assert "-v" in cmd and f"{rr}:{rr}:ro" in cmd
+        assert "--tmpfs" in cmd and "/work:rw" in cmd
+        # THE guarantee, locked: EXACTLY ONE host bind, it is the staged
+        # tree, and it is read-only. A future second `-v` (a second
+        # readable host path) must fail this.
+        v_idxs = [i for i, a in enumerate(cmd) if a == "-v"]
+        assert len(v_idxs) == 1, f"expected exactly one -v host bind, got {len(v_idxs)}"
+        bind = cmd[v_idxs[0] + 1]
+        assert bind == f"{rr}:{rr}:ro" and bind.endswith(":ro")
+        # the only other mount is the writable tmpfs (not a host path)
+        assert cmd.count("--tmpfs") == 1
+        assert "--mount" not in cmd  # no alternate bind syntax sneaking a path in
+        # only auth-relevant env injected, not arbitrary host env
+        joined = " ".join(cmd)
+        assert "OPENAI_API_KEY=sk-test" in joined
+        assert "FOO=bar" not in joined
+        assert "HOME=/work" in cmd and "CODEX_HOME=/work/.codex" in cmd
+        # entrypoint is the login-then-exec shell script
+        assert cmd[-3:-1] == ["bash", "-lc"]
+        script = cmd[-1]
+        assert "codex login --with-api-key" in script
+        assert "exec codex exec" in script
+        assert "--dangerously-bypass-approvals-and-sandbox" in script
+        # no double-`codex` token regression (codex codex exec …)
+        assert "codex codex" not in script
+        # `--sandbox read-only` stripped; `-C` PRESERVED (staged tree is
+        # bind-mounted at that exact path :ro — it is the evidence cwd)
+        assert "--sandbox" not in script
+        assert "-C /host/cwd" in script
+        # driver must NOT inject --skip-git-repo-check (connector base
+        # args already carry it; double-passing errors — live-gate bug)
+        assert "--skip-git-repo-check" not in script
+    finally:
+        asyncio.run(c._cleanup_jail(None))
 
 
 def test_cleanup_idempotent_and_safe_without_proc():
@@ -94,9 +164,17 @@ def test_generated_profile_enforces_read_jail_at_os_layer(tmp_path):
     sibling = flow / "turns.jsonl"  # the side channel — outside turn_dir
     sibling.write_text("OTHER_PREDICATE_REASONING")
 
-    c = CodexConnector(model_id="gpt-5.4", read_jail=str(turn_dir))
-    # Generate the real profile via the connector seam, then wrap /bin/cat.
+    # Retargeted: inject the (inert, retained) Seatbelt driver so the
+    # connector seam yields a real `.sb` profile. The /bin/cat OS-
+    # enforcement proof below runs BYTE-IDENTICAL to the parent — only the
+    # wiring that hands it the profile path changed.
+    c = CodexConnector(
+        model_id="gpt-5.4",
+        read_jail=str(turn_dir),
+        jail_driver=SandboxExecJailDriver(),
+    )
     cmd = c._build_codex_cmd(["exec"])
+    assert cmd[0] == "sandbox-exec"
     profile = cmd[2]
     try:
         ok = subprocess.run(
