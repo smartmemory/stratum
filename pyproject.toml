@@ -22,7 +22,7 @@ classifiers = [
 dependencies = ["litellm>=1.0", "pydantic>=2.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-timeout>=0.5"]
 
 [project.urls]
 Homepage = "https://github.com/regression-io/stratum"
@@ -32,6 +32,7 @@ Documentation = "https://github.com/regression-io/stratum/blob/main/SPEC.md"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+timeout = 120
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stratum"]
