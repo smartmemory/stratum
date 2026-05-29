@@ -130,6 +130,25 @@ def test_accumulate_dunder_guard():
         parse_and_validate(bad)
 
 
+def test_accumulate_rejected_on_parallel_dispatch_step():
+    bad = textwrap.dedent("""\
+        version: "0.3"
+        flows:
+          main:
+            input: {}
+            steps:
+              - id: s1
+                type: parallel_dispatch
+                source: "$.input.items"
+                agent: claude
+                intent_template: "process {{task}}"
+                max_iterations: 3
+                accumulate: "result.findings"
+""")
+    with pytest.raises(IRSemanticError, match="accumulate"):
+        parse_and_validate(bad)
+
+
 def test_accumulate_rejected_on_gate_step():
     bad = textwrap.dedent("""\
         version: "0.2"
@@ -214,6 +233,19 @@ def test_loop_until_dry_exits_on_k_zero_new_rounds():
     assert {f["id"] for f in r4["accumulated"]} == {1, 2}
 
 
+def test_loop_until_dry_not_preempted_by_stagnation():
+    # dry_streak threshold (5) larger than _STAGNATION_WINDOW (3): identical empty rounds
+    # must NOT exit as stagnation before the governed dry threshold is reached.
+    state = _new_state(_acc_spec(exit_criterion="dry_streak >= 5", max_iterations=20))
+    start_iteration(state, "s1")
+    report_iteration(state, "s1", {"findings": [{"id": 1}]})  # new → dry 0
+    last = None
+    for _ in range(5):  # five identical empty (dry) rounds
+        last = report_iteration(state, "s1", {"findings": []})
+    assert last["dry_streak"] == 5
+    assert last["outcome"] == "exit_success"   # not exit_stagnation
+
+
 def test_dry_streak_resets_on_new_item():
     state = _new_state(_acc_spec(exit_criterion="dry_streak >= 2"))
     start_iteration(state, "s1")
@@ -275,6 +307,56 @@ def test_process_step_result_merges_accumulated_into_output():
     assert out["accumulated_count"] == 2
     assert {f["id"] for f in out["accumulated"]} == {1, 2}
     # accumulator cleared once folded into the authoritative output
+    assert "s1" not in state.iteration_accumulator
+
+
+def test_accumulator_cleared_on_ensure_failure_onfail_route():
+    # The ensure-failure terminal path must clear the accumulator like the other
+    # terminal paths, so an on_fail back-edge can't inherit a stale dedupe set.
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            ok: {type: boolean}
+            findings: {type: array}
+        functions:
+          work:
+            mode: infer
+            intent: "find"
+            input: {}
+            output: Out
+            ensure: ["result.ok == True"]
+            retries: 1
+          recover:
+            mode: infer
+            intent: "recover"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 5
+                exit_criterion: "dry_streak >= 1"
+                accumulate: "result.findings"
+                on_fail: recover
+              - id: recover
+                function: recover
+                inputs: {}
+""")
+    state = _new_state(spec_yaml)
+    start_iteration(state, "s1")
+    report_iteration(state, "s1", {"ok": True, "findings": [{"id": 1}]})
+    report_iteration(state, "s1", {"ok": True, "findings": [{"id": 1}]})  # dry → exit
+    assert state.iteration_accumulator["s1"]["items"]  # populated
+
+    # Final result fails the ensure → on_fail route at max_retries → accumulator cleared.
+    status, _ = process_step_result(state, "s1", {"ok": False, "findings": []})
+    assert status == "on_fail_routed"
     assert "s1" not in state.iteration_accumulator
 
 

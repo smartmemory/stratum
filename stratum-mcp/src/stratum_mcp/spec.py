@@ -1472,6 +1472,14 @@ def _validate_semantics(spec: IRSpec) -> None:
                         f"— score_expr is not supported on {step.step_type} steps",
                         path=f"flows.{flow_name}.steps.{step.id}.score_expr"
                     )
+                # STRAT-WORKFLOW-IMPERATIVE: accumulate is an iteration-loop concept;
+                # decompose/parallel_dispatch steps don't run the per-step iteration loop.
+                if step.accumulate is not None or step.accumulate_key is not None:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has accumulate/accumulate_key but is a {step.step_type} "
+                        f"step — accumulate is not supported on {step.step_type} steps",
+                        path=f"flows.{flow_name}.steps.{step.id}.accumulate"
+                    )
                 continue  # skip legacy mode checks
 
             # --- 1. Mode exclusion: exactly one of function, intent, flow_ref, judge ---
