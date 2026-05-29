@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### stratum — fix(#4): cover `score_expr` in `compute_spec_checksum`
+
+- `_step_fingerprint` hashed `max_iterations`/`exit_criterion`/`accumulate`/`accumulate_key` but not `score_expr`, leaving a tamper-detection gap (a live flow's score expression could be altered mid-run undetected). Added `score_expr` to the fingerprint; regression test `test_spec_checksum_covers_score_expr`. Found during STRAT-WORKFLOW-IMPERATIVE.
+
 ### stratum — feat(STRAT-WORKFLOW-IMPERATIVE): governed accumulator + loop-until-dry for the iteration loop
 
 - **What:** a per-step iteration loop can now declare `accumulate` (an expression extracting the iteration's item list from `result`) and optional `accumulate_key` (a per-item dedup-key expression binding `item`). Items are deduped across iterations into `FlowState.iteration_accumulator`, and `exit_criterion` additionally sees `accumulator` / `accumulated_count` / `new_count` / `dry_streak`. Loop-until-dry is expressed as a predicate — `exit_criterion: "dry_streak >= K"` (K consecutive zero-new rounds) — with no new construct, no new MCP tool, no new outcome verb. Epic STRAT-WORKFLOW ticket 3 of 6.
