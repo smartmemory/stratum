@@ -42,6 +42,13 @@ from .executor import (
     persist_flow,
     validate_certificate,
 )
+from .run_budget import (
+    BUDGET_EXHAUSTED,
+    accumulate_usage,
+    budget_exhausted,
+    debit_budget,
+    new_usage_acc,
+)
 from .worktree import capture_worktree_diff, create_worktree, remove_worktree
 
 DEFAULT_TASK_TIMEOUT = 1800  # seconds
@@ -182,6 +189,8 @@ class ParallelExecutor:
         # Handle + connector registries for cascade cancel.
         self._task_handles: dict[str, asyncio.Task] = {}
         self._connectors: dict[str, AgentConnector] = {}
+        # STRAT-WORKFLOW-BUDGET: per-task usage accumulator, read in _run_one.
+        self._task_usage: dict[str, dict] = {}
 
         # T2-F5-DEPENDS-ON: per-task done-events + terminal-state record
         self._task_done: dict[str, asyncio.Event] = {
@@ -355,14 +364,21 @@ class ParallelExecutor:
         Connector-yielded ``_result`` (INTERNAL_RESULT_KIND) events carry the
         final agent text and are NOT pushed to the wire.
         """
+        # STRAT-WORKFLOW-BUDGET: register the accumulator BEFORE consuming so
+        # partial usage survives an error/timeout/cancel mid-stream — the dict
+        # holds the reference and accumulate_usage mutates it in place, so the
+        # _run_one finally always sees whatever was charged before the fault.
+        acc = new_usage_acc()
+        self._task_usage[task_id] = acc
         stream = getattr(connector, "stream_events", None)
         if stream is None:
-            return await self._consume(connector, prompt, cwd, env)
+            return await self._consume(connector, prompt, cwd, env, acc=acc, task_id=task_id)
         final: Any = None
         produced_event = False
         produced_result_sentinel = False
         async for ev in stream(prompt=prompt, cwd=cwd, env=env):
             produced_event = True
+            accumulate_usage(acc, ev)
             if ev.kind == INTERNAL_RESULT_KIND:
                 produced_result_sentinel = True
                 final = ev.metadata.get("content")
@@ -370,7 +386,7 @@ class ParallelExecutor:
             envelope = self._mint(task_id, ev.kind, dict(ev.metadata))
             await self._emit(task_id, envelope)
         if not produced_event:
-            return await self._consume(connector, prompt, cwd, env)
+            return await self._consume(connector, prompt, cwd, env, acc=acc, task_id=task_id)
         if not produced_result_sentinel:
             raise RuntimeError(
                 "connector stream_events() yielded events but no _result sentinel; "
@@ -384,17 +400,29 @@ class ParallelExecutor:
         prompt: str,
         cwd: Optional[str],
         env: dict[str, str],
+        acc: Optional[dict] = None,
+        task_id: Optional[str] = None,
     ) -> Any:
         """Drive ``connector.run()`` to completion, returning the final payload.
 
         We prefer the last ``result`` envelope's ``output`` field, falling back
         to ``content`` for real-connector compatibility. ``error`` events raise
         a ``RuntimeError`` — matches ``server.stratum_agent_run`` semantics.
+
+        STRAT-WORKFLOW-BUDGET: usage events are folded into ``acc`` (created here
+        if not supplied) and recorded under ``task_id`` for the run-budget debit.
         """
+        if acc is None:
+            acc = new_usage_acc()
+        # Register early so partial usage survives an error mid-run() (see
+        # _consume_streaming). Idempotent if the caller already registered acc.
+        if task_id is not None:
+            self._task_usage[task_id] = acc
         final: Any = None
         async for event in connector.run(prompt=prompt, cwd=cwd, env=env):
             if not isinstance(event, dict):
                 continue
+            accumulate_usage(acc, event)
             etype = event.get("type")
             if etype == "result":
                 if "output" in event:
@@ -546,6 +574,27 @@ class ParallelExecutor:
             # always unblock, even if we're cancelled mid-cleanup.
             self._task_terminal_state[tid] = ts.state
             self._task_done[tid].set()
+            # STRAT-WORKFLOW-BUDGET: record per-task consumption and debit it to
+            # the flow's run budget. A task counts as one agent dispatch only if
+            # it actually started (started_at set) — a sibling cancelled while
+            # still pending never reached the connector.
+            usage = self._task_usage.get(tid, {})
+            if ts.started_at is not None and ts.finished_at is not None:
+                ts.elapsed_s = ts.finished_at - ts.started_at
+            ts.tokens = int(usage.get("tokens", 0))
+            ts.dollars_recorded = float(usage.get("dollars", 0.0))
+            if ts.started_at is not None:
+                debit_budget(
+                    self.state,
+                    dispatches=1,
+                    tokens=ts.tokens,
+                    wall_s=ts.elapsed_s,
+                    dollars=ts.dollars_recorded,
+                )
+            # Mark terminal BEFORE the persist below so the persisted snapshot
+            # carries budget_exhausted (survives restart / query / resume).
+            if budget_exhausted(self.state) and not self.state.terminal_status:
+                self.state.terminal_status = BUDGET_EXHAUSTED
             if worktree_path_obj is not None:
                 # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in).
                 # CancelledError is caught here so cascade-cancel / shutdown
@@ -590,6 +639,13 @@ class ParallelExecutor:
             # Cascade cancel siblings when the require policy becomes
             # unsatisfiable in light of this task's terminal state.
             if self._require_unsatisfiable():
+                self._cancel_siblings()
+
+            # STRAT-WORKFLOW-BUDGET: hard cutoff — once this task's debit tips
+            # the flow over its run budget, cascade cancel any still-active
+            # siblings (reuses the require-cancel path). terminal_status was
+            # already set above (pre-persist) so it is durable across restart.
+            if self.state.terminal_status == BUDGET_EXHAUSTED:
                 self._cancel_siblings()
 
 
