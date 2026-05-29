@@ -3675,6 +3675,7 @@ def _cmd_help() -> None:
     print("  validate <file>      Validate a .stratum.yaml spec file")
     print("  compile <dir>        Compile tasks/*.md files to .stratum.yaml")
     print("  migrate <file>       Upgrade a .stratum.yaml spec to the latest IR version")
+    print("  doctor               Diagnose install/PATH/Python-version problems")
     print()
     print("Run with no arguments to start the stdio MCP server (for Claude Code).")
 
@@ -3708,6 +3709,10 @@ def main() -> None:
         if cmd == "migrate":
             from . import migrate as _migrate
             _migrate._cmd_migrate(sys.argv[2:])
+            return
+        if cmd == "doctor":
+            from .doctor import _cmd_doctor
+            _cmd_doctor()
             return
         print(f"Unknown command: {cmd}", file=sys.stderr)
         print("Run 'stratum-mcp --help' for usage.", file=sys.stderr)

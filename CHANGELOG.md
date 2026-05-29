@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### stratum — feat(#1): `stratum-mcp doctor` install/environment diagnostics
+
+- **What:** new `stratum-mcp doctor` CLI subcommand that surfaces the common first-run failure modes behind `compose init` leaving Stratum disabled (smartmemory/stratum#1). Checks: Python version vs. the `>=3.11` floor (with the exact running version + interpreter path), whether `stratum-mcp` is installed (`importlib.metadata`, with version + location), whether a `stratum-mcp` console script resolves on PATH (`shutil.which`), and whether the active `python` differs from the interpreter that owns the package. Exit 0 = healthy, 1 = problems; every failure carries an actionable `fix:` line.
+- **Shadow detection:** distinguishes "not installed" from "installed but no binary on PATH" (pyenv-shim / PATH mismatch) from "installed but declares no console script" — the last being the vendored-kernel-shadow footgun the issue calls out. Each maps to a different remediation (`pip install` / `ln -sf` / `pip uninstall && pip install`).
+- **Wiring:** `src/stratum_mcp/doctor.py` (pure `evaluate(Probe) -> DoctorReport` + `gather_probe()` + `render()` so logic is testable without touching the environment); dispatched in `server.main()`, listed in `_cmd_help`. `tests/test_doctor.py` — 10 tests covering each branch + live `gather_probe`/`_cmd_doctor` smoke. Full `stratum-mcp/tests/` 1055 passed, 2 skipped.
+
 ### stratum — fix(#4): cover `score_expr` in `compute_spec_checksum`
 
 - `_step_fingerprint` hashed `max_iterations`/`exit_criterion`/`accumulate`/`accumulate_key` but not `score_expr`, leaving a tamper-detection gap (a live flow's score expression could be altered mid-run undetected). Added `score_expr` to the fingerprint; regression test `test_spec_checksum_covers_score_expr`. Found during STRAT-WORKFLOW-IMPERATIVE.
