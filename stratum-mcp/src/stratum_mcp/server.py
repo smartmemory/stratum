@@ -512,6 +512,7 @@ async def stratum_step_done(
         # Clear iteration state so a new loop can be started on retry
         state.iteration_outcome.pop(step_id, None)
         state.iteration_best.pop(step_id, None)
+        state.iteration_accumulator.pop(step_id, None)  # STRAT-WORKFLOW-IMPERATIVE
         # Persist incremented attempts so retry budget survives an MCP server restart.
         # current_idx has not advanced — get_current_step_info returns the same step
         # with updated retries_remaining. Persist AFTER get_current_step_info in case
@@ -1726,7 +1727,11 @@ async def stratum_iteration_start(
     "Report one iteration result. Evaluates exit_criterion, increments count, "
     "checks max_iterations. "
     "Inputs: flow_id (str), step_id (str), result (dict). "
-    "Returns iteration_continue or iteration_exit with outcome."
+    "Returns iteration_continue or iteration_exit with outcome. "
+    "When the step declares accumulate, items are deduped across iterations and "
+    "exit_criterion additionally sees accumulator/accumulated_count/new_count/dry_streak "
+    "(e.g. exit_criterion: 'dry_streak >= 2' for loop-until-dry); the response carries "
+    "new_count/dry_streak and, on exit, the deduped accumulated set."
 ))
 async def stratum_iteration_report(
     flow_id: str,

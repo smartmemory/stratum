@@ -361,6 +361,34 @@ def compile_score_expr(expr: str) -> Callable[[Any], float]:
     return evaluator
 
 
+def compile_value_expr(expr: str, bind: str = "result") -> Callable[[Any], Any]:
+    """Compile a value-returning expression (any type) for the iteration accumulator
+    (STRAT-WORKFLOW-IMPERATIVE). Same dunder guard + restricted-builtins jail as
+    compile_ensure/compile_score_expr, but returns the raw value. ``bind`` names the local
+    the input is exposed as — ``result`` for the ``accumulate`` list-extraction expr,
+    ``item`` for the per-item ``accumulate_key`` expr. Raises EnsureCompileError on a malformed
+    expression (compile failure) or a global eval failure."""
+    if "__" in expr:
+        raise EnsureCompileError(
+            f"Expression may not contain dunder attributes: {expr!r}"
+        )
+    try:
+        code = compile(expr, f"<{bind}_expr>", "eval")
+    except SyntaxError as exc:
+        raise EnsureCompileError(f"Cannot compile expression {expr!r}: {exc}") from exc
+
+    def evaluator(value: Any) -> Any:
+        if isinstance(value, dict):
+            value = types.SimpleNamespace(**value)
+        try:
+            return eval(code, {"__builtins__": {}, **_ENSURE_BUILTINS}, {bind: value})
+        except Exception as exc:
+            raise EnsureCompileError(f"Expression {expr!r} raised: {exc}") from exc
+
+    evaluator.__name__ = f"value({expr})"
+    return evaluator
+
+
 def _validate_output_schema(result: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     """Validate result dict against a JSON Schema. Returns list of violation strings."""
     validator = Draft202012Validator(schema)
@@ -579,6 +607,7 @@ def _clear_from(state: "FlowState", target_idx: int, preserve: set[str] | None =
     for sid in steps_to_clear:
         state.iteration_outcome.pop(sid, None)
         state.iteration_best.pop(sid, None)
+        state.iteration_accumulator.pop(sid, None)  # STRAT-WORKFLOW-IMPERATIVE
     # STRAT-JUDGE v1: clear judge audit state for affected steps
     for sid in steps_to_clear:
         state.judge_history.pop(sid, None)
@@ -757,6 +786,9 @@ class FlowState:
     active_iteration: dict[str, Any] | None = None
     iteration_outcome: dict[str, str] = field(default_factory=dict)
     iteration_best: dict[str, dict] = field(default_factory=dict)
+    # STRAT-WORKFLOW-IMPERATIVE: per-step accumulator-with-dedup.
+    # step_id -> {"items": [...], "seen": [<canonical-string keys>], "dry_streak": int}
+    iteration_accumulator: dict[str, dict] = field(default_factory=dict)
     # v0.2 STRAT-ENG-5: flow composition
     parent_flow_id: str | None = None
     parent_step_id: str | None = None
@@ -874,6 +906,10 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
             "require": step.require,
             "max_iterations": step.max_iterations,
             "exit_criterion": step.exit_criterion,
+            # STRAT-WORKFLOW-IMPERATIVE: accumulator semantics are load-bearing,
+            # so they're tamper-detected (can't be altered mid-run undetected).
+            "accumulate": step.accumulate,
+            "accumulate_key": step.accumulate_key,
             "capture_diff": getattr(step, "capture_diff", False),
             "defer_advance": getattr(step, "defer_advance", False),
         }
@@ -989,6 +1025,7 @@ def persist_flow(state: FlowState) -> None:
         "active_iteration":   state.active_iteration,
         "iteration_outcome":  state.iteration_outcome,
         "iteration_best":     state.iteration_best,
+        "iteration_accumulator": state.iteration_accumulator,
         "parent_flow_id":     state.parent_flow_id,
         "parent_step_id":     state.parent_step_id,
         "active_child_flow_id": state.active_child_flow_id,
@@ -1058,6 +1095,7 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         active_iteration=payload.get("active_iteration"),
         iteration_outcome=payload.get("iteration_outcome", {}),
         iteration_best=payload.get("iteration_best", {}),
+        iteration_accumulator=payload.get("iteration_accumulator", {}),
         parent_flow_id=payload.get("parent_flow_id"),
         parent_step_id=payload.get("parent_step_id"),
         active_child_flow_id=payload.get("active_child_flow_id"),
@@ -1127,6 +1165,7 @@ def commit_checkpoint(state: FlowState, label: str) -> None:
         "active_iteration":   copy.deepcopy(state.active_iteration),
         "iteration_outcome":  dict(state.iteration_outcome),
         "iteration_best":     copy.deepcopy(state.iteration_best),
+        "iteration_accumulator": copy.deepcopy(state.iteration_accumulator),
         "active_child_flow_id": state.active_child_flow_id,
         "child_audits":       copy.deepcopy(state.child_audits),
         "judge_history":      copy.deepcopy(state.judge_history),
@@ -1158,6 +1197,7 @@ def revert_checkpoint(state: FlowState, label: str) -> bool:
     state.active_iteration   = copy.deepcopy(snap.get("active_iteration"))
     state.iteration_outcome  = dict(snap.get("iteration_outcome", {}))
     state.iteration_best     = copy.deepcopy(snap.get("iteration_best", {}))
+    state.iteration_accumulator = copy.deepcopy(snap.get("iteration_accumulator", {}))
     state.active_child_flow_id = snap.get("active_child_flow_id")
     state.child_audits       = copy.deepcopy(snap.get("child_audits", {}))
     state.judge_history      = copy.deepcopy(snap.get("judge_history", {}))
@@ -1546,6 +1586,7 @@ def process_step_result(
                 dispatched = state.dispatched_at.get(step_id, state.flow_start)
                 duration_ms = int((time.monotonic() - dispatched) * 1000)
                 state.records.append(_make_record(duration_ms))
+                state.iteration_accumulator.pop(step_id, None)  # STRAT-WORKFLOW-IMPERATIVE
                 if step.on_fail:
                     state.step_outputs[step_id] = result
                     target_idx = _find_step_idx(state, step.on_fail)
@@ -1569,6 +1610,7 @@ def process_step_result(
                 dispatched = state.dispatched_at.get(step_id, state.flow_start)
                 duration_ms = int((time.monotonic() - dispatched) * 1000)
                 state.records.append(_make_record(duration_ms))
+                state.iteration_accumulator.pop(step_id, None)  # STRAT-WORKFLOW-IMPERATIVE
                 if step.on_fail:
                     state.step_outputs[step_id] = result
                     target_idx = _find_step_idx(state, step.on_fail)
@@ -1587,6 +1629,7 @@ def process_step_result(
                 dispatched = state.dispatched_at.get(step_id, state.flow_start)
                 duration_ms = int((time.monotonic() - dispatched) * 1000)
                 state.records.append(_make_record(duration_ms))
+                state.iteration_accumulator.pop(step_id, None)  # STRAT-WORKFLOW-IMPERATIVE
                 if step.on_fail:
                     state.step_outputs[step_id] = result
                     target_idx = _find_step_idx(state, step.on_fail)
@@ -1623,8 +1666,18 @@ def process_step_result(
             return ("retries_exhausted", violations)
         return ("ensure_failed", violations)
 
+    # STRAT-WORKFLOW-IMPERATIVE: merge the deduped accumulator into the authoritative step
+    # output — AFTER schema/guardrail/ensure validation (above), mirroring iteration_best.
+    acc = state.iteration_accumulator.get(step_id)
+    if acc is not None and isinstance(result, dict):
+        result = {
+            **result,
+            "accumulated": list(acc["items"]),
+            "accumulated_count": len(acc["items"]),
+        }
     state.step_outputs[step_id] = result
     state.iteration_best.pop(step_id, None)
+    state.iteration_accumulator.pop(step_id, None)
     state.records.append(_make_record(duration_ms))
     if mode == "flow":
         state.active_child_flow_id = None
@@ -1905,6 +1958,8 @@ def start_iteration(state: FlowState, step_id: str) -> dict[str, Any]:
         "max_iterations": step.max_iterations,
         "exit_criterion": step.exit_criterion,
         "score_expr": step.score_expr,
+        "accumulate": step.accumulate,            # STRAT-WORKFLOW-IMPERATIVE
+        "accumulate_key": step.accumulate_key,
         "count": 0,
         "started_at": time.monotonic(),
         "status": "active",
@@ -1963,27 +2018,68 @@ def report_iteration(
                     "result": result,
                 }
 
+    # --- Accumulation (STRAT-WORKFLOW-IMPERATIVE): dedup items across iterations ---
+    acc_new_count: int | None = None
+    accumulate_error: str | None = None
+    acc = state.iteration_accumulator.setdefault(
+        step_id, {"items": [], "seen": [], "dry_streak": 0}
+    )
+    if ai.get("accumulate"):
+        try:
+            # Compile BOTH exprs up front — a malformed accumulate/accumulate_key is an
+            # accumulate_error (freezes dry_streak), never a silently-swallowed fallback.
+            extract = compile_value_expr(ai["accumulate"], bind="result")
+            key_fn = (
+                compile_value_expr(ai["accumulate_key"], bind="item")
+                if ai.get("accumulate_key") else None
+            )
+            items = extract(result)  # global eval failure → EnsureCompileError → frozen
+            if not isinstance(items, list):
+                raise EnsureCompileError(
+                    f"accumulate expression {ai['accumulate']!r} did not return a list"
+                )
+            seen = set(acc["seen"])
+            added = 0
+            for item in items:
+                try:
+                    raw_key = key_fn(item) if key_fn else item
+                except EnsureCompileError:
+                    raw_key = item  # true per-item eval failure only → identity fallback
+                key = json.dumps(raw_key, sort_keys=True, default=str)
+                if key not in seen:
+                    seen.add(key)
+                    acc["items"].append(item)
+                    acc["seen"].append(key)
+                    added += 1
+            acc_new_count = added
+            acc["dry_streak"] = acc["dry_streak"] + 1 if added == 0 else 0
+        except EnsureCompileError as exc:
+            # Extraction failure is NOT a dry round — dry_streak frozen (Decision 5),
+            # so a dry-based predicate can't fire off a broken expression.
+            accumulate_error = str(exc)
+
     # --- Build enriched eval context for exit_criterion ---
     exit_met = False
     exit_criterion_error: str | None = None
     if ai["exit_criterion"]:
         try:
             fn = compile_ensure(ai["exit_criterion"])
+            eval_kwargs: dict[str, Any] = {}
             if score_expr_str:
                 prior_scores = [
                     r["score"] for r in state.iterations.get(step_id, [])
                     if r.get("score") is not None
                 ]
                 best_entry = state.iteration_best.get(step_id)
-                best_score = best_entry["score"] if best_entry else None
-                exit_met = fn(
-                    result,
-                    best_score=best_score,
-                    prior_scores=prior_scores,
-                    iteration=count,
-                )
-            else:
-                exit_met = fn(result)
+                eval_kwargs["best_score"] = best_entry["score"] if best_entry else None
+                eval_kwargs["prior_scores"] = prior_scores
+                eval_kwargs["iteration"] = count
+            if ai.get("accumulate"):
+                eval_kwargs["accumulator"] = list(acc["items"])
+                eval_kwargs["accumulated_count"] = len(acc["items"])
+                eval_kwargs["new_count"] = acc_new_count
+                eval_kwargs["dry_streak"] = acc["dry_streak"]
+            exit_met = fn(result, **eval_kwargs)
         except EnsureCompileError as exc:
             exit_met = False
             exit_criterion_error = str(exc)
@@ -2044,6 +2140,12 @@ def report_iteration(
         report["score"] = current_score
         if score_error:
             report["score_error"] = score_error
+    if ai.get("accumulate"):
+        report["new_count"] = acc_new_count
+        report["dry_streak"] = acc["dry_streak"]
+        report["accumulated_count"] = len(acc["items"])
+        if accumulate_error:
+            report["accumulate_error"] = accumulate_error
     state.iterations.setdefault(step_id, []).append(report)
 
     # On exit: write outcome, clear active
@@ -2065,6 +2167,11 @@ def report_iteration(
     }
     if exit_criterion_error:
         response["exit_criterion_error"] = exit_criterion_error
+    if accumulate_error:
+        response["accumulate_error"] = accumulate_error
+    if ai.get("accumulate"):
+        response["new_count"] = acc_new_count
+        response["dry_streak"] = acc["dry_streak"]
     if outcome != "continue":
         best_entry = state.iteration_best.get(step_id)
         if best_entry:
@@ -2073,6 +2180,9 @@ def report_iteration(
             response["best_iteration"] = best_entry["iteration"]
         else:
             response["final_result"] = result
+        if ai.get("accumulate"):
+            response["accumulated"] = list(acc["items"])
+            response["accumulated_count"] = len(acc["items"])
     return response
 
 

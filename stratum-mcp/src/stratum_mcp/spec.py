@@ -118,6 +118,11 @@ class IRStepDef:
     exit_criterion: str | None = None
     # v0.2 STRAT-SCORE: numeric scoring expression for iteration loops
     score_expr: str | None = None
+    # STRAT-WORKFLOW-IMPERATIVE: governed accumulator for iteration loops.
+    # accumulate = expr extracting the iteration's item list from `result`;
+    # accumulate_key = optional per-item dedup-key expr (binds `item`).
+    accumulate: str | None = None
+    accumulate_key: str | None = None
     # v0.2: pre-execution guardrails — regex patterns checked against result
     step_guardrails: list[str] | None = None
     # v0.3 STRAT-PAR: step type — "decompose" or "parallel_dispatch" (None = legacy inferred mode)
@@ -388,6 +393,9 @@ _IR_SCHEMA_V02: dict = {
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
                 "score_expr": {"type": "string"},
+                # STRAT-WORKFLOW-IMPERATIVE: governed accumulator
+                "accumulate": {"type": "string"},
+                "accumulate_key": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 "reasoning_template": {"type": "object"},
                 "task_reasoning_template": {"type": "object"},
@@ -566,6 +574,9 @@ _IR_SCHEMA_V03: dict = {
                 "max_iterations": {"type": "integer", "minimum": 1},
                 "exit_criterion": {"type": "string"},
                 "score_expr": {"type": "string"},
+                # STRAT-WORKFLOW-IMPERATIVE: governed accumulator
+                "accumulate": {"type": "string"},
+                "accumulate_key": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 # v0.3 STRAT-PAR: parallel_dispatch fields
                 "source": {"type": "string"},
@@ -1238,6 +1249,8 @@ def _build_step(s: dict) -> IRStepDef:
         max_iterations=s.get("max_iterations"),
         exit_criterion=s.get("exit_criterion"),
         score_expr=s.get("score_expr"),
+        accumulate=s.get("accumulate"),
+        accumulate_key=s.get("accumulate_key"),
         step_guardrails=s.get("guardrails"),
         # v0.3 STRAT-PAR fields
         step_type=step_type,
@@ -1531,6 +1544,11 @@ def _validate_semantics(spec: IRSpec) -> None:
                             f"Gate step '{step.id}' must not have score_expr",
                             path=f"flows.{flow_name}.steps.{step.id}.score_expr"
                         )
+                    if step.accumulate is not None or step.accumulate_key is not None:
+                        raise IRSemanticError(
+                            f"Gate step '{step.id}' must not have accumulate/accumulate_key",
+                            path=f"flows.{flow_name}.steps.{step.id}.accumulate"
+                        )
                     # Gate steps CAN have skip_if (e.g., file_exists-based .approved markers).
                     # When skip_if is true, the gate is auto-approved via PolicyRecord.
                     for routing_field in ("on_approve", "on_kill"):
@@ -1694,6 +1712,29 @@ def _validate_semantics(spec: IRSpec) -> None:
                     raise IRSemanticError(
                         f"Step '{step.id}' score_expr must not contain dunder attributes",
                         path=f"flows.{flow_name}.steps.{step.id}.score_expr"
+                    )
+                # STRAT-WORKFLOW-IMPERATIVE: accumulate requires max_iterations
+                if step.accumulate and not step.max_iterations:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has accumulate but no max_iterations",
+                        path=f"flows.{flow_name}.steps.{step.id}.accumulate"
+                    )
+                # accumulate_key requires accumulate
+                if step.accumulate_key and not step.accumulate:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has accumulate_key but no accumulate",
+                        path=f"flows.{flow_name}.steps.{step.id}.accumulate_key"
+                    )
+                # accumulate / accumulate_key dunder guards
+                if step.accumulate and "__" in step.accumulate:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' accumulate must not contain dunder attributes",
+                        path=f"flows.{flow_name}.steps.{step.id}.accumulate"
+                    )
+                if step.accumulate_key and "__" in step.accumulate_key:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' accumulate_key must not contain dunder attributes",
+                        path=f"flows.{flow_name}.steps.{step.id}.accumulate_key"
                     )
             else:
                 # Gate steps: on_fail and next are gate-incompatible
