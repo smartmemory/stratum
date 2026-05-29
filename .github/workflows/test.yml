@@ -4,9 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 7 * * *"   # nightly integration (cross-repo contracts + live gates)
+  workflow_dispatch:
 
 jobs:
-  combined-suite:
+  # Fast hermetic suite — no compose checkout, no secrets. Runs on every push
+  # and PR. Cross-repo contract tests skip (no compose/contracts present) and
+  # live model/Docker judge gates skip (no OPENAI_API_KEY). Both packages run in
+  # one process to preserve the cross-package contamination guard.
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,5 +28,51 @@ jobs:
       - name: Install stratum-mcp
         run: pip install -e "stratum-mcp"
 
-      - name: Combined suite (cross-contamination guard)
-        run: pytest tests/ stratum-mcp/tests/ --ignore=tests/test_e2e.py --timeout=15 -x -q
+      - name: Hermetic combined suite (cross-contamination guard)
+        run: pytest tests/ stratum-mcp/tests/ --ignore=tests/test_e2e.py --timeout=15 -q
+
+  # Integration suite — checks out compose as a sibling so the cross-repo
+  # contract tests and judge-result schema validation run for real, and wires
+  # OPENAI_API_KEY so the live Docker/model judge gates execute. Scheduled +
+  # manual only: it is slow, needs secrets, and makes real model calls.
+  #
+  # Requires repo secrets:
+  #   COMPOSE_CHECKOUT_TOKEN — PAT with read access to smartmemory/compose
+  #   OPENAI_API_KEY         — for the live judge gate (optional; gates skip if unset)
+  integration:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      # Sibling layout: <workspace>/stratum + <workspace>/compose. The contract
+      # tests resolve compose via Path(__file__).parents[..] / "compose", and
+      # the judge validator resolves <repo>/../compose/contracts — both land on
+      # <workspace>/compose when the two repos are siblings under the workspace.
+      - name: Check out stratum
+        uses: actions/checkout@v4
+        with:
+          path: stratum
+
+      - name: Check out compose (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: smartmemory/compose
+          path: compose
+          token: ${{ secrets.COMPOSE_CHECKOUT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install stratum-py (dev)
+        working-directory: stratum
+        run: pip install -e ".[dev]"
+
+      - name: Install stratum-mcp
+        working-directory: stratum
+        run: pip install -e "stratum-mcp"
+
+      - name: Full suite (contracts + live judge gates)
+        working-directory: stratum
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: pytest tests/ stratum-mcp/tests/ --ignore=tests/test_e2e.py --timeout=120 -q

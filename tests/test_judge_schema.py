@@ -30,6 +30,13 @@ CONTRACTS_DIR = (
     Path(__file__).resolve().parent.parent.parent / "compose" / "contracts"
 )
 
+# Validates against contracts in the sibling compose repo; skip when compose
+# isn't checked out alongside stratum (e.g. the stratum-only CI workflow).
+pytestmark = pytest.mark.skipif(
+    not CONTRACTS_DIR.exists(),
+    reason="requires sibling compose/contracts checkout (absent in stratum-only CI)",
+)
+
 
 def _registry() -> Registry:
     """Build a referencing Registry over compose/contracts/*.json so allOf
