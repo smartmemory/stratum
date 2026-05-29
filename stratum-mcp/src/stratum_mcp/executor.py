@@ -1657,6 +1657,7 @@ def process_step_result(
     if violations:
         if attempt >= max_retries:
             state.records.append(_make_record(duration_ms))
+            state.iteration_accumulator.pop(step_id, None)  # STRAT-WORKFLOW-IMPERATIVE
             if step.on_fail:
                 state.step_outputs[step_id] = result
                 target_idx = _find_step_idx(state, step.on_fail)
@@ -2090,7 +2091,11 @@ def report_iteration(
     ).hexdigest()
 
     stagnation_detected = False
-    if not exit_met:
+    # STRAT-WORKFLOW-IMPERATIVE: an accumulator loop is governed solely by its exit_criterion
+    # (e.g. dry_streak >= K) and max_iterations. Implicit fingerprint-stagnation must NOT
+    # preempt it — repeated dry rounds share a fingerprint and would otherwise exit at
+    # _STAGNATION_WINDOW before a larger dry_streak threshold could be reached.
+    if not exit_met and not ai.get("accumulate"):
         if score_expr_str:
             # Score-based stagnation: only when exit_criterion is absent
             if not ai["exit_criterion"]:
