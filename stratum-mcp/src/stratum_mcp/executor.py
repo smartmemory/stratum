@@ -559,11 +559,56 @@ def _topological_sort(flow_def: IRFlowDef) -> list[IRStepDef]:
     return ordered
 
 
+def _is_pipeline_step(step) -> bool:
+    """True for STRAT-WORKFLOW-PIPELINE `pipeline` steps.
+
+    A pipeline executes as a parallel_dispatch (``_step_mode`` maps it so), but
+    desugars to an item x stage depends_on graph and uses item-scoped require.
+    """
+    return getattr(step, "step_type", None) == "pipeline"
+
+
+def expand_pipeline_tasks(step, source_items) -> list[dict]:
+    """Desugar a `pipeline` step into a flat depends_on task graph.
+
+    For each source item ``i`` and stage ``j`` emit one task
+    ``f"{step.id}::item{i}::stage{j}"`` depending on the same item's previous
+    stage. Pure + deterministic so start/poll/advance (and the dispatch surface)
+    all materialize byte-identical task ids. See STRAT-WORKFLOW-PIPELINE design §2.
+
+    Reserved keys (underscored + ``item``/``id``/``depends_on``) are never
+    overwritten by a dict source item's fields; scalar items still bind ``item``.
+    """
+    stages = list(step.stages or [])
+    _RESERVED = {"id", "depends_on", "item", "_pipeline_item", "_pipeline_stage",
+                 "_intent_template", "_agent"}
+    tasks: list[dict] = []
+    for i, item in enumerate(source_items):
+        for j, stage in enumerate(stages):
+            task = {
+                "id": f"{step.id}::item{i}::stage{j}",
+                "depends_on": [f"{step.id}::item{i}::stage{j - 1}"] if j > 0 else [],
+                "_pipeline_item": i,
+                "_pipeline_stage": j,
+                "_intent_template": stage.get("intent_template"),
+                "_agent": stage.get("agent"),
+                "item": item,
+            }
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    if k not in _RESERVED and k not in task and not k.startswith("_"):
+                        task[k] = v
+            tasks.append(task)
+    return tasks
+
+
 def _step_mode(step) -> str:
     """Return 'function', 'inline', 'flow', 'decompose', 'parallel_dispatch', or 'judge'."""
     if step.step_type == "decompose":
         return "decompose"
-    if step.step_type == "parallel_dispatch":
+    # STRAT-WORKFLOW-PIPELINE: a pipeline runs as a parallel_dispatch (server-side
+    # fan-out over the desugared graph); only the executor + evaluator special-case it.
+    if step.step_type in ("parallel_dispatch", "pipeline"):
         return "parallel_dispatch"
     if step.function:
         return "function"
@@ -903,6 +948,9 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
             "skip_if": step.skip_if,
             "step_type": step.step_type,
             "source": step.source,
+            # STRAT-WORKFLOW-PIPELINE: stages are spec-defining (change what the
+            # step does), so they're tamper-detected. Only checksum delta added.
+            "stages": [dict(sorted(st.items())) for st in (step.stages or [])],
             "require": step.require,
             "max_iterations": step.max_iterations,
             "exit_criterion": step.exit_criterion,
@@ -1458,14 +1506,21 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         # source is guaranteed non-None by semantic validation for parallel_dispatch
         assert step.source is not None, "parallel_dispatch step must have source"
         source_tasks = resolve_ref(step.source, state.inputs, state.step_outputs)
-        return {
+        # STRAT-WORKFLOW-PIPELINE: advertise the SAME desugared graph that
+        # _resolve_dispatch_tasks materializes, so the surface matches dispatch.
+        _is_pipeline = _is_pipeline_step(step)
+        tasks = (
+            expand_pipeline_tasks(step, list(source_tasks or []))
+            if _is_pipeline else source_tasks
+        )
+        info = {
             "status": "parallel_dispatch",
             "flow_id": state.flow_id,
             "step_number": state.current_idx + 1,
             "total_steps": len(state.ordered_steps),
             "step_id": step.id,
             "step_mode": "parallel_dispatch",
-            "tasks": source_tasks,
+            "tasks": tasks,
             "agent": step.agent,
             "max_concurrent": step.max_concurrent or 3,
             "isolation": step.isolation or "worktree",
@@ -1475,6 +1530,10 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "ensure": step.step_ensure or [],
             "retries_remaining": (step.step_retries or 2) - attempts_so_far,
         }
+        if _is_pipeline:
+            info["pipeline"] = True
+            info["stages"] = [dict(st) for st in (step.stages or [])]
+        return info
 
     elif mode == "flow":
         child_state = None
