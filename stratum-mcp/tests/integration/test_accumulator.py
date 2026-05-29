@@ -390,6 +390,56 @@ def test_accumulator_checkpoint_revert():
     assert len(state.iteration_accumulator["s1"]["items"]) == 1
 
 
+def test_accumulate_without_exit_criterion_runs_to_max():
+    # No exit_criterion: the loop accumulates and exits at max_iterations.
+    state = _new_state(_acc_spec(exit_criterion="False", max_iterations=2))
+    start_iteration(state, "s1")
+    report_iteration(state, "s1", {"findings": [{"id": 1}]})
+    r2 = report_iteration(state, "s1", {"findings": [{"id": 2}]})
+    assert r2["outcome"] == "exit_max"
+    assert {f["id"] for f in r2["accumulated"]} == {1, 2}
+
+
+def test_accumulate_with_score_expr_combined():
+    # accumulate + score_expr together: exit_criterion sees BOTH accumulator and score kwargs.
+    spec_yaml = textwrap.dedent("""\
+        version: "0.2"
+        contracts:
+          Out:
+            findings: {type: array}
+            score: {type: number}
+        functions:
+          work:
+            mode: infer
+            intent: "find+score"
+            input: {}
+            output: Out
+        flows:
+          main:
+            input: {}
+            output: Out
+            steps:
+              - id: s1
+                function: work
+                inputs: {}
+                max_iterations: 5
+                score_expr: "result.score"
+                exit_criterion: "dry_streak >= 1 and best_score >= 0.5"
+                accumulate: "result.findings"
+""")
+    state = _new_state(spec_yaml)
+    start_iteration(state, "s1")
+    # new item, score below threshold → continue
+    r1 = report_iteration(state, "s1", {"findings": [{"id": 1}], "score": 0.4})
+    assert r1["outcome"] == "continue"
+    # dry round AND best_score now >= 0.5 → both conditions met → exit
+    r2 = report_iteration(state, "s1", {"findings": [{"id": 1}], "score": 0.9})
+    assert r2["dry_streak"] == 1
+    assert r2["best_score"] == 0.9
+    assert r2["outcome"] == "exit_success"
+    assert r2["accumulated_count"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Tamper detection
 # ---------------------------------------------------------------------------
