@@ -289,13 +289,13 @@ async def test_mixed_predicates_t3_only_on_reached(tmp_path, monkeypatch):
 async def test_t3_cannot_read_same_predicate_prior_rows(tmp_path, monkeypatch):
     """Cold-read side-channel: when T3 runs, this predicate's T1/T2 rows must
     NOT yet be on disk in turns.jsonl (deferred-flush ordering)."""
-    from stratum.judge import logging as lmod
+    from stratum.judge import staging as smod
 
-    # turns.jsonl is written via logging.JUDGE_ROOT (distinct from
-    # staging.JUDGE_ROOT). Isolate it so this test is hermetic and reads the
-    # SAME file append_turn_log writes.
+    # turns.jsonl is written by append_turn_log, which resolves the judge root
+    # from staging.JUDGE_ROOT at call time. Isolate it so this test is hermetic
+    # and reads the SAME file append_turn_log writes.
     log_root = tmp_path / "judgelog"
-    monkeypatch.setattr(lmod, "JUDGE_ROOT", log_root)
+    monkeypatch.setattr(smod, "JUDGE_ROOT", log_root)
 
     async def fake_t2(p, root, run, ctx):
         return TierRecord("T2", "met", 9, "__T2_LEAK__"), []
