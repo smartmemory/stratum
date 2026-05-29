@@ -451,3 +451,15 @@ def test_spec_checksum_covers_accumulate():
     csum_a = compute_spec_checksum(spec_a.flows["main"], spec_a)
     csum_b = compute_spec_checksum(spec_b.flows["main"], spec_b)
     assert csum_a != csum_b
+
+
+def test_spec_checksum_covers_score_expr():
+    # #4: score_expr is load-bearing iteration semantics — must be tamper-detected too.
+    base = _acc_spec(exit_criterion="best_score >= 0.9").replace(
+        'accumulate: "result.findings"', 'score_expr: "result.score"')
+    spec_a = parse_and_validate(base)
+    spec_b = parse_and_validate(base.replace(
+        'score_expr: "result.score"', 'score_expr: "result.other"'))
+    csum_a = compute_spec_checksum(spec_a.flows["main"], spec_a)
+    csum_b = compute_spec_checksum(spec_b.flows["main"], spec_b)
+    assert csum_a != csum_b

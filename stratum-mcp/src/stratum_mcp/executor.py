@@ -906,8 +906,10 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
             "require": step.require,
             "max_iterations": step.max_iterations,
             "exit_criterion": step.exit_criterion,
-            # STRAT-WORKFLOW-IMPERATIVE: accumulator semantics are load-bearing,
-            # so they're tamper-detected (can't be altered mid-run undetected).
+            # All iteration-loop semantics are load-bearing, so they're tamper-detected
+            # (can't be altered mid-run undetected): exit_criterion, score_expr (#4), and
+            # the STRAT-WORKFLOW-IMPERATIVE accumulator fields.
+            "score_expr": step.score_expr,
             "accumulate": step.accumulate,
             "accumulate_key": step.accumulate_key,
             "capture_diff": getattr(step, "capture_diff", False),
