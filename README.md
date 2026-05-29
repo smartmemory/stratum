@@ -311,6 +311,8 @@ flows:
         # Iteration (v0.2):
         max_iterations: 10                           # optional (forbidden on gates)
         exit_criterion: "result.quality >= 0.9"      # optional, requires max_iterations
+        accumulate: "result.findings"                # optional; dedup items across rounds
+        accumulate_key: "item.id"                    # optional; requires accumulate
 ```
 
 #### `workflow` (v0.2)
@@ -798,6 +800,30 @@ Steps with `max_iterations` support counted sub-loops. The agent iterates until 
 4. `stratum_iteration_abort(flow_id, step_id, reason)` -- early exit
 
 Gate steps cannot use iterations. `exit_criterion` requires `max_iterations`. Iteration history is preserved across gate revise cycles in `archived_iterations`.
+
+### Accumulator & loop-until-dry
+
+An iteration step can accumulate deduped items across rounds and exit when it stops finding
+new ones. Declare `accumulate` (an expression returning the round's item list) and optionally
+`accumulate_key` (a per-item dedup key, binding `item`):
+
+```yaml
+- id: hunt
+  intent: "Find issues; keep hunting until two dry rounds"
+  max_iterations: 20
+  accumulate: "result.findings"        # list extracted from each result
+  accumulate_key: "item.id"            # optional; default dedups on the whole item
+  exit_criterion: "dry_streak >= 2"    # K consecutive zero-new rounds → exit
+```
+
+`exit_criterion` additionally sees `accumulator` (the deduped list), `accumulated_count`,
+`new_count` (items added this round), and `dry_streak` (consecutive zero-new rounds) — compose
+them freely, e.g. `"dry_streak >= 2 or accumulated_count >= 50"`. On exit the deduped set is
+merged into the step's authoritative output as `accumulated`/`accumulated_count`. A malformed
+`accumulate`/`accumulate_key` is reported as `accumulate_error` and **freezes `dry_streak`** (a
+broken extractor can't fake dryness); accumulator loops are governed solely by `exit_criterion`
+and `max_iterations` (fingerprint-stagnation does not preempt them). Not valid on gate,
+`decompose`, or `parallel_dispatch` steps.
 
 ---
 
