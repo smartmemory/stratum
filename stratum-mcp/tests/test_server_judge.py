@@ -88,6 +88,40 @@ async def test_stratum_judge_returns_judge_result_dict(flow_state):
 
 
 @pytest.mark.asyncio
+async def test_judge_succeeds_when_contract_schemas_absent(
+    flow_state, monkeypatch, capsys
+):
+    """Regression (stratum#1): a missing compose/contracts checkout must not
+    turn a valid JudgeResult into a schema_validation_failed error. The judge
+    runs in stratum-only CI and in plain `pip install stratum-mcp` environments
+    that have no compose tree — result-shape validation is best-effort and must
+    degrade to a skip, not a failure."""
+    monkeypatch.setattr(
+        server_mod, "_judge_contracts_dir",
+        lambda: Path("/nonexistent/compose/contracts"),
+    )
+    monkeypatch.setattr(server_mod, "_JUDGE_RESULT_VALIDATOR", None)
+    monkeypatch.setattr(server_mod, "_JUDGE_VALIDATOR_UNAVAILABLE", False)
+
+    result = await stratum_judge(
+        flow_id=flow_state.flow_id,
+        step_id="verify",
+        predicates=[{
+            "id": "p1",
+            "type": "deterministic",
+            "statement": "file_exists('artifacts/out.txt')",
+        }],
+        artifacts={"out": "hello world"},
+        ctx=_Ctx(),
+    )
+
+    assert result.get("status") != "error", result
+    assert result["judge_version"] == "1.0"
+    assert result["met"] is True
+    assert "skipping result-shape validation" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
 async def test_stratum_judge_flow_not_found_response():
     response = await stratum_judge(
         flow_id="nonexistent-flow-id",

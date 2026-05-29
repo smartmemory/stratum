@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### stratum — fix(#1): judge no longer errors when compose/contracts is absent + CI split into unit/integration
+
+- **Production bug:** `_validate_judge_result` (server.py) loaded the judge-result contract schemas from a sibling `compose/contracts` checkout and a broad `except` turned a missing schema file into `schema_validation_failed`. Any `pip install stratum-mcp` (where `__file__` is in site-packages, no compose tree) or stratum-only CI checkout therefore failed **every** `stratum_judge` call. The runtime check is a best-effort result-shape regression catcher, not a correctness gate — it now degrades to a skip (with a one-time stderr warning) when the schemas can't be located, and only raises on a genuine schema mismatch. Regression test `test_judge_succeeds_when_contract_schemas_absent`.
+- **Cross-repo contract tests** (`test_goal_state`, `test_judge_schema`, `test_judge_corpus`, `test_goal_tool`) read `compose/contracts/*.json` directly; they now `skipif` the contracts dir is absent (run locally / in the integration job where compose is a sibling, skip in the stratum-only unit job). Also fixed a hardcoded absolute `/Users/...` contracts path in `test_goal_tool`.
+- **CI split (`test.yml`):** the single combined-suite job (added in 4d55522, ran the whole corpus against a bare checkout and so failed on the contract dependency) is now two jobs — a fast hermetic `unit` job on every push/PR (both packages in one process to keep the cross-contamination guard; contract + live tests skip), and a scheduled/manual `integration` job that checks out compose as a sibling and wires `OPENAI_API_KEY` so the contract validation and live Docker/model judge gates run for real.
+
 ### stratum — feat(#1): `stratum-mcp doctor` install/environment diagnostics
 
 - **What:** new `stratum-mcp doctor` CLI subcommand that surfaces the common first-run failure modes behind `compose init` leaving Stratum disabled (smartmemory/stratum#1). Checks: Python version vs. the `>=3.11` floor (with the exact running version + interpreter path), whether `stratum-mcp` is installed (`importlib.metadata`, with version + location), whether a `stratum-mcp` console script resolves on PATH (`shutil.which`), and whether the active `python` differs from the interpreter that owns the package. Exit 0 = healthy, 1 = problems; every failure carries an actionable `fix:` line.

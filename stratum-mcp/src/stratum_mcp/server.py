@@ -1910,20 +1910,38 @@ async def stratum_judge(
 
 
 _JUDGE_RESULT_VALIDATOR = None
+_JUDGE_VALIDATOR_UNAVAILABLE = False
 
 
-def _validate_judge_result(result_dict: dict) -> None:
-    """Validate a JudgeResult dict against compose/contracts/judge-result.json.
-    Lazy-builds the validator on first use; reuses across calls."""
-    global _JUDGE_RESULT_VALIDATOR
-    if _JUDGE_RESULT_VALIDATOR is None:
-        import json
-        from jsonschema import Draft7Validator
-        from referencing import Registry, Resource
+def _judge_contracts_dir() -> Path:
+    """Where the judge-result contract schemas live.
 
-        contracts_dir = (
-            Path(__file__).resolve().parents[4] / "compose" / "contracts"
-        )
+    They are the source of truth in the compose repo, checked out as a sibling
+    of stratum in dev / integration layouts. A plain ``pip install stratum-mcp``
+    (or a stratum-only CI checkout) has no compose tree — callers must tolerate
+    the directory being absent.
+    """
+    return Path(__file__).resolve().parents[4] / "compose" / "contracts"
+
+
+def _get_judge_validator():
+    """Lazily build the judge-result validator, or return ``None`` when the
+    contract schemas can't be located.
+
+    Result-shape validation is a best-effort regression catcher, not a
+    correctness gate (see the call site). A missing schema file is an
+    environment limitation — it must never turn an otherwise valid JudgeResult
+    into an error — so we degrade to "skip validation" and warn once."""
+    global _JUDGE_RESULT_VALIDATOR, _JUDGE_VALIDATOR_UNAVAILABLE
+    if _JUDGE_RESULT_VALIDATOR is not None or _JUDGE_VALIDATOR_UNAVAILABLE:
+        return _JUDGE_RESULT_VALIDATOR
+
+    import json
+    from jsonschema import Draft7Validator
+    from referencing import Registry, Resource
+
+    contracts_dir = _judge_contracts_dir()
+    try:
         resources = []
         for name in (
             "review-result.json",
@@ -1935,7 +1953,27 @@ def _validate_judge_result(result_dict: dict) -> None:
         registry = Registry().with_resources(resources)
         schema = json.loads((contracts_dir / "judge-result.json").read_text())
         _JUDGE_RESULT_VALIDATOR = Draft7Validator(schema, registry=registry)
-    errors = list(_JUDGE_RESULT_VALIDATOR.iter_errors(result_dict))
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        _JUDGE_VALIDATOR_UNAVAILABLE = True
+        print(
+            f"stratum-mcp: warning: judge-result contract schemas not found at "
+            f"{contracts_dir}; skipping result-shape validation. Install with a "
+            f"compose checkout alongside stratum to enable it.",
+            file=sys.stderr,
+        )
+        return None
+    return _JUDGE_RESULT_VALIDATOR
+
+
+def _validate_judge_result(result_dict: dict) -> None:
+    """Validate a JudgeResult dict against compose/contracts/judge-result.json.
+
+    No-op when the contract schemas aren't available (see _get_judge_validator).
+    Raises ValueError only on a genuine schema mismatch."""
+    validator = _get_judge_validator()
+    if validator is None:
+        return
+    errors = list(validator.iter_errors(result_dict))
     if errors:
         raise ValueError("; ".join(e.message for e in errors[:3]))
 

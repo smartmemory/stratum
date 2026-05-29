@@ -30,6 +30,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 CONTRACTS_DIR = Path(__file__).parent.parent.parent / "compose" / "contracts"
 GOAL_CONTRACT_PATH = CONTRACTS_DIR / "goal-result.json"
 
+# These tests validate stratum's serialization against contracts that live in
+# the sibling compose repo (compose/contracts/*.json). They run locally where
+# compose is checked out alongside stratum, but the stratum CI workflow only
+# checks out stratum, so skip the whole module when the contracts aren't present.
+pytestmark = pytest.mark.skipif(
+    not CONTRACTS_DIR.exists(),
+    reason="requires sibling compose/contracts checkout (absent in stratum-only CI)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers

@@ -39,6 +39,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Contracts live in the sibling compose repo: tests -> stratum-mcp -> stratum
+# -> <workspace> / compose / contracts. Present locally, absent in stratum-only CI.
+_COMPOSE_CONTRACTS = (
+    Path(__file__).resolve().parent.parent.parent.parent / "compose" / "contracts"
+)
+
 # ---------------------------------------------------------------------------
 # Helpers: import tools under test via the server module
 # ---------------------------------------------------------------------------
@@ -852,6 +858,10 @@ class TestPredicateOutcomesSynthesis:
 # Task-2 regression: zero-predicate GoalResult validates against contract
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    not _COMPOSE_CONTRACTS.exists(),
+    reason="requires sibling compose/contracts checkout (absent in stratum-only CI)",
+)
 class TestZeroTurnContractValidation:
     """Regression: empty predicate_outcomes / predicates must not fail JSON schema validation."""
 
@@ -859,9 +869,8 @@ class TestZeroTurnContractValidation:
         """T2-reg: zero predicates validates against judge-result.json (minItems removed)."""
         import json
         import jsonschema
-        from pathlib import Path
 
-        contracts_dir = Path("/Users/ruze/reg/my/forge/compose/contracts")
+        contracts_dir = _COMPOSE_CONTRACTS
         judge_schema_path = contracts_dir / "judge-result.json"
         goal_schema_path = contracts_dir / "goal-result.json"
 
@@ -882,9 +891,8 @@ class TestZeroTurnContractValidation:
         """T2-reg: zero predicate_outcomes validates against goal-result.json (minItems removed)."""
         import json
         import jsonschema
-        from pathlib import Path
 
-        contracts_dir = Path("/Users/ruze/reg/my/forge/compose/contracts")
+        contracts_dir = _COMPOSE_CONTRACTS
         goal_schema_path = contracts_dir / "goal-result.json"
 
         with open(goal_schema_path) as f:
