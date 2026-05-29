@@ -2663,6 +2663,14 @@ async def stratum_list_workflows(
     workflows_dir: str = ".",
     ctx: Context = None,
 ) -> dict[str, Any]:
+    """List the **workflow definitions** discoverable in a directory.
+
+    Returns authored, version-controlled artifacts — each a ``.stratum.yaml`` spec
+    carrying a ``workflow:`` block — not running instances. A workflow is the
+    definition you write once and rerun; a *flow execution* (tracked as a
+    ``FlowState`` with a ``flow_id``) is a single live run of one. This tool walks
+    the definition layer only. See SPEC.md "Terminology: Workflow vs Flow".
+    """
     from pathlib import Path as _Path
     import yaml as _yaml
 

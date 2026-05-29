@@ -13,6 +13,8 @@ Two shipped components:
 - **`stratum-mcp`** -- MCP server for Claude Code. Validates `.stratum.yaml` specs, manages flow execution state, enforces typed contracts and postconditions. Published on PyPI.
 - **`stratum-py`** -- Python library with `@infer`, `@contract`, `@compute`, `@flow` decorators for building production LLM systems. Published on PyPI.
 
+**Governed workflows as auditable flows — on any agent, not just one vendor.** Unlike a single-vendor in-context orchestrator, Stratum runs as an MCP server and a library under Claude Code, Codex, or any MCP host; enforces typed contracts and `ensure` postconditions on every flow execution; stops at real human gates; dispatches Claude *and* Codex agents in one flow (so an independent reviewer can be a different model from the implementer); and persists flow state across sessions. Where you want raw in-context fan-out, reach for an in-host workflow runtime; where you want the run governed, portable, and auditable, that's a Stratum workflow.
+
 ---
 
 ## Table of Contents
@@ -95,9 +97,17 @@ You see plain English narration throughout. The spec, state management, and post
 
 ## Core Concepts
 
+### Workflow vs Flow
+
+Stratum uses these two terms deliberately — they are **not** interchangeable.
+
+A **workflow** is the *authored definition*: the named, registered, version-controlled artifact you write once and rerun (a `.stratum.yaml` spec with a `workflow:` block, discoverable via `stratum_list_workflows`). A **flow** is the *executable DAG definition*: a DAG of steps (`flows:`, `@flow`). Running a flow produces a **flow execution** — a single live instance tracked as a `FlowState` with a `flow_id`. A workflow composes flows; running a workflow produces flow executions.
+
+The split mirrors Temporal (Workflow Definition vs Execution) and Airflow (DAG vs DAG Run). Rule of thumb: if you can `git diff` it, it's a *workflow*; if it has a `flow_id` and a state, it's a *flow execution*.
+
 ### Flows
 
-A **flow** is a directed acyclic graph of steps with typed inputs and an output contract. Flows are defined in `.stratum.yaml` files and executed by the MCP server.
+A **flow** is a directed acyclic graph of steps with typed inputs and an output contract. Flows are defined either in `.stratum.yaml` specs (executed by the MCP server) or with the `@flow` decorator in the Python library.
 
 ### Steps
 

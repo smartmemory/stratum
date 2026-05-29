@@ -277,6 +277,12 @@ def flow(budget: Budget | None = None) -> Callable:
     """
     Marks an async def function as a Stratum flow.
 
+    ``@flow`` *defines* a flow (the authored, reusable DAG). Each *invocation*
+    of the decorated function *creates a flow execution* — a single running
+    instance carrying a fresh ``flow_id``. The definition is what you
+    ``git diff``; the execution is what has a ``flow_id`` and state. See
+    SPEC.md "Terminology: Workflow vs Flow".
+
     Injects a flow_id and budget envelope into the ContextVar so nested
     @infer calls can inherit them without explicit passing.
     """

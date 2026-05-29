@@ -82,6 +82,26 @@ Conformance language follows [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119):
 
 ---
 
+## Terminology: Workflow vs Flow
+
+Stratum uses two related terms deliberately. They are **not** interchangeable.
+
+A **workflow** is an *authored definition* — the named, registered, version-controlled artifact you write once and rerun. It is the `.stratum.yaml` spec carrying a `workflow:` block, discoverable via `stratum_list_workflows`. A workflow composes one or more flows.
+
+A **flow** is an *executable DAG definition* — a directed acyclic graph of typed steps (`flows:` in the spec, `@flow` in the library). Running a flow produces a **flow execution**: a single live instance tracked as a `FlowState` with a `flow_id`. A workflow is what you authored; a flow is the executable graph inside it; a flow execution is one run of that graph.
+
+The relationship mirrors **Temporal** (Workflow Definition vs Workflow Execution) and **Airflow** (DAG vs DAG Run): the definition is static and reusable; the execution is a live, stateful instance of it.
+
+| Layer | Term | Construct | Kind |
+|---|---|---|---|
+| Authored spec | **Workflow** | `workflow:` block, `stratum_list_workflows` | Definition (saved, versioned, discoverable) |
+| Spec body | **Flow** | `flows:`, `flow: sub_flow` composition, `@flow` | Definition of an executable DAG |
+| Runtime | **Flow execution** | `FlowState`, `flow_id`, audit trace | A single running instance of a flow |
+
+**Rule of thumb:** if you can `git diff` it, it is a *workflow* (or the flows inside it). If it has a `flow_id` and a state, it is a *flow execution*. `@flow` *defines* a flow; invoking it *creates* a flow execution.
+
+---
+
 ## 1. Type System
 
 ### 1.1 Primitive Types
