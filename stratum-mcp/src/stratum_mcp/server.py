@@ -24,6 +24,8 @@ from .executor import (
     FlowState,
     _flows,
     _step_mode,
+    _is_pipeline_step,
+    expand_pipeline_tasks,
     create_flow_state,
     get_current_step_info,
     process_step_result,
@@ -582,6 +584,55 @@ _RUNNING_EXECUTORS: dict[tuple[str, str], Any] = {}
 _PARALLEL_EXECUTORS: dict[tuple[str, str], Any] = {}
 
 
+def _collapse_pipeline_items(
+    task_results: list[dict[str, Any]],
+    pipe_meta: dict[str, dict],
+) -> list[dict[str, Any]]:
+    """Collapse pipeline stage-task results into per-item verdicts.
+
+    STRAT-WORKFLOW-PIPELINE: ``pipe_meta`` (the FULL desugared graph) is the source
+    of truth for which item/stage tasks must exist — NOT the submitted
+    ``task_results``. This closes a require-bypass on the client-dispatched
+    ``stratum_parallel_done`` path: a caller cannot make ``require: all`` pass by
+    omitting an item's tasks, because a stage with no reported result counts as
+    ``missing`` (not complete). Per item:
+      - ``failed`` iff any stage reported failed/cancelled;
+      - ``complete`` iff EVERY stage reported complete;
+      - else ``incomplete`` (a stage is missing or still running).
+    Returns plain dicts (consumer uses bracket access in ``ensure``; only the
+    top-level result is SimpleNamespace-wrapped). Ordered by item index.
+    """
+    reported: dict[str, dict] = {tr.get("task_id"): tr for tr in task_results}
+
+    # Group the EXPECTED tasks (from the desugared graph) by item.
+    by_item: dict[Any, list[dict]] = {}
+    for tid, meta in pipe_meta.items():
+        by_item.setdefault(meta.get("_pipeline_item"), []).append(meta)
+
+    items: list[dict[str, Any]] = []
+    for item_idx in sorted(by_item, key=lambda x: (x is None, x)):
+        stage_metas = sorted(by_item[item_idx], key=lambda m: m.get("_pipeline_stage", 0))
+        stage_results = [reported.get(m["id"]) for m in stage_metas]
+        statuses = [
+            (sr.get("status") if sr is not None else "missing") for sr in stage_results
+        ]
+        if any(s in ("failed", "cancelled") for s in statuses):
+            status = "failed"
+        elif statuses and all(s == "complete" for s in statuses):
+            status = "complete"
+        else:
+            status = "incomplete"
+        final_sr = stage_results[-1] if stage_results else None
+        items.append({
+            "item": stage_metas[0].get("item") if stage_metas else None,
+            "status": status,
+            # Only a fully completed chain has a meaningful final-stage output.
+            "result": (final_sr.get("result") if (status == "complete" and final_sr) else None),
+            "stages": [sr.get("result") if sr is not None else None for sr in stage_results],
+        })
+    return items
+
+
 def _evaluate_parallel_results(
     state: FlowState,
     step: Any,
@@ -610,10 +661,27 @@ def _evaluate_parallel_results(
     # every failure-response path.
     task_template = step.task_reasoning_template
     per_task_cert_strs: list[str] = []
-    if task_template and (step.agent or 'claude').startswith('claude'):
+    # STRAT-WORKFLOW-PIPELINE: pipeline mode gates the cert per-task on the
+    # resolved per-stage agent (codex stage skips a claude-structured cert), and
+    # collapses stage tasks into item verdicts for require evaluation.
+    is_pipeline = _is_pipeline_step(step)
+    pipe_meta = (
+        {t["id"]: t for t in _resolve_dispatch_tasks(state, step)}
+        if is_pipeline else None
+    )
+
+    def _task_is_claude(task: dict) -> bool:
+        if pipe_meta is not None:
+            meta = pipe_meta.get(task.get("task_id"), {})
+            return (meta.get("_agent") or step.agent or "claude").startswith("claude")
+        return (step.agent or "claude").startswith("claude")
+
+    if task_template:
         for task in task_results:
             if task.get("status") != "complete":
                 continue  # already failed — skip cert check
+            if not _task_is_claude(task):
+                continue  # non-claude stage task — cert does not apply
             task_result = task.get("result") or {}
             cert_violations = validate_certificate(task_template, task_result)
             if cert_violations:
@@ -629,24 +697,47 @@ def _evaluate_parallel_results(
     failed = [t for t in task_results if t.get("status") != "complete"]
 
     require = step.require or "all"
-    if require == "all":
-        require_satisfied = len(failed) == 0
-    elif require == "any":
-        require_satisfied = len(completed) > 0
-    elif isinstance(require, int):
-        require_satisfied = len(completed) >= require
-    else:
-        require_satisfied = len(failed) == 0  # default to "all"
-
     merge_ok = merge_status != "conflict"
 
-    aggregate = {
-        "tasks": task_results,
-        "merge_status": merge_status,
-        "completed": completed,
-        "failed": failed,
-        "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
-    }
+    if is_pipeline:
+        # Collapse stage tasks into per-item verdicts (item-scoped require).
+        items = _collapse_pipeline_items(task_results, pipe_meta or {})
+        total_items = len(items)
+        item_complete = sum(1 for it in items if it["status"] == "complete")
+        # NB: an item can be "incomplete" (a stage missing/still running) on the
+        # client-dispatched path, so "all" must require every item COMPLETE — not
+        # merely the absence of failures (an incomplete item is not a pass).
+        if require == "all":
+            require_satisfied = total_items > 0 and item_complete == total_items
+        elif require == "any":
+            require_satisfied = item_complete > 0
+        elif isinstance(require, int):
+            require_satisfied = item_complete >= require
+        else:
+            require_satisfied = total_items > 0 and item_complete == total_items
+        aggregate = {
+            "items": items,
+            "require_satisfied": require_satisfied,
+            "merge_status": merge_status,
+            "tasks": task_results,
+            "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
+        }
+    else:
+        if require == "all":
+            require_satisfied = len(failed) == 0
+        elif require == "any":
+            require_satisfied = len(completed) > 0
+        elif isinstance(require, int):
+            require_satisfied = len(completed) >= require
+        else:
+            require_satisfied = len(failed) == 0  # default to "all"
+        aggregate = {
+            "tasks": task_results,
+            "merge_status": merge_status,
+            "completed": completed,
+            "failed": failed,
+            "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
+        }
 
     can_advance = require_satisfied and merge_ok
     evaluation = {
@@ -893,7 +984,12 @@ def _resolve_dispatch_tasks(state: FlowState, step: Any) -> list[dict]:
     """
     from .executor import resolve_ref
     assert step.source is not None, "parallel_dispatch step must have source"
-    return list(resolve_ref(step.source, state.inputs, state.step_outputs) or [])
+    source_items = list(resolve_ref(step.source, state.inputs, state.step_outputs) or [])
+    # STRAT-WORKFLOW-PIPELINE: desugar source x stages into the depends_on graph.
+    # Same helper get_current_step_info uses → advertised surface == dispatched graph.
+    if _is_pipeline_step(step):
+        return expand_pipeline_tasks(step, source_items)
+    return source_items
 
 
 async def _advance_after_parallel(
@@ -1092,6 +1188,7 @@ async def stratum_parallel_start(
         task_reasoning_template=cur_step.task_reasoning_template,
         require=cur_step.require or "all",
         capture_diff=cur_step.capture_diff and isolation == "worktree",
+        is_pipeline=_is_pipeline_step(cur_step),
         ctx=ctx,
     )
     handle = _asyncio.create_task(executor.run())
@@ -1300,7 +1397,9 @@ async def stratum_parallel_advance(
     step = next((s for s in state.ordered_steps if s.id == step_id), None)
     if step is None:
         return {"error": "unknown_step", "message": f"Step '{step_id}' not found in flow"}
-    if getattr(step, "step_type", None) != "parallel_dispatch":
+    # STRAT-WORKFLOW-PIPELINE: accept pipeline steps (they execute as
+    # parallel_dispatch). Use the mode mapping rather than a raw step_type literal.
+    if _step_mode(step) != "parallel_dispatch":
         return {"error": "wrong_step_type", "message": f"Step '{step_id}' is not a parallel_dispatch step"}
     if not getattr(step, "defer_advance", False):
         return {
