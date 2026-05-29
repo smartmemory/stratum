@@ -148,6 +148,10 @@ class IRStepDef:
     # ({status: "awaiting_consumer_advance"}) instead of auto-advancing;
     # consumer must call stratum_parallel_advance(flow_id, step_id, merge_status).
     defer_advance: bool = False
+    # STRAT-WORKFLOW-PIPELINE: ordered stage list for `pipeline` step type.
+    # Each stage is a dict {intent_template, agent?}. A pipeline step desugars
+    # (source x stages) into a depends_on task graph; see executor.expand_pipeline_tasks.
+    stages: tuple | None = None
     # STRAT-JUDGE v1: tiered-judge step config — mutually exclusive with
     # function/intent/flow_ref. None for non-judge steps.
     judge: JudgeStepConfig | None = None
@@ -539,7 +543,7 @@ _IR_SCHEMA_V03: dict = {
                 "id": {"type": "string"},
                 # Step type: explicit type field for v0.3 step types
                 "type": {"type": "string", "enum": [
-                    "function", "inline", "flow", "decompose", "parallel_dispatch"
+                    "function", "inline", "flow", "decompose", "parallel_dispatch", "pipeline"
                 ]},
                 # Step mode: exactly one of function, intent, or flow (semantic validation)
                 "function": {"type": "string"},
@@ -588,6 +592,20 @@ _IR_SCHEMA_V03: dict = {
                 ]},
                 "merge": {"type": "string", "enum": ["sequential_apply", "manual"]},
                 "intent_template": {"type": "string"},
+                # STRAT-WORKFLOW-PIPELINE: ordered stages for the `pipeline` step type
+                "stages": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["intent_template"],
+                        "properties": {
+                            "agent": {"type": "string"},
+                            "intent_template": {"type": "string"},
+                        },
+                    },
+                },
                 "reasoning_template": {"type": "object"},
                 "task_reasoning_template": {"type": "object"},
                 "task_timeout": {"type": ["integer", "null"], "minimum": 1},
@@ -1188,7 +1206,7 @@ def _build_step(s: dict) -> IRStepDef:
     step_type = s.get("type")  # YAML key "type" → field "step_type"
     # Default max_concurrent to 3 for parallel_dispatch steps
     max_concurrent = s.get("max_concurrent")
-    if step_type == "parallel_dispatch" and max_concurrent is None:
+    if step_type in ("parallel_dispatch", "pipeline") and max_concurrent is None:
         max_concurrent = 3
     # T2-F5-DIFF-EXPORT: validate capture_diff is a bool if present
     if "capture_diff" in s and not isinstance(s["capture_diff"], bool):
@@ -1265,6 +1283,8 @@ def _build_step(s: dict) -> IRStepDef:
         task_timeout=s.get("task_timeout"),
         capture_diff=s.get("capture_diff", False),
         defer_advance=s.get("defer_advance", False),
+        # STRAT-WORKFLOW-PIPELINE: normalize stages to a tuple of plain dicts
+        stages=tuple(dict(st) for st in s["stages"]) if s.get("stages") else None,
         judge=judge_cfg,
     )
 
@@ -1405,7 +1425,15 @@ def _validate_semantics(spec: IRSpec) -> None:
                 "source", "isolation", "require", "merge", "task_reasoning_template",
                 "task_timeout", "max_concurrent",
             )
-            if step.step_type in ("decompose", "parallel_dispatch"):
+            if step.step_type in ("decompose", "parallel_dispatch", "pipeline"):
+                # STRAT-WORKFLOW-PIPELINE: `stages` is pipeline-only. decompose/
+                # parallel_dispatch take the early `continue` below before the
+                # legacy guard, so reject a stray `stages` here.
+                if step.step_type != "pipeline" and step.stages is not None:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has 'stages' but is not a pipeline step",
+                        path=f"flows.{flow_name}.steps.{step.id}.stages"
+                    )
                 if step.step_type == "decompose":
                     # decompose needs agent and intent (agent-executed step that produces TaskGraph)
                     if not step.agent:
@@ -1459,7 +1487,56 @@ def _validate_semantics(spec: IRSpec) -> None:
                             path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
                         )
 
-                # depends_on check for decompose/parallel_dispatch
+                elif step.step_type == "pipeline":
+                    # STRAT-WORKFLOW-PIPELINE: source + non-empty stages required.
+                    if not step.source:
+                        raise IRSemanticError(
+                            f"pipeline step '{step.id}' must have 'source'",
+                            path=f"flows.{flow_name}.steps.{step.id}.source"
+                        )
+                    if not step.stages:
+                        raise IRSemanticError(
+                            f"pipeline step '{step.id}' must have a non-empty 'stages' list",
+                            path=f"flows.{flow_name}.steps.{step.id}.stages"
+                        )
+                    # intent_template is per-stage, not step-level, on pipeline.
+                    # Presence check (not truthiness) so intent_template: "" is also rejected.
+                    if step.intent_template is not None:
+                        raise IRSemanticError(
+                            f"pipeline step '{step.id}' must not have a step-level "
+                            f"'intent_template' — it lives per-stage in 'stages'",
+                            path=f"flows.{flow_name}.steps.{step.id}.intent_template"
+                        )
+                    # reasoning_template forbidden (same as parallel_dispatch); per-task
+                    # cert uses step-level task_reasoning_template (uniform across stages in v1).
+                    if step.reasoning_template:
+                        raise IRSemanticError(
+                            f"Step '{step.id}' in flow '{flow_name}' has 'reasoning_template' "
+                            f"which is not valid on pipeline steps. Use 'task_reasoning_template' "
+                            f"for per-task cert validation.",
+                            path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
+                        )
+                    # Each stage: intent_template required; only 'agent' permitted besides.
+                    for si, stage in enumerate(step.stages):
+                        if not isinstance(stage, dict):
+                            raise IRSemanticError(
+                                f"pipeline step '{step.id}' stage {si} must be an object",
+                                path=f"flows.{flow_name}.steps.{step.id}.stages[{si}]"
+                            )
+                        if not stage.get("intent_template"):
+                            raise IRSemanticError(
+                                f"pipeline step '{step.id}' stage {si} must have 'intent_template'",
+                                path=f"flows.{flow_name}.steps.{step.id}.stages[{si}].intent_template"
+                            )
+                        extra = set(stage) - {"intent_template", "agent"}
+                        if extra:
+                            raise IRSemanticError(
+                                f"pipeline step '{step.id}' stage {si} has unsupported key(s) "
+                                f"{sorted(extra)} — v1 stages allow only 'intent_template' and 'agent'",
+                                path=f"flows.{flow_name}.steps.{step.id}.stages[{si}]"
+                            )
+
+                # depends_on check for decompose/parallel_dispatch/pipeline
                 for dep in step.depends_on:
                     if dep not in known_step_ids:
                         raise IRSemanticError(
@@ -1491,7 +1568,8 @@ def _validate_semantics(spec: IRSpec) -> None:
                 )
 
             # --- v0.3: parallel_dispatch-only fields forbidden on legacy step types ---
-            for pf in (*_parallel_dispatch_only, "intent_template"):
+            # STRAT-WORKFLOW-PIPELINE: `stages` is pipeline-only → reject on legacy steps too.
+            for pf in (*_parallel_dispatch_only, "intent_template", "stages"):
                 if getattr(step, pf) is not None:
                     raise IRSemanticError(
                         f"Step '{step.id}' has '{pf}' but is not a parallel_dispatch step",
