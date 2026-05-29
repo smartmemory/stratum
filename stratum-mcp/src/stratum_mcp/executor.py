@@ -717,6 +717,16 @@ class ParallelTaskState:
 
 @dataclass
 class FlowState:
+    """Runtime state of a single **flow execution** — one live, stateful run of a flow.
+
+    This is the *execution* side of the workflow/flow split: a flow is the authored DAG
+    (defined in a ``.stratum.yaml`` spec or via ``@flow``); a ``FlowState`` is what you
+    get when you *run* one. It is keyed by ``flow_id``, persisted under
+    ``~/.stratum/flows/``, and reconstructable from ``raw_spec`` after a restart. It is
+    not a workflow definition (those are discovered via ``stratum_list_workflows``).
+    See SPEC.md "Terminology: Workflow vs Flow".
+    """
+
     flow_id: str
     flow_name: str
     raw_spec: str                    # original YAML — used to reconstruct state after restart

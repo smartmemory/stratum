@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### stratum — docs(STRAT-WORKFLOW-NAMING): formalize the two-tier workflow/flow vocabulary
+
+- **Wrote down a distinction the code already encoded.** Stratum splits *workflow* (authored definition — a `.stratum.yaml` spec with a `workflow:` block, discoverable via `stratum_list_workflows`) from *flow* (the executable DAG definition: `flows:`, `@flow`) and *flow execution* (a single run — a `FlowState` with a `flow_id`). The boundary existed structurally but was never documented, risking vocabulary drift. **No rename** — the definition/instance split is intentional (Temporal/Airflow model); a rename would be ~20 files of churn for zero behavior gain.
+- **SPEC.md** gains a "Terminology: Workflow vs Flow" section (three-layer glossary table + `git diff`-vs-`flow_id` rule of thumb). **README.md** gains a matching "Workflow vs Flow" Core Concepts entry plus a positioning note framing Stratum as **governed, portable, cross-model workflows** — the cross-client answer to single-vendor in-context orchestrators.
+- **Docstrings** (narrow scope, 3 load-bearing public symbols) now carry the distinction: `stratum_list_workflows` (lists *definitions*, not runs), `@flow` (*defines* a flow; invoking it *creates* a flow execution), `FlowState` (runtime state of *one* flow execution). No behavior, signature, or API change — purely documentary.
+- Codex doc-review gate caught two real internal inconsistencies in the initial drafts (prose calling a flow "the execution unit and its running instance," contradicting the table that separates flow from flow execution; and "### Flows" implying only YAML defines flows, omitting the `@flow` library track) — both tightened, re-review **REVIEW CLEAN**. First of 6 tickets in the STRAT-WORKFLOW epic. `docs/features/STRAT-WORKFLOW-NAMING/design.md`.
+
 ### stratum — fix: test-hygiene follow-ups from STRAT-TEST-EVENTLOOP-HYGIENE
 
 - **`.githooks/pre-push` self-perpetuating bump loop.** The pre-push hook auto-commits `chore: bump to 0.2.N` when pushing to `main`, but a commit created during pre-push can never be part of *that* push — it lands unpushed and the next push re-triggers the hook, forever (`0.2.47`→`0.2.48`→…). Added a loop guard: capture the main ref's local/remote oids and skip bumping when every commit in `remote..local` is already a `chore: bump` commit (nothing real changed since the last bump). Real-work pushes still bump exactly once; the bump path itself is unchanged. Verified live: bump-only push now prints `skipping bump (loop guard)`, exits 0, creates no commit.
