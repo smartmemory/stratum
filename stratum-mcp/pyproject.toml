@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stratum-mcp"
-version = "0.2.49"
+version = "0.2.50"
 description = "Stratum MCP server for Claude Code — structured execution, typed contracts, postcondition enforcement"
 readme = "README.md"
 license = {text = "Apache-2.0"}
