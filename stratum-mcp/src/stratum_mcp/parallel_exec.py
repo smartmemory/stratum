@@ -165,11 +165,15 @@ class ParallelExecutor:
         model_id: Optional[str] = None,
         persist_callable: Optional[Callable[[FlowState], None]] = None,
         capture_diff: bool = False,
+        is_pipeline: bool = False,
         ctx: Any = None,
     ) -> None:
         self.state = state
         self.step_id = step_id
         self.tasks = tasks
+        # STRAT-WORKFLOW-PIPELINE: when True, require/cascade are item-scoped and
+        # the per-task cert gate keys on the resolved per-stage agent.
+        self.is_pipeline = is_pipeline
         self.max_concurrent = max(1, int(max_concurrent))
         self.isolation = isolation
         self.task_timeout = task_timeout if task_timeout is not None else DEFAULT_TASK_TIMEOUT
@@ -246,20 +250,62 @@ class ParallelExecutor:
     # ------------------------------------------------------------------
 
     def _render_prompt(self, task: dict) -> str:
-        """Render the spec's ``intent_template`` using the task dict as kwargs.
+        """Render the step/stage ``intent_template`` using the task dict as kwargs.
 
-        Falls back to the raw template when ``str.format`` can't find a field —
-        a template with no placeholders is valid and common.
+        STRAT-WORKFLOW-PIPELINE: a pipeline task carries its own stage template in
+        ``_intent_template`` (preferred over the executor-wide ``intent_template``),
+        and — when it has exactly one ``depends_on`` predecessor — binds that
+        predecessor's result as ``{prev}`` (string; JSON-encoded if not already a
+        str) and ``{prev_raw}`` (raw object). Falls back to the raw template when
+        ``str.format`` can't find a field (a template with no placeholders is valid).
         """
+        template = task.get("_intent_template") or self.intent_template
+        kwargs = dict(task)
+        deps = task.get("depends_on") or []
+        if len(deps) == 1:
+            dep_ts = self.state.parallel_tasks.get(deps[0])
+            if dep_ts is not None:
+                raw = dep_ts.result
+                kwargs["prev_raw"] = raw
+                kwargs["prev"] = (
+                    raw if isinstance(raw, str)
+                    else json.dumps(raw, default=str, ensure_ascii=False)
+                )
         try:
-            return self.intent_template.format(**task)
+            return template.format(**kwargs)
         except (KeyError, IndexError):
-            return self.intent_template
+            return template
 
     async def _persist(self) -> None:
         """Persist the FlowState under the per-flow lock."""
         async with _lock_for(self.state.flow_id):
             self._persist_callable(self.state)
+
+    def _item_counts(self) -> tuple[int, int, int]:
+        """Collapse pipeline stage tasks into (complete, failed, in_flight) ITEM counts.
+
+        Groups ``self.tasks`` by ``_pipeline_item``. Per item:
+          - ``complete`` iff its highest-stage task state is "complete";
+          - ``failed`` iff any of its stage tasks is "failed"/"cancelled";
+          - else still in flight (pending/running).
+        Failure takes precedence over a complete final stage (can't both happen,
+        but ordering is defensive).
+        """
+        items: dict[Any, list[dict]] = {}
+        for t in self.tasks:
+            items.setdefault(t.get("_pipeline_item"), []).append(t)
+        complete = failed = in_flight = 0
+        for _item, group in items.items():
+            states = {t["id"]: self.state.parallel_tasks[t["id"]].state for t in group}
+            if any(s in ("failed", "cancelled") for s in states.values()):
+                failed += 1
+                continue
+            final = max(group, key=lambda t: t.get("_pipeline_stage", 0))
+            if states[final["id"]] == "complete":
+                complete += 1
+            else:
+                in_flight += 1
+        return complete, failed, in_flight
 
     def _require_unsatisfiable(self) -> bool:
         """True when the ``require`` policy can no longer be satisfied.
@@ -268,11 +314,20 @@ class ParallelExecutor:
         - ``require == "any"`` — unsatisfiable only after *every* task settled
           and none completed.
         - ``require`` integer N — unsatisfiable when ``complete + still_active < N``.
+
+        STRAT-WORKFLOW-PIPELINE: in pipeline mode the unit of work is the *item*,
+        not the individual stage task. An item is ``complete`` iff its final-stage
+        task completed, ``failed`` iff any of its stage tasks failed/cancelled, else
+        still in flight. A single item's failure thus only makes the policy
+        unsatisfiable under ``require: all`` (matching parallel_dispatch, item-scoped).
         """
-        states = [self.state.parallel_tasks[t["id"]].state for t in self.tasks]
-        complete = sum(1 for s in states if s == "complete")
-        failed_or_cancelled = sum(1 for s in states if s in ("failed", "cancelled"))
-        pending_running = sum(1 for s in states if s in ("pending", "running"))
+        if self.is_pipeline:
+            complete, failed_or_cancelled, pending_running = self._item_counts()
+        else:
+            states = [self.state.parallel_tasks[t["id"]].state for t in self.tasks]
+            complete = sum(1 for s in states if s == "complete")
+            failed_or_cancelled = sum(1 for s in states if s in ("failed", "cancelled"))
+            pending_running = sum(1 for s in states if s in ("pending", "running"))
 
         if self.require == "all":
             return failed_or_cancelled > 0
@@ -486,7 +541,11 @@ class ParallelExecutor:
 
                 # ---------- connector dispatch ----------
                 try:
-                    connector_type = _connector_type_from_agent(self.agent)
+                    # STRAT-WORKFLOW-PIPELINE: per-stage agent override (falls back
+                    # to the step-level agent for non-pipeline / agent-less stages).
+                    connector_type = _connector_type_from_agent(
+                        task.get("_agent") or self.agent
+                    )
                     connector = make_agent_connector(
                         connector_type, self.model_id, cwd,
                     )
@@ -536,7 +595,15 @@ class ParallelExecutor:
                     ts.error = str(exc)
                 else:
                     ts.result = result
-                    if self.task_reasoning_template:
+                    # STRAT-WORKFLOW-PIPELINE: in pipeline mode the cert gate keys
+                    # on the resolved per-stage agent (a codex stage skips the
+                    # claude-structured cert). Non-pipeline keeps the historical
+                    # unconditional validation byte-for-byte.
+                    _cert_applies = self.task_reasoning_template and (
+                        not self.is_pipeline
+                        or (task.get("_agent") or self.agent or "claude").startswith("claude")
+                    )
+                    if _cert_applies:
                         vios = validate_certificate(
                             self.task_reasoning_template, result or {},
                         )
