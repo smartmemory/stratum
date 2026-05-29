@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 
 import pytest
 
@@ -99,6 +100,11 @@ def test_profile_is_deny_default_with_single_evidence_allow(tmp_path):
     assert f'(allow file-write* file-read* (subpath "{os.path.realpath(scratch)}"))' in prof
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="exercises macOS /tmp -> /private/tmp symlink canonicalization; "
+    "Linux has no such symlink (Seatbelt is macOS-only anyway)",
+)
 def test_profile_realresolves_paths(tmp_path, monkeypatch):
     # /tmp -> /private/tmp canonicalization must happen at generation.
     prof = sandbox.build_seatbelt_profile("/tmp/nope-not-real-xyz", tmp_path)

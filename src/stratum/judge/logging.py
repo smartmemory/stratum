@@ -26,7 +26,11 @@ from __future__ import annotations
 import json
 import time
 
-from .staging import JUDGE_ROOT
+# Import the module, not the name: JUDGE_ROOT must be resolved at call time so a
+# runtime reconfiguration (or a test that redirects it) is honored. Binding the
+# name at import froze it to ~/.stratum/judge and let turns.jsonl leak to the
+# real home even when staging was pointed elsewhere.
+from . import staging
 
 
 def append_turn_log(
@@ -36,7 +40,7 @@ def append_turn_log(
     record: dict,
 ) -> None:
     """Append one envelope-wrapped record to the per-flow turns.jsonl file."""
-    flow_dir = JUDGE_ROOT / flow_id
+    flow_dir = staging.JUDGE_ROOT / flow_id
     flow_dir.mkdir(parents=True, exist_ok=True)
     path = flow_dir / "turns.jsonl"
     envelope = {
