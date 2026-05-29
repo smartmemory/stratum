@@ -27,6 +27,11 @@ from .errors import IRParseError, IRValidationError, IRSemanticError
 class IRBudgetDef:
     ms: int | None = None
     usd: float | None = None
+    # STRAT-WORKFLOW-BUDGET: flow-execution-wide run budget axes. Optional;
+    # enforced only at the flow level (see executor.budget_state). `ms` doubles
+    # as the wall-clock axis (compute-seconds). `usd` is recorded-not-enforced.
+    max_agent_dispatches: int | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +217,8 @@ _IR_SCHEMA_V01: dict = {
             "properties": {
                 "ms": {"type": "integer", "minimum": 1},
                 "usd": {"type": "number", "minimum": 0},
+                "max_agent_dispatches": {"type": "integer", "minimum": 1},
+                "max_tokens": {"type": "integer", "minimum": 1},
             },
             "additionalProperties": False,
         },
@@ -317,6 +324,8 @@ _IR_SCHEMA_V02: dict = {
             "properties": {
                 "ms": {"type": "integer", "minimum": 1},
                 "usd": {"type": "number", "minimum": 0},
+                "max_agent_dispatches": {"type": "integer", "minimum": 1},
+                "max_tokens": {"type": "integer", "minimum": 1},
             },
             "additionalProperties": False,
         },
@@ -492,6 +501,8 @@ _IR_SCHEMA_V03: dict = {
             "properties": {
                 "ms": {"type": "integer", "minimum": 1},
                 "usd": {"type": "number", "minimum": 0},
+                "max_agent_dispatches": {"type": "integer", "minimum": 1},
+                "max_tokens": {"type": "integer", "minimum": 1},
             },
             "additionalProperties": False,
         },
@@ -1057,7 +1068,12 @@ def _build_spec(doc: dict) -> IRSpec:
 
 def _build_function(name: str, d: dict) -> IRFunctionDef:
     b = d.get("budget")
-    budget = IRBudgetDef(ms=b.get("ms"), usd=b.get("usd")) if b else None
+    budget = IRBudgetDef(
+        ms=b.get("ms"),
+        usd=b.get("usd"),
+        max_agent_dispatches=b.get("max_agent_dispatches"),
+        max_tokens=b.get("max_tokens"),
+    ) if b else None
     return IRFunctionDef(
         name=name,
         mode=d["mode"],
@@ -1076,7 +1092,12 @@ def _build_function(name: str, d: dict) -> IRFunctionDef:
 
 def _build_flow(name: str, d: dict) -> IRFlowDef:
     b = d.get("budget")
-    budget = IRBudgetDef(ms=b.get("ms"), usd=b.get("usd")) if b else None
+    budget = IRBudgetDef(
+        ms=b.get("ms"),
+        usd=b.get("usd"),
+        max_agent_dispatches=b.get("max_agent_dispatches"),
+        max_tokens=b.get("max_tokens"),
+    ) if b else None
     steps = [_build_step(s) for s in d.get("steps", [])]
     return IRFlowDef(
         name=name,
@@ -1147,7 +1168,12 @@ def _apply_cert_defaults(s: dict, field_name: str = "reasoning_template") -> Non
 
 def _build_step(s: dict) -> IRStepDef:
     sb = s.get("budget")
-    step_budget = IRBudgetDef(ms=sb.get("ms"), usd=sb.get("usd")) if sb else None
+    step_budget = IRBudgetDef(
+        ms=sb.get("ms"),
+        usd=sb.get("usd"),
+        max_agent_dispatches=sb.get("max_agent_dispatches"),
+        max_tokens=sb.get("max_tokens"),
+    ) if sb else None
     step_type = s.get("type")  # YAML key "type" → field "step_type"
     # Default max_concurrent to 3 for parallel_dispatch steps
     max_concurrent = s.get("max_concurrent")

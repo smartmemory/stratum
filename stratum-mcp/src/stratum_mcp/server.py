@@ -13,6 +13,13 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
 
 from .errors import IRParseError, IRValidationError, IRSemanticError, MCPExecutionError, exception_to_mcp_error
+from .run_budget import (
+    BUDGET_EXHAUSTED,
+    accumulate_usage,
+    budget_exhausted,
+    debit_budget,
+    new_usage_acc,
+)
 from .executor import (
     FlowState,
     _flows,
@@ -153,6 +160,25 @@ async def stratum_agent_run(
 
     full_prompt = f"{context}\n\n{prompt}" if context and context.strip() else prompt
 
+    # STRAT-WORKFLOW-BUDGET: resolve a budgeted flow from correlation_id. Only a
+    # call attributed to a live, budgeted FlowState debits or gates; un-attributed
+    # agent runs (no correlation_id, or a flow with no run budget) are unbounded.
+    budget_flow = _flows.get(correlation_id) if correlation_id else None
+    if budget_flow is not None and getattr(budget_flow, "budget_state", None):
+        if budget_exhausted(budget_flow):
+            budget_flow.terminal_status = BUDGET_EXHAUSTED
+            persist_flow(budget_flow)
+            return {
+                "status": BUDGET_EXHAUSTED,
+                "text": "",
+                "correlation_id": correlation_id,
+                "budget_state": budget_flow.budget_state,
+            }
+    else:
+        budget_flow = None
+    _budget_usage = new_usage_acc()
+    _budget_t0 = time.monotonic()
+
     connector = _make_agent_connector(
         type,
         active_model_id,
@@ -195,6 +221,7 @@ async def stratum_agent_run(
             async for cev in connector.stream_events(
                 full_prompt, schema=schema, model_id=active_model_id, cwd=cwd
             ):
+                accumulate_usage(_budget_usage, cev)  # STRAT-WORKFLOW-BUDGET
                 if cev.kind == INTERNAL_RESULT_KIND:
                     final_result = cev.metadata.get("content")
                     continue
@@ -216,6 +243,7 @@ async def stratum_agent_run(
             async for event in connector.run(
                 full_prompt, schema=schema, model_id=active_model_id, cwd=cwd
             ):
+                accumulate_usage(_budget_usage, event)  # STRAT-WORKFLOW-BUDGET
                 etype = event.get("type")
                 if etype == "assistant" and event.get("content"):
                     parts.append(event["content"])
@@ -228,6 +256,22 @@ async def stratum_agent_run(
                     )
     finally:
         _AGENT_RUN_TASKS.pop(flow_id, None)
+        # STRAT-WORKFLOW-BUDGET: debit in finally so a connector error or
+        # cancellation still charges the flow — failed/retrying dispatches must
+        # not be free (they would let error loops run past the cap). Mark the
+        # flow terminal here (and persist) if this debit crosses the budget, so
+        # the durable snapshot reflects exhaustion across restart/query/resume.
+        if budget_flow is not None:
+            debit_budget(
+                budget_flow,
+                dispatches=1,
+                tokens=int(_budget_usage.get("tokens", 0)),
+                wall_s=time.monotonic() - _budget_t0,
+                dollars=float(_budget_usage.get("dollars", 0.0)),
+            )
+            if budget_exhausted(budget_flow) and not budget_flow.terminal_status:
+                budget_flow.terminal_status = BUDGET_EXHAUSTED
+            persist_flow(budget_flow)
 
     if supports_stream:
         # Streaming connectors: prefer the _result sentinel (authoritative final
@@ -327,8 +371,16 @@ async def stratum_resume(flow_id: str, ctx: Context) -> dict[str, Any]:
             }
         _flows[flow_id] = state
 
-    if state.terminal_status == "killed":
-        return {"status": "killed", "flow_id": flow_id}
+    if state.terminal_status:
+        # STRAT-WORKFLOW-BUDGET: refuse to resume a terminal flow (killed or
+        # budget_exhausted) — it cannot advance further.
+        return {"status": state.terminal_status, "flow_id": flow_id}
+    if budget_exhausted(state):
+        # Exhausted but not yet marked terminal (e.g. crossed by a debit on a
+        # prior call that didn't re-enter an advancement guard): mark + persist.
+        state.terminal_status = BUDGET_EXHAUSTED
+        persist_flow(state)
+        return {"status": BUDGET_EXHAUSTED, "flow_id": flow_id}
 
     if state.current_idx >= len(state.ordered_steps):
         delete_persisted_flow(flow_id)
@@ -480,6 +532,11 @@ async def stratum_step_done(
         _cleanup_child()
     # Consume iteration outcome (ENG-5 will read before clearing)
     state.iteration_outcome.pop(step_id, None)
+    # STRAT-WORKFLOW-BUDGET: record this step, then halt before advancing if the
+    # run budget is spent (e.g. server-dispatched agents debited it).
+    _budget_stop = _flow_budget_hard_stop(state)
+    if _budget_stop is not None:
+        return _budget_stop
     try:
         next_step = get_current_step_info(state)
         next_step = _apply_policy_loop(state, next_step)
@@ -790,6 +847,9 @@ async def stratum_parallel_done(
 
     # "ok" — flow advanced
     state.iteration_outcome.pop(step_id, None)
+    _budget_stop = _flow_budget_hard_stop(state)  # STRAT-WORKFLOW-BUDGET
+    if _budget_stop is not None:
+        return _budget_stop
     try:
         next_step = get_current_step_info(state)
         next_step = _apply_policy_loop(state, next_step)
@@ -890,6 +950,9 @@ async def _advance_after_parallel(
         }
     # "ok" — flow advanced
     state.iteration_outcome.pop(step_id, None)
+    _budget_stop = _flow_budget_hard_stop(state)  # STRAT-WORKFLOW-BUDGET
+    if _budget_stop is not None:
+        return _budget_stop
     try:
         next_step = get_current_step_info(state)
         next_step = _apply_policy_loop(state, next_step)
@@ -1008,6 +1071,11 @@ async def stratum_parallel_start(
         if tid not in state.parallel_tasks:
             state.parallel_tasks[tid] = _PTS(task_id=tid)
     persist_flow(state)
+
+    # STRAT-WORKFLOW-BUDGET: refuse to fan out if the run budget is already spent.
+    _budget_stop = _flow_budget_hard_stop(state)
+    if _budget_stop is not None:
+        return _budget_stop
 
     task_timeout = cur_step.task_timeout or DEFAULT_TASK_TIMEOUT
 
@@ -1326,8 +1394,9 @@ def _build_audit_snapshot(state: FlowState) -> dict[str, Any]:
     total_ms = int((time.monotonic() - state.flow_start) * 1000)
     is_complete = state.current_idx >= len(state.ordered_steps)
 
-    if state.terminal_status == "killed":
-        flow_status = "killed"
+    if state.terminal_status:
+        # STRAT-WORKFLOW-BUDGET: killed or budget_exhausted.
+        flow_status = state.terminal_status
     elif is_complete:
         flow_status = "complete"
     else:
@@ -1337,6 +1406,7 @@ def _build_audit_snapshot(state: FlowState) -> dict[str, Any]:
         "flow_id": state.flow_id,
         "flow_name": state.flow_name,
         "status": flow_status,
+        "budget_state": state.budget_state,
         "steps_completed": len(state.records),
         "total_steps": len(state.ordered_steps),
         "trace": [dataclasses.asdict(r) for r in state.records],
@@ -1462,6 +1532,10 @@ async def stratum_gate_resolve(
         persist_flow(state)
         return {"status": "error", **extra}
 
+    # STRAT-WORKFLOW-BUDGET: halt at the gate if the run budget is spent.
+    _budget_stop = _flow_budget_hard_stop(state)
+    if _budget_stop is not None:
+        return _budget_stop
     # "execute_step" — route to the target step; persist AFTER get_current_step_info
     # in case the routed-to step has skip_if that fires (mutating state).
     next_step = get_current_step_info(state)
@@ -1537,6 +1611,9 @@ async def stratum_check_timeouts(flow_id: str, ctx: Context) -> dict[str, Any]:
         }
 
     if result_status == "execute_step":
+        _budget_stop = _flow_budget_hard_stop(state)  # STRAT-WORKFLOW-BUDGET
+        if _budget_stop is not None:
+            return _budget_stop
         next_step = get_current_step_info(state)  # may skip; persist after
         next_step = _apply_policy_loop(state, next_step)
         if next_step is not None and next_step.get("status") == "complete":
@@ -1571,6 +1648,11 @@ async def stratum_skip_step(
                 "message": f"No active flow with id '{flow_id}'",
             }
         _flows[flow_id] = state
+
+    # STRAT-WORKFLOW-BUDGET: don't skip-advance past an exhausted budget.
+    _budget_stop = _flow_budget_hard_stop(state)
+    if _budget_stop is not None:
+        return _budget_stop
 
     try:
         skip_step(state, step_id, reason)
@@ -3350,10 +3432,41 @@ def _cmd_validate(arg: str) -> None:
 # query / gate helpers
 # ---------------------------------------------------------------------------
 
+def _flow_budget_hard_stop(state: FlowState) -> dict[str, Any] | None:
+    """STRAT-WORKFLOW-BUDGET: terminal payload if the flow's run budget is spent.
+
+    Returns the flow-terminal payload (and marks the flow ``budget_exhausted``,
+    cleaning up persistence) when the flow is already terminal for budget reasons
+    or any enforced axis is now exhausted; otherwise None so advancement proceeds.
+    Called at every step-advancement entry so no advancement API can route past
+    an exhausted budget.
+    """
+    if state.terminal_status == BUDGET_EXHAUSTED or budget_exhausted(state):
+        if not state.terminal_status:
+            state.terminal_status = BUDGET_EXHAUSTED
+        delete_persisted_flow(state.flow_id)
+        total_ms = int((time.monotonic() - state.flow_start) * 1000)
+        output = next(
+            (state.step_outputs[s.id] for s in reversed(state.ordered_steps)
+             if s.id in state.step_outputs and state.step_outputs[s.id] is not None),
+            None,
+        )
+        return {
+            "status": BUDGET_EXHAUSTED,
+            "flow_id": state.flow_id,
+            "output": output,
+            "trace": [dataclasses.asdict(r) for r in state.records],
+            "total_duration_ms": total_ms,
+            "budget_state": state.budget_state,
+        }
+    return None
+
+
 def _flow_status(state: Any) -> str:
     """Derive a human-readable status string from a FlowState."""
-    if state.terminal_status == "killed":
-        return "killed"
+    # STRAT-WORKFLOW-BUDGET: any terminal status (killed, budget_exhausted) wins.
+    if state.terminal_status:
+        return state.terminal_status
     if state.current_idx >= len(state.ordered_steps):
         return "complete"
     step = state.ordered_steps[state.current_idx]

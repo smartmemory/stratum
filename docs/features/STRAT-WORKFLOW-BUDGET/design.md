@@ -217,7 +217,8 @@ for an additive enum, but note the change in CHANGELOG.
 - [ ] `budget` added to `compute_spec_checksum` fingerprint (STRAT-IMMUTABLE coverage).
 - [ ] Usage (`input+output tokens`, `cost_usd` where present) captured in `ParallelExecutor._consume_streaming` and `stratum_agent_run`; `ParallelTaskState` gains additive `tokens`/`elapsed_s`/`dollars_recorded`.
 - [ ] `FlowState.budget_state` persists/restores via **both** serializers (`executor.py` + `goal/orchestrator.py`); synthetic goal flows carry `None` by design; legacy-missing-field test.
-- [ ] Every **server-dispatched, flow-attributed** agent (parallel task + `stratum_agent_run` with a resolving `correlation_id`) debits dispatches/tokens/wall_s; `flow_id` threaded through judge/decompose agent-run calls.
+- [ ] Every **server-dispatched, flow-attributed** agent (parallel task + `stratum_agent_run` with a resolving `correlation_id`) debits dispatches/tokens/wall_s.
+- [x] **Judge attribution — fallback taken (documented):** the judge verifier receives `stratum_agent_run` as an injected callable with no `flow_id` in scope; threading it is multi-layer. The judge is already governed by its own `BudgetCaps`, so judge-internal dispatches are **not** counted against the run-wide budget in v1 (they carry no `correlation_id`, so the S6 debit path skips them). Deferred to the dollars/consumer-reporting follow-up.
 - [ ] `ms` (wall-clock), `max_agent_dispatches`, `max_tokens` each independently trip exhaustion.
 - [ ] Exhaustion mid-fan-out cascade-cancels in-flight siblings (reuses `_cancel_siblings`) and sets `terminal_status="budget_exhausted"`.
 - [ ] `stratum_agent_run` pre-dispatch gate stops a multi-call judge loop after exhaustion (returns budget-exhausted sentinel).

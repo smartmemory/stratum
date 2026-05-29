@@ -47,6 +47,7 @@
    - 7.2 [Per-Call Enforcement](#72-per-call-enforcement)
    - 7.3 [Per-Flow Enforcement](#73-per-flow-enforcement)
    - 7.4 [Inheritance](#74-inheritance)
+   - 7.5 [Run Budget (MCP flow-execution-wide ceiling)](#75-run-budget-mcp-flow-execution-wide-ceiling)
 8. [Trace Records](#8-trace-records)
    - 8.1 [Schema](#81-schema)
    - 8.2 [OTel Export](#82-otel-export)
@@ -661,6 +662,51 @@ Each `@infer` call wraps the LLM invocation in `asyncio.timeout(budget.remaining
 ### 7.4 Inheritance
 
 If an `@infer` call has no `budget` annotation and is invoked within a `@flow` that has a budget, it inherits the flow's remaining envelope. If neither has a budget, the call is unbounded.
+
+### 7.5 Run Budget (MCP flow-execution-wide ceiling)
+
+Sections 7.1–7.4 describe the **library** budget (`Budget`, drawn down by `@infer`
+calls). The **MCP server path** — a *flow execution* tracked as a `FlowState`,
+driven by `stratum_plan`/`stratum_step_done` and `ParallelExecutor` — has a
+separate, additive **run budget**: a ceiling on the whole flow execution that
+every *server-dispatched* agent debits.
+
+Declared by extending the flow-level `budget:` block in the spec:
+
+```yaml
+flows:
+  my_flow:
+    budget:
+      ms: 1800000              # wall-clock cap (see semantics below)
+      max_agent_dispatches: 50 # hard cap on server-dispatched agents
+      max_tokens: 2000000      # hard cap on input+output tokens
+      usd: 5.0                 # RECORDED ONLY — never trips a cutoff
+    steps: [...]
+```
+
+**Enforced axes:** `ms`, `max_agent_dispatches`, `max_tokens`. A flow exhausts
+when any enforced consumed axis reaches or exceeds its cap; the flow is marked
+`terminal_status = "budget_exhausted"` and any in-flight parallel siblings are
+cascade-cancelled. `budget_exhausted` is a terminal flow status (alongside
+`killed`) surfaced by every query/advance/resume/audit path.
+
+**What debits:** only agents the **server** dispatches — parallel-fan-out tasks
+(`ParallelExecutor`) and `stratum_agent_run` calls attributed to the flow via
+`correlation_id`. Normal steps are consumer-dispatched (the server returns a
+dispatch descriptor and the host runs the agent), so they do not debit in v1.
+
+**Wall-clock semantics:** `ms` is enforced as *cumulative active-dispatch
+wall-time* (Σ per-dispatch durations), **not** real elapsed since flow creation.
+This is resume-safe (flow-start resets on restore) and excludes time parked at a
+human gate — it measures compute consumed, which is the runaway signal. Under
+parallel fan-out this can exceed real elapsed time (concurrent dispatches each
+count their own duration).
+
+**Dollars:** `usd` is recorded for observability but never enforced — per-call
+cost is not computed on the MCP path (connectors emit token counts only).
+
+A flow with no `budget:` block (or a `usd`-only budget) has no run budget and is
+unbounded — zero overhead, zero behavior change.
 
 ---
 

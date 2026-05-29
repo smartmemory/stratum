@@ -14,7 +14,7 @@
         "_schema_version": { "type": "string", "const": "1" },
         "flow_id":          { "type": "string" },
         "flow_name":        { "type": "string" },
-        "status":           { "type": "string", "enum": ["running", "awaiting_gate", "complete", "killed"] },
+        "status":           { "type": "string", "enum": ["running", "awaiting_gate", "complete", "killed", "budget_exhausted"] },
         "current_step_id":  { "type": ["string", "null"] },
         "round":            { "type": "integer", "minimum": 0 },
         "step_count":       { "type": "integer", "minimum": 0 },

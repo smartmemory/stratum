@@ -713,6 +713,11 @@ class ParallelTaskState:
     # T2-F5-DIFF-EXPORT: error string if diff capture raised (kept separate from
     # `error` which carries task-execution error semantics).
     diff_error: str | None = None
+    # STRAT-WORKFLOW-BUDGET: per-task consumption, debited to the flow's run
+    # budget on completion and surfaced in the trace.
+    tokens: int = 0
+    elapsed_s: float = 0.0
+    dollars_recorded: float = 0.0
 
 
 @dataclass
@@ -779,6 +784,11 @@ class FlowState:
     # When True, delete_persisted_flow skips judge-tree cleanup (PRD M14) so that
     # the orchestrator can inspect judge audit artifacts after the synthetic flow completes.
     synthetic: bool = False
+    # STRAT-WORKFLOW-BUDGET: flow-execution-wide budget ledger, or None when the
+    # flow declares no run budget (zero overhead, zero behavior change).
+    # Shape: {"caps": {ms?, usd?, max_agent_dispatches?, max_tokens?},
+    #         "consumed": {wall_s, dispatches, tokens, dollars}}.
+    budget_state: dict[str, Any] | None = None
 
     def record_judge_turn(self, step_id: str, result) -> None:
         """Record a JudgeResult into ``judge_history`` and ``judge_outcome``.
@@ -903,6 +913,9 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
         "steps": [_step_fingerprint(s) for s in steps_sorted],
         "functions": fn_fingerprints,
         "max_rounds": flow_def.max_rounds,
+        # STRAT-WORKFLOW-BUDGET: the run-wide budget is load-bearing, so it is
+        # covered by tamper-detection (cannot be altered mid-run undetected).
+        "budget": dataclasses.asdict(flow_def.budget) if flow_def.budget else None,
     }
     canonical = json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
@@ -986,6 +999,7 @@ def persist_flow(state: FlowState) -> None:
         "judge_history":      state.judge_history,
         "judge_outcome":      state.judge_outcome,
         "synthetic":          state.synthetic,
+        "budget_state":       state.budget_state,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -1054,6 +1068,7 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         judge_history=payload.get("judge_history", {}),
         judge_outcome=payload.get("judge_outcome", {}),
         synthetic=payload.get("synthetic", False),
+        budget_state=payload.get("budget_state"),
     )
 
 
@@ -1151,6 +1166,31 @@ def revert_checkpoint(state: FlowState, label: str) -> bool:
     return True
 
 
+def init_budget_state(budget: "IRBudgetDef | None") -> dict[str, Any] | None:
+    """Build the flow-execution-wide budget ledger from a flow's budget def.
+
+    STRAT-WORKFLOW-BUDGET. Returns None unless at least one *enforced* run-wide
+    axis (``ms`` wall-clock, ``max_agent_dispatches``, ``max_tokens``) is set —
+    a ``usd``-only budget has nothing to enforce server-side (dollars are
+    recorded-not-enforced) so it yields no ledger. ``ms`` is milliseconds; it is
+    enforced as cumulative active-dispatch wall-time (compute-seconds).
+    """
+    if budget is None:
+        return None
+    enforced = (budget.ms, budget.max_agent_dispatches, budget.max_tokens)
+    if all(v is None for v in enforced):
+        return None
+    return {
+        "caps": {
+            "ms": budget.ms,
+            "usd": budget.usd,
+            "max_agent_dispatches": budget.max_agent_dispatches,
+            "max_tokens": budget.max_tokens,
+        },
+        "consumed": {"wall_s": 0.0, "dispatches": 0, "tokens": 0, "dollars": 0.0},
+    }
+
+
 def create_flow_state(spec: IRSpec, flow_name: str, inputs: dict[str, Any], raw_spec: str = "") -> FlowState:
     """Create flow execution state. Raises MCPExecutionError if flow not found."""
     flow_def = spec.flows.get(flow_name)
@@ -1173,6 +1213,7 @@ def create_flow_state(spec: IRSpec, flow_name: str, inputs: dict[str, Any], raw_
         current_idx=0,
         round_start_step_id=None,  # round-0 records carry None per contract
         spec_checksum=checksum,
+        budget_state=init_budget_state(flow_def.budget),
     )
 
 

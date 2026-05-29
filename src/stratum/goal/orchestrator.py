@@ -181,6 +181,10 @@ def _flow_state_to_dict(state) -> dict:
         "judge_history": state.judge_history,
         "judge_outcome": state.judge_outcome,
         "synthetic": state.synthetic,
+        # STRAT-WORKFLOW-BUDGET: synthetic goal flows are governed by the judge
+        # BudgetCaps, not the run-wide budget — always None. Round-tripped
+        # explicitly so the field is never silently dropped by this serializer.
+        "budget_state": getattr(state, "budget_state", None),
     }
 
 
@@ -266,6 +270,7 @@ def _restore_flow_state_from_path(path: Path):
         judge_history=payload.get("judge_history", {}),
         judge_outcome=payload.get("judge_outcome", {}),
         synthetic=payload.get("synthetic", False),
+        budget_state=payload.get("budget_state"),
     )
 
 
