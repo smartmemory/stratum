@@ -1282,14 +1282,15 @@ def init_budget_state(budget: "IRBudgetDef | None") -> dict[str, Any] | None:
     """Build the flow-execution-wide budget ledger from a flow's budget def.
 
     STRAT-WORKFLOW-BUDGET. Returns None unless at least one *enforced* run-wide
-    axis (``ms`` wall-clock, ``max_agent_dispatches``, ``max_tokens``) is set —
-    a ``usd``-only budget has nothing to enforce server-side (dollars are
-    recorded-not-enforced) so it yields no ledger. ``ms`` is milliseconds; it is
+    axis (``ms`` wall-clock, ``max_agent_dispatches``, ``max_tokens``, ``usd``)
+    is set. STRAT-WORKFLOW-BUDGET-DOLLARS promoted ``usd`` to an enforced axis
+    (dollars derived from token counts via the static pricing table), so a
+    ``usd``-only budget now yields a ledger. ``ms`` is milliseconds; it is
     enforced as cumulative active-dispatch wall-time (compute-seconds).
     """
     if budget is None:
         return None
-    enforced = (budget.ms, budget.max_agent_dispatches, budget.max_tokens)
+    enforced = (budget.ms, budget.max_agent_dispatches, budget.max_tokens, budget.usd)
     if all(v is None for v in enforced):
         return None
     return {
