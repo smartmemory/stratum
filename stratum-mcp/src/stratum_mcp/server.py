@@ -26,6 +26,7 @@ from .executor import (
     _step_mode,
     _is_pipeline_step,
     expand_pipeline_tasks,
+    effective_pipeline_task_cert,
     create_flow_state,
     get_current_step_info,
     process_step_result,
@@ -661,37 +662,45 @@ def _evaluate_parallel_results(
     # every failure-response path.
     task_template = step.task_reasoning_template
     per_task_cert_strs: list[str] = []
-    # STRAT-WORKFLOW-PIPELINE: pipeline mode gates the cert per-task on the
-    # resolved per-stage agent (codex stage skips a claude-structured cert), and
-    # collapses stage tasks into item verdicts for require evaluation.
+    # STRAT-WORKFLOW-PIPELINE(-STAGEOPTS): pipeline mode resolves the effective cert
+    # per task (stage override → claude-gated step fallback) via the shared helper —
+    # a stage may carry its own cert even when the step has none. Non-pipeline keeps
+    # the historical step-cert, claude-gated behavior. Collapses stage tasks into item
+    # verdicts for require evaluation (below).
     is_pipeline = _is_pipeline_step(step)
     pipe_meta = (
         {t["id"]: t for t in _resolve_dispatch_tasks(state, step)}
         if is_pipeline else None
     )
 
-    def _task_is_claude(task: dict) -> bool:
-        if pipe_meta is not None:
-            meta = pipe_meta.get(task.get("task_id"), {})
-            return (meta.get("_agent") or step.agent or "claude").startswith("claude")
-        return (step.agent or "claude").startswith("claude")
+    def _effective_cert(task: dict):
+        if is_pipeline:
+            meta = pipe_meta.get(task.get("task_id"), {}) if pipe_meta else {}
+            return effective_pipeline_task_cert(
+                meta.get("_task_reasoning_template"),
+                task_template,
+                meta.get("_agent") or step.agent,
+            )
+        # non-pipeline parallel_dispatch: step cert, claude-gated (unchanged)
+        if task_template and (step.agent or "claude").startswith("claude"):
+            return task_template
+        return None
 
-    if task_template:
-        for task in task_results:
-            if task.get("status") != "complete":
-                continue  # already failed — skip cert check
-            if not _task_is_claude(task):
-                continue  # non-claude stage task — cert does not apply
-            task_result = task.get("result") or {}
-            cert_violations = validate_certificate(task_template, task_result)
-            if cert_violations:
-                task["status"] = "failed"
-                task["error"] = f"cert validation: {'; '.join(cert_violations)}"
-                task["cert_violations"] = cert_violations
-                task_id = task.get("task_id", "?")
-                per_task_cert_strs.append(
-                    f"task '{task_id}' cert: {'; '.join(cert_violations)}"
-                )
+    for task in task_results:
+        if task.get("status") != "complete":
+            continue  # already failed — skip cert check
+        eff_cert = _effective_cert(task)
+        if eff_cert is None:
+            continue  # no cert applies to this task
+        cert_violations = validate_certificate(eff_cert, task.get("result") or {})
+        if cert_violations:
+            task["status"] = "failed"
+            task["error"] = f"cert validation: {'; '.join(cert_violations)}"
+            task["cert_violations"] = cert_violations
+            task_id = task.get("task_id", "?")
+            per_task_cert_strs.append(
+                f"task '{task_id}' cert: {'; '.join(cert_violations)}"
+            )
 
     completed = [t for t in task_results if t.get("status") == "complete"]
     failed = [t for t in task_results if t.get("status") != "complete"]
