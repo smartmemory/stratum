@@ -609,6 +609,22 @@ _IR_SCHEMA_V03: dict = {
                             # STRAT-WORKFLOW-PIPELINE-ROUTE: conditional routing predicates
                             "when": {"type": "string"},
                             "exit_when": {"type": "string"},
+                            # STRAT-WORKFLOW-PIPELINE-FANOUT: bounded map-reduce markers
+                            "fanout": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["max"],
+                                "properties": {
+                                    "max": {"type": "integer", "minimum": 1},
+                                    "require": {
+                                        "oneOf": [
+                                            {"enum": ["all", "any"]},
+                                            {"type": "integer", "minimum": 1},
+                                        ]
+                                    },
+                                },
+                            },
+                            "join": {"type": "boolean"},
                         },
                     },
                 },
@@ -1534,7 +1550,9 @@ def _validate_semantics(spec: IRSpec) -> None:
                     _STAGE_KEYS = {"intent_template", "agent",
                                    "task_reasoning_template", "task_timeout",
                                    # STRAT-WORKFLOW-PIPELINE-ROUTE
-                                   "when", "exit_when"}
+                                   "when", "exit_when",
+                                   # STRAT-WORKFLOW-PIPELINE-FANOUT
+                                   "fanout", "join"}
                     # Local import avoids the spec↔executor module-level cycle
                     # (executor imports spec at module load).
                     from .executor import compile_predicate, EnsureCompileError
@@ -1577,6 +1595,57 @@ def _validate_semantics(spec: IRSpec) -> None:
                                     f"'{field}': {exc}",
                                     path=f"flows.{flow_name}.steps.{step.id}.stages[{si}].{field}"
                                 ) from exc
+
+                    # STRAT-WORKFLOW-PIPELINE-FANOUT: region shape validation.
+                    fanout_idxs = [i for i, s in enumerate(step.stages) if s.get("fanout")]
+                    join_idxs = [i for i, s in enumerate(step.stages) if s.get("join")]
+                    if fanout_idxs or join_idxs:
+                        if len(fanout_idxs) != 1 or len(join_idxs) != 1:
+                            raise IRSemanticError(
+                                f"pipeline step '{step.id}' must have exactly one `fanout` stage "
+                                f"and exactly one `join` stage (found {len(fanout_idxs)} fanout, "
+                                f"{len(join_idxs)} join)",
+                                path=f"flows.{flow_name}.steps.{step.id}.stages"
+                            )
+                        f_idx, j_idx = fanout_idxs[0], join_idxs[0]
+                        if j_idx <= f_idx:
+                            raise IRSemanticError(
+                                f"pipeline step '{step.id}' `join` stage (index {j_idx}) must come "
+                                f"after the `fanout` stage (index {f_idx})",
+                                path=f"flows.{flow_name}.steps.{step.id}.stages"
+                            )
+                        if j_idx - f_idx < 2:
+                            raise IRSemanticError(
+                                f"pipeline step '{step.id}' must have at least one per-lane stage "
+                                f"between `fanout` (index {f_idx}) and `join` (index {j_idx})",
+                                path=f"flows.{flow_name}.steps.{step.id}.stages"
+                            )
+                        # require ∈ {all, any, int≥1} (schema already constrains; default all)
+                        f_require = step.stages[f_idx]["fanout"].get("require", "all")
+                        # route predicates are banned on every stage in the region
+                        # (fanout, per-lane, join) — only pre-fanout / post-join may route.
+                        for ri in range(f_idx, j_idx + 1):
+                            rstage = step.stages[ri]
+                            if rstage.get("when") is not None or rstage.get("exit_when") is not None:
+                                raise IRSemanticError(
+                                    f"pipeline step '{step.id}' stage {ri} is inside the fanout "
+                                    f"region (fanout..join) and may not carry `when`/`exit_when` "
+                                    f"in v1",
+                                    path=f"flows.{flow_name}.steps.{step.id}.stages[{ri}]"
+                                )
+                        # A pre-fanout `exit_when` would early-exit the item and skip the
+                        # WHOLE region; the join's require-gate would then misread those
+                        # early-exit skips as unfilled lanes → banned in v1. (`when` on a
+                        # pre-fanout stage is fine — it skips one stage via passthrough and
+                        # never sets the item-exit marker.)
+                        for ri in range(0, f_idx):
+                            if step.stages[ri].get("exit_when") is not None:
+                                raise IRSemanticError(
+                                    f"pipeline step '{step.id}' stage {ri} has `exit_when` before "
+                                    f"a fanout region — pre-fanout early-exit is not supported in "
+                                    f"v1 (it would skip the whole region)",
+                                    path=f"flows.{flow_name}.steps.{step.id}.stages[{ri}]"
+                                )
 
                 # depends_on check for decompose/parallel_dispatch/pipeline
                 for dep in step.depends_on:
