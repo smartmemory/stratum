@@ -606,6 +606,9 @@ _IR_SCHEMA_V03: dict = {
                             # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage overrides
                             "task_reasoning_template": {"type": "object"},
                             "task_timeout": {"type": "integer", "minimum": 1},
+                            # STRAT-WORKFLOW-PIPELINE-ROUTE: conditional routing predicates
+                            "when": {"type": "string"},
+                            "exit_when": {"type": "string"},
                         },
                     },
                 },
@@ -1529,7 +1532,12 @@ def _validate_semantics(spec: IRSpec) -> None:
                     # (task_reasoning_template / task_timeout) permitted besides
                     # (STRAT-WORKFLOW-PIPELINE-STAGEOPTS).
                     _STAGE_KEYS = {"intent_template", "agent",
-                                   "task_reasoning_template", "task_timeout"}
+                                   "task_reasoning_template", "task_timeout",
+                                   # STRAT-WORKFLOW-PIPELINE-ROUTE
+                                   "when", "exit_when"}
+                    # Local import avoids the spec↔executor module-level cycle
+                    # (executor imports spec at module load).
+                    from .executor import compile_predicate, EnsureCompileError
                     for si, stage in enumerate(step.stages):
                         if not isinstance(stage, dict):
                             raise IRSemanticError(
@@ -1546,9 +1554,29 @@ def _validate_semantics(spec: IRSpec) -> None:
                             raise IRSemanticError(
                                 f"pipeline step '{step.id}' stage {si} has unsupported key(s) "
                                 f"{sorted(extra)} — stages allow only 'intent_template', 'agent', "
-                                f"'task_reasoning_template', 'task_timeout'",
+                                f"'task_reasoning_template', 'task_timeout', 'when', 'exit_when'",
                                 path=f"flows.{flow_name}.steps.{step.id}.stages[{si}]"
                             )
+                        # STRAT-WORKFLOW-PIPELINE-ROUTE: validate routing predicates at
+                        # parse time. `when` (pre-dispatch) binds the predecessor's
+                        # output — absent on stage 0; `exit_when` (post-complete) binds
+                        # this stage's own output (all stages). compile_predicate's AST
+                        # name pass rejects out-of-scope/unknown names up front.
+                        when_names = ({"item"} if si == 0
+                                      else {"item", "prev", "prev_raw"})
+                        for field, allowed in (("when", when_names),
+                                               ("exit_when", {"item", "result", "result_raw"})):
+                            expr = stage.get(field)
+                            if expr is None:
+                                continue
+                            try:
+                                compile_predicate(expr, allowed)
+                            except EnsureCompileError as exc:
+                                raise IRSemanticError(
+                                    f"pipeline step '{step.id}' stage {si} has invalid "
+                                    f"'{field}': {exc}",
+                                    path=f"flows.{flow_name}.steps.{step.id}.stages[{si}].{field}"
+                                ) from exc
 
                 # depends_on check for decompose/parallel_dispatch/pipeline
                 for dep in step.depends_on:
