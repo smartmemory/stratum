@@ -581,7 +581,7 @@ def expand_pipeline_tasks(step, source_items) -> list[dict]:
     """
     stages = list(step.stages or [])
     _RESERVED = {"id", "depends_on", "item", "_pipeline_item", "_pipeline_stage",
-                 "_intent_template", "_agent"}
+                 "_intent_template", "_agent", "_task_timeout", "_task_reasoning_template"}
     tasks: list[dict] = []
     for i, item in enumerate(source_items):
         for j, stage in enumerate(stages):
@@ -592,6 +592,9 @@ def expand_pipeline_tasks(step, source_items) -> list[dict]:
                 "_pipeline_stage": j,
                 "_intent_template": stage.get("intent_template"),
                 "_agent": stage.get("agent"),
+                # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage overrides (None → step fallback)
+                "_task_timeout": stage.get("task_timeout"),
+                "_task_reasoning_template": stage.get("task_reasoning_template"),
                 "item": item,
             }
             if isinstance(item, dict):
@@ -600,6 +603,25 @@ def expand_pipeline_tasks(step, source_items) -> list[dict]:
                         task[k] = v
             tasks.append(task)
     return tasks
+
+
+def effective_pipeline_task_cert(stage_template, step_template, agent):
+    """Resolve the cert template for a PIPELINE stage task (STRAT-WORKFLOW-PIPELINE-STAGEOPTS).
+
+    PIPELINE-ONLY — non-pipeline parallel_dispatch keeps its own (asymmetric) cert
+    paths and must NOT route through this. Rule:
+      - explicit per-stage cert → always applies (no agent gate);
+      - else step-level cert, claude-agent-gated (a codex stage skips the
+        claude-structured step cert — preserves -PIPELINE behavior);
+      - else no cert.
+    Used identically by _run_one (validate), _render_prompt (inject), and
+    server._evaluate_parallel_results (validate) so the three sites can't drift.
+    """
+    if stage_template is not None:
+        return stage_template
+    if step_template is not None and (agent or "claude").startswith("claude"):
+        return step_template
+    return None
 
 
 def _step_mode(step) -> str:
