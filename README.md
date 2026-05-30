@@ -3,6 +3,7 @@
 [![PyPI — stratum-mcp](https://img.shields.io/pypi/v/stratum-mcp?label=stratum-mcp)](https://pypi.org/project/stratum-mcp/)
 [![PyPI — stratum-py](https://img.shields.io/pypi/v/stratum-py?label=stratum-py)](https://pypi.org/project/stratum-py/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![SafeSkill 50/100](https://img.shields.io/badge/SafeSkill-50%2F100_Use%20with%20Caution-orange)](https://safeskill.dev/scan/smartmemory-stratum)
 
 **State machine dispatch server for AI agent workflows.**
 
