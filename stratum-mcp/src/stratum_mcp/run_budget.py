@@ -10,11 +10,43 @@ DAG, and a *flow execution* (the thing budgeted here) is one run of it.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
+
+from .pricing import cost_from_tokens, is_priced
 
 # Terminal status set on a FlowState whose run budget is exhausted. Sits
 # alongside "killed" everywhere the flow state machine special-cases terminality.
 BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+def nonneg_int(x: Any) -> int:
+    """Coerce to a non-negative int; unparseable/negative → 0.
+
+    Budget accounting must never break flow execution or let a bad value credit
+    the ledger back, so a non-numeric or negative token count degrades to 0.
+    """
+    try:
+        v = int(x)
+    except (TypeError, ValueError):
+        return 0
+    return v if v > 0 else 0
+
+
+def nonneg_float(x: Any) -> float:
+    """Coerce to a non-negative finite float; unparseable/negative/NaN/inf → 0.0.
+
+    Critically, a NaN must never reach the ledger: ``nan >= cap`` is always
+    False, so a single poisoned dollar value would disable ``usd`` enforcement
+    for the rest of the run.
+    """
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(v) or v < 0.0:
+        return 0.0
+    return v
 
 
 def accumulate_usage(acc: dict[str, Any], event: Any) -> dict[str, Any]:
@@ -26,14 +58,30 @@ def accumulate_usage(acc: dict[str, Any], event: Any) -> dict[str, Any]:
         ``metadata`` dict carrying ``{"type": "usage", ...}``.
     Only *billed* tokens count (input + output); cache tokens are excluded.
     Non-usage events are ignored (returns ``acc`` unchanged).
+
+    STRAT-WORKFLOW-BUDGET-DOLLARS: connectors emit token counts + a ``model`` id
+    but no ``cost_usd`` (codex hardcodes 0, claude omits it). Dollars are derived
+    from the static pricing table: trust a positive reported ``cost_usd`` if
+    present (future-proofs a connector that starts reporting real cost), else
+    price input/output separately via ``cost_from_tokens``. An unpriced model
+    contributes ``$0`` and is tagged into ``acc["unpriced_models"]`` so the debit
+    site can warn (the cap is in scope there, not here).
     """
     meta = _usage_metadata(event)
     if meta is None:
         return acc
-    acc["tokens"] = acc.get("tokens", 0) + int(meta.get("input_tokens") or 0) + int(
-        meta.get("output_tokens") or 0
-    )
-    acc["dollars"] = acc.get("dollars", 0.0) + float(meta.get("cost_usd") or 0.0)
+    in_tok = nonneg_int(meta.get("input_tokens"))
+    out_tok = nonneg_int(meta.get("output_tokens"))
+    acc["tokens"] = acc.get("tokens", 0) + in_tok + out_tok
+    cost = nonneg_float(meta.get("cost_usd"))
+    if cost <= 0.0:
+        model = meta.get("model") or ""
+        cost = cost_from_tokens(model, in_tok, out_tok)
+        # Only tag a real (hashable, non-empty) string id — a malformed model
+        # still prices as $0 above, it just isn't named in the warning set.
+        if isinstance(model, str) and model and not is_priced(model):
+            acc.setdefault("unpriced_models", set()).add(model)
+    acc["dollars"] = acc.get("dollars", 0.0) + cost
     return acc
 
 
@@ -89,8 +137,10 @@ def budget_exhausted(state: Any) -> bool:
     """True when any *enforced* axis has reached or exceeded its cap.
 
     Enforced axes: ``ms`` (wall-clock, compute-seconds — compared as
-    ``wall_s >= ms/1000``), ``max_agent_dispatches``, ``max_tokens``. ``usd`` is
-    recorded-not-enforced and never trips. Unbudgeted flows never exhaust.
+    ``wall_s >= ms/1000``), ``max_agent_dispatches``, ``max_tokens``, and ``usd``
+    (STRAT-WORKFLOW-BUDGET-DOLLARS — dollars derived from token counts via the
+    static pricing table; unpriced models under-count). Unbudgeted flows never
+    exhaust.
     """
     bs = getattr(state, "budget_state", None)
     if not bs:
@@ -105,5 +155,8 @@ def budget_exhausted(state: Any) -> bool:
         return True
     max_tok = caps.get("max_tokens")
     if max_tok is not None and consumed["tokens"] >= max_tok:
+        return True
+    usd = caps.get("usd")
+    if usd is not None and consumed["dollars"] >= usd:
         return True
     return False
