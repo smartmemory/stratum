@@ -603,6 +603,9 @@ _IR_SCHEMA_V03: dict = {
                         "properties": {
                             "agent": {"type": "string"},
                             "intent_template": {"type": "string"},
+                            # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage overrides
+                            "task_reasoning_template": {"type": "object"},
+                            "task_timeout": {"type": "integer", "minimum": 1},
                         },
                     },
                 },
@@ -1224,6 +1227,12 @@ def _build_step(s: dict) -> IRStepDef:
     _apply_cert_defaults(s)
     # STRAT-CERT-PAR: apply defaults to per-task template as well (no-op when absent)
     _apply_cert_defaults(s, "task_reasoning_template")
+    # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: apply the same cert defaults/validation to
+    # each pipeline stage's task_reasoning_template (raw-copied otherwise → an empty
+    # {} wouldn't inherit default sections and a malformed template would slip through).
+    for _stage in (s.get("stages") or []):
+        if isinstance(_stage, dict):
+            _apply_cert_defaults(_stage, "task_reasoning_template")
     # STRAT-JUDGE v1: parse the nested judge: block into a JudgeStepConfig
     judge_raw = s.get("judge")
     if judge_raw is not None:
@@ -1516,7 +1525,11 @@ def _validate_semantics(spec: IRSpec) -> None:
                             f"for per-task cert validation.",
                             path=f"flows.{flow_name}.steps.{step.id}.reasoning_template"
                         )
-                    # Each stage: intent_template required; only 'agent' permitted besides.
+                    # Each stage: intent_template required; agent + per-stage overrides
+                    # (task_reasoning_template / task_timeout) permitted besides
+                    # (STRAT-WORKFLOW-PIPELINE-STAGEOPTS).
+                    _STAGE_KEYS = {"intent_template", "agent",
+                                   "task_reasoning_template", "task_timeout"}
                     for si, stage in enumerate(step.stages):
                         if not isinstance(stage, dict):
                             raise IRSemanticError(
@@ -1528,11 +1541,12 @@ def _validate_semantics(spec: IRSpec) -> None:
                                 f"pipeline step '{step.id}' stage {si} must have 'intent_template'",
                                 path=f"flows.{flow_name}.steps.{step.id}.stages[{si}].intent_template"
                             )
-                        extra = set(stage) - {"intent_template", "agent"}
+                        extra = set(stage) - _STAGE_KEYS
                         if extra:
                             raise IRSemanticError(
                                 f"pipeline step '{step.id}' stage {si} has unsupported key(s) "
-                                f"{sorted(extra)} — v1 stages allow only 'intent_template' and 'agent'",
+                                f"{sorted(extra)} — stages allow only 'intent_template', 'agent', "
+                                f"'task_reasoning_template', 'task_timeout'",
                                 path=f"flows.{flow_name}.steps.{step.id}.stages[{si}]"
                             )
 
