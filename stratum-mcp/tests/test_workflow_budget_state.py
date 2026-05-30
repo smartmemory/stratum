@@ -65,9 +65,18 @@ def test_budgetless_flow_has_none_budget_state():
     assert state.budget_state is None
 
 
-def test_usd_only_budget_yields_no_ledger():
-    """usd has nothing to enforce server-side → no ledger."""
-    assert init_budget_state(_budget(usd=5.0)) is None
+def test_usd_only_budget_yields_ledger():
+    """STRAT-WORKFLOW-BUDGET-DOLLARS: usd is now enforced → a usd-only budget
+    yields a ledger carrying the usd cap."""
+    bs = init_budget_state(_budget(usd=5.0))
+    assert bs is not None
+    assert bs["caps"]["usd"] == 5.0
+    assert bs["consumed"]["dollars"] == 0.0
+
+
+def test_empty_budget_still_yields_no_ledger():
+    """A budget with no axis set at all still has nothing to enforce."""
+    assert init_budget_state(_budget()) is None
 
 
 def test_round_trip_persist_restore(flows_dir):

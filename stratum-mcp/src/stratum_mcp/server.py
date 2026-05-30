@@ -19,7 +19,10 @@ from .run_budget import (
     budget_exhausted,
     debit_budget,
     new_usage_acc,
+    nonneg_float,
+    nonneg_int,
 )
+from .pricing import cost_from_tokens, _maybe_warn_unpriced
 from .executor import (
     FlowState,
     _flows,
@@ -272,6 +275,11 @@ async def stratum_agent_run(
                 wall_s=time.monotonic() - _budget_t0,
                 dollars=float(_budget_usage.get("dollars", 0.0)),
             )
+            # STRAT-WORKFLOW-BUDGET-DOLLARS: surface models the pricing table
+            # couldn't price (they contributed $0, under-counting a usd cap).
+            _has_usd = budget_flow.budget_state["caps"].get("usd") is not None
+            for _m in _budget_usage.get("unpriced_models", ()):
+                _maybe_warn_unpriced(_m, _has_usd)
             if budget_exhausted(budget_flow) and not budget_flow.terminal_status:
                 budget_flow.terminal_status = BUDGET_EXHAUSTED
             persist_flow(budget_flow)
@@ -401,6 +409,10 @@ async def stratum_resume(flow_id: str, ctx: Context) -> dict[str, Any]:
 @mcp.tool(description=(
     "Report a completed step result. "
     "Inputs: flow_id (str), step_id (str), result (dict matching the step's output contract). "
+    "Optional usage (dict) charges the flow's run budget for the work the consumer did on "
+    "this step: {input_tokens, output_tokens, model} (priced via the model pricing table) or "
+    "pre-priced {tokens, dollars}. Charged across all outcomes; if it crosses the budget the "
+    "flow halts. Ignored on flows with no budget. "
     "Checks ensure postconditions. Returns next step to execute, ensure failure with retry "
     "instructions, or flow completion with final output and trace."
 ))
@@ -409,6 +421,7 @@ async def stratum_step_done(
     step_id: str,
     result: dict[str, Any],
     ctx: Context,
+    usage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     state = _flows.get(flow_id)
     if state is None:
@@ -476,6 +489,42 @@ async def stratum_step_done(
             _flows.pop(fid, None)
             delete_persisted_flow(fid)
             state.active_child_flow_id = None
+
+    # STRAT-WORKFLOW-BUDGET-DOLLARS: charge consumer-reported usage for THIS
+    # attempt. Lands here — after process_step_result validated the submission
+    # (a stale/wrong-step call already returned an error above, uncharged) but
+    # before the per-status branches — so every accepted outcome (ok AND every
+    # retry status) is charged. Mirrors the server-dispatched finally-debit: a
+    # failed/retrying attempt's work is not free, so a retry storm can't evade
+    # the usd/token caps. No `dispatches` charge — a consumer step isn't a
+    # server-dispatched agent. On exhaustion, tear down any child flow (the
+    # status branches' _cleanup_child) before returning the terminal payload;
+    # retry-state clearing is moot on a now-terminal flow.
+    if isinstance(usage, dict) and getattr(state, "budget_state", None):
+        has_usd = state.budget_state["caps"].get("usd") is not None
+        # Untyped consumer input: coerce defensively (non-numeric/negative/NaN → 0)
+        # so a bad payload can neither raise after the step was accepted nor
+        # credit/poison the ledger.
+        if usage.get("dollars") is not None or usage.get("tokens") is not None:
+            debit_budget(
+                state,
+                tokens=nonneg_int(usage.get("tokens")),
+                dollars=nonneg_float(usage.get("dollars")),
+            )
+        else:
+            in_tok = nonneg_int(usage.get("input_tokens"))
+            out_tok = nonneg_int(usage.get("output_tokens"))
+            model = usage.get("model") or ""
+            _maybe_warn_unpriced(model, has_usd)
+            debit_budget(
+                state,
+                tokens=in_tok + out_tok,
+                dollars=cost_from_tokens(model, in_tok, out_tok),
+            )
+        if budget_exhausted(state):
+            if _is_flow_step:
+                _cleanup_child()
+            return _flow_budget_hard_stop(state)
 
     if status == "retries_exhausted":
         if _is_flow_step:
