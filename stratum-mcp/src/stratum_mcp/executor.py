@@ -648,31 +648,87 @@ def expand_pipeline_tasks(step, source_items) -> list[dict]:
     """
     stages = list(step.stages or [])
     _RESERVED = {"id", "depends_on", "item", "_pipeline_item", "_pipeline_stage",
-                 "_intent_template", "_agent", "_task_timeout", "_task_reasoning_template",
-                 "_when", "_exit_when"}
+                 "_pipeline_role", "_intent_template", "_agent", "_task_timeout",
+                 "_task_reasoning_template", "_when", "_exit_when",
+                 "_fanout_lane", "_fanout_split_id", "_fanout_max", "_fanout_require"}
+
+    # STRAT-WORKFLOW-PIPELINE-FANOUT: locate the (validated) single fanout/join region.
+    fanout_idx = next((j for j, s in enumerate(stages) if s.get("fanout")), None)
+    join_idx = next((j for j, s in enumerate(stages) if s.get("join")), None)
+
+    def _base(i, item, j, stage, role, *, lane=None, splat=True):
+        tid = f"{step.id}::item{i}::stage{j}"
+        if lane is not None:
+            tid += f"::lane{lane}"
+        task = {
+            "id": tid,
+            "depends_on": [],
+            "_pipeline_item": i,
+            "_pipeline_stage": j,
+            "_pipeline_role": role,
+            "_intent_template": stage.get("intent_template"),
+            "_agent": stage.get("agent"),
+            # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage overrides (None → step fallback)
+            "_task_timeout": stage.get("task_timeout"),
+            "_task_reasoning_template": stage.get("task_reasoning_template"),
+            # STRAT-WORKFLOW-PIPELINE-ROUTE: per-stage routing predicates (None → no routing)
+            "_when": stage.get("when"),
+            "_exit_when": stage.get("exit_when"),
+            "item": item,
+        }
+        if lane is not None:
+            task["_fanout_lane"] = lane
+            task["_fanout_split_id"] = f"{step.id}::item{i}::stage{fanout_idx}"
+        # Lane tasks do NOT bare-splat (their `{item}` is rebound to the lane element
+        # L[k] at render; the source item is reachable via `{source}` — design §3).
+        if splat and isinstance(item, dict):
+            for k, v in item.items():
+                if k not in _RESERVED and k not in task and not k.startswith("_"):
+                    task[k] = v
+        return task
+
     tasks: list[dict] = []
+
+    if fanout_idx is None:
+        # No fan-out: the existing per-item straight chain, byte-identical (plus the
+        # additive `_pipeline_role: "plain"` field, which the non-fanout paths ignore).
+        for i, item in enumerate(source_items):
+            for j, stage in enumerate(stages):
+                t = _base(i, item, j, stage, "plain")
+                t["depends_on"] = [f"{step.id}::item{i}::stage{j - 1}"] if j > 0 else []
+                tasks.append(t)
+        return tasks
+
+    # Bounded fan-out grid: pre-fanout/split/join/post-join are per-item single tasks;
+    # the per-lane stages (fanout_idx, join_idx) materialize K tasks each.
+    K = int(stages[fanout_idx]["fanout"]["max"])
     for i, item in enumerate(source_items):
         for j, stage in enumerate(stages):
-            task = {
-                "id": f"{step.id}::item{i}::stage{j}",
-                "depends_on": [f"{step.id}::item{i}::stage{j - 1}"] if j > 0 else [],
-                "_pipeline_item": i,
-                "_pipeline_stage": j,
-                "_intent_template": stage.get("intent_template"),
-                "_agent": stage.get("agent"),
-                # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage overrides (None → step fallback)
-                "_task_timeout": stage.get("task_timeout"),
-                "_task_reasoning_template": stage.get("task_reasoning_template"),
-                # STRAT-WORKFLOW-PIPELINE-ROUTE: per-stage routing predicates (None → no routing)
-                "_when": stage.get("when"),
-                "_exit_when": stage.get("exit_when"),
-                "item": item,
-            }
-            if isinstance(item, dict):
-                for k, v in item.items():
-                    if k not in _RESERVED and k not in task and not k.startswith("_"):
-                        task[k] = v
-            tasks.append(task)
+            if fanout_idx < j < join_idx:
+                for k in range(K):
+                    t = _base(i, item, j, stage, "lane", lane=k, splat=False)
+                    if j == fanout_idx + 1:
+                        t["depends_on"] = [f"{step.id}::item{i}::stage{fanout_idx}"]
+                    else:
+                        t["depends_on"] = [f"{step.id}::item{i}::stage{j - 1}::lane{k}"]
+                    tasks.append(t)
+            else:
+                role = ("split" if j == fanout_idx
+                        else "join" if j == join_idx
+                        else "plain")
+                t = _base(i, item, j, stage, role)
+                if role == "split":
+                    t["_fanout_max"] = K
+                if role == "join":
+                    # lane-require lives on the fanout stage; thread it to the join,
+                    # which is the task that evaluates it (design §4).
+                    t["_fanout_require"] = stages[fanout_idx]["fanout"].get("require", "all")
+                    t["depends_on"] = [
+                        f"{step.id}::item{i}::stage{join_idx - 1}::lane{k}" for k in range(K)
+                    ]
+                elif j > 0:
+                    t["depends_on"] = [f"{step.id}::item{i}::stage{j - 1}"]
+                tasks.append(t)
     return tasks
 
 

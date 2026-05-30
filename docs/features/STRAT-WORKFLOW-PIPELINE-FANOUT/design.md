@@ -425,7 +425,10 @@ consistent with `-ROUTE` §5).
   list-split source).
 - **Nested fan-out** (a lane that itself fans out) and **multiple fanout regions** in one pipeline.
 - **Fan-out combined with `when`/`exit_when`** inside a lane (routing within lanes) — each primitive
-  works; their interaction is a separate validation matrix, deferred.
+  works; their interaction is a separate validation matrix, deferred. **Pre-fanout `exit_when` is also
+  banned** (impl-review): an item early-exiting before the region would skip the whole region, which the
+  join's require-gate would misread as unfilled lanes — so pre-fanout early-exit is rejected at parse
+  time. (Pre-fanout `when` is allowed; post-join `exit_when` is allowed.)
 - **Per-lane `agent` differing from the per-lane stage's `agent`** beyond the existing per-stage
   `agent` field — lanes of one stage share that stage's connector in v1.
 - **Cross-item fan-out** (splitting across the source list rather than within an item) — predicates

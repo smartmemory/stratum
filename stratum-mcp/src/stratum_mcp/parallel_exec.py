@@ -213,6 +213,11 @@ class ParallelExecutor:
         # `exit_when` fires, maps the item index → the stage it exited at; later
         # stages of that item then skip. Mutated in the single-flow async context.
         self._item_exited: dict[Any, int] = {}
+        # STRAT-WORKFLOW-PIPELINE-FANOUT: memoized split-stage list per split task id.
+        # Populated by the split-role validation branch in _run_one when the split
+        # completes; read by _lane_is_filled / _effective_lane_input. Same single
+        # async context, no lock.
+        self._fanout_lists: dict[str, list] = {}
 
         # Seed per-task state so pollers see "pending" from the start.
         for t in tasks:
@@ -271,10 +276,47 @@ class ParallelExecutor:
         str) and ``{prev_raw}`` (raw object). Falls back to the raw template when
         ``str.format`` can't find a field (a template with no placeholders is valid).
         """
+        def _as_str(v):
+            return v if isinstance(v, str) else json.dumps(v, default=str, ensure_ascii=False)
+
         template = task.get("_intent_template") or self.intent_template
         kwargs = dict(task)
         deps = task.get("depends_on") or []
-        if len(deps) == 1:
+        role = task.get("_pipeline_role") if self.is_pipeline else None
+
+        if role == "lane":
+            # STRAT-WORKFLOW-PIPELINE-FANOUT: {item} = the lane element L[k] (via the
+            # single resolver); {source}/{source_raw} = the original source item
+            # (the lane task's own `item` field). First per-lane stage's {prev} = the
+            # lane element; subsequent per-lane stage's {prev} = single-dep result.
+            lane_input = self._effective_lane_input(task)
+            src = task.get("item")
+            kwargs["source_raw"] = src
+            kwargs["source"] = _as_str(src)
+            kwargs["item"] = lane_input
+            if len(deps) == 1 and deps[0] == task.get("_fanout_split_id"):
+                kwargs["prev_raw"] = lane_input
+                kwargs["prev"] = _as_str(lane_input)
+            elif len(deps) == 1:
+                dep_ts = self.state.parallel_tasks.get(deps[0])
+                if dep_ts is not None:
+                    kwargs["prev_raw"] = dep_ts.result
+                    kwargs["prev"] = _as_str(dep_ts.result)
+        elif role == "join":
+            # {prevs}/{prevs_raw} = surviving (complete, filled) lane results; a
+            # skipped (unfilled) or failed lane is excluded. {source} = source item.
+            survivors = [
+                self.state.parallel_tasks[d].result
+                for d in deps
+                if self._task_terminal_state.get(d) == "complete"
+                and self.state.parallel_tasks.get(d) is not None
+            ]
+            kwargs["prevs_raw"] = survivors
+            kwargs["prevs"] = json.dumps(survivors, default=str, ensure_ascii=False)
+            src = task.get("item")
+            kwargs["source_raw"] = src
+            kwargs["source"] = _as_str(src)
+        elif len(deps) == 1:
             dep_ts = self.state.parallel_tasks.get(deps[0])
             if dep_ts is not None:
                 raw = dep_ts.result
@@ -334,6 +376,12 @@ class ParallelExecutor:
         exited_at = self._item_exited.get(item_idx)
         if exited_at is not None and exited_at < stage_j:
             return True, passthrough
+        # STRAT-WORKFLOW-PIPELINE-FANOUT: an over-cap (unfilled) lane skips — it
+        # carries no data (passthrough None) and is excluded from the join's
+        # {prevs}. Route predicates are banned in-region, so a `skipped` lane is
+        # unambiguously "unfilled".
+        if task.get("_pipeline_role") == "lane" and not self._lane_is_filled(task):
+            return True, None
         # (b) `when` predicate
         when = task.get("_when")
         if when:
@@ -387,6 +435,83 @@ class ParallelExecutor:
         if do_exit:
             self._item_exited[task.get("_pipeline_item")] = task.get("_pipeline_stage", 0)
 
+    # ------------------------------------------------------------------
+    # STRAT-WORKFLOW-PIPELINE-FANOUT: bounded map-reduce helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fanout_require_satisfied(complete: int, filled: int, require: Any) -> bool:
+        """Lane-require over FILLED lanes (unfilled/skipped lanes don't count).
+        Empty (filled == 0) falls out uniformly: `all` → satisfied, `any`/`N` → not.
+        """
+        if require == "any":
+            return complete >= 1
+        if isinstance(require, int) and not isinstance(require, bool):
+            return complete >= require
+        # "all" (default / unknown) → every filled lane must have completed
+        return complete == filled
+
+    def _resolve_fanout_list(self, split_id: str) -> list:
+        """Resolve a split task's result to the fan-out list `L` (design §2 contract):
+        a native list is used as-is; a JSON-array string is parsed; anything else
+        raises. Raises propagate to the split-role validation branch, which turns
+        them into a split-task failure.
+        """
+        raw = self.state.parallel_tasks[split_id].result
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, str):
+            parsed = json.loads(raw)
+            if not isinstance(parsed, list):
+                raise ValueError("fanout stage result is not a JSON array")
+            return parsed
+        raise ValueError("fanout stage result is not a list")
+
+    def _lane_is_filled(self, task: dict) -> bool:
+        """A lane is filled iff its index < the resolved split list length.
+        Reads the memoized list (populated when the split completed)."""
+        L = self._fanout_lists.get(task.get("_fanout_split_id"))
+        if L is None:
+            return False
+        return task.get("_fanout_lane", 0) < len(L)
+
+    def _effective_lane_input(self, task: dict) -> Any:
+        """The lane's element L[k] — the single resolver of a lane's input, used by
+        `_render_prompt` for `{item}` and the first-lane `{prev}`. Only called on a
+        filled lane (the index is always in range)."""
+        L = self._fanout_lists[task["_fanout_split_id"]]
+        return L[task["_fanout_lane"]]
+
+    async def _await_join_deps(self, task: dict, ts: "ParallelTaskState") -> bool:
+        """Join-specific dep-gate (design §4): wait for ALL K lane predecessors to
+        reach a terminal state, then evaluate lane-require over the FILLED lanes
+        (skipped = unfilled, excluded). Returns True to proceed (dispatch the join
+        over survivors), or sets the join terminal-`cancelled` and returns False
+        when lane-require is unsatisfiable. Distinct from the single-dep gate, which
+        cancels on the first non-complete predecessor.
+        """
+        deps = task.get("depends_on") or []
+        for dep_id in deps:
+            evt = self._task_done.get(dep_id)
+            if evt is None:
+                ts.state = "failed"
+                ts.error = f"depends_on references unknown task_id '{dep_id}'"
+                ts.finished_at = time.time()
+                return False
+            await evt.wait()
+        filled = [d for d in deps if self._task_terminal_state.get(d) != "skipped"]
+        complete = [d for d in filled if self._task_terminal_state.get(d) == "complete"]
+        require = task.get("_fanout_require", "all")
+        if not self._fanout_require_satisfied(len(complete), len(filled), require):
+            ts.state = "cancelled"
+            ts.error = (
+                f"fanout require={require!r} not satisfied: "
+                f"{len(complete)}/{len(filled)} lanes completed"
+            )
+            ts.finished_at = time.time()
+            return False
+        return True
+
     async def _persist(self) -> None:
         """Persist the FlowState under the per-flow lock."""
         async with _lock_for(self.state.flow_id):
@@ -410,10 +535,17 @@ class ParallelExecutor:
             items.setdefault(t.get("_pipeline_item"), []).append(t)
         complete = failed = in_flight = 0
         for _item, group in items.items():
-            states = {t["id"]: self.state.parallel_tasks[t["id"]].state for t in group}
-            if any(s in ("failed", "cancelled") for s in states.values()):
+            # STRAT-WORKFLOW-PIPELINE-FANOUT: a failed LANE is not itself an item
+            # failure — lane-require governs whether the join still runs, and the
+            # join's own terminal state (complete vs cancelled) carries that verdict.
+            # So failure is judged over non-lane tasks only; lanes still gate
+            # in-flight (an item isn't complete until its lanes settle).
+            non_lane = [t for t in group if t.get("_pipeline_role") != "lane"]
+            if any(self.state.parallel_tasks[t["id"]].state in ("failed", "cancelled")
+                   for t in non_lane):
                 failed += 1
-            elif any(s in ("pending", "running") for s in states.values()):
+            elif any(self.state.parallel_tasks[t["id"]].state in ("pending", "running")
+                     for t in group):
                 in_flight += 1
             else:
                 complete += 1
@@ -614,25 +746,31 @@ class ParallelExecutor:
             # unwind through the existing finally, which runs cascade-cancel via
             # _require_unsatisfiable.
             deps = task.get("depends_on") or []
-            for dep_id in deps:
-                done_evt = self._task_done.get(dep_id)
-                if done_evt is None:
-                    ts.state = "failed"
-                    ts.error = f"depends_on references unknown task_id '{dep_id}'"
-                    ts.finished_at = time.time()
+            # STRAT-WORKFLOW-PIPELINE-FANOUT: a join task takes a distinct dep-gate —
+            # wait for ALL lanes terminal, then require over survivors (design §4).
+            if self.is_pipeline and task.get("_pipeline_role") == "join":
+                if not await self._await_join_deps(task, ts):
                     return
-                await done_evt.wait()
-                # STRAT-WORKFLOW-PIPELINE-ROUTE: a `skipped` predecessor is a
-                # transparent passthrough — proceed (its result flows into {prev}),
-                # do NOT cancel. Any other non-complete terminal state cancels.
-                if self._task_terminal_state.get(dep_id) not in ("complete", "skipped"):
-                    ts.state = "cancelled"
-                    ts.error = (
-                        f"upstream task '{dep_id}' did not complete "
-                        f"(state={self._task_terminal_state.get(dep_id)!r})"
-                    )
-                    ts.finished_at = time.time()
-                    return
+            else:
+                for dep_id in deps:
+                    done_evt = self._task_done.get(dep_id)
+                    if done_evt is None:
+                        ts.state = "failed"
+                        ts.error = f"depends_on references unknown task_id '{dep_id}'"
+                        ts.finished_at = time.time()
+                        return
+                    await done_evt.wait()
+                    # STRAT-WORKFLOW-PIPELINE-ROUTE: a `skipped` predecessor is a
+                    # transparent passthrough — proceed (its result flows into {prev}),
+                    # do NOT cancel. Any other non-complete terminal state cancels.
+                    if self._task_terminal_state.get(dep_id) not in ("complete", "skipped"):
+                        ts.state = "cancelled"
+                        ts.error = (
+                            f"upstream task '{dep_id}' did not complete "
+                            f"(state={self._task_terminal_state.get(dep_id)!r})"
+                        )
+                        ts.finished_at = time.time()
+                        return
 
             # STRAT-WORKFLOW-PIPELINE-ROUTE: routing skip is decided AFTER deps
             # resolve (so `when` sees the predecessor result) but BEFORE acquiring
@@ -762,6 +900,27 @@ class ParallelExecutor:
                     # immediate downstream task observes it and skips.
                     if self.is_pipeline and ts.state == "complete":
                         self._check_exit_when(task, result)
+                    # STRAT-WORKFLOW-PIPELINE-FANOUT: a split task validates its list
+                    # output (design §2 contract + the `len > K` cap) AFTER cert and
+                    # BEFORE terminal commit. On violation it becomes `failed` (lanes
+                    # then auto-cancel via the dep-gate); on success the list is
+                    # memoized so lanes read a resolved, validated `L`.
+                    if (self.is_pipeline and ts.state == "complete"
+                            and task.get("_pipeline_role") == "split"):
+                        try:
+                            L = self._resolve_fanout_list(tid)
+                        except (ValueError, json.JSONDecodeError) as exc:
+                            ts.state = "failed"
+                            ts.error = f"fanout split: {exc}"
+                        else:
+                            cap = task.get("_fanout_max")
+                            if cap is not None and len(L) > cap:
+                                ts.state = "failed"
+                                ts.error = (
+                                    f"fanout list length {len(L)} exceeds max {cap}"
+                                )
+                            else:
+                                self._fanout_lists[tid] = L
         except asyncio.CancelledError:
             # Cascade cancel arrived while we were blocked on the semaphore,
             # the initial _persist, or connector setup — still register a

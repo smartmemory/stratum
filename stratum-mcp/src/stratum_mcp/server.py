@@ -673,27 +673,44 @@ def _collapse_pipeline_items(
         by_item.setdefault(meta.get("_pipeline_item"), []).append(meta)
 
     items: list[dict[str, Any]] = []
+    _SETTLED = ("complete", "skipped", "failed", "cancelled")
     for item_idx in sorted(by_item, key=lambda x: (x is None, x)):
-        stage_metas = sorted(by_item[item_idx], key=lambda m: m.get("_pipeline_stage", 0))
-        stage_results = [reported.get(m["id"]) for m in stage_metas]
+        metas = by_item[item_idx]
+        # STRAT-WORKFLOW-PIPELINE-FANOUT: split metas into PER-ITEM stages (plain /
+        # split / join) and per-lane stages. `items[].stages` carries one entry per
+        # per-item stage in order; per-lane stage indices emit none (lane detail lives
+        # in the trace). A failed LANE is not itself an item failure — the join's own
+        # status (complete vs cancelled) carries the lane-require verdict — but every
+        # lane must be SETTLED for the item to be complete (require-bypass guard).
+        per_item_metas = sorted(
+            (m for m in metas if m.get("_pipeline_role") != "lane"),
+            key=lambda m: m.get("_pipeline_stage", 0),
+        )
+        lane_metas = [m for m in metas if m.get("_pipeline_role") == "lane"]
+        stage_results = [reported.get(m["id"]) for m in per_item_metas]
         statuses = [
             (sr.get("status") if sr is not None else "missing") for sr in stage_results
         ]
-        # STRAT-WORKFLOW-PIPELINE-ROUTE: a `skipped` stage (when:false / early-exit
-        # tail) is settled-non-failure — complete iff every stage is
-        # complete-or-skipped; `missing` (a stage with no reported result) still
-        # blocks, preserving the -PIPELINE require-bypass guard.
+        lane_statuses = [
+            (reported[m["id"]].get("status") if m["id"] in reported else "missing")
+            for m in lane_metas
+        ]
+        # STRAT-WORKFLOW-PIPELINE-ROUTE: a `skipped` per-item stage (when:false /
+        # early-exit tail) is settled-non-failure — complete iff every per-item stage
+        # is complete-or-skipped AND every lane is settled; `missing` still blocks.
         if any(s in ("failed", "cancelled") for s in statuses):
             status = "failed"
-        elif statuses and all(s in ("complete", "skipped") for s in statuses):
+        elif (statuses and all(s in ("complete", "skipped") for s in statuses)
+                and all(s in _SETTLED for s in lane_statuses)):
             status = "complete"
         else:
             status = "incomplete"
         final_sr = stage_results[-1] if stage_results else None
         items.append({
-            "item": stage_metas[0].get("item") if stage_metas else None,
+            "item": per_item_metas[0].get("item") if per_item_metas else None,
             "status": status,
-            # Only a fully completed chain has a meaningful final-stage output.
+            # Only a fully completed chain has a meaningful final-stage output
+            # (the join / last post-join result for a fanned-out item).
             "result": (final_sr.get("result") if (status == "complete" and final_sr) else None),
             "stages": [sr.get("result") if sr is not None else None for sr in stage_results],
         })
@@ -891,6 +908,22 @@ async def stratum_parallel_done(
             "message": (
                 f"Step '{step_id}' is a {mode} step, not parallel_dispatch. "
                 "Use stratum_step_done for non-parallel steps."
+            ),
+        }
+
+    # STRAT-WORKFLOW-PIPELINE-FANOUT: lane-fill + the join require-gate are
+    # executor-side only, and the status-based fill inference is sound only for
+    # executor-produced traces. A client driving a fanned-out graph via
+    # stratum_parallel_done would let arbitrary `skipped` lanes be mis-read as
+    # unfilled — so reject it (fanned-out pipelines are server-dispatched only).
+    if any((s.get("fanout") or s.get("join")) for s in (cur_step.stages or [])):
+        return {
+            "status": "error",
+            "error_type": "fanout_server_dispatched_only",
+            "message": (
+                f"Pipeline step '{step_id}' uses fanout/join — fanned-out pipelines "
+                "are server-dispatched only (use stratum_parallel_start, not "
+                "stratum_parallel_done)."
             ),
         }
 
