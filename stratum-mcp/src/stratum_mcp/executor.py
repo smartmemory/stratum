@@ -1,6 +1,7 @@
 """Flow controller: plan state management, $ reference resolution, ensure compilation."""
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import json
@@ -267,6 +268,10 @@ _ENSURE_BUILTINS: dict[str, Any] = {
     "bool": bool,
     "int": int,
     "str": str,
+    # STRAT-WORKFLOW-PIPELINE-ROUTE: safe aggregate predicates (also usable in
+    # ensure/score expressions — pure, no side effects).
+    "any": any,
+    "all": all,
     "no_file_conflicts": _no_file_conflicts,
     "plan_completion": plan_completion,
     "vocabulary_compliance": vocabulary_compliance,
@@ -386,6 +391,68 @@ def compile_value_expr(expr: str, bind: str = "result") -> Callable[[Any], Any]:
             raise EnsureCompileError(f"Expression {expr!r} raised: {exc}") from exc
 
     evaluator.__name__ = f"value({expr})"
+    return evaluator
+
+
+def _free_names(code_ast: ast.AST) -> set[str]:
+    """Collect free `Load`-context names in an expression, minus locally-bound
+    names (comprehension targets / lambda args). Used to validate a predicate's
+    referenced names against an allowed set at compile time."""
+    bound: set[str] = set()
+    for node in ast.walk(code_ast):
+        if isinstance(node, ast.comprehension):
+            for tgt in ast.walk(node.target):
+                if isinstance(tgt, ast.Name):
+                    bound.add(tgt.id)
+        elif isinstance(node, ast.Lambda):
+            for a in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+                bound.add(a.arg)
+    used = {
+        n.id for n in ast.walk(code_ast)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    return used - bound
+
+
+def compile_predicate(expr: str, allowed_names: set[str]) -> Callable[..., bool]:
+    """Compile a STRAT-WORKFLOW-PIPELINE-ROUTE `when`/`exit_when` predicate.
+
+    Same dunder + restricted-builtins jail as `compile_ensure`, but:
+      * binds caller-supplied names (subscript access — values bound raw, NOT
+        wrapped in SimpleNamespace, so `item['x']` works);
+      * validates at compile time that every free name is in
+        ``allowed_names ∪ _ENSURE_BUILTINS`` (a stage-0 `prev` reference, an
+        unknown name, etc. → EnsureCompileError, surfaced as a spec error at parse).
+    The returned evaluator takes the bound names as kwargs and returns ``bool``.
+    """
+    if "__" in expr:
+        raise EnsureCompileError(
+            f"Predicate may not contain dunder attributes: {expr!r}"
+        )
+    try:
+        tree = ast.parse(expr, "<predicate>", "eval")
+    except SyntaxError as exc:
+        raise EnsureCompileError(f"Cannot compile predicate {expr!r}: {exc}") from exc
+    allowed = set(allowed_names) | set(_ENSURE_BUILTINS)
+    disallowed = _free_names(tree) - allowed
+    if disallowed:
+        raise EnsureCompileError(
+            f"Predicate {expr!r} references disallowed name(s) "
+            f"{sorted(disallowed)}; allowed: {sorted(allowed_names)}"
+        )
+    code = compile(tree, "<predicate>", "eval")
+
+    def evaluator(**bindings: Any) -> bool:
+        try:
+            return bool(eval(
+                code, {"__builtins__": {}, **_ENSURE_BUILTINS}, dict(bindings),
+            ))
+        except Exception as exc:
+            raise EnsureCompileError(
+                f"Predicate {expr!r} raised: {exc}"
+            ) from exc
+
+    evaluator.__name__ = f"predicate({expr})"
     return evaluator
 
 
@@ -581,7 +648,8 @@ def expand_pipeline_tasks(step, source_items) -> list[dict]:
     """
     stages = list(step.stages or [])
     _RESERVED = {"id", "depends_on", "item", "_pipeline_item", "_pipeline_stage",
-                 "_intent_template", "_agent", "_task_timeout", "_task_reasoning_template"}
+                 "_intent_template", "_agent", "_task_timeout", "_task_reasoning_template",
+                 "_when", "_exit_when"}
     tasks: list[dict] = []
     for i, item in enumerate(source_items):
         for j, stage in enumerate(stages):
@@ -595,6 +663,9 @@ def expand_pipeline_tasks(step, source_items) -> list[dict]:
                 # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage overrides (None → step fallback)
                 "_task_timeout": stage.get("task_timeout"),
                 "_task_reasoning_template": stage.get("task_reasoning_template"),
+                # STRAT-WORKFLOW-PIPELINE-ROUTE: per-stage routing predicates (None → no routing)
+                "_when": stage.get("when"),
+                "_exit_when": stage.get("exit_when"),
                 "item": item,
             }
             if isinstance(item, dict):
