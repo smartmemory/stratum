@@ -51,6 +51,7 @@ from .run_budget import (
     debit_budget,
     new_usage_acc,
 )
+from .pricing import _maybe_warn_unpriced
 from .worktree import capture_worktree_diff, create_worktree, remove_worktree
 
 DEFAULT_TASK_TIMEOUT = 1800  # seconds
@@ -689,6 +690,13 @@ class ParallelExecutor:
                     wall_s=ts.elapsed_s,
                     dollars=ts.dollars_recorded,
                 )
+                # STRAT-WORKFLOW-BUDGET-DOLLARS: warn on models the table couldn't
+                # price (they contributed $0, under-counting a usd cap).
+                bs = getattr(self.state, "budget_state", None)
+                if bs:
+                    _has_usd = bs["caps"].get("usd") is not None
+                    for _m in usage.get("unpriced_models", ()):
+                        _maybe_warn_unpriced(_m, _has_usd)
             # Mark terminal BEFORE the persist below so the persisted snapshot
             # carries budget_exhausted (survives restart / query / resume).
             if budget_exhausted(self.state) and not self.state.terminal_status:
