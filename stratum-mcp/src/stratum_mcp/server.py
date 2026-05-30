@@ -634,6 +634,19 @@ _RUNNING_EXECUTORS: dict[tuple[str, str], Any] = {}
 _PARALLEL_EXECUTORS: dict[tuple[str, str], Any] = {}
 
 
+def _serialized_task_status(state: str) -> str:
+    """Map a ParallelTaskState.state to the task_results `status` enum.
+
+    STRAT-WORKFLOW-PIPELINE-ROUTE: `skipped` is carried through verbatim (not
+    collapsed to `failed`) so the aggregation treats it as settled-non-failure;
+    `complete` stays `complete`; everything else (failed/cancelled/defensive) is
+    `failed`.
+    """
+    if state in ("complete", "skipped"):
+        return state
+    return "failed"
+
+
 def _collapse_pipeline_items(
     task_results: list[dict[str, Any]],
     pipe_meta: dict[str, dict],
@@ -666,9 +679,13 @@ def _collapse_pipeline_items(
         statuses = [
             (sr.get("status") if sr is not None else "missing") for sr in stage_results
         ]
+        # STRAT-WORKFLOW-PIPELINE-ROUTE: a `skipped` stage (when:false / early-exit
+        # tail) is settled-non-failure — complete iff every stage is
+        # complete-or-skipped; `missing` (a stage with no reported result) still
+        # blocks, preserving the -PIPELINE require-bypass guard.
         if any(s in ("failed", "cancelled") for s in statuses):
             status = "failed"
-        elif statuses and all(s == "complete" for s in statuses):
+        elif statuses and all(s in ("complete", "skipped") for s in statuses):
             status = "complete"
         else:
             status = "incomplete"
@@ -751,8 +768,16 @@ def _evaluate_parallel_results(
                 f"task '{task_id}' cert: {'; '.join(cert_violations)}"
             )
 
+    # STRAT-WORKFLOW-PIPELINE-ROUTE: `skipped` is settled-non-failure on a ROUTED
+    # PIPELINE only, so it doesn't inflate that path's diagnostic counts. On the
+    # plain parallel_dispatch path routing never runs, so `skipped` must keep
+    # counting as failed — else a client could submit status='skipped' to bypass
+    # require:all without completing the task (require uses len(failed)==0 there).
     completed = [t for t in task_results if t.get("status") == "complete"]
-    failed = [t for t in task_results if t.get("status") != "complete"]
+    if is_pipeline:
+        failed = [t for t in task_results if t.get("status") not in ("complete", "skipped")]
+    else:
+        failed = [t for t in task_results if t.get("status") != "complete"]
 
     require = step.require or "all"
     merge_ok = merge_status != "conflict"
@@ -1196,7 +1221,8 @@ async def stratum_parallel_start(
     # finished; caller should use stratum_parallel_poll.
     already = [
         tid for tid, ts in state.parallel_tasks.items()
-        if ts.state in ("running", "complete", "failed", "cancelled")
+        # STRAT-WORKFLOW-PIPELINE-ROUTE: `skipped` is past-pending (terminal) too.
+        if ts.state in ("running", "complete", "failed", "cancelled", "skipped")
     ]
     if already or (flow_id, step_id) in _RUNNING_EXECUTORS:
         return {
@@ -1333,13 +1359,16 @@ async def stratum_parallel_poll(
         }
 
     # Build summary counts.
-    summary = {"pending": 0, "running": 0, "complete": 0, "failed": 0, "cancelled": 0}
+    summary = {"pending": 0, "running": 0, "complete": 0, "failed": 0,
+               "cancelled": 0, "skipped": 0}  # STRAT-WORKFLOW-PIPELINE-ROUTE
     for ts in ts_map.values():
         if ts.state in summary:
             summary[ts.state] += 1
 
     all_terminal = all(
-        ts.state in ("complete", "failed", "cancelled") for ts in ts_map.values()
+        # STRAT-WORKFLOW-PIPELINE-ROUTE: `skipped` is terminal.
+        ts.state in ("complete", "failed", "cancelled", "skipped")
+        for ts in ts_map.values()
     )
 
     # Idempotent advance: only run process_step_result when (a) all tasks are
@@ -1362,7 +1391,7 @@ async def stratum_parallel_poll(
             {
                 "task_id": tid,
                 "result": ts.result,
-                "status": "complete" if ts.state == "complete" else "failed",
+                "status": _serialized_task_status(ts.state),
             }
             for tid, ts in ts_map.items()
         ]
@@ -1494,7 +1523,8 @@ async def stratum_parallel_advance(
             "error": "step_not_dispatched",
             "message": f"Step '{step_id}' not dispatched yet; call stratum_parallel_start first",
         }
-    if not all(ts.state in ("complete", "failed", "cancelled") for ts in ts_map.values()):
+    if not all(ts.state in ("complete", "failed", "cancelled", "skipped")
+               for ts in ts_map.values()):  # STRAT-WORKFLOW-PIPELINE-ROUTE: +skipped
         return {
             "error": "tasks_not_terminal",
             "message": (
@@ -1508,7 +1538,7 @@ async def stratum_parallel_advance(
         {
             "task_id": tid,
             "result": ts.result,
-            "status": "complete" if ts.state == "complete" else "failed",
+            "status": _serialized_task_status(ts.state),
         }
         for tid, ts in ts_map.items()
     ]
