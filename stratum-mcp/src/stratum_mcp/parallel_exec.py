@@ -39,6 +39,8 @@ from .events import (
 from .executor import (
     FlowState,
     ParallelTaskState,
+    effective_pipeline_task_cert,
+    inject_cert_instructions,
     persist_flow,
     validate_certificate,
 )
@@ -272,9 +274,27 @@ class ParallelExecutor:
                     else json.dumps(raw, default=str, ensure_ascii=False)
                 )
         try:
-            return template.format(**kwargs)
+            rendered = template.format(**kwargs)
         except (KeyError, IndexError):
-            return template
+            rendered = template
+        # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: inject the effective cert's INSTRUCTIONS
+        # into the prompt (pipeline only) so an explicit per-stage cert actually
+        # instructs the agent, not just post-hoc validates. Same precedence + gate as
+        # validation, so the agent is told to produce exactly what gets checked.
+        if self.is_pipeline:
+            eff_cert = effective_pipeline_task_cert(
+                task.get("_task_reasoning_template"),
+                self.task_reasoning_template,
+                task.get("_agent") or self.agent,
+            )
+            if eff_cert is not None:
+                # Degrade gracefully: a malformed cert template must not crash the
+                # task at render time — validation still runs on the result.
+                try:
+                    rendered = inject_cert_instructions(rendered, eff_cert)
+                except Exception:
+                    pass
+        return rendered
 
     async def _persist(self) -> None:
         """Persist the FlowState under the per-flow lock."""
@@ -571,10 +591,17 @@ class ParallelExecutor:
                 # Synthetic mint here would emit a duplicate with empty model.
 
                 # ---------- run + terminal-state resolution ----------
+                # STRAT-WORKFLOW-PIPELINE-STAGEOPTS: per-stage task_timeout override
+                # (presence-based; schema floor is >=1 so a present value is valid).
+                _eff_timeout = (
+                    task["_task_timeout"]
+                    if task.get("_task_timeout") is not None
+                    else self.task_timeout
+                )
                 try:
                     result = await asyncio.wait_for(
                         self._consume_streaming(connector, tid, prompt, cwd, env),
-                        timeout=self.task_timeout,
+                        timeout=_eff_timeout,
                     )
                 except asyncio.TimeoutError:
                     try:
@@ -582,7 +609,7 @@ class ParallelExecutor:
                     except Exception:
                         pass
                     ts.state = "failed"
-                    ts.error = f"timeout after {self.task_timeout}s"
+                    ts.error = f"timeout after {_eff_timeout}s"
                 except asyncio.CancelledError:
                     try:
                         connector.interrupt()
@@ -595,17 +622,21 @@ class ParallelExecutor:
                     ts.error = str(exc)
                 else:
                     ts.result = result
-                    # STRAT-WORKFLOW-PIPELINE: in pipeline mode the cert gate keys
-                    # on the resolved per-stage agent (a codex stage skips the
-                    # claude-structured cert). Non-pipeline keeps the historical
-                    # unconditional validation byte-for-byte.
-                    _cert_applies = self.task_reasoning_template and (
-                        not self.is_pipeline
-                        or (task.get("_agent") or self.agent or "claude").startswith("claude")
-                    )
-                    if _cert_applies:
+                    # STRAT-WORKFLOW-PIPELINE(-STAGEOPTS): pipeline mode resolves the
+                    # effective cert (stage override → claude-gated step fallback) via
+                    # the shared helper; non-pipeline parallel_dispatch keeps its
+                    # historical UNCONDITIONAL step-cert validation byte-for-byte.
+                    if self.is_pipeline:
+                        eff_cert = effective_pipeline_task_cert(
+                            task.get("_task_reasoning_template"),
+                            self.task_reasoning_template,
+                            task.get("_agent") or self.agent,
+                        )
+                    else:
+                        eff_cert = self.task_reasoning_template
+                    if eff_cert is not None:
                         vios = validate_certificate(
-                            self.task_reasoning_template, result or {},
+                            eff_cert, result or {},
                         )
                         if vios:
                             ts.state = "failed"

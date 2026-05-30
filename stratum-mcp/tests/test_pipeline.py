@@ -32,6 +32,7 @@ from stratum_mcp.executor import (
     _step_mode,
     compute_spec_checksum,
     compile_ensure,
+    effective_pipeline_task_cert,
     expand_pipeline_tasks,
 )
 from stratum_mcp.parallel_exec import ParallelExecutor
@@ -576,3 +577,202 @@ def test_ensure_over_items_bracket_access(monkeypatch):
     assert fn(aggregate) is True
     fn2 = compile_ensure("len([i for i in result.items if i['status'] == 'failed']) == 1")
     assert fn2(aggregate) is True
+
+
+# ===========================================================================
+# STRAT-WORKFLOW-PIPELINE-STAGEOPTS — per-stage task_reasoning_template + task_timeout
+# ===========================================================================
+
+def _stageopts_spec(stages_yaml, step_extra=""):
+    return _pipeline_spec(stages_yaml).replace(
+        "        require: all\n",
+        "        require: all\n" + step_extra,
+    )
+
+
+# --- validation -------------------------------------------------------------
+
+def test_stage_accepts_timeout_and_cert():
+    spec = parse_and_validate(_pipeline_spec(
+        '        stages:\n'
+        '          - {agent: claude, intent_template: "c {item}", task_timeout: 120}\n'
+        '          - {agent: codex, intent_template: "v {prev}", task_reasoning_template: {}}\n'
+    ))
+    step = _get_step(spec)
+    assert step.stages[0]["task_timeout"] == 120
+    # an explicit empty {} cert inherits the default sections (not treated as absent)
+    assert "sections" in step.stages[1]["task_reasoning_template"]
+    assert len(step.stages[1]["task_reasoning_template"]["sections"]) >= 1
+
+
+def test_stage_rejects_zero_timeout():
+    with pytest.raises((IRSemanticError, IRValidationError)):
+        parse_and_validate(_pipeline_spec(
+            '        stages:\n'
+            '          - {intent_template: "x", task_timeout: 0}\n'
+        ))
+
+
+def test_stage_rejects_malformed_cert():
+    # sections present but empty → _apply_cert_defaults raises (same as step-level)
+    with pytest.raises(IRSemanticError, match="at least one section"):
+        parse_and_validate(_pipeline_spec(
+            '        stages:\n'
+            '          - {intent_template: "x", task_reasoning_template: {sections: []}}\n'
+        ))
+
+
+def test_stage_rejects_unknown_key_still():
+    # Schema additionalProperties:false catches it first (IRValidationError); the
+    # semantic "unsupported key" check is redundant defense behind it.
+    with pytest.raises((IRSemanticError, IRValidationError)):
+        parse_and_validate(_pipeline_spec(
+            '        stages:\n'
+            '          - {intent_template: "x", bogus: 1}\n'
+        ))
+
+
+# --- desugar precedence -----------------------------------------------------
+
+def test_desugar_stamps_stage_overrides():
+    spec = parse_and_validate(_pipeline_spec(
+        '        stages:\n'
+        '          - {agent: claude, intent_template: "c {item}", task_timeout: 120}\n'
+        '          - {agent: codex, intent_template: "v {prev}"}\n'
+    ))
+    tasks = expand_pipeline_tasks(_get_step(spec), ["a"])
+    s0 = next(t for t in tasks if t["_pipeline_stage"] == 0)
+    s1 = next(t for t in tasks if t["_pipeline_stage"] == 1)
+    assert s0["_task_timeout"] == 120          # stage override
+    assert s1["_task_timeout"] is None         # falls back to step-level at use
+
+
+# --- effective_pipeline_task_cert helper -----------------------------------
+
+def test_effective_cert_explicit_stage_bypasses_gate():
+    stage = {"sections": [{"id": "x", "label": "X", "description": "d"}]}
+    # explicit per-stage cert applies even on a codex stage
+    assert effective_pipeline_task_cert(stage, None, "codex") is stage
+    assert effective_pipeline_task_cert(stage, {"sections": []}, "codex") is stage  # overrides step
+
+
+def test_effective_cert_step_fallback_claude_gated():
+    step = {"sections": [{"id": "x", "label": "X", "description": "d"}]}
+    assert effective_pipeline_task_cert(None, step, "claude") is step   # claude → applies
+    assert effective_pipeline_task_cert(None, step, "codex") is None     # codex → gated out
+    assert effective_pipeline_task_cert(None, None, "claude") is None    # no cert anywhere
+
+
+# --- per-stage timeout (engine) --------------------------------------------
+
+async def test_per_stage_timeout_fires(monkeypatch):
+    # item0 stage0 has a tiny per-stage timeout and a slow connector → times out;
+    # item1 stage0 has no override (uses step-level 30s) → completes. require=any
+    # so item0's failure doesn't cascade-cancel item1.
+    tasks = _tasks(["A", "B"])
+    for t in tasks:
+        if t["_pipeline_item"] == 0 and t["_pipeline_stage"] == 0:
+            t["_task_timeout"] = 0.05
+
+    def behavior(prompt):
+        if prompt == "s0:A":
+            return {"delay": 0.5}     # exceeds the 0.05 per-stage timeout
+        return {"delay": 0.02}
+
+    ex, state, _, _ = _pipeline_executor(
+        monkeypatch, tasks=tasks, behavior=behavior, require="any")
+    await asyncio.wait_for(ex.run(), timeout=10)
+    pt = state.parallel_tasks
+    assert pt["pipe::item0::stage0"].state == "failed"
+    assert "timeout" in (pt["pipe::item0::stage0"].error or "")
+    # sibling item1 (no per-stage timeout) completes both stages
+    assert pt["pipe::item1::stage0"].state == "complete"
+    assert pt["pipe::item1::stage1"].state == "complete"
+
+
+# --- per-stage cert: explicit codex stage IS validated (engine) ------------
+
+async def test_explicit_codex_stage_cert_is_validated(monkeypatch):
+    # stage1 is codex AND carries its own cert → must be validated (bypasses gate),
+    # while a claude stage0 with no stage cert + NO step cert → not validated.
+    spec = parse_and_validate(_pipeline_spec(
+        '        stages:\n'
+        '          - {agent: claude, intent_template: "s0:{item}"}\n'
+        '          - {agent: codex, intent_template: "s1:{prev}", task_reasoning_template: {}}\n'
+    ))
+    tasks = expand_pipeline_tasks(_get_step(spec), ["A"])
+    cert_calls = []
+    monkeypatch.setattr(parallel_exec_mod, "validate_certificate",
+                        lambda t, r: cert_calls.append(t) or [])
+    # no STEP-level cert; only the codex stage has one
+    ex, state, _, _ = _pipeline_executor(monkeypatch, tasks=tasks, behavior=lambda p: {})
+    await asyncio.wait_for(ex.run(), timeout=10)
+    # exactly one validation: the explicit codex stage cert
+    assert len(cert_calls) == 1
+
+
+# --- cert instruction injection into the prompt ----------------------------
+
+def test_cert_instructions_injected_for_pipeline(monkeypatch):
+    spec = parse_and_validate(_pipeline_spec(
+        '        stages:\n'
+        '          - {agent: claude, intent_template: "do {item}", task_reasoning_template: {}}\n'
+        '          - {agent: codex, intent_template: "v {prev}"}\n'
+    ))
+    tasks = expand_pipeline_tasks(_get_step(spec), ["A"])
+    ex, _, _, _ = _pipeline_executor(monkeypatch, tasks=tasks, behavior=lambda p: {})
+    s0 = next(t for t in tasks if t["_pipeline_stage"] == 0)
+    prompt = ex._render_prompt(s0)
+    assert "You MUST structure your response" in prompt   # cert instructions present
+    assert prompt.startswith("do A")                       # intent still rendered first
+
+
+def test_no_injection_for_parallel_dispatch(monkeypatch):
+    # is_pipeline=False (parallel_dispatch) → prompt construction byte-identical, no injection.
+    def fake_factory(a, m, c):
+        return ScriptedConnector(lambda p: {}, [], a, [])
+    monkeypatch.setattr(parallel_exec_mod, "make_agent_connector", fake_factory)
+    ex = ParallelExecutor(
+        state=FakeFlowState(), step_id="pd", tasks=[{"id": "t1"}],
+        max_concurrent=2, isolation="none", task_timeout=30, agent="claude",
+        intent_template="do {id}", task_reasoning_template={"sections": [
+            {"id": "x", "label": "X", "description": "d"}]},
+        require="all", persist_callable=lambda s: None,  # is_pipeline defaults False
+    )
+    prompt = ex._render_prompt({"id": "t1"})
+    assert prompt == "do t1"   # NO cert injection on parallel_dispatch
+
+
+# --- checksum covers stage opts (no fingerprint edit needed) ----------------
+
+def test_checksum_changes_on_stage_timeout():
+    a = parse_and_validate(_pipeline_spec(
+        '        stages:\n'
+        '          - {intent_template: "x", task_timeout: 120}\n'))
+    b = parse_and_validate(_pipeline_spec(
+        '        stages:\n'
+        '          - {intent_template: "x", task_timeout: 900}\n'))
+    assert compute_spec_checksum(a.flows["f"]) != compute_spec_checksum(b.flows["f"])
+
+
+# --- server-side _evaluate: explicit codex stage cert validated -------------
+
+def test_evaluate_validates_explicit_codex_stage_cert(monkeypatch):
+    step = SimpleNamespace(
+        step_type="pipeline", id="pipe", source="$.x",
+        stages=({"intent_template": "s0:{item}"},
+                {"agent": "codex", "intent_template": "s1:{prev}",
+                 "task_reasoning_template": {"sections": [
+                     {"id": "x", "label": "X", "description": "d"}]}}),
+        require="all", task_reasoning_template=None, agent=None,
+    )
+    desugared = expand_pipeline_tasks(step, ["A"])
+    monkeypatch.setattr(server_mod, "_resolve_dispatch_tasks", lambda s, st: desugared)
+    seen = []
+    monkeypatch.setattr(server_mod, "validate_certificate",
+                        lambda t, r: seen.append(t) or [])
+    results = [{"task_id": t["id"], "result": {"artifact": "x"}, "status": "complete"}
+               for t in desugared]
+    server_mod._evaluate_parallel_results(FakeFlowState(), step, results)
+    # only the codex stage1 task carries a cert → exactly one validation
+    assert len(seen) == 1
