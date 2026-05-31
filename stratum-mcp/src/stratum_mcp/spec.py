@@ -57,6 +57,10 @@ class IRFunctionDef:
     retries_explicit: bool = False
     # v0.2: pre-execution guardrails — regex patterns checked against result before acceptance
     guardrails: list[str] = field(default_factory=list)
+    # STRAT-WORKFLOW-RESUME: opt-in content-addressed result caching for steps
+    # referencing this function (step-level `cache` overrides). Validator restricts
+    # this to compute functions.
+    cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +156,9 @@ class IRStepDef:
     # Each stage is a dict {intent_template, agent?}. A pipeline step desugars
     # (source x stages) into a depends_on task graph; see executor.expand_pipeline_tasks.
     stages: tuple | None = None
+    # STRAT-WORKFLOW-RESUME: opt-in content-addressed result caching for this step
+    # (overrides the function's `cache`). Eligibility is validator-enforced.
+    cache: bool = False
     # STRAT-JUDGE v1: tiered-judge step config — mutually exclusive with
     # function/intent/flow_ref. None for non-judge steps.
     judge: JudgeStepConfig | None = None
@@ -355,6 +362,7 @@ _IR_SCHEMA_V02: dict = {
                 "model": {"type": "string"},
                 "timeout": {"type": "integer", "minimum": 1},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "cache": {"type": "boolean"},
             }
         },
         "StepDef": {
@@ -401,6 +409,7 @@ _IR_SCHEMA_V02: dict = {
                 "accumulate": {"type": "string"},
                 "accumulate_key": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "cache": {"type": "boolean"},
                 "reasoning_template": {"type": "object"},
                 "task_reasoning_template": {"type": "object"},
                 # STRAT-JUDGE v1: tiered-judge step config
@@ -533,6 +542,7 @@ _IR_SCHEMA_V03: dict = {
                 "model": {"type": "string"},
                 "timeout": {"type": "integer", "minimum": 1},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "cache": {"type": "boolean"},
             }
         },
         "StepDef": {
@@ -582,6 +592,7 @@ _IR_SCHEMA_V03: dict = {
                 "accumulate": {"type": "string"},
                 "accumulate_key": {"type": "string"},
                 "guardrails": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "cache": {"type": "boolean"},
                 # v0.3 STRAT-PAR: parallel_dispatch fields
                 "source": {"type": "string"},
                 "max_concurrent": {"type": "integer", "minimum": 1},
@@ -1138,6 +1149,7 @@ def _build_function(name: str, d: dict) -> IRFunctionDef:
         timeout=d.get("timeout"),
         retries_explicit="retries" in d,
         guardrails=d.get("guardrails", []),
+        cache=bool(d.get("cache", False)),
     )
 
 
@@ -1298,6 +1310,7 @@ def _build_step(s: dict) -> IRStepDef:
         accumulate=s.get("accumulate"),
         accumulate_key=s.get("accumulate_key"),
         step_guardrails=s.get("guardrails"),
+        cache=bool(s.get("cache", False)),
         # v0.3 STRAT-PAR fields
         step_type=step_type,
         source=s.get("source"),
@@ -1447,6 +1460,58 @@ def _validate_semantics(spec: IRSpec) -> None:
         topo_pos = _topo_positions(flow.steps)
 
         for step in flow.steps:
+            # --- STRAT-WORKFLOW-RESUME: result-cache eligibility (fail-closed) ---
+            # `cache: true` is only sound on a side-effect-free compute *function*
+            # step whose declared output captures its whole effect. Reject it at
+            # parse time everywhere else. Two gates, both enforced (passing Gate 1
+            # does not exempt Gate 2):
+            #   Gate 1 — necessary: step.function set AND fn.mode == "compute".
+            #   Gate 2 — additional: not an iteration loop / accumulator / routing
+            #            step (those loop, carry cross-iteration state, or jump —
+            #            none replayable from a single cached output in v1).
+            # Caching is enabled at runtime by EITHER step.cache OR the referenced
+            # function's `cache` (cache_enabled = step.cache or fn.cache), so the
+            # gates must apply to that *effective* enablement — a function-level
+            # `cache: true` on a routing/iteration/accumulator step must be
+            # rejected here, not silently cached (which would skip a `next` jump).
+            cache_fn = spec.functions.get(step.function) if step.function else None
+            effective_cache = step.cache or (cache_fn is not None and getattr(cache_fn, "cache", False))
+            if effective_cache:
+                if step.function and cache_fn is None:
+                    # Unknown function — defer to the precise undefined-function
+                    # error raised in the function branch below.
+                    pass
+                elif cache_fn is None or cache_fn.mode != "compute":
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has cache: true but is not a compute "
+                        f"function step — result caching is only valid on "
+                        f"side-effect-free compute function steps",
+                        path=f"flows.{flow_name}.steps.{step.id}.cache",
+                    )
+                elif (step.max_iterations is not None
+                      or step.exit_criterion is not None
+                      or step.score_expr is not None):
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has cache: true but is an iteration-loop "
+                        f"step (max_iterations/exit_criterion/score_expr) — "
+                        f"iteration loops are nondeterministic and not cacheable",
+                        path=f"flows.{flow_name}.steps.{step.id}.cache",
+                    )
+                elif step.accumulate:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has cache: true but is an accumulator "
+                        f"step (accumulate) — accumulators carry cross-iteration "
+                        f"state and are not cacheable",
+                        path=f"flows.{flow_name}.steps.{step.id}.cache",
+                    )
+                elif step.next:
+                    raise IRSemanticError(
+                        f"Step '{step.id}' has cache: true but is a routing step "
+                        f"(next) — `next` jumps are not honoured on the cache hit "
+                        f"path in v1",
+                        path=f"flows.{flow_name}.steps.{step.id}.cache",
+                    )
+
             # --- v0.3 STRAT-PAR: decompose / parallel_dispatch validation ---
             # STRAT-CERT-PAR: task_reasoning_template is parallel_dispatch-only (like source/isolation/require/merge)
             _parallel_dispatch_only = (
