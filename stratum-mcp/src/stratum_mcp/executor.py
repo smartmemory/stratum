@@ -19,6 +19,8 @@ from jsonschema import Draft202012Validator
 
 from .errors import MCPExecutionError
 from .spec import IRSpec, IRFlowDef, IRStepDef, plan_completion, vocabulary_compliance
+from . import result_cache
+from .result_cache import CACHE_VERSION as _RESULT_CACHE_VERSION, canonical_json
 
 
 # ---------------------------------------------------------------------------
@@ -834,6 +836,11 @@ class StepRecord:
     agent: str | None = None
     step_mode: str = "function"
     child_flow_id: str | None = None
+    # STRAT-WORKFLOW-RESUME: set when this step's result was served from the
+    # content-addressed result cache instead of a fresh agent dispatch. The
+    # audit/trace surfaces these so a replay is never passed off as a fresh run.
+    cache_hit: bool = False
+    cache_key: str | None = None
 
 
 @dataclass
@@ -910,6 +917,8 @@ def _record_from_dict(r: dict) -> StepRecord | GateRecord | SkipRecord | PolicyR
         agent=r.get("agent"),
         step_mode=r.get("step_mode", "function"),
         child_flow_id=r.get("child_flow_id"),
+        cache_hit=r.get("cache_hit", False),
+        cache_key=r.get("cache_key"),
     )
 
 
@@ -1081,6 +1090,99 @@ class FlowState:
 # STRAT-IMMUTABLE: spec integrity checksumming
 # ---------------------------------------------------------------------------
 
+def _step_fingerprint(step: "IRStepDef") -> dict:
+    """Deterministic fingerprint of a step's spec-defining fields.
+
+    Single source of truth for BOTH compute_spec_checksum (whole-flow tamper
+    detection) and the STRAT-WORKFLOW-RESUME result cache (per-step content key).
+    Every field here is load-bearing: changing it invalidates a cached result for
+    this step (and, via the whole-flow checksum, is tamper-detected mid-run).
+    """
+    fp = {
+        "id": step.id,
+        "function": step.function,
+        "intent": step.intent,
+        "flow_ref": step.flow_ref,
+        "agent": step.agent,
+        "depends_on": sorted(step.depends_on),
+        "inputs": dict(sorted(step.inputs.items())),
+        "ensure": step.step_ensure or [],
+        "on_approve": step.on_approve,
+        "on_revise": step.on_revise,
+        "on_kill": step.on_kill,
+        "on_fail": step.on_fail,
+        "next": step.next,
+        "policy": step.policy,
+        "skip_if": step.skip_if,
+        "step_type": step.step_type,
+        "source": step.source,
+        # STRAT-WORKFLOW-PIPELINE: stages are spec-defining (change what the
+        # step does), so they're tamper-detected. Only checksum delta added.
+        "stages": [dict(sorted(st.items())) for st in (step.stages or [])],
+        "require": step.require,
+        "max_iterations": step.max_iterations,
+        "exit_criterion": step.exit_criterion,
+        # All iteration-loop semantics are load-bearing, so they're tamper-detected
+        # (can't be altered mid-run undetected): exit_criterion, score_expr (#4), and
+        # the STRAT-WORKFLOW-IMPERATIVE accumulator fields.
+        "score_expr": step.score_expr,
+        "accumulate": step.accumulate,
+        "accumulate_key": step.accumulate_key,
+        "capture_diff": getattr(step, "capture_diff", False),
+        "defer_advance": getattr(step, "defer_advance", False),
+        # STRAT-WORKFLOW-RESUME: step_guardrails are load-bearing (applied
+        # before ensure), so a guardrail change must invalidate any cached
+        # result — include them in the tamper/cache checksum. Toggling
+        # `cache` is itself a checksum change (conservative).
+        "step_guardrails": step.step_guardrails or [],
+        "cache": getattr(step, "cache", False),
+        # STRAT-WORKFLOW-RESUME: output_schema gates step-result acceptance
+        # (schema validation in process_step_result), so it is spec-defining — a
+        # schema edit must invalidate a cached result and is tamper-detected.
+        "output_schema": step.output_schema,
+    }
+    # STRAT-JUDGE v1: include judge payload in checksum so live flows
+    # can't have predicates/stakes/budget altered mid-run undetected.
+    judge_cfg = getattr(step, "judge", None)
+    if judge_cfg is not None:
+        fp["judge"] = {
+            "predicates": [dict(sorted(p.items())) for p in judge_cfg.predicates],
+            "stakes": judge_cfg.stakes,
+            "budget": dict(sorted(judge_cfg.budget.items())) if judge_cfg.budget else None,
+        }
+    return fp
+
+
+def _fn_fingerprint(fn_name: str, spec: "IRSpec | None") -> dict | None:
+    """Return a fingerprint of a function def referenced by a step (None if absent)."""
+    if spec is None:
+        return None
+    fn_def = spec.functions.get(fn_name)
+    if fn_def is None:
+        return None
+    # STRAT-WORKFLOW-RESUME: the output contract determines the output_fields the
+    # agent is asked to produce (get_current_step_info dispatch payload), so both
+    # the contract NAME and its resolved field shape are spec-defining — changing
+    # either must invalidate a cached result (and is tamper-detected). A name that
+    # doesn't resolve contributes None (e.g. gate functions with no output).
+    output_contract = getattr(fn_def, "output_contract", None)
+    contract = spec.contracts.get(output_contract) if output_contract else None
+    contract_fields = dict(sorted(contract.fields.items())) if contract else None
+    return {
+        "name": fn_name,
+        "mode": fn_def.mode,
+        "intent": fn_def.intent,
+        "ensure": fn_def.ensure or [],
+        # STRAT-WORKFLOW-RESUME: guardrails are load-bearing (applied before
+        # ensure) — include them so a guardrail edit invalidates the cache and
+        # is tamper-detected. `cache` toggling is also a checksum change.
+        "guardrails": fn_def.guardrails or [],
+        "cache": getattr(fn_def, "cache", False),
+        "output_contract": output_contract,
+        "output_contract_fields": contract_fields,
+    }
+
+
 def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -> str:
     """Compute a deterministic SHA-256 checksum of a parsed FlowDefinition.
 
@@ -1090,70 +1192,11 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
     When ``spec`` is provided, the checksum also covers the function definitions
     referenced by steps (intent, ensure, mode) to detect tampering of function defs.
     """
-    def _step_fingerprint(step: "IRStepDef") -> dict:
-        fp = {
-            "id": step.id,
-            "function": step.function,
-            "intent": step.intent,
-            "flow_ref": step.flow_ref,
-            "agent": step.agent,
-            "depends_on": sorted(step.depends_on),
-            "inputs": dict(sorted(step.inputs.items())),
-            "ensure": step.step_ensure or [],
-            "on_approve": step.on_approve,
-            "on_revise": step.on_revise,
-            "on_kill": step.on_kill,
-            "on_fail": step.on_fail,
-            "next": step.next,
-            "policy": step.policy,
-            "skip_if": step.skip_if,
-            "step_type": step.step_type,
-            "source": step.source,
-            # STRAT-WORKFLOW-PIPELINE: stages are spec-defining (change what the
-            # step does), so they're tamper-detected. Only checksum delta added.
-            "stages": [dict(sorted(st.items())) for st in (step.stages or [])],
-            "require": step.require,
-            "max_iterations": step.max_iterations,
-            "exit_criterion": step.exit_criterion,
-            # All iteration-loop semantics are load-bearing, so they're tamper-detected
-            # (can't be altered mid-run undetected): exit_criterion, score_expr (#4), and
-            # the STRAT-WORKFLOW-IMPERATIVE accumulator fields.
-            "score_expr": step.score_expr,
-            "accumulate": step.accumulate,
-            "accumulate_key": step.accumulate_key,
-            "capture_diff": getattr(step, "capture_diff", False),
-            "defer_advance": getattr(step, "defer_advance", False),
-        }
-        # STRAT-JUDGE v1: include judge payload in checksum so live flows
-        # can't have predicates/stakes/budget altered mid-run undetected.
-        judge_cfg = getattr(step, "judge", None)
-        if judge_cfg is not None:
-            fp["judge"] = {
-                "predicates": [dict(sorted(p.items())) for p in judge_cfg.predicates],
-                "stakes": judge_cfg.stakes,
-                "budget": dict(sorted(judge_cfg.budget.items())) if judge_cfg.budget else None,
-            }
-        return fp
-
-    def _fn_fingerprint(fn_name: str) -> dict | None:
-        """Return a fingerprint of a function def referenced by a step."""
-        if spec is None:
-            return None
-        fn_def = spec.functions.get(fn_name)
-        if fn_def is None:
-            return None
-        return {
-            "name": fn_name,
-            "mode": fn_def.mode,
-            "intent": fn_def.intent,
-            "ensure": fn_def.ensure or [],
-        }
-
     steps_sorted = sorted(flow_def.steps, key=lambda s: s.id)
 
     # Collect unique function names referenced by the flow's steps
     fn_names_sorted = sorted({s.function for s in flow_def.steps if s.function})
-    fn_fingerprints = [fp for n in fn_names_sorted if (fp := _fn_fingerprint(n)) is not None]
+    fn_fingerprints = [fp for n in fn_names_sorted if (fp := _fn_fingerprint(n, spec)) is not None]
 
     fingerprint = {
         "name": flow_def.name,
@@ -1166,6 +1209,85 @@ def compute_spec_checksum(flow_def: "IRFlowDef", spec: "IRSpec | None" = None) -
     }
     canonical = json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+# STRAT-WORKFLOW-RESUME: result-cache key + enable helpers.
+# Separator that cannot appear in a hex sha256 / flow name / step id so the key
+# components are unambiguously delimited.
+_CACHE_KEY_SEP = "‖"  # ‖
+
+
+def cache_enabled(step: "IRStepDef", fn_def: "IRFunctionDef | None") -> bool:
+    """True when result caching is enabled for ``step``.
+
+    Step-level ``cache`` wins; otherwise the referenced function's ``cache``.
+    Eligibility (compute function, no loop/accumulator/routing) is guaranteed by
+    the parse-time validator, so this is a pure on/off read.
+    """
+    return bool(step.cache or (fn_def is not None and getattr(fn_def, "cache", False)))
+
+
+def result_cache_key(state: "FlowState", step: "IRStepDef", resolved: Any) -> str | None:
+    """Content-addressed cache key for a step's about-to-run dispatch.
+
+    ``sha256(CACHE_VERSION ‖ flow_name ‖ step_id ‖ step_fingerprint ‖
+    fn_fingerprint ‖ canonical_json(resolved_input))``. Returns ``None`` (→ forced
+    miss, never an exception) when the resolved input is not JSON-serializable.
+
+    The key folds **only this step's own** fingerprint (its inputs/ensure/
+    guardrails/cache/...) and **its own function's** fingerprint (intent/ensure/
+    mode/guardrails) — deliberately NOT the whole-flow ``spec_checksum``. That is
+    what delivers the prefix property: editing a *later* step's intent changes
+    only that step's key, so unchanged earlier steps still hit; the edited step's
+    own key changes, and every step downstream of it misses because its
+    ``resolved`` input (which threads the edited step's output) changes. A changed
+    flow input cascades the same way from step 1.
+    """
+    payload = canonical_json(resolved)
+    if payload is None:
+        return None
+    step_fp = canonical_json(_step_fingerprint(step)) or ""
+    fn_fp = canonical_json(_fn_fingerprint(step.function, state.spec)) or ""
+    raw = _CACHE_KEY_SEP.join((
+        str(_RESULT_CACHE_VERSION),
+        state.flow_name or "",
+        step.id,
+        step_fp,
+        fn_fp,
+        payload,
+    ))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _revalidate_cached(
+    state: "FlowState",
+    step: "IRStepDef",
+    fn_def: "IRFunctionDef",
+    output: Any,
+) -> bool:
+    """Belt-and-suspenders check before trusting a cached output.
+
+    A cached output must still pass the CURRENT schema + guardrails + ensure.
+    The content-addressed key already folds these in (a changed schema/guardrail/
+    ensure changes ``spec_checksum`` → miss), so this only ever catches a stale
+    record that slipped the ``CACHE_VERSION`` check. Never raises; any failure
+    (validation error or evaluation error) → not trusted, so the caller falls
+    through to a normal dispatch.
+    """
+    try:
+        if step.output_schema is not None and _validate_output_schema(output, step.output_schema):
+            return False
+        patterns = fn_def.guardrails or []
+        if patterns:
+            text = json.dumps(output, sort_keys=True, default=str)
+            if _scan_guardrails(compile_guardrails(patterns), text):
+                return False
+        for expr in fn_def.ensure or []:
+            if not compile_ensure(expr)(output):
+                return False
+    except Exception:
+        return False
+    return True
 
 
 def verify_spec_integrity(flow_def: "IRFlowDef", state: "FlowState") -> dict | None:
@@ -1593,6 +1715,35 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
     attempts_so_far = state.attempts.get(step.id, 0)
 
     if mode == "function":
+        # STRAT-WORKFLOW-RESUME: result-cache short-circuit. For an opt-in,
+        # eligible (validator-guaranteed compute) step, serve a prior validated
+        # output instead of re-dispatching the agent when the content-addressed
+        # key matches. A hit advances current_idx and tail-recurses, exactly like
+        # the skip_if path above; a miss/disabled/corrupt record falls through to
+        # a normal dispatch. The hit is recorded with cache_hit=True so the audit
+        # never passes a replay off as a fresh run.
+        if cache_enabled(step, fn_def) and not result_cache.cache_disabled():
+            ckey = result_cache_key(state, step, resolved)
+            cached = result_cache.result_cache_get(ckey) if ckey else None
+            if cached is not None and _revalidate_cached(state, step, fn_def, cached):
+                dispatched = state.dispatched_at.get(step.id, time.monotonic())
+                duration_ms = int((time.monotonic() - dispatched) * 1000)
+                state.records.append(StepRecord(
+                    step_id=step.id,
+                    function_name=fn_def.name,
+                    attempts=0,
+                    duration_ms=duration_ms,
+                    round=state.round,
+                    round_start_step_id=state.round_start_step_id,
+                    agent=step.agent,
+                    step_mode="function",
+                    cache_hit=True,
+                    cache_key=ckey,
+                ))
+                state.step_outputs[step.id] = cached
+                state.current_idx += 1
+                return get_current_step_info(state)  # tail-recurse for next step
+
         contract = state.spec.contracts.get(fn_def.output_contract)
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
         return {
@@ -1922,6 +2073,30 @@ def process_step_result(
     state.iteration_best.pop(step_id, None)
     state.iteration_accumulator.pop(step_id, None)
     state.records.append(_make_record(duration_ms))
+    # STRAT-WORKFLOW-RESUME: populate the result cache for an eligible step now
+    # that the result has passed schema + guardrails + ensure. Only successful
+    # results reach here (failures/retries returned above), so the cache only
+    # ever stores validated outputs. Key is recomputed from the now-frozen
+    # state.step_outputs (every dep was frozen before this step ran), so it is
+    # byte-identical to the key get_current_step_info computed. Best-effort.
+    if mode == "function":
+        cache_fn = state.spec.functions.get(step.function) if step.function else None
+        if cache_fn is not None and cache_enabled(step, cache_fn) and not result_cache.cache_disabled():
+            try:
+                cache_resolved = resolve_inputs(step.inputs, state.inputs, state.step_outputs)
+            except RefResolutionError:
+                cache_resolved = None
+            if cache_resolved is not None:
+                ckey = result_cache_key(state, step, cache_resolved)
+                if ckey is not None:
+                    result_cache.result_cache_put(
+                        ckey,
+                        result,
+                        flow_name=state.flow_name,
+                        step_id=step_id,
+                        spec_checksum=state.spec_checksum or "",
+                        source_flow_id=state.flow_id,
+                    )
     if mode == "flow":
         state.active_child_flow_id = None
     if step.next:

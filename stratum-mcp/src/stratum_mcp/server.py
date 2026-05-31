@@ -1717,6 +1717,10 @@ def _build_audit_snapshot(state: FlowState) -> dict[str, Any]:
         "steps_completed": len(state.records),
         "total_steps": len(state.ordered_steps),
         "trace": [dataclasses.asdict(r) for r in state.records],
+        # STRAT-WORKFLOW-RESUME: count of steps served from the result cache
+        # (no agent dispatched, zero budget debited). Per-step detail is in the
+        # trace as `cache_hit`/`cache_key`.
+        "cache_hits": sum(1 for r in state.records if getattr(r, "cache_hit", False)),
         "total_duration_ms": total_ms,
         "round": state.round,
         "rounds": [{"round": i, "steps": r} for i, r in enumerate(state.rounds)],
