@@ -24,12 +24,20 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .connectors.base import AgentConnector, SENSITIVE_ENV_VARS
+from .connectors.codex import (
+    T2F5_DONE_SENTINEL,
+    CodexConnector,
+    _CODEX_ERROR_KIND,
+    _emit_for_codex_event,
+    _read_text_file,
+)
 from .connectors.factory import make_agent_connector
 from .events import (
     INTERNAL_RESULT_KIND,
@@ -43,6 +51,7 @@ from .executor import (
     ParallelTaskState,
     compile_predicate,
     effective_pipeline_task_cert,
+    flow_streams_dir,
     inject_cert_instructions,
     persist_flow,
     validate_certificate,
@@ -55,6 +64,7 @@ from .run_budget import (
     new_usage_acc,
 )
 from .pricing import _maybe_warn_unpriced
+from .proc_identity import pid_alive, proc_start_time
 from .worktree import capture_worktree_diff, create_worktree, remove_worktree
 
 logger = logging.getLogger(__name__)
@@ -73,6 +83,24 @@ def _lock_for(flow_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _FLOW_LOCKS[flow_id] = lock
     return lock
+
+
+def _remove_stream_files(ts: "ParallelTaskState") -> None:
+    """T2-F5-RESUME: remove a reparentable task's durable stream/stderr/prompt
+    files once it reaches a terminal state (kept until then for re-attach).
+    Best-effort and idempotent; a no-op for non-durable tasks (paths are None).
+    """
+    paths: list[str] = []
+    if ts.stream_path:
+        paths.append(ts.stream_path)
+        paths.append(ts.stream_path + ".in")
+    if ts.stderr_path:
+        paths.append(ts.stderr_path)
+    for p in paths:
+        try:
+            os.remove(p)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def _connector_type_from_agent(agent: Optional[str]) -> str:
@@ -218,6 +246,14 @@ class ParallelExecutor:
         # completes; read by _lane_is_filled / _effective_lane_input. Same single
         # async context, no lock.
         self._fanout_lists: dict[str, list] = {}
+        # T2-F5-RESUME: set True by the server shutdown hook (via S6) before it
+        # cancels the executor tasks. When True, a reparentable (codex durable-
+        # stream) task is DETACHED, not killed — _run_one's cancel/finally paths
+        # skip interrupt/terminalize/worktree-remove and leave it `running` with
+        # its handle persisted, so restart-classify can re-attach to the live
+        # child. A genuine cascade/budget cancel (this stays False) keeps the
+        # full destructive teardown.
+        self._detaching = False
 
         # Seed per-task state so pollers see "pending" from the start.
         for t in tasks:
@@ -544,7 +580,8 @@ class ParallelExecutor:
             if any(self.state.parallel_tasks[t["id"]].state in ("failed", "cancelled")
                    for t in non_lane):
                 failed += 1
-            elif any(self.state.parallel_tasks[t["id"]].state in ("pending", "running")
+            elif any(self.state.parallel_tasks[t["id"]].state
+                     in ("pending", "running", "reparenting")  # T2-F5-RESUME
                      for t in group):
                 in_flight += 1
             else:
@@ -571,7 +608,10 @@ class ParallelExecutor:
             states = [self.state.parallel_tasks[t["id"]].state for t in self.tasks]
             complete = sum(1 for s in states if s == "complete")
             failed_or_cancelled = sum(1 for s in states if s in ("failed", "cancelled"))
-            pending_running = sum(1 for s in states if s in ("pending", "running"))
+            # T2-F5-RESUME: `reparenting` is in-flight (re-attaching), not settled.
+            pending_running = sum(
+                1 for s in states if s in ("pending", "running", "reparenting")
+            )
 
         if self.require == "all":
             return failed_or_cancelled > 0
@@ -678,6 +718,20 @@ class ParallelExecutor:
         async for ev in stream(prompt=prompt, cwd=cwd, env=env):
             produced_event = True
             accumulate_usage(acc, ev)
+            # T2-F5-RESUME (review #2): the connector emits `durable_spawned` as
+            # its FIRST event — the handle handoff. Stamp the reparent handle on
+            # the task and persist it immediately (under the per-flow lock),
+            # BEFORE any codex output, so a crash between spawn and first output
+            # is still reparentable. Not forwarded to the wire (internal handle).
+            if ev.kind == "durable_spawned":
+                ts = self.state.parallel_tasks[task_id]
+                ts.child_pid = ev.metadata.get("child_pid")
+                ts.stream_path = ev.metadata.get("stream_path")
+                ts.stderr_path = ev.metadata.get("stderr_path")
+                ts.proc_start_time = ev.metadata.get("proc_start_time")
+                ts.reparentable = True
+                await self._persist()
+                continue
             if ev.kind == INTERNAL_RESULT_KIND:
                 produced_result_sentinel = True
                 final = ev.metadata.get("content")
@@ -813,9 +867,24 @@ class ParallelExecutor:
                     connector_type = _connector_type_from_agent(
                         task.get("_agent") or self.agent
                     )
-                    connector = make_agent_connector(
-                        connector_type, self.model_id, cwd,
-                    )
+                    # T2-F5-RESUME: codex is the only reparentable server-dispatch
+                    # connector. Give it a durable stream file (the child owns it),
+                    # so a server restart mid-run can re-attach instead of losing
+                    # the work. claude is in-process (nothing to reparent) and is
+                    # built with the verbatim 3-arg call (keeps non-codex paths and
+                    # their tests untouched).
+                    if connector_type == "codex":
+                        sdir = flow_streams_dir(self.state.flow_id)
+                        sdir.mkdir(parents=True, exist_ok=True)
+                        connector = make_agent_connector(
+                            connector_type, self.model_id, cwd,
+                            stream_path=str(sdir / f"{tid}.jsonl"),
+                            stderr_path=str(sdir / f"{tid}.err"),
+                        )
+                    else:
+                        connector = make_agent_connector(
+                            connector_type, self.model_id, cwd,
+                        )
                     self._connectors[tid] = connector
                 except Exception as exc:
                     ts.state = "failed"
@@ -858,11 +927,17 @@ class ParallelExecutor:
                     ts.state = "failed"
                     ts.error = f"timeout after {_eff_timeout}s"
                 except asyncio.CancelledError:
-                    try:
-                        connector.interrupt()
-                    except Exception:
-                        pass
-                    ts.state = "cancelled"
+                    # T2-F5-RESUME (review #1): detach-don't-kill. On a shutdown
+                    # cancel of a reparentable task, do NOT interrupt (would kill
+                    # the durable child) and do NOT terminalize — leave it
+                    # `running` with its persisted handle so restart-classify can
+                    # re-attach. Re-raise either way so cancellation propagates.
+                    if not (self._detaching and ts.reparentable):
+                        try:
+                            connector.interrupt()
+                        except Exception:
+                            pass
+                        ts.state = "cancelled"
                     raise
                 except Exception as exc:
                     ts.state = "failed"
@@ -925,108 +1000,144 @@ class ParallelExecutor:
             # Cascade cancel arrived while we were blocked on the semaphore,
             # the initial _persist, or connector setup — still register a
             # terminal state so pollers see "cancelled" rather than "running".
-            if ts.state in ("pending", "running"):
-                ts.state = "cancelled"
-            if connector is not None:
-                try:
-                    connector.interrupt()
-                except Exception:
-                    pass
+            # T2-F5-RESUME (review #1): except for a reparentable task on
+            # shutdown — leave it `running` and don't kill the durable child.
+            if not (self._detaching and ts.reparentable):
+                if ts.state in ("pending", "running"):
+                    ts.state = "cancelled"
+                if connector is not None:
+                    try:
+                        connector.interrupt()
+                    except Exception:
+                        pass
             raise
         finally:
-            if ts.state in ("pending", "running"):
-                # Defensive: a task should never exit _run_one still
-                # pending/running. Mark it failed so the terminal state is
-                # observable.
-                ts.state = "failed"
-                ts.error = ts.error or "unexpected exit without terminal state"
-            if ts.finished_at is None:
-                ts.finished_at = time.time()
-            # T2-F5-DEPENDS-ON: commit terminal state + unblock waiters BEFORE
-            # any await that could raise CancelledError. Downstream tasks must
-            # always unblock, even if we're cancelled mid-cleanup.
-            self._task_terminal_state[tid] = ts.state
-            self._task_done[tid].set()
-            # STRAT-WORKFLOW-BUDGET: record per-task consumption and debit it to
-            # the flow's run budget. A task counts as one agent dispatch only if
-            # it actually started (started_at set) — a sibling cancelled while
-            # still pending never reached the connector.
-            usage = self._task_usage.get(tid, {})
-            if ts.started_at is not None and ts.finished_at is not None:
-                ts.elapsed_s = ts.finished_at - ts.started_at
-            ts.tokens = int(usage.get("tokens", 0))
-            ts.dollars_recorded = float(usage.get("dollars", 0.0))
-            if ts.started_at is not None:
-                debit_budget(
-                    self.state,
-                    dispatches=1,
-                    tokens=ts.tokens,
-                    wall_s=ts.elapsed_s,
-                    dollars=ts.dollars_recorded,
-                )
-                # STRAT-WORKFLOW-BUDGET-DOLLARS: warn on models the table couldn't
-                # price (they contributed $0, under-counting a usd cap).
-                bs = getattr(self.state, "budget_state", None)
-                if bs:
-                    _has_usd = bs["caps"].get("usd") is not None
-                    for _m in usage.get("unpriced_models", ()):
-                        _maybe_warn_unpriced(_m, _has_usd)
-            # Mark terminal BEFORE the persist below so the persisted snapshot
-            # carries budget_exhausted (survives restart / query / resume).
-            if budget_exhausted(self.state) and not self.state.terminal_status:
-                self.state.terminal_status = BUDGET_EXHAUSTED
-            if worktree_path_obj is not None:
-                # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in).
-                # CancelledError is caught here so cascade-cancel / shutdown
-                # cannot leak the worktree — cleanup must always run.
-                cancelled_during_capture = False
-                if self.capture_diff:
-                    try:
-                        ts.diff = await asyncio.to_thread(
-                            capture_worktree_diff, worktree_path_obj,
-                        )
-                    except asyncio.CancelledError:
-                        ts.diff = None
-                        ts.diff_error = "cancelled during diff capture"
-                        cancelled_during_capture = True
-                    except Exception as exc:
-                        ts.diff = None
-                        stderr = getattr(exc, "stderr", None)
-                        if isinstance(stderr, (bytes, bytearray)):
-                            detail = stderr.decode("utf-8", errors="replace").strip()
-                        elif isinstance(stderr, str):
-                            detail = stderr.strip()
-                        else:
-                            detail = ""
-                        ts.diff_error = (
-                            f"{type(exc).__name__}: {exc}"
-                            + (f" | stderr: {detail}" if detail else "")
-                        )
+            # T2-F5-RESUME (review #1): detach-don't-kill — bypass the WHOLE
+            # destructive finalizer for a reparentable task being shut down.
+            # Persist the handle, leave state `running`, and let the in-flight
+            # CancelledError keep propagating (no return → not swallowed). The
+            # re-attach reader (S4) later reproduces terminalize / done-event /
+            # budget debit / worktree-remove from the durable stream.
+            #
+            # Codex review #1 (round 1): only detach a task that is STILL
+            # in-flight. If it already reached a terminal state in the try-body
+            # (codex finished just as shutdown arrived), fall through to the
+            # normal finalizer so it is charged, its done-event fires, its
+            # worktree/streams are cleaned, and the TERMINAL state is persisted —
+            # otherwise a `complete`/`failed` task would be stranded (restart
+            # classify only re-attaches `running` tasks, never re-finalizing it).
+            if (self._detaching and ts.reparentable
+                    and ts.state in ("pending", "running")):
                 try:
-                    remove_worktree(worktree_path_obj)
-                except Exception:
-                    pass
-                if cancelled_during_capture:
-                    # Re-raise so cancellation still propagates after cleanup ran.
-                    raise asyncio.CancelledError()
-            try:
-                await self._persist()
-            except asyncio.CancelledError:
-                # If we were cancelled while persisting, record locally and
-                # re-raise so cancellation propagates cleanly.
-                raise
+                    await self._persist()
+                except asyncio.CancelledError:
+                    raise
+            else:
+                if ts.state in ("pending", "running"):
+                    # Defensive: a task should never exit _run_one still
+                    # pending/running. Mark it failed so the terminal state is
+                    # observable.
+                    ts.state = "failed"
+                    ts.error = ts.error or "unexpected exit without terminal state"
+                if ts.finished_at is None:
+                    ts.finished_at = time.time()
+                # T2-F5-DEPENDS-ON: commit terminal state + unblock waiters BEFORE
+                # any await that could raise CancelledError. Downstream tasks must
+                # always unblock, even if we're cancelled mid-cleanup.
+                self._task_terminal_state[tid] = ts.state
+                self._task_done[tid].set()
+                # STRAT-WORKFLOW-BUDGET: record per-task consumption and debit it
+                # to the flow's run budget. A task counts as one agent dispatch
+                # only if it actually started (started_at set) — a sibling
+                # cancelled while still pending never reached the connector.
+                # T2-F5-RESUME: guard the dispatch debit on `dispatch_debited` so
+                # a re-attach (which charges the dispatch itself) never
+                # double-charges; set it here once the live path charges.
+                usage = self._task_usage.get(tid, {})
+                if ts.started_at is not None and ts.finished_at is not None:
+                    ts.elapsed_s = ts.finished_at - ts.started_at
+                ts.tokens = int(usage.get("tokens", 0))
+                ts.dollars_recorded = float(usage.get("dollars", 0.0))
+                if ts.started_at is not None and not ts.dispatch_debited:
+                    debit_budget(
+                        self.state,
+                        dispatches=1,
+                        tokens=ts.tokens,
+                        wall_s=ts.elapsed_s,
+                        dollars=ts.dollars_recorded,
+                    )
+                    ts.dispatch_debited = True
+                    # STRAT-WORKFLOW-BUDGET-DOLLARS: warn on models the table
+                    # couldn't price (they contributed $0, under-counting a usd cap).
+                    bs = getattr(self.state, "budget_state", None)
+                    if bs:
+                        _has_usd = bs["caps"].get("usd") is not None
+                        for _m in usage.get("unpriced_models", ()):
+                            _maybe_warn_unpriced(_m, _has_usd)
+                # Mark terminal BEFORE the persist below so the persisted snapshot
+                # carries budget_exhausted (survives restart / query / resume).
+                if budget_exhausted(self.state) and not self.state.terminal_status:
+                    self.state.terminal_status = BUDGET_EXHAUSTED
+                if worktree_path_obj is not None:
+                    # T2-F5-DIFF-EXPORT: capture diff before cleanup (opt-in).
+                    # CancelledError is caught here so cascade-cancel / shutdown
+                    # cannot leak the worktree — cleanup must always run.
+                    cancelled_during_capture = False
+                    if self.capture_diff:
+                        try:
+                            ts.diff = await asyncio.to_thread(
+                                capture_worktree_diff, worktree_path_obj,
+                            )
+                        except asyncio.CancelledError:
+                            ts.diff = None
+                            ts.diff_error = "cancelled during diff capture"
+                            cancelled_during_capture = True
+                        except Exception as exc:
+                            ts.diff = None
+                            stderr = getattr(exc, "stderr", None)
+                            if isinstance(stderr, (bytes, bytearray)):
+                                detail = stderr.decode("utf-8", errors="replace").strip()
+                            elif isinstance(stderr, str):
+                                detail = stderr.strip()
+                            else:
+                                detail = ""
+                            ts.diff_error = (
+                                f"{type(exc).__name__}: {exc}"
+                                + (f" | stderr: {detail}" if detail else "")
+                            )
+                    try:
+                        remove_worktree(worktree_path_obj)
+                    except Exception:
+                        pass
+                    if cancelled_during_capture:
+                        # Re-raise so cancellation still propagates after cleanup ran.
+                        raise asyncio.CancelledError()
+                # T2-F5-RESUME (Codex review #2): persist the TERMINAL snapshot
+                # BEFORE removing the durable replay files. If the order were
+                # reversed and the process died in between, both recovery sources
+                # would be gone (no stream to re-tail, no persisted terminal
+                # result). Persist-then-delete leaks at most a stream file on a
+                # crash (cleaned on flow delete), never the result.
+                try:
+                    await self._persist()
+                except asyncio.CancelledError:
+                    # If we were cancelled while persisting, record locally and
+                    # re-raise so cancellation propagates cleanly.
+                    raise
+                if ts.state in ("complete", "failed", "cancelled", "skipped"):
+                    _remove_stream_files(ts)
 
-            # Cascade cancel siblings when the require policy becomes
-            # unsatisfiable in light of this task's terminal state.
-            if self._require_unsatisfiable():
-                self._cancel_siblings()
+                # Cascade cancel siblings when the require policy becomes
+                # unsatisfiable in light of this task's terminal state.
+                if self._require_unsatisfiable():
+                    self._cancel_siblings()
 
-            # STRAT-WORKFLOW-BUDGET: hard cutoff — once this task's debit tips
-            # the flow over its run budget, cascade cancel any still-active
-            # siblings (reuses the require-cancel path). terminal_status was
-            # already set above (pre-persist) so it is durable across restart.
-            if self.state.terminal_status == BUDGET_EXHAUSTED:
-                self._cancel_siblings()
+                # STRAT-WORKFLOW-BUDGET: hard cutoff — once this task's debit tips
+                # the flow over its run budget, cascade cancel any still-active
+                # siblings (reuses the require-cancel path). terminal_status was
+                # already set above (pre-persist) so it is durable across restart.
+                if self.state.terminal_status == BUDGET_EXHAUSTED:
+                    self._cancel_siblings()
 
 
 # ---------------------------------------------------------------------------
@@ -1036,23 +1147,41 @@ class ParallelExecutor:
 RESUME_INTERRUPTED_ERROR = "server restart interrupted task"
 
 
-def resume_interrupted_parallel_tasks(flow_root: Path | str) -> None:
-    """Walk persisted flows and mark interrupted parallel tasks as failed.
+def _classify_interrupted_task(t: dict) -> str:
+    """Decide a single interrupted (``running``) task's restart fate.
 
-    On stdio server startup, any flow whose ``parallel_tasks`` contains
-    entries with ``state == "running"`` has those entries flipped to
-    ``state="failed"`` with ``error="server restart interrupted task"``
-    and ``finished_at`` set to the current wall-clock time. This makes
-    interrupted tasks observable to consumers rather than leaving them
-    stuck in the running state across a restart.
+    Returns ``"reparenting"`` if the task is a live, identity-matched codex
+    durable-stream child that a fresh reader can re-attach to; otherwise
+    ``"failed"`` (today's behavior — consumer re-runs). The identity guard is
+    strict: the persisted pid must be alive AND its current start-time must
+    exactly match the persisted one (a live pid with a different start time is a
+    reused pid → a DIFFERENT process → treated as dead).
+    """
+    if not t.get("reparentable"):
+        return "failed"
+    pid = t.get("child_pid")
+    if not isinstance(pid, int) or not pid_alive(pid):
+        return "failed"
+    persisted_start = t.get("proc_start_time")
+    now_start = proc_start_time(pid)
+    if persisted_start and now_start and now_start == persisted_start:
+        return "reparenting"
+    return "failed"
 
-    Real reparenting (resuming an executor against a live child process)
-    is tracked separately as T2-F5-RESUME.
 
-    Best-effort: missing/empty flow roots are no-ops, and corrupt JSON
-    files are skipped rather than raising. Writes a warning to stderr
-    for each file that couldn't be read. The server continues starting
-    regardless of what's found here.
+def classify_interrupted_parallel_tasks(flow_root: Path | str) -> None:
+    """Walk persisted flows on startup and classify interrupted parallel tasks.
+
+    Each ``state == "running"`` task is either re-attachable (a live codex
+    durable-stream child) → flipped to ``state="reparenting"`` (the poll/resume
+    driver then lazily starts a :class:`ReattachReader` to tail it to
+    completion), or not → flipped to ``state="failed"`` with
+    ``error="server restart interrupted task"`` (today's behavior) so the
+    consumer observes the interruption instead of a stuck status.
+
+    Best-effort: missing/empty flow roots are no-ops, and corrupt JSON files are
+    skipped rather than raising. Writes a warning to stderr for each unreadable
+    file. The server continues starting regardless of what's found here.
     """
     root = Path(flow_root)
     if not root.exists():
@@ -1076,10 +1205,14 @@ def resume_interrupted_parallel_tasks(flow_root: Path | str) -> None:
         touched = False
         for tid, t in parallel_tasks.items():
             if isinstance(t, dict) and t.get("state") == "running":
-                t["state"] = "failed"
-                t["error"] = RESUME_INTERRUPTED_ERROR
-                if t.get("finished_at") is None:
-                    t["finished_at"] = now
+                fate = _classify_interrupted_task(t)
+                if fate == "reparenting":
+                    t["state"] = "reparenting"
+                else:
+                    t["state"] = "failed"
+                    t["error"] = RESUME_INTERRUPTED_ERROR
+                    if t.get("finished_at") is None:
+                        t["finished_at"] = now
                 touched = True
         if touched:
             try:
@@ -1090,6 +1223,220 @@ def resume_interrupted_parallel_tasks(flow_root: Path | str) -> None:
                     f"for '{path.name}': {exc}",
                     file=sys.stderr,
                 )
+
+
+# Back-compat alias: the historical name still flips non-reparentable running
+# tasks to failed (its original contract), now via the classifier. The server
+# startup hook is retargeted to classify_interrupted_parallel_tasks directly.
+resume_interrupted_parallel_tasks = classify_interrupted_parallel_tasks
+
+
+class ReattachReader:
+    """Tails a `reparenting` task's durable stream to completion after a restart.
+
+    The fresh server is NOT the child's parent (it reparented to init), so the
+    reader cannot ``waitpid`` — it derives the verdict purely from the durable
+    stream: the ``__t2f5_done__`` sentinel rc, any ``{"type":"error"}`` record,
+    and the ``$T2F5_ERR`` file, with pid-liveness as the "died with no sentinel"
+    backstop. It binds the CANONICAL ``FlowState`` instance (the same object
+    poll/resume cache) and persists every mutation under the per-flow lock, so a
+    concurrent poll/resume can't race it.
+
+    Reproduces the per-task accounting the ``_run_one`` finalizer owns and that
+    the detach path skipped (Codex review #4): ``finished_at``, ``elapsed_s``,
+    ``tokens``, ``dollars_recorded``, the one-time dispatch debit (guarded by
+    ``dispatch_debited``), ``budget_exhausted`` terminalization, and worktree
+    removal — so audit/budget state matches a live completion.
+
+    v1 persists ``stream_offset`` + the budget debit + the result ATOMICALLY at
+    the terminal flip. A reader cancelled mid-tail (shutdown) persists nothing
+    new and leaves the task ``reparenting``; the next boot re-attaches from the
+    persisted offset and rebuilds — never double-charging, never losing result
+    text.
+    """
+
+    def __init__(
+        self,
+        state: FlowState,
+        step_id: str,
+        task_id: str,
+        *,
+        persist_callable: Optional[Callable[[FlowState], None]] = None,
+        model_id: Optional[str] = None,
+        cert: Optional[dict] = None,
+        require: Any = None,
+        sibling_task_ids: Optional[list[str]] = None,
+    ) -> None:
+        self.state = state
+        self.step_id = step_id
+        self.task_id = task_id
+        self._persist_callable = persist_callable or persist_flow
+        self.model_id = model_id
+        self.cert = cert
+        # T2-F5-RESUME (Codex review #3): after a restart there is no executor to
+        # run _run_one's cascade-cancel, so the reader reproduces it. `require` +
+        # the step's task-id set let it decide when this task's terminal state
+        # makes the step's require policy unsatisfiable (or tips the budget),
+        # and kill the sibling reparented children so their readers terminalize.
+        self.require = require
+        self.sibling_task_ids = sibling_task_ids or []
+
+    async def _persist(self) -> None:
+        async with _lock_for(self.state.flow_id):
+            self._persist_callable(self.state)
+
+    async def run(self) -> None:
+        ts = self.state.parallel_tasks.get(self.task_id)
+        if ts is None or ts.state != "reparenting" or not ts.stream_path:
+            return
+        pid = ts.child_pid
+        conn = CodexConnector(stream_path=ts.stream_path)
+        text_parts: list[str] = []
+        acc = new_usage_acc()
+        error_message: Optional[str] = None
+        sentinel_rc: Optional[int] = None
+        final_offset = ts.stream_offset or 0
+
+        async for rec, consumed in conn._tail_stream(
+            ts.stream_path, ts.stream_offset or 0,
+            is_alive=lambda: pid_alive(pid) if isinstance(pid, int) else False,
+        ):
+            final_offset = consumed
+            if isinstance(rec, dict) and T2F5_DONE_SENTINEL in rec:
+                sentinel_rc = rec[T2F5_DONE_SENTINEL]
+                break
+            for emitted in _emit_for_codex_event(
+                rec, model=self.model_id or "", prompt="",
+            ):
+                if emitted.kind == _CODEX_ERROR_KIND:
+                    if error_message is None:
+                        error_message = emitted.metadata["message"]
+                    continue
+                if (emitted.kind == "agent_relay"
+                        and emitted.metadata.get("role") == "assistant"):
+                    text_parts.append(emitted.metadata["text"])
+                accumulate_usage(acc, emitted)
+
+        await self._finalize(
+            ts, text_parts, acc, sentinel_rc, error_message, final_offset,
+        )
+        self._maybe_cascade_cancel_siblings()
+
+    def _require_unsatisfiable_over_siblings(self) -> bool:
+        """Mirror ParallelExecutor._require_unsatisfiable, but over the persisted
+        states of THIS step's tasks (no live executor after a restart)."""
+        states = [
+            self.state.parallel_tasks[t].state
+            for t in self.sibling_task_ids
+            if t in self.state.parallel_tasks
+        ]
+        complete = sum(1 for s in states if s == "complete")
+        failed = sum(1 for s in states if s in ("failed", "cancelled"))
+        in_flight = sum(
+            1 for s in states if s in ("pending", "running", "reparenting")
+        )
+        req = self.require
+        if req == "any":
+            return complete == 0 and in_flight == 0
+        if isinstance(req, int):
+            return complete + in_flight < req
+        # "all" / unknown
+        return failed > 0
+
+    def _maybe_cascade_cancel_siblings(self) -> None:
+        """T2-F5-RESUME (Codex review #3): reproduce _run_one's cascade-cancel
+        after a restart. If this task's terminal state tips the run budget OR
+        makes the step's require policy unsatisfiable, kill the still-in-flight
+        sibling reparented children (killpg the wrapper = group leader). Each
+        sibling's own reader then sees its child die with no sentinel and
+        terminalizes it as failed — no cross-reader handle coordination needed.
+        """
+        if not self.sibling_task_ids:
+            return
+        exhausted = self.state.terminal_status == BUDGET_EXHAUSTED
+        if not exhausted and not self._require_unsatisfiable_over_siblings():
+            return
+        for tid in self.sibling_task_ids:
+            if tid == self.task_id:
+                continue
+            sib = self.state.parallel_tasks.get(tid)
+            if sib is None or sib.state not in ("running", "reparenting"):
+                continue
+            pid = sib.child_pid
+            if not isinstance(pid, int) or not pid_alive(pid):
+                continue
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+    async def _finalize(self, ts, text_parts, acc, sentinel_rc, error_message,
+                        final_offset) -> None:
+        full_text = "".join(text_parts)
+        if sentinel_rc is None:
+            # Tail ended (pid died) with no sentinel → interrupted/incomplete.
+            ts.state = "failed"
+            ts.error = error_message or RESUME_INTERRUPTED_ERROR
+        elif error_message is not None:
+            ts.state = "failed"
+            ts.error = error_message
+        elif sentinel_rc != 0 and not full_text:
+            ts.state = "failed"
+            ts.error = (
+                _read_text_file(ts.stderr_path) if ts.stderr_path else ""
+            ) or f"codex exited with code {sentinel_rc}"
+        else:
+            result = full_text or None
+            # Cert parity with _run_one: an invalid output flips complete→failed.
+            if self.cert is not None:
+                vios = validate_certificate(self.cert, result or {})
+                if vios:
+                    ts.state = "failed"
+                    ts.cert_violations = vios
+                    ts.error = "certificate validation failed"
+                else:
+                    ts.result = result
+                    ts.state = "complete"
+            else:
+                ts.result = result
+                ts.state = "complete"
+
+        # --- accounting parity with the _run_one finalizer (review #4) ---
+        if ts.finished_at is None:
+            ts.finished_at = time.time()
+        if ts.started_at is not None:
+            ts.elapsed_s = ts.finished_at - ts.started_at
+        delta_tokens = int(acc.get("tokens", 0))
+        delta_dollars = float(acc.get("dollars", 0.0))
+        ts.tokens = int(ts.tokens or 0) + delta_tokens
+        ts.dollars_recorded = float(ts.dollars_recorded or 0.0) + delta_dollars
+        # The dispatch is charged exactly once across the whole task lifetime;
+        # the detach path skipped it, so the reader charges it here (delta tokens
+        # + the dispatch). A re-run (dispatch_debited already set) charges only
+        # delta tokens, never the dispatch again.
+        dispatches = 0 if ts.dispatch_debited else 1
+        debit_budget(
+            self.state,
+            dispatches=dispatches,
+            tokens=delta_tokens,
+            wall_s=ts.elapsed_s if dispatches else 0.0,
+            dollars=delta_dollars,
+        )
+        ts.dispatch_debited = True
+        if budget_exhausted(self.state) and not self.state.terminal_status:
+            self.state.terminal_status = BUDGET_EXHAUSTED
+        ts.stream_offset = final_offset
+        # Worktree was kept alive for the detached child; remove it now.
+        if ts.worktree_path:
+            try:
+                remove_worktree(Path(ts.worktree_path))
+            except Exception:
+                pass
+        # Codex review #2: persist the terminal snapshot BEFORE deleting the
+        # durable replay files, so a crash in between never loses both the
+        # stream and the persisted result.
+        await self._persist()
+        _remove_stream_files(ts)
 
 
 def shutdown_all(
@@ -1119,4 +1466,27 @@ def shutdown_all(
         except Exception:
             # Best-effort — a failed cancel on one task must not prevent
             # cancellation of the others.
+            pass
+
+
+def shutdown_readers(
+    registry: dict[tuple[str, str], asyncio.Task] | None = None,
+) -> None:
+    """Cancel every registered ReattachReader task (T2-F5-RESUME S6).
+
+    Called from the server shutdown path right after :func:`shutdown_all`.
+    Readers only read the durable stream and persist at terminal, so a cancel
+    loses at most the un-persisted tail — the next boot re-attaches from the
+    persisted ``stream_offset`` (or re-reads from the start) and rebuilds.
+    Idempotent; mirrors :func:`shutdown_all`'s contract (registry passed in to
+    keep this module free of a server.py dependency).
+    """
+    if not registry:
+        return
+    for handle in list(registry.values()):
+        if handle is None or handle.done():
+            continue
+        try:
+            handle.cancel()
+        except Exception:
             pass

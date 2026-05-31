@@ -26,11 +26,17 @@ def make_agent_connector(
     thinking: Optional[dict] = None,
     effort: Optional[str] = None,
     read_jail: Optional[str] = None,
+    stream_path: Optional[str] = None,
+    stderr_path: Optional[str] = None,
 ) -> AgentConnector:
     """Factory — raises ValueError on unknown type or bad codex model.
 
     "opencode" raises ValueError with T2-F5-OPENCODE-DISPATCH pointer — that
     agent type is not yet wired into server-dispatch.
+
+    T2-F5-RESUME: ``stream_path``/``stderr_path`` enable the codex connector's
+    durable-stream (reparentable) mode. They are codex-only — ignored for
+    claude (in-process, nothing to reparent).
     """
     if agent_type == "opencode":
         raise ValueError(
@@ -48,6 +54,8 @@ def make_agent_connector(
             "model_id": model_id or "gpt-5.4",
             "cwd": cwd,
             "read_jail": read_jail,
+            "stream_path": stream_path,
+            "stderr_path": stderr_path,
         }
         return CodexConnector(**codex_kwargs)
     kwargs: dict[str, Any] = {"cwd": cwd}

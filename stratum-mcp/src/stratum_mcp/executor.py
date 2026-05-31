@@ -941,6 +941,18 @@ class ParallelTaskState:
     tokens: int = 0
     elapsed_s: float = 0.0
     dollars_recorded: float = 0.0
+    # T2-F5-RESUME: the reparent handle for a codex durable-stream task. Written
+    # at the durable spawn (via the connector's `durable_spawned` event) and
+    # JSON-persisted so a fresh server can re-attach to a live child after a
+    # restart. All default to the "not reparentable" values, so adding them is a
+    # back-compat round-trip (old persisted states load with these defaults).
+    child_pid: int | None = None        # the WRAPPER pid (session/group leader)
+    stream_path: str | None = None      # durable codex JSONL file the child owns
+    stderr_path: str | None = None      # durable codex stderr file
+    proc_start_time: str | None = None  # PID-reuse identity guard (see proc_identity)
+    stream_offset: int = 0              # bytes consumed; re-attach resumes here
+    reparentable: bool = False          # True only for codex durable-stream tasks
+    dispatch_debited: bool = False      # dispatch charged once; re-attach charges only delta tokens
 
 
 @dataclass
@@ -1202,6 +1214,16 @@ _flows: dict[str, FlowState] = {}
 _FLOWS_DIR = Path.home() / ".stratum" / "flows"
 
 
+def flow_streams_dir(flow_id: str) -> "Path":
+    """Directory holding a flow's durable codex streams (T2-F5-RESUME).
+
+    ``~/.stratum/flows/<flow_id>/streams/``. Reads ``_FLOWS_DIR`` at call time so
+    tests that redirect persistence (``patch_flows_dir``) are honored. Removed by
+    :func:`delete_persisted_flow`; a per-task terminal removes its own files.
+    """
+    return _FLOWS_DIR / flow_id / "streams"
+
+
 def persist_flow(state: FlowState) -> None:
     """Write flow state to ~/.stratum/flows/{flow_id}.json."""
     _FLOWS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1323,6 +1345,15 @@ def delete_persisted_flow(flow_id: str, *, synthetic: bool = False) -> None:
     try:
         (_FLOWS_DIR / f"{flow_id}.json").unlink(missing_ok=True)
     except OSError:
+        pass
+    # T2-F5-RESUME: remove the flow's durable codex streams dir
+    # (~/.stratum/flows/<flow_id>/streams/ and its parent <flow_id>/).
+    try:
+        import shutil as _shutil
+        flow_dir = _FLOWS_DIR / flow_id
+        if flow_dir.exists():
+            _shutil.rmtree(flow_dir, ignore_errors=True)
+    except Exception:
         pass
     if not synthetic:
         try:
