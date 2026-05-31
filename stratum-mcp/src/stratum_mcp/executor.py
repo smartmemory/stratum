@@ -1036,6 +1036,16 @@ class FlowState:
     # Shape: {"caps": {ms?, usd?, max_agent_dispatches?, max_tokens?},
     #         "consumed": {wall_s, dispatches, tokens, dollars}}.
     budget_state: dict[str, Any] | None = None
+    # STRAT-WORKFLOW-BG: server-driven background execution.
+    #   flow_mode: "consumer_turn" (default — turn-driven by the consumer) or
+    #     "server_driven" (a _background_flow_advance loop drives the flow).
+    #   bg_status: last BG lifecycle status (running/paused_gate/handoff:<mode>/
+    #     complete/error/budget_exhausted/cancelled), or None when never BG-run.
+    #   bg_pause_reason: free-text reason for a paused/handoff stop (e.g. the
+    #     handed-off step kind), surfaced by stratum_flow_bg_poll.
+    flow_mode: str = "consumer_turn"
+    bg_status: str | None = None
+    bg_pause_reason: str | None = None
 
     def record_judge_turn(self, step_id: str, result) -> None:
         """Record a JudgeResult into ``judge_history`` and ``judge_outcome``.
@@ -1380,6 +1390,9 @@ def persist_flow(state: FlowState) -> None:
         "judge_outcome":      state.judge_outcome,
         "synthetic":          state.synthetic,
         "budget_state":       state.budget_state,
+        "flow_mode":          state.flow_mode,
+        "bg_status":          state.bg_status,
+        "bg_pause_reason":    state.bg_pause_reason,
     }
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
@@ -1450,6 +1463,9 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         judge_outcome=payload.get("judge_outcome", {}),
         synthetic=payload.get("synthetic", False),
         budget_state=payload.get("budget_state"),
+        flow_mode=payload.get("flow_mode", "consumer_turn"),
+        bg_status=payload.get("bg_status"),
+        bg_pause_reason=payload.get("bg_pause_reason"),
     )
 
 

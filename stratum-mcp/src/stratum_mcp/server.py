@@ -382,6 +382,19 @@ async def stratum_resume(flow_id: str, ctx: Context) -> dict[str, Any]:
             }
         _flows[flow_id] = state
 
+    # STRAT-WORKFLOW-BG: a live background driver owns this flow — refuse the
+    # consumer resume so it can't mutate (dispatched_at / skip-policy / current_idx)
+    # or advertise a dispatch for a step the server is already driving.
+    if _bg_live(flow_id):
+        return {
+            "status": "bg_owned",
+            "flow_id": flow_id,
+            "message": (
+                f"Flow '{flow_id}' is running server-driven (background); poll with "
+                f"stratum_flow_bg_poll or cancel with stratum_flow_cancel_bg first."
+            ),
+        }
+
     if state.terminal_status:
         # STRAT-WORKFLOW-BUDGET: refuse to resume a terminal flow (killed or
         # budget_exhausted) — it cannot advance further.
@@ -465,6 +478,19 @@ async def stratum_step_done(
                 "message": f"No active flow with id '{flow_id}'",
             }
         _flows[flow_id] = state
+
+    # STRAT-WORKFLOW-BG: a server-driven background loop owns this flow — refuse
+    # the consumer step_done so the two drivers don't race the same FlowState.
+    if _bg_live(flow_id):
+        return {
+            "status": "bg_owned",
+            "flow_id": flow_id,
+            "message": (
+                f"Flow '{flow_id}' is running server-driven (background); "
+                f"poll with stratum_flow_bg_poll or cancel with "
+                f"stratum_flow_cancel_bg before reporting steps manually."
+            ),
+        }
 
     # STRAT-IMMUTABLE: verify spec has not been tampered with since flow creation.
     flow_def = state.spec.flows.get(state.flow_name)
@@ -4028,6 +4054,319 @@ def _cmd_help() -> None:
     print("Run with no arguments to start the stdio MCP server (for Claude Code).")
 
 
+# ---------------------------------------------------------------------------
+# STRAT-WORKFLOW-BG: server-driven background flow execution (v1 linear driver)
+# ---------------------------------------------------------------------------
+# A `_background_flow_advance` loop drives a flow through function/inline steps,
+# dispatching each via `stratum_agent_run` (reused wholesale), pausing at gates
+# and handing off at judge/flow/parallel/pipeline steps. One driver task per
+# flow_id in `_BG_FLOWS`. parallel/pipeline autonomous execution + mid-parallel
+# restart-reattach are deferred to STRAT-WORKFLOW-BG-PARALLEL (handoff in v1).
+
+_BG_FLOWS: "dict[str, asyncio.Task[Any]]" = {}
+_BG_SHUTTING_DOWN: bool = False
+# Flows whose driver was explicitly cancelled (vs a shutdown drain). Marked
+# BEFORE task.cancel() so the loop's CancelledError handler can terminalize a
+# user cancel authoritatively even if a shutdown drain races the same tick.
+_BG_CANCEL_REQUESTED: "set[str]" = set()
+
+# Returned by _bg_dispatch_step when the connector produced no usable result dict
+# (parseError / missing / non-dict) — routed through the retry path, never faked.
+_BG_DISPATCH_BAD = object()
+
+# The v1 loop drives only function/inline steps; every other kind (judge, flow,
+# decompose, parallel_dispatch, pipeline, or any unrecognized dispatch shape) is
+# handed back to the consumer rather than mis-executed (see the loop's classify).
+
+
+def _bg_live(flow_id: str) -> bool:
+    """True when a background driver task is actively running for this flow."""
+    task = _BG_FLOWS.get(flow_id)
+    return task is not None and not task.done()
+
+
+def _bg_output_schema(info: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Build a JSON schema for the step's declared output, for structured dispatch.
+
+    Derived from the dispatch dict's ``output_fields`` ({name: type}). Returns
+    None when the step declares no fields.
+    """
+    fields = info.get("output_fields") or {}
+    if not fields:
+        return None
+    _JSON_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
+    props = {
+        name: {"type": (typ if typ in _JSON_TYPES else "string")}
+        for name, typ in fields.items()
+    }
+    return {"type": "object", "properties": props, "required": sorted(fields.keys())}
+
+
+async def _bg_dispatch_step(state: FlowState, info: dict[str, Any], ctx: Context):
+    """Dispatch one function/inline step server-side via stratum_agent_run.
+
+    Returns the validated ``result`` dict, ``_BG_DISPATCH_BAD`` when the connector
+    produced no usable dict (parseError / missing / non-dict), or the string
+    ``BUDGET_EXHAUSTED`` if the budget gate tripped on the dispatch path. The
+    returned dict is then validated by ``process_step_result`` exactly as a
+    consumer-reported result would be.
+    """
+    intent = info.get("intent") or "Produce the step output."
+    inputs = info.get("inputs") or {}
+    schema = _bg_output_schema(info)
+    context_str = (
+        "Inputs (JSON):\n" + json.dumps(inputs, indent=2, default=str)
+        if inputs else None
+    )
+    env = await stratum_agent_run(
+        prompt=intent,
+        ctx=ctx,
+        type=info.get("agent") or "claude",
+        context=context_str,
+        schema=schema,
+        correlation_id=state.flow_id,
+        cwd=state.cwd or None,
+    )
+    if isinstance(env, dict) and env.get("status") == BUDGET_EXHAUSTED:
+        return BUDGET_EXHAUSTED
+    result = env.get("result") if isinstance(env, dict) else None
+    if not isinstance(result, dict):
+        return _BG_DISPATCH_BAD
+    return result
+
+
+def _bg_finalize(state: FlowState, status: str, *, reason: Optional[str] = None) -> None:
+    """Set the BG lifecycle status and persist a durable snapshot (never delete).
+
+    Terminal `cancelled` also sets `terminal_status` so the flow can't be resumed;
+    `complete`/`error`/`paused_gate`/`handoff:*` leave `terminal_status` untouched
+    (error/paused/handoff stay resumable; complete is simply at end-of-steps).
+    `budget_exhausted` already had `terminal_status` set by the budget machinery.
+    """
+    state.bg_status = status
+    state.bg_pause_reason = reason
+    if status == "cancelled":
+        state.terminal_status = "cancelled"
+    try:
+        persist_flow(state)
+    except Exception:
+        pass
+
+
+async def _background_flow_advance(flow_id: str, ctx: Context) -> None:
+    """Server-driven advance loop: drive a flow through function/inline steps.
+
+    Pauses at gates, hands off at judge/flow/parallel/pipeline steps, halts on
+    budget exhaustion or an unrecoverable step error, and finalizes a durable
+    terminal snapshot on completion. Cancellation distinguishes an explicit
+    cancel (terminal `cancelled`) from a shutdown drain (resumable snapshot).
+    """
+    state = _flows.get(flow_id)
+    try:
+        if state is None:
+            return
+        state.flow_mode = "server_driven"
+        state.bg_status = "running"
+        persist_flow(state)
+
+        while True:
+            if _BG_SHUTTING_DOWN:
+                # Resumable drain: leave current_idx intact, do NOT terminalize.
+                state.bg_status = "running"
+                persist_flow(state)
+                return
+
+            hard = _flow_budget_hard_stop(state)  # sets terminal_status if exhausted
+            if hard is not None:
+                _bg_finalize(state, "budget_exhausted", reason="run budget exhausted")
+                return
+
+            try:
+                info = get_current_step_info(state)
+                info = _apply_policy_loop(state, info)
+            except MCPExecutionError as exc:
+                _bg_finalize(state, "error", reason=str(exc))
+                return
+
+            if info is None or info.get("status") == "complete":
+                _bg_finalize(state, "complete")
+                return
+
+            st = info.get("status")
+            if st == "await_gate":
+                _bg_finalize(state, "paused_gate", reason=f"gate:{info.get('step_id')}")
+                return
+
+            mode = info.get("step_mode")
+            if st == "execute_step" and mode in ("function", "inline"):
+                step_id = info["step_id"]
+                res = await _bg_dispatch_step(state, info, ctx)
+                if res == BUDGET_EXHAUSTED:
+                    _bg_finalize(state, "budget_exhausted", reason="run budget exhausted")
+                    return
+                # A bad dispatch (parseError / non-dict) is routed through
+                # process_step_result as an empty result so it consumes a REAL,
+                # persisted attempt (state.attempts) under the same retry cap as a
+                # validation failure — durable across resume, no separate counter.
+                # An empty dict reliably fails any output_schema/ensure the step
+                # declares; a step with neither guard legitimately accepts it.
+                if res is _BG_DISPATCH_BAD:
+                    res = {}
+
+                try:
+                    status, violations = process_step_result(state, step_id, res)
+                except MCPExecutionError as exc:
+                    _bg_finalize(state, "error", reason=str(exc))
+                    return
+
+                if status == "retries_exhausted":
+                    _bg_finalize(
+                        state, "error",
+                        reason=f"step '{step_id}' exhausted retries: {violations}",
+                    )
+                    return
+                # ensure_failed / schema_failed / guardrail_blocked: current_idx is
+                # unchanged → the loop re-fetches the same step and re-dispatches
+                # (process_step_result caps attempts → retries_exhausted above).
+                # ok / on_fail_routed: process_step_result already advanced/routed.
+                persist_flow(state)
+                continue
+
+            # Everything else is handed back to the consumer, never mis-executed:
+            # judge / flow / decompose / parallel_dispatch / pipeline carry their
+            # mode as the dispatch `status` (e.g. status=="parallel_dispatch"), and
+            # any unrecognized dispatch shape also falls here defensively.
+            handoff_kind = mode or st or "unknown"
+            _bg_finalize(
+                state, f"handoff:{handoff_kind}",
+                reason=f"handoff:{handoff_kind}:{info.get('step_id')}",
+            )
+            return
+
+    except asyncio.CancelledError:
+        if state is not None:
+            if flow_id in _BG_CANCEL_REQUESTED:
+                # Explicit per-flow cancel (authoritative, even if a shutdown
+                # drain races the same tick): terminal.
+                state.bg_status = "cancelled"
+                state.terminal_status = "cancelled"
+            else:
+                # Shutdown drain or any other cancellation: persist a RESUMABLE
+                # in-progress snapshot — a restart must not look like a user cancel.
+                state.bg_status = "running"
+            try:
+                persist_flow(state)
+            except Exception:
+                pass
+        raise
+    except Exception as exc:
+        # An unexpected error (e.g. a connector RuntimeError raised by
+        # stratum_agent_run on an error event) must still leave a durable,
+        # resumable `error` snapshot — never a silently-orphaned `running` flow.
+        if state is not None:
+            _bg_finalize(state, "error", reason=f"background driver error: {exc}")
+        return
+    finally:
+        _BG_FLOWS.pop(flow_id, None)
+        _BG_CANCEL_REQUESTED.discard(flow_id)
+
+
+@mcp.tool(description=(
+    "Start server-driven background execution of an existing flow. The server "
+    "drives the flow through function/inline steps autonomously (dispatching each "
+    "step's agent itself), pausing at gates and handing off at judge/flow/parallel/"
+    "pipeline steps. Input: flow_id (str). Returns bg_started, or a terminal/"
+    "already-running/complete/not_found status. Poll with stratum_flow_bg_poll."
+))
+async def stratum_flow_run_bg(flow_id: str, ctx: Context) -> dict[str, Any]:
+    state = _flows.get(flow_id)
+    if state is None:
+        state = restore_flow(flow_id)
+        if state is None:
+            return {"status": "not_found", "flow_id": flow_id}
+        _flows[flow_id] = state
+    if state.terminal_status:
+        return {"status": state.terminal_status, "flow_id": flow_id}
+    if _bg_live(flow_id):
+        return {"status": "bg_already_running", "flow_id": flow_id}
+    if state.current_idx >= len(state.ordered_steps):
+        return {"status": "complete", "flow_id": flow_id}
+    task = asyncio.create_task(_background_flow_advance(flow_id, ctx))
+    _BG_FLOWS[flow_id] = task
+    return {"status": "bg_started", "flow_id": flow_id, "total_steps": len(state.ordered_steps)}
+
+
+@mcp.tool(description=(
+    "Poll a background (server-driven) flow's progress. Input: flow_id (str). "
+    "Returns {status, flow_id, flow_mode, current_step, steps_completed, "
+    "total_steps, terminal_status, paused_reason}. status is running / paused_gate "
+    "/ handoff:<mode> / complete / error / budget_exhausted / cancelled / not_found."
+))
+async def stratum_flow_bg_poll(flow_id: str, ctx: Context) -> dict[str, Any]:
+    state = _flows.get(flow_id)
+    if state is None:
+        state = restore_flow(flow_id)
+        if state is None:
+            return {"status": "not_found", "flow_id": flow_id}
+    live = _bg_live(flow_id)
+    snap = _build_audit_snapshot(state)
+    if live and state.bg_status in (None, "running"):
+        status = "running"
+    elif state.bg_status:
+        status = state.bg_status
+    elif state.current_idx >= len(state.ordered_steps):
+        status = "complete"
+    else:
+        status = "idle"
+    current_step = (
+        state.ordered_steps[state.current_idx].id
+        if state.current_idx < len(state.ordered_steps) else None
+    )
+    return {
+        "status": status,
+        "flow_id": flow_id,
+        "flow_mode": state.flow_mode,
+        "current_step": current_step,
+        "steps_completed": snap["steps_completed"],
+        "total_steps": snap["total_steps"],
+        "terminal_status": state.terminal_status,
+        "paused_reason": state.bg_pause_reason,
+    }
+
+
+@mcp.tool(description=(
+    "Cancel a running background (server-driven) flow. Input: flow_id (str). "
+    "Stops the driver and marks the flow terminal (cancelled). Returns the final "
+    "status: usually 'cancelled', or 'not_found' when no live driver owns the "
+    "flow; if the run finishes naturally in the cancel race window it returns the "
+    "actual outcome instead (e.g. 'complete' / 'error')."
+))
+async def stratum_flow_cancel_bg(flow_id: str, ctx: Context) -> dict[str, Any]:
+    task = _BG_FLOWS.get(flow_id)
+    if task is None or task.done():
+        return {"status": "not_found", "flow_id": flow_id}
+    # Mark BEFORE cancel so the loop terminalizes this as a user cancel, not a
+    # drain. Discard in our OWN finally too: if the task finishes in the race
+    # window before cancel() lands, the loop's finally already ran, so the tool
+    # must clear the marker or it would mis-tag a future run of the same flow_id.
+    _BG_CANCEL_REQUESTED.add(flow_id)
+    try:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+    finally:
+        _BG_CANCEL_REQUESTED.discard(flow_id)
+    # Report the actual outcome: if the run finished naturally in the race window,
+    # bg_status reflects that (e.g. "complete"); otherwise the handler set "cancelled".
+    final_state = _flows.get(flow_id)
+    final = (final_state.bg_status if final_state and final_state.bg_status else "cancelled")
+    return {"status": final, "flow_id": flow_id}
+
+
 def main() -> None:
     """Entry point: CLI subcommands or stdio MCP server."""
     if len(sys.argv) >= 2:
@@ -4098,6 +4437,17 @@ def main() -> None:
     try:
         mcp.run(transport="stdio")
     finally:
+        # STRAT-WORKFLOW-BG: signal a shutdown drain BEFORE cancelling BG drivers
+        # so each loop's CancelledError handler persists a RESUMABLE snapshot (no
+        # terminalize) instead of a `cancelled` terminal — a restart must not look
+        # like a user cancel. Mirrors the T2-F5 set-flag-before-cancel pattern.
+        global _BG_SHUTTING_DOWN
+        _BG_SHUTTING_DOWN = True
+        for _bg_task in list(_BG_FLOWS.values()):
+            try:
+                _bg_task.cancel()
+            except Exception:
+                pass
         # T2-F5-RESUME (review #1): mark every live executor as detaching BEFORE
         # cancelling, so reparentable (codex durable-stream) children survive the
         # shutdown instead of being killed. shutdown_all only receives the task
