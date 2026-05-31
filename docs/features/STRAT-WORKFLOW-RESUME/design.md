@@ -53,7 +53,7 @@ key = sha256(
 ```
 
 - `spec_checksum` is `compute_spec_checksum(flow_def, spec)` — already computed and stored on `FlowState` (`spec_checksum`, `executor.py:1006`). Covers the step's function intent/ensure/mode + flow structure.
-  - **Required fix (folds into this feature):** `compute_spec_checksum`'s fingerprints currently **omit guardrails** — `_fn_fingerprint` (`executor.py:1138–1150`) covers `{name, mode, intent, ensure}` but not `fn_def.guardrails` (`spec.py:59`), and `_step_fingerprint` (`:1093–1136`) omits `step.step_guardrails` (`spec.py:127`). Guardrails are applied in `process_step_result` *before* `ensure` (`executor.py:1794–1863`), so a tightened guardrail that would now block a result must invalidate the cache. Add `fn_def.guardrails` to `_fn_fingerprint` and `step.step_guardrails` to `_step_fingerprint` (one line each). This closes the gap for **every** consumer of the checksum (tamper detection too), not just the cache. With this in place, "any flow/fn-def change invalidates" is true.
+  - **Guardrails are already covered (verified against disk, 2026-05-31).** `_step_fingerprint` (`executor.py:1093`) already includes `"step_guardrails": step.step_guardrails`, and `_fn_fingerprint` (`:1138`) already includes `"guardrails": fn.guardrails`. (A first-round Codex finding claimed these were missing; reading the source in Phase-5 verification showed that claim was a false positive — see `blueprint.md` corrections table.) So "any flow/fn-def change — including a tightened guardrail — invalidates the cache" holds with **no change** to `compute_spec_checksum`. The only addition needed is folding the new `cache` field itself into `_step_fingerprint` (§7), per the function's own "keep this in sync with new IRStepDef fields" note.
 - `resolved_input` is the exact dict `resolve_inputs` produces for the step (the same value already shown to the agent). `canonical_json` = `json.dumps(sort_keys=True, separators=(",",":"))` with a deterministic fallback for any non-JSON value (→ miss, never raise).
 - **Prefix property falls out for free:** if step _N-1_'s output changes, step _N_'s `resolved_input` changes, so _N_ misses — and so does everything downstream of _N_. An unchanged prefix hits; the first changed step and its suffix miss. This is precisely "an unchanged prefix returns instantly."
 - `CACHE_VERSION` is a module constant bumped whenever the cache record format or key composition changes (forces a clean miss across an upgrade).
@@ -117,7 +117,7 @@ One new optional field, `cache: bool = false`, on the step def (and, for ergonom
 - the `spec_checksum` canonical serialization (so toggling `cache` is itself a checksum change — conservative; avoids a stale hit when an author flips caching on/off),
 - the `.stratum.yaml` schema docs.
 
-Separately (and independently useful), `compute_spec_checksum` is corrected to fingerprint **guardrails** (`fn_def.guardrails` in `_fn_fingerprint`, `step.step_guardrails` in `_step_fingerprint`) — see §2. No change to `output_schema`, gates, parallel, pipeline, iteration, or judge.
+The new `cache` field is added to `_step_fingerprint` (`executor.py:1093`) so toggling it changes the checksum (§2). Guardrails are **already** fingerprinted (verified) — no `compute_spec_checksum` change beyond the `cache` field. No change to `output_schema`, gates, parallel, pipeline, iteration, or judge.
 
 ## Acceptance criteria
 
@@ -126,7 +126,7 @@ Separately (and independently useful), `compute_spec_checksum` is corrected to f
 - [ ] **Key composition:** `result_cache_key` folds `CACHE_VERSION`, `flow_name`, `step_id`, `spec_checksum`, and `canonical_json(resolved_input)`; a non-JSON-serializable resolved input degrades to a miss (never raises).
 - [ ] **Prefix hit / suffix miss:** in a 4-step flow with all steps `cache: true`, run once (populate); re-run unchanged → all 4 hit (zero agent dispatches). Edit step 3's function intent → re-run → steps 1–2 hit, steps 3–4 miss and re-dispatch.
 - [ ] **Upstream-change cascade:** change a value in flow `inputs` that step 1 consumes → step 1 (and all downstream) miss.
-- [ ] **`spec_checksum` invalidation:** changing a cached step's `ensure`, `intent`, **or guardrail pattern** (`fn_def.guardrails` / `step.step_guardrails`, now fingerprinted) → that step misses (key changed). Regression test that a guardrail-only edit changes the checksum.
+- [ ] **`spec_checksum` invalidation:** changing a cached step's `ensure`, `intent`, **or guardrail pattern** (`fn_def.guardrails` / `step.step_guardrails`, already fingerprinted) → that step misses (key changed). Regression test that a guardrail-only edit changes the checksum (guards against future fingerprint regressions).
 - [ ] **`ensure` still enforced on hits:** a cached value that would fail the current `ensure` is not trusted (covered by key change; re-validation belt-and-suspenders verified).
 - [ ] **Only successes cached:** a step that fails `ensure` (then retries) writes **nothing** to the cache; the eventual passing result is the only thing cached.
 - [ ] **Atomic store:** concurrent writers of the same key don't corrupt the record (tmp + `os.replace`); a corrupt/old-version record on disk → miss, not crash.
