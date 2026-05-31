@@ -76,6 +76,69 @@ def test_parallel_task_state_defaults():
     assert t.error is None
     assert t.cert_violations is None
     assert t.worktree_path is None
+    # T2-F5-RESUME handle defaults → "not reparentable"
+    assert t.child_pid is None
+    assert t.stream_path is None
+    assert t.stderr_path is None
+    assert t.proc_start_time is None
+    assert t.stream_offset == 0
+    assert t.reparentable is False
+    assert t.dispatch_debited is False
+
+
+def test_t2f5_handle_fields_round_trip(patch_flows_dir):
+    """T2-F5-RESUME reparent handle survives FlowState JSON round-trip."""
+    spec = parse_and_validate(SIMPLE_IR)
+    state = create_flow_state(spec, "run", {"text": "hi"}, raw_spec=SIMPLE_IR)
+    state.parallel_tasks = {
+        "t1": ParallelTaskState(
+            task_id="t1",
+            state="running",
+            started_at=1.0,
+            child_pid=4242,
+            stream_path="/tmp/flow/streams/t1.jsonl",
+            stderr_path="/tmp/flow/streams/t1.err",
+            proc_start_time="Sat May 31 09:00:00 2026",
+            stream_offset=128,
+            reparentable=True,
+            dispatch_debited=True,
+        ),
+    }
+    persist_flow(state)
+    loaded = restore_flow(state.flow_id)
+    t1 = loaded.parallel_tasks["t1"]
+    assert t1.child_pid == 4242
+    assert t1.stream_path == "/tmp/flow/streams/t1.jsonl"
+    assert t1.stderr_path == "/tmp/flow/streams/t1.err"
+    assert t1.proc_start_time == "Sat May 31 09:00:00 2026"
+    assert t1.stream_offset == 128
+    assert t1.reparentable is True
+    assert t1.dispatch_debited is True
+
+
+def test_t2f5_handle_backcompat_old_persisted_state(patch_flows_dir):
+    """A persisted task dict WITHOUT the T2-F5 keys loads with defaults."""
+    import json
+    spec = parse_and_validate(SIMPLE_IR)
+    state = create_flow_state(spec, "run", {"text": "hi"}, raw_spec=SIMPLE_IR)
+    state.parallel_tasks = {
+        "t1": ParallelTaskState(task_id="t1", state="complete", result={"ok": True}),
+    }
+    persist_flow(state)
+    # Simulate an OLD persisted file: strip the new keys from the task dict.
+    path = executor_mod._FLOWS_DIR / f"{state.flow_id}.json"
+    payload = json.loads(path.read_text())
+    for k in ("child_pid", "stream_path", "stderr_path", "proc_start_time",
+              "stream_offset", "reparentable", "dispatch_debited"):
+        payload["parallel_tasks"]["t1"].pop(k, None)
+    path.write_text(json.dumps(payload))
+
+    loaded = restore_flow(state.flow_id)
+    t1 = loaded.parallel_tasks["t1"]
+    assert t1.reparentable is False
+    assert t1.stream_offset == 0
+    assert t1.child_pid is None
+    assert t1.result == {"ok": True}
 
 
 # ---------------------------------------------------------------------------

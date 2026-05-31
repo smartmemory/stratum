@@ -397,6 +397,38 @@ async def stratum_resume(flow_id: str, ctx: Context) -> dict[str, Any]:
         delete_persisted_flow(flow_id)
         return {"status": "complete", "flow_id": flow_id}
 
+    # T2-F5-RESUME: if the current parallel/pipeline step has `reparenting` tasks
+    # (a restart re-classified live codex children), don't advertise a fresh
+    # dispatch — lazily start the ReattachReaders and tell the caller to poll.
+    # `running` (without a live executor) is likewise an already-dispatched,
+    # poll-not-dispatch state after a restart.
+    _cur = state.ordered_steps[state.current_idx]
+    if getattr(_cur, "step_type", None) in ("parallel_dispatch", "pipeline"):
+        try:
+            _expected = {t["id"] for t in _resolve_dispatch_tasks(state, _cur)}
+        except Exception:
+            _expected = set()
+        _ts_map = {tid: ts for tid, ts in state.parallel_tasks.items()
+                   if tid in _expected}
+        _in_flight = [tid for tid, ts in _ts_map.items()
+                      if ts.state in ("running", "reparenting")]
+        if any(ts.state == "reparenting" for ts in _ts_map.values()):
+            _ensure_reattach_readers(
+                state, _cur.id, list(_ts_map.keys()),
+                cert=getattr(_cur, "task_reasoning_template", None),
+                require=getattr(_cur, "require", None) or "all",
+            )
+        if _in_flight:
+            return {
+                "status": "parallel_in_progress",
+                "flow_id": flow_id,
+                "step_id": _cur.id,
+                "message": (
+                    f"Step '{_cur.id}' already dispatched and in flight "
+                    f"({len(_in_flight)} task(s)); poll with stratum_parallel_poll."
+                ),
+            }
+
     try:
         step_info = get_current_step_info(state)
         step_info = _apply_policy_loop(state, step_info)
@@ -632,6 +664,44 @@ _RUNNING_EXECUTORS: dict[tuple[str, str], Any] = {}
 # so stratum_parallel_poll can drain its event queue under the poll request's ctx.
 # parallel_start's ctx is dead by the time the background executor emits.
 _PARALLEL_EXECUTORS: dict[tuple[str, str], Any] = {}
+
+# T2-F5-RESUME: per-(flow_id, task_id) ReattachReader tasks. A poll/resume that
+# observes `reparenting` tasks lazily starts exactly one reader per task
+# (single-flight: the check-then-create_task below is synchronous, so concurrent
+# poll coroutines can't double-attach within the event loop). The server
+# shutdown path cancels them via shutdown_readers.
+_REATTACH_READERS: dict[tuple[str, str], Any] = {}
+
+
+def _ensure_reattach_readers(state, step_id, task_ids, *, cert=None,
+                             require=None) -> list[str]:
+    """Start a ReattachReader for each `reparenting` task in this step that
+    isn't already owned by a live reader. Synchronous (no await) so the
+    check-then-set is atomic in the event loop = single-flight. Returns the
+    task ids whose readers were started this call."""
+    import asyncio as _asyncio
+    from .parallel_exec import ReattachReader
+
+    task_ids = list(task_ids)
+    started: list[str] = []
+    for tid in task_ids:
+        ts = state.parallel_tasks.get(tid)
+        if ts is None or ts.state != "reparenting":
+            continue
+        key = (state.flow_id, tid)
+        existing = _REATTACH_READERS.get(key)
+        if existing is not None and not existing.done():
+            continue
+        reader = ReattachReader(
+            state, step_id, tid,
+            model_id=getattr(state, "model_id", None),
+            cert=cert,
+            require=require,
+            sibling_task_ids=task_ids,
+        )
+        _REATTACH_READERS[key] = _asyncio.create_task(reader.run())
+        started.append(tid)
+    return started
 
 
 def _serialized_task_status(state: str) -> str:
@@ -1255,7 +1325,10 @@ async def stratum_parallel_start(
     already = [
         tid for tid, ts in state.parallel_tasks.items()
         # STRAT-WORKFLOW-PIPELINE-ROUTE: `skipped` is past-pending (terminal) too.
-        if ts.state in ("running", "complete", "failed", "cancelled", "skipped")
+        # T2-F5-RESUME: `reparenting` is also past-pending (already dispatched,
+        # re-attaching) — reject re-start, kick the caller to poll.
+        if ts.state in ("running", "complete", "failed", "cancelled", "skipped",
+                        "reparenting")
     ]
     if already or (flow_id, step_id) in _RUNNING_EXECUTORS:
         return {
@@ -1391,15 +1464,28 @@ async def stratum_parallel_poll(
             ),
         }
 
+    # T2-F5-RESUME: a flow restored after a restart may carry `reparenting`
+    # tasks (live codex children re-classified on boot). Lazily start one
+    # ReattachReader per task (single-flight) before reporting status; later
+    # polls observe their progress to terminal.
+    if any(ts.state == "reparenting" for ts in ts_map.values()):
+        _ensure_reattach_readers(
+            state, step_id, list(ts_map.keys()),
+            cert=getattr(step, "task_reasoning_template", None),
+            require=getattr(step, "require", None) or "all",
+        )
+
     # Build summary counts.
     summary = {"pending": 0, "running": 0, "complete": 0, "failed": 0,
-               "cancelled": 0, "skipped": 0}  # STRAT-WORKFLOW-PIPELINE-ROUTE
+               "cancelled": 0, "skipped": 0,
+               "reparenting": 0}  # T2-F5-RESUME: non-terminal, already-dispatched
     for ts in ts_map.values():
         if ts.state in summary:
             summary[ts.state] += 1
 
     all_terminal = all(
         # STRAT-WORKFLOW-PIPELINE-ROUTE: `skipped` is terminal.
+        # T2-F5-RESUME: `reparenting` is NOT terminal (still in flight).
         ts.state in ("complete", "failed", "cancelled", "skipped")
         for ts in ts_map.values()
     )
@@ -3978,21 +4064,24 @@ def main() -> None:
 
     _self_install_hooks_on_startup()
 
-    # T14 — startup resume: flip any persisted parallel_tasks still in the
-    # 'running' state (from a prior crashed/killed server) to 'failed' so
+    # T14 / T2-F5-RESUME — startup classify: each persisted parallel_task still
+    # in the 'running' state (from a prior crashed/killed server) is either
+    # re-attachable (a live codex durable child → 'reparenting', the next poll
+    # starts a ReattachReader) or not (→ 'failed', today's behavior) so
     # consumers observe the interruption instead of a stuck status.
     from .executor import _FLOWS_DIR
     from .parallel_exec import (
-        resume_interrupted_parallel_tasks,
+        classify_interrupted_parallel_tasks,
         shutdown_all as _parallel_shutdown_all,
+        shutdown_readers as _parallel_shutdown_readers,
     )
     try:
-        resume_interrupted_parallel_tasks(_FLOWS_DIR)
+        classify_interrupted_parallel_tasks(_FLOWS_DIR)
     except Exception as exc:
         # Never let a startup best-effort fixup block the server from
         # coming up.
         print(
-            f"stratum-mcp: warning: resume_interrupted_parallel_tasks "
+            f"stratum-mcp: warning: classify_interrupted_parallel_tasks "
             f"failed: {exc}",
             file=sys.stderr,
         )
@@ -4005,11 +4094,31 @@ def main() -> None:
     try:
         mcp.run(transport="stdio")
     finally:
+        # T2-F5-RESUME (review #1): mark every live executor as detaching BEFORE
+        # cancelling, so reparentable (codex durable-stream) children survive the
+        # shutdown instead of being killed. shutdown_all only receives the task
+        # handle registry and cannot reach the executor objects, so the flag must
+        # be set here on the _PARALLEL_EXECUTORS instances.
+        for _ex in list(_PARALLEL_EXECUTORS.values()):
+            try:
+                _ex._detaching = True
+            except Exception:
+                pass
         try:
             _parallel_shutdown_all(_RUNNING_EXECUTORS)
         except Exception as exc:
             print(
                 f"stratum-mcp: warning: shutdown_all failed: {exc}",
+                file=sys.stderr,
+            )
+        # T2-F5-RESUME (S6): cancel any in-flight ReattachReaders. They only
+        # read-and-persist-at-terminal, so a cancel loses at most the un-persisted
+        # tail — recovered on the next boot's re-attach from the persisted offset.
+        try:
+            _parallel_shutdown_readers(_REATTACH_READERS)
+        except Exception as exc:
+            print(
+                f"stratum-mcp: warning: shutdown_readers failed: {exc}",
                 file=sys.stderr,
             )
 

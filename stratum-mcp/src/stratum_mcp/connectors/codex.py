@@ -23,6 +23,7 @@ import signal
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from stratum.judge.sandbox import (
@@ -33,6 +34,7 @@ from stratum.judge.sandbox import (
 )
 
 from ..events import INTERNAL_RESULT_KIND, ConnectorEvent
+from ..proc_identity import proc_start_time
 from .base import AgentConnector, Event, inject_schema
 
 CODEX_MODEL_IDS: frozenset[str] = frozenset(
@@ -86,6 +88,129 @@ _AUTH_ERROR_MARKERS = (
 
 STALL_TIMEOUT_SECONDS = 120
 STALL_CHECK_INTERVAL_SECONDS = 30
+
+# T2-F5-RESUME: durable-stream mode.
+# The completion sentinel the wrapper appends to $T2F5_OUT after the codex
+# child exits — `{"__t2f5_done__": <rc>}`. This durable record, NOT the
+# connector's in-memory result, is the authoritative completion signal a fresh
+# process re-attaches to after a server restart.
+T2F5_DONE_SENTINEL = "__t2f5_done__"
+
+# Internal ConnectorEvent kind for a codex `{"type":"error"}` record. Never
+# reaches the wire: the stream caller interprets it (live mode raises
+# immediately; durable mode records the first one and fails after the sentinel).
+_CODEX_ERROR_KIND = "_codex_error"
+
+# POSIX-shell wrapper around the FINAL codex argv. It runs the command with
+# durable file redirections (the shell opens the files itself — no parent pipe,
+# so no SIGPIPE/EPIPE after the server dies) and then, crucially, STAYS ALIVE
+# (no `exec`) to append the completion sentinel carrying the child's exit code.
+# `start_new_session=True` on the spawn makes this shell the session/process-
+# group leader, so NO inner `setsid` is needed. `"$@"` is the final argv —
+# already jail-wrapped when read-jail is active — so the durable wrapper sits
+# OUTSIDE the jail wrapper and composes with both.
+_T2F5_WRAPPER = (
+    '"$@" > "$T2F5_OUT" 2> "$T2F5_ERR" < "$T2F5_IN"; rc=$?; '
+    'printf \'{"__t2f5_done__":%d}\\n\' "$rc" >> "$T2F5_OUT"; '
+    'exit "$rc"'
+)
+
+
+def _read_text_file(path: str) -> str:
+    """Best-effort read of a durable side-file ($T2F5_ERR). '' if absent."""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except (FileNotFoundError, OSError):
+        return ""
+
+
+def _emit_for_codex_event(
+    event: dict, *, model: str, prompt: str
+) -> list[ConnectorEvent]:
+    """Map ONE ``codex exec --json`` JSONL record to zero or more ConnectorEvents.
+
+    Stateless on purpose (T2-F5-RESUME S1): the caller owns the ``agent_started``
+    dedup, the assistant-text accumulation, and the error-handling decision, so
+    the same mapping drives both the live PIPE/file read loop and the re-attach
+    file tailer. A ``{"type":"error"}`` record maps to the internal
+    :data:`_CODEX_ERROR_KIND` event the caller interprets — it is NOT forwarded
+    to the wire.
+    """
+    etype = event.get("type")
+    out: list[ConnectorEvent] = []
+    if etype == "thread.started":
+        out.append(ConnectorEvent(
+            kind="agent_started",
+            metadata={
+                "agent": _AGENT_NAME,
+                "model": model,
+                "prompt_chars": len(prompt),
+            },
+        ))
+    elif etype == "item.completed" and event.get("item"):
+        item = event["item"]
+        itype = item.get("type")
+        if itype == "agent_message":
+            text = item.get("text") or ""
+            if text:
+                out.append(ConnectorEvent(
+                    kind="agent_relay",
+                    metadata={"text": text, "role": "assistant"},
+                ))
+        elif itype == "command_execution":
+            cmd = item.get("command")
+            if cmd is None:
+                cmd = (item.get("input") or {}).get("command") or ""
+            cmd_s = str(cmd)
+            summary = cmd_s if len(cmd_s) <= 80 else cmd_s[:77] + "..."
+            exit_code = item.get("exit_code")
+            ok = exit_code == 0 if exit_code is not None else True
+            out.append(ConnectorEvent(
+                kind="tool_use_summary",
+                metadata={
+                    "tool": "bash",
+                    "summary": summary,
+                    "ok": bool(ok),
+                    "duration_ms": int(item.get("duration_ms") or 0),
+                },
+            ))
+        elif itype == "reasoning":
+            text = item.get("text") or ""
+            if text:
+                out.append(ConnectorEvent(
+                    kind="agent_relay",
+                    metadata={"text": text, "role": "system"},
+                ))
+        elif itype == "file_change":
+            path = item.get("path") or ""
+            out.append(ConnectorEvent(
+                kind="tool_use_summary",
+                metadata={
+                    "tool": "edit",
+                    "summary": f"edit {path}"[:80],
+                    "ok": True,
+                    "duration_ms": 0,
+                },
+            ))
+    elif etype == "turn.completed" and event.get("usage"):
+        u = event["usage"]
+        out.append(ConnectorEvent(
+            kind="step_usage",
+            metadata={
+                "input_tokens": u.get("input_tokens") or 0,
+                "output_tokens": u.get("output_tokens") or 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": u.get("cached_input_tokens") or 0,
+                "cost_usd": 0,
+                "model": model,
+            },
+        ))
+    elif etype == "error":
+        out.append(ConnectorEvent(
+            kind=_CODEX_ERROR_KIND,
+            metadata={"message": event.get("message") or "codex error"},
+        ))
+    return out
 
 
 def _resolve_stdout_limit() -> int:
@@ -143,11 +268,22 @@ class CodexConnector(AgentConnector):
         cwd: Optional[str] = None,
         read_jail: Optional[str] = None,
         jail_driver: Optional[JailDriver] = None,
+        stream_path: Optional[str] = None,
+        stderr_path: Optional[str] = None,
     ):
         _assert_codex_model(model_id)
         self._default_model_id = model_id
         self._cwd = cwd or os.getcwd()
         self._proc: Optional[asyncio.subprocess.Process] = None
+        # T2-F5-RESUME: durable-stream mode. When `stream_path` is set, the
+        # codex child is spawned detached (start_new_session) under the
+        # `_T2F5_WRAPPER`, writing JSONL to a file it owns + a completion
+        # sentinel, so it survives a server restart and a fresh process can
+        # re-attach. None (every existing caller) → today's PIPE behavior
+        # byte-for-byte.
+        self._stream_path = stream_path
+        self._stderr_path = stderr_path
+        self._durable = stream_path is not None
         # STRAT-JUDGE-T3-READJAIL[-CODEXNEST]: when set, the codex subprocess
         # is confined by a non-nesting JailDriver (Docker) so it can read
         # only the staged turn tree. None = no jail (every existing caller
@@ -430,6 +566,18 @@ class CodexConnector(AgentConnector):
             clean_env.pop(var, None)
 
         codex_cmd = self._build_codex_cmd(args, clean_env)
+
+        # T2-F5-RESUME: durable-stream mode — spawn detached under the wrapper,
+        # tail the file the child owns. Shares _emit_for_codex_event with the
+        # live PIPE path below. None stream_path → today's PIPE path verbatim.
+        if self._durable:
+            async for ev in self._stream_events_durable(
+                codex_cmd, clean_env, resolved_cwd, resolved_model_id,
+                prompt, actual_prompt,
+            ):
+                yield ev
+            return
+
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *codex_cmd,
@@ -489,81 +637,23 @@ class CodexConnector(AgentConnector):
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                etype = event.get("type")
 
-                if etype == "thread.started" and not agent_started_yielded:
-                    agent_started_yielded = True
-                    yield ConnectorEvent(
-                        kind="agent_started",
-                        metadata={
-                            "agent": _AGENT_NAME,
-                            "model": resolved_model_id,
-                            "prompt_chars": len(prompt),
-                        },
-                    )
-                    continue
-
-                if etype == "item.completed" and event.get("item"):
-                    item = event["item"]
-                    itype = item.get("type")
-                    if itype == "agent_message":
-                        text = item.get("text") or ""
-                        if text:
-                            text_parts.append(text)
-                            yield ConnectorEvent(
-                                kind="agent_relay",
-                                metadata={"text": text, "role": "assistant"},
-                            )
-                    elif itype == "command_execution":
-                        cmd = item.get("command")
-                        if cmd is None:
-                            cmd = (item.get("input") or {}).get("command") or ""
-                        cmd_s = str(cmd)
-                        summary = cmd_s if len(cmd_s) <= 80 else cmd_s[:77] + "..."
-                        exit_code = item.get("exit_code")
-                        ok = exit_code == 0 if exit_code is not None else True
-                        yield ConnectorEvent(
-                            kind="tool_use_summary",
-                            metadata={
-                                "tool": "bash",
-                                "summary": summary,
-                                "ok": bool(ok),
-                                "duration_ms": int(item.get("duration_ms") or 0),
-                            },
-                        )
-                    elif itype == "reasoning":
-                        text = item.get("text") or ""
-                        if text:
-                            yield ConnectorEvent(
-                                kind="agent_relay",
-                                metadata={"text": text, "role": "system"},
-                            )
-                    elif itype == "file_change":
-                        path = item.get("path") or ""
-                        yield ConnectorEvent(
-                            kind="tool_use_summary",
-                            metadata={
-                                "tool": "edit",
-                                "summary": f"edit {path}"[:80],
-                                "ok": True,
-                                "duration_ms": 0,
-                            },
-                        )
-                elif etype == "turn.completed" and event.get("usage"):
-                    u = event["usage"]
-                    yield ConnectorEvent(
-                        kind="step_usage",
-                        metadata={
-                            "input_tokens": u.get("input_tokens") or 0,
-                            "output_tokens": u.get("output_tokens") or 0,
-                            "cache_creation_input_tokens": 0,
-                            "cache_read_input_tokens": u.get("cached_input_tokens") or 0,
-                            "cost_usd": 0,
-                            "model": resolved_model_id,
-                        },
-                    )
-                elif etype == "error":
-                    raise RuntimeError(event.get("message") or "codex error")
+                # Stateless mapping shared with the durable tailer; the caller
+                # keeps agent_started-dedup / text accumulation / error policy.
+                for emitted in _emit_for_codex_event(
+                    event, model=resolved_model_id, prompt=prompt,
+                ):
+                    if emitted.kind == _CODEX_ERROR_KIND:
+                        # Live PIPE path: a codex error is raised immediately.
+                        raise RuntimeError(emitted.metadata["message"])
+                    if emitted.kind == "agent_started":
+                        if agent_started_yielded:
+                            continue
+                        agent_started_yielded = True
+                    elif (emitted.kind == "agent_relay"
+                          and emitted.metadata.get("role") == "assistant"):
+                        text_parts.append(emitted.metadata["text"])
+                    yield emitted
 
             exit_code = await proc.wait()
             if exit_code != 0 and not text_parts:
@@ -586,12 +676,209 @@ class CodexConnector(AgentConnector):
             await self._cleanup_jail(proc)
             self._proc = None
 
+    async def _tail_stream(
+        self,
+        out_path: str,
+        start_offset: int = 0,
+        *,
+        is_alive=None,
+        poll_interval: float = 0.05,
+    ) -> AsyncIterator[tuple[dict, int]]:
+        """Yield ``(parsed_record, line_boundary_offset)`` for each complete
+        JSONL line in ``out_path`` from ``start_offset``.
+
+        The trailing partial line (a crash mid-write, or a record still being
+        flushed) is carried in the buffer and never handed to ``json.loads`` —
+        so a re-attach resumes from a clean line boundary. Stops after yielding
+        a record containing :data:`T2F5_DONE_SENTINEL`, or when ``is_alive()``
+        becomes False with no more complete lines (caller treats that as an
+        incomplete/failed task). Both the live durable path and the re-attach
+        reader use this one tailer.
+        """
+        offset = start_offset
+        buf = b""
+        while True:
+            try:
+                with open(out_path, "rb") as f:
+                    f.seek(offset)
+                    chunk = f.read()
+            except FileNotFoundError:
+                chunk = b""
+            if chunk:
+                offset += len(chunk)
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    s = line.decode("utf-8", errors="replace").strip()
+                    if not s:
+                        continue
+                    try:
+                        rec = json.loads(s)
+                    except json.JSONDecodeError:
+                        continue
+                    consumed = offset - len(buf)
+                    yield rec, consumed
+                    if isinstance(rec, dict) and T2F5_DONE_SENTINEL in rec:
+                        return
+                continue
+            # No new bytes available.
+            if is_alive is not None and not is_alive():
+                return
+            await asyncio.sleep(poll_interval)
+
+    async def _stream_events_durable(
+        self,
+        final_argv: list[str],
+        clean_env: dict,
+        resolved_cwd: str,
+        model: str,
+        prompt: str,
+        actual_prompt: str,
+    ) -> AsyncIterator[ConnectorEvent]:
+        """Durable, detached spawn + file-tail (T2-F5-RESUME S1).
+
+        Spawns ``final_argv`` under :data:`_T2F5_WRAPPER` with
+        ``start_new_session=True`` so the child outlives this connector, feeds
+        the prompt from ``$T2F5_IN``, and tails ``$T2F5_OUT`` to the sentinel.
+        Emits a synthetic ``durable_spawned`` event FIRST (before any codex
+        output) carrying the reparent handle, so a crash right after spawn is
+        still reparentable. The ``finally`` does NOT kill the child — only an
+        explicit :meth:`interrupt` does.
+        """
+        out_path = self._stream_path
+        assert out_path is not None
+        err_path = self._stderr_path or (out_path + ".err")
+        in_path = out_path + ".in"
+        Path(in_path).write_text(actual_prompt, encoding="utf-8")
+        # Truncate any prior content so the tailer starts clean.
+        open(out_path, "w").close()
+        open(err_path, "w").close()
+
+        wrapper_env = {
+            **clean_env,
+            "T2F5_OUT": out_path,
+            "T2F5_ERR": err_path,
+            "T2F5_IN": in_path,
+        }
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                "sh", "-c", _T2F5_WRAPPER, "sh", *final_argv,
+                cwd=resolved_cwd,
+                env=wrapper_env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"{_AGENT_NAME}: shell not found — durable-stream mode requires sh"
+            )
+        proc = self._proc
+
+        # Handle handoff (review #2): emit BEFORE any codex output so the
+        # executor can stamp + persist the reparent handle even if the child
+        # crashes before its first JSONL line.
+        yield ConnectorEvent(
+            kind="durable_spawned",
+            metadata={
+                "child_pid": proc.pid,
+                "stream_path": out_path,
+                "stderr_path": err_path,
+                "proc_start_time": proc_start_time(proc.pid),
+            },
+        )
+
+        # Reap the wrapper concurrently so returncode updates promptly and the
+        # tailer's liveness backstop fires even if the wrapper is hard-killed
+        # without writing a sentinel. Cancelling this wait on teardown does NOT
+        # kill the child — it only abandons our await.
+        wait_task = asyncio.ensure_future(proc.wait())
+        agent_started_yielded = False
+        text_parts: list[str] = []
+        error_message: Optional[str] = None
+        sentinel_rc: Optional[int] = None
+        try:
+            async for rec, _consumed in self._tail_stream(
+                out_path, 0, is_alive=lambda: not wait_task.done(),
+            ):
+                if isinstance(rec, dict) and T2F5_DONE_SENTINEL in rec:
+                    sentinel_rc = rec[T2F5_DONE_SENTINEL]
+                    break
+                for emitted in _emit_for_codex_event(
+                    rec, model=model, prompt=prompt,
+                ):
+                    if emitted.kind == _CODEX_ERROR_KIND:
+                        # Durable mode: record the FIRST error, keep tailing to
+                        # the sentinel (so a detached child is never terminalized
+                        # before it's actually done), fail with it afterwards.
+                        if error_message is None:
+                            error_message = emitted.metadata["message"]
+                        continue
+                    if emitted.kind == "agent_started":
+                        if agent_started_yielded:
+                            continue
+                        agent_started_yielded = True
+                    elif (emitted.kind == "agent_relay"
+                          and emitted.metadata.get("role") == "assistant"):
+                        text_parts.append(emitted.metadata["text"])
+                    yield emitted
+
+            # Live completion contract: the connector IS the parent here, so reap
+            # the wrapper and assert exit-status parity with the sentinel rc.
+            exit_code = await wait_task
+            if sentinel_rc is not None and exit_code != sentinel_rc:
+                raise RuntimeError(
+                    f"{_AGENT_NAME}: durable wrapper exit {exit_code} != "
+                    f"sentinel rc {sentinel_rc}"
+                )
+            rc = sentinel_rc if sentinel_rc is not None else exit_code
+            if error_message is not None:
+                raise RuntimeError(error_message)
+            if rc != 0 and not text_parts:
+                stderr_text = _read_text_file(err_path)
+                raise RuntimeError(
+                    stderr_text or f"codex exited with code {rc}"
+                )
+            full_text = "".join(text_parts)
+            if full_text:
+                yield ConnectorEvent(
+                    kind=INTERNAL_RESULT_KIND,
+                    metadata={"content": full_text},
+                )
+        finally:
+            # Durable teardown contract: do NOT kill/reap the child — it is a
+            # detached, durable-output process meant to outlive the connector
+            # (so a fresh process can re-attach). Killing happens ONLY via an
+            # explicit interrupt() (require-cascade / budget-exhaust). We only
+            # abandon our own wait_task; the child survives.
+            if not wait_task.done():
+                wait_task.cancel()
+                try:
+                    await wait_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            self._proc = None
+
     def interrupt(self) -> None:
-        """Send SIGTERM to the running codex subprocess. Idempotent."""
+        """Kill the running codex subprocess. Idempotent.
+
+        Durable-stream mode (T2-F5-RESUME): ``self._proc`` is the wrapper =
+        the session/process-group leader, and codex is its child, so a genuine
+        interrupt (require-cascade / budget-exhaust) must signal the whole
+        GROUP — signalling only the wrapper would orphan codex. Non-durable
+        mode keeps today's single-process SIGTERM.
+        """
         proc = self._proc
         if proc is None:
             return
         if proc.returncode is not None:
+            return
+        if self._durable:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                return
             return
         try:
             proc.send_signal(signal.SIGTERM)

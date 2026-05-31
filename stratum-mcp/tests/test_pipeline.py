@@ -288,7 +288,7 @@ def _pipeline_executor(monkeypatch, *, tasks, behavior, require="all",
     log: list[dict] = []
     agents_seen: list[tuple] = []
 
-    def fake_factory(agent_type, model_id, cwd):
+    def fake_factory(agent_type, model_id, cwd, **_kw):
         return ScriptedConnector(behavior, log, agent_type, agents_seen)
 
     monkeypatch.setattr(parallel_exec_mod, "make_agent_connector", fake_factory)
@@ -419,7 +419,7 @@ async def test_regression_codex_parallel_dispatch_still_certs(monkeypatch):
     monkeypatch.setattr(parallel_exec_mod, "validate_certificate",
                         lambda t, r: cert_calls.append(r) or [])
 
-    def fake_factory(agent_type, model_id, cwd):
+    def fake_factory(agent_type, model_id, cwd, **_kw):
         log, seen = [], []
         return ScriptedConnector(lambda p: {}, log, agent_type, seen)
 
@@ -729,7 +729,7 @@ def test_cert_instructions_injected_for_pipeline(monkeypatch):
 
 def test_no_injection_for_parallel_dispatch(monkeypatch):
     # is_pipeline=False (parallel_dispatch) → prompt construction byte-identical, no injection.
-    def fake_factory(a, m, c):
+    def fake_factory(a, m, c, **_kw):
         return ScriptedConnector(lambda p: {}, [], a, [])
     monkeypatch.setattr(parallel_exec_mod, "make_agent_connector", fake_factory)
     ex = ParallelExecutor(
