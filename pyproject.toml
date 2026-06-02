@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stratum-py"
-version = "0.2.62"
+version = "0.2.63"
 description = "LLM calls that behave like the rest of your code"
 readme = "README.md"
 license = {text = "Apache-2.0"}
