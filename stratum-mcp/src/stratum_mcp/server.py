@@ -4367,6 +4367,179 @@ async def stratum_flow_cancel_bg(flow_id: str, ctx: Context) -> dict[str, Any]:
     return {"status": final, "flow_id": flow_id}
 
 
+# ===========================================================================
+# STRAT-GUARD — standalone guarded-transition primitive
+# ---------------------------------------------------------------------------
+# Resource-agnostic, tamper-evident state transitions over the run_judge
+# verifier, for clients that manage a resource lifecycle OUTSIDE a stratum flow
+# (e.g. compose's feature tracker). See docs/features/STRAT-GUARD/.
+# Guard errors carry a stable .error_type; we convert them to the canonical
+# {status, error_type, message} dict rather than letting them cross the boundary.
+# ===========================================================================
+
+
+def _guard_error_dict(exc: "Exception") -> dict[str, Any]:
+    from stratum_mcp.guard.errors import GuardError
+
+    if isinstance(exc, GuardError):
+        return {"status": "error", "error_type": exc.error_type, "message": exc.message}
+    return {"status": "error", "error_type": type(exc).__name__, "message": str(exc)}
+
+
+@mcp.tool(description=(
+    "STRAT-GUARD: register a guarded resource (state machine) with per-edge "
+    "evidence predicates. Inputs: resource_id (str, client-namespaced e.g. "
+    "'compose:FEAT-1'), graph (dict[from_state -> list[to_state]]), "
+    "edge_predicates (dict['from->to' -> list of predicate dicts {id,type,statement}]), "
+    "initial (str, genesis state), terminal (list[str]), stakes (dict['from->to' -> "
+    "'cheap'|'default'|'paranoid']), workspace_root (abs dir for trusted file/git/command "
+    "evidence). Policy is checksummed and immutable — re-register identical is a no-op, "
+    "a different policy is rejected (use migrate). Returns {guard_id, checksum, status}."
+))
+async def stratum_guard_register(
+    resource_id: str,
+    graph: dict[str, list[str]],
+    edge_predicates: dict[str, list[dict[str, Any]]],
+    initial: str,
+    ctx: Context,
+    terminal: Optional[list[str]] = None,
+    stakes: Optional[dict[str, str]] = None,
+    workspace_root: Optional[str] = None,
+) -> dict[str, Any]:
+    from stratum_mcp.guard import register_guard
+
+    try:
+        return await register_guard(
+            resource_id=resource_id,
+            graph=graph,
+            edge_predicates=edge_predicates,
+            initial=initial,
+            terminal=terminal,
+            stakes=stakes,
+            workspace_root=workspace_root,
+        )
+    except Exception as exc:  # noqa: BLE001 — convert to canonical error dict
+        return _guard_error_dict(exc)
+
+
+@mcp.tool(description=(
+    "STRAT-GUARD: attempt a guarded transition from_state -> to_state. The edge must "
+    "be legal and from_state must equal the resource's current state. Trusted-evidence "
+    "predicates (server_file_exists/git_commit_exists/command_exit_zero/verdict_receipt_clean) "
+    "are verified server-side; any LLM-tier predicates route through the judge at the edge's "
+    "stakes. Inputs: resource_id, from_state, to_state, artifacts (dict[str,str] staged for "
+    "judge), modified_files (list[str]), idempotency_key (str|None), resolved_by (str). "
+    "Returns {status: applied|refused|replayed, verdict: JudgeResult-dict, ledger_ref, "
+    "current_state}. ledger_ref is the receipt token for verdict_receipt_clean."
+))
+async def stratum_guard_transition(
+    resource_id: str,
+    from_state: str,
+    to_state: str,
+    artifacts: dict[str, str],
+    ctx: Context,
+    modified_files: Optional[list[str]] = None,
+    idempotency_key: Optional[str] = None,
+    resolved_by: str = "agent",
+) -> dict[str, Any]:
+    from stratum_mcp.guard import guard_transition
+
+    try:
+        return await guard_transition(
+            resource_id=resource_id,
+            from_state=from_state,
+            to_state=to_state,
+            artifacts=artifacts,
+            modified_files=modified_files,
+            idempotency_key=idempotency_key,
+            resolved_by=resolved_by,
+            stratum_agent_run=stratum_agent_run,
+            ctx=ctx,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _guard_error_dict(exc)
+
+
+@mcp.tool(description=(
+    "STRAT-GUARD: the single sanctioned bypass of predicate verification. Requires an "
+    "out-of-band override_token (server env STRATUM_GUARD_OVERRIDE_TOKEN; not agent-mintable), "
+    "a human resolver, and a rationale. Moves a LEGAL edge without verifying its predicates and "
+    "records a 'deviation' ledger entry. Inputs: resource_id, from_state, to_state, "
+    "override_token, rationale, resolved_by ('human'). Returns {status: deviation, ledger_ref, "
+    "current_state, rationale}."
+))
+async def stratum_guard_override(
+    resource_id: str,
+    from_state: str,
+    to_state: str,
+    override_token: str,
+    rationale: str,
+    ctx: Context,
+    resolved_by: str = "human",
+) -> dict[str, Any]:
+    from stratum_mcp.guard import guard_override
+
+    try:
+        return await guard_override(
+            resource_id=resource_id,
+            from_state=from_state,
+            to_state=to_state,
+            override_token=override_token,
+            rationale=rationale,
+            resolved_by=resolved_by,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _guard_error_dict(exc)
+
+
+@mcp.tool(description=(
+    "STRAT-GUARD: evolve a registered guard's policy (graph/predicates/terminal/stakes). "
+    "Token-gated (STRATUM_GUARD_OVERRIDE_TOKEN) so an agent cannot silently weaken policy. "
+    "Bumps graph_version, writes a 'graph_version' ledger entry, and never relaxes an "
+    "in-flight resource's policy silently. The resource's current_state must remain a node "
+    "in the new graph. Inputs: resource_id, new_graph, new_edge_predicates, override_token, "
+    "rationale, new_terminal, new_stakes. Returns {status: migrated, checksum, graph_version, ledger_ref}."
+))
+async def stratum_guard_migrate(
+    resource_id: str,
+    new_graph: dict[str, list[str]],
+    new_edge_predicates: dict[str, list[dict[str, Any]]],
+    override_token: str,
+    rationale: str,
+    ctx: Context,
+    new_terminal: Optional[list[str]] = None,
+    new_stakes: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    from stratum_mcp.guard import guard_migrate
+
+    try:
+        return await guard_migrate(
+            resource_id=resource_id,
+            new_graph=new_graph,
+            new_edge_predicates=new_edge_predicates,
+            override_token=override_token,
+            rationale=rationale,
+            new_terminal=new_terminal,
+            new_stakes=new_stakes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _guard_error_dict(exc)
+
+
+@mcp.tool(description=(
+    "STRAT-GUARD: return a resource's current state and its append-only, hash-chained "
+    "transition/deviation ledger (the tamper-evident audit trail). Input: resource_id. "
+    "Returns {resource_id, current_state, graph_version, ledger: [LedgerEntry, ...]}."
+))
+async def stratum_guard_history(resource_id: str, ctx: Context) -> dict[str, Any]:
+    from stratum_mcp.guard import guard_history
+
+    try:
+        return guard_history(resource_id=resource_id)
+    except Exception as exc:  # noqa: BLE001
+        return _guard_error_dict(exc)
+
+
 def main() -> None:
     """Entry point: CLI subcommands or stdio MCP server."""
     if len(sys.argv) >= 2:

@@ -1,6 +1,6 @@
 # STRAT-GUARD — Standalone Guarded-Transition Primitive
 
-**Status:** DESIGN (Phase 1) — not implemented. This is an intent document; file:line references describe the *current* codebase the primitive will reuse, not shipped behavior of STRAT-GUARD.
+**Status:** IMPLEMENTED (2026-06-02) — shipped in `stratum-mcp/src/stratum_mcp/guard/` + 5 MCP tools. This remains the Phase-1 intent document; see [`blueprint.md`](./blueprint.md) for the verified build plan (which corrected the trusted-evidence-vs-T1-jail framing below) and [`report.md`](./report.md) for what shipped. file:line references here describe the pre-implementation codebase.
 **Owner:** stratum
 **First consumer:** compose (`COMP-MCP-ENFORCE`)
 **Created:** 2026-06-02

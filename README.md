@@ -482,6 +482,48 @@ Push a pipeline draft to the PipelineEditor UI via `.stratum/pipeline-draft.json
 
 ---
 
+## STRAT-GUARD — guarded transitions outside a flow
+
+`stratum_judge`/`stratum_gate_resolve` enforce guarantees **only inside a flow**. STRAT-GUARD exposes the same independent-verification engine (`run_judge`) as a standalone, resource-agnostic, tamper-evident state machine for clients that manage a resource lifecycle **outside** a stratum flow (e.g. compose's feature tracker). A client registers a transition graph with per-edge evidence predicates; stratum then permits a transition only if the edge is legal and its predicates verify against **trusted, server-read evidence** (not caller-staged claims). Every attempt — applied or refused — is appended to a hash-chained ledger. See `docs/features/STRAT-GUARD/`.
+
+### `stratum_guard_register`
+
+Register a guarded resource. The `(graph, edge_predicates, terminal, stakes)` policy is checksummed and immutable — re-registering an identical policy is a no-op; a different policy is rejected (use `stratum_guard_migrate`).
+
+**Inputs:** `resource_id` (str, client-namespaced e.g. `"compose:FEAT-1"`), `graph` (`dict[from -> list[to]]`), `edge_predicates` (`dict["from->to" -> list of {id,type,statement}]`), `initial` (str), `terminal` (list[str]), `stakes` (`dict["from->to" -> "cheap"|"default"|"paranoid"]`), `workspace_root` (abs dir, for file/git/command evidence).
+
+Predicate `type`: `"deterministic"` → server-side trusted evidence (`server_file_exists`/`git_commit_exists`/`command_exit_zero`/`verdict_receipt_clean`); `"verified"`/`"judged"` → LLM-tier, routed through `run_judge`. A `paranoid` edge must declare ≥1 trusted predicate.
+
+**Returns:** `{guard_id, checksum, status}`.
+
+### `stratum_guard_transition`
+
+Attempt `from_state -> to_state`. Trusted predicates are verified server-side; any LLM-tier predicates go through the judge at the edge's stakes. Optimistic concurrency: evaluation runs outside a per-resource lock, the commit re-validates state under it.
+
+**Inputs:** `resource_id`, `from_state`, `to_state`, `artifacts` (`dict[str,str]`), `modified_files` (list[str]), `idempotency_key` (str|None), `resolved_by` (str).
+
+**Returns:** `{status: applied|refused|replayed, verdict: JudgeResult-dict, ledger_ref, current_state}`. `ledger_ref` is the receipt token presented to `verdict_receipt_clean`.
+
+### `stratum_guard_override`
+
+The single sanctioned bypass of predicate verification. Requires an out-of-band `override_token` (server env `STRATUM_GUARD_OVERRIDE_TOKEN`, not agent-mintable), a human resolver, and a rationale. Moves a **legal** edge without verifying predicates and records a `deviation` ledger entry. Replaces a `force` flag.
+
+**Inputs:** `resource_id`, `from_state`, `to_state`, `override_token`, `rationale`, `resolved_by` (`"human"`).
+
+### `stratum_guard_migrate`
+
+Evolve a registered policy. Token-gated, bumps `graph_version`, writes a `graph_version` ledger entry, and never silently relaxes an in-flight resource's policy. The current state must remain a node in the new graph.
+
+**Inputs:** `resource_id`, `new_graph`, `new_edge_predicates`, `override_token`, `rationale`, `new_terminal`, `new_stakes`.
+
+### `stratum_guard_history`
+
+Return a resource's current state and its append-only, hash-chained transition/deviation ledger (the tamper-evident audit trail).
+
+**Inputs:** `resource_id`. **Returns:** `{resource_id, current_state, graph_version, ledger: [...]}`.
+
+---
+
 ## Step Types
 
 ### Function Steps
