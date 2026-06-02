@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-GUARD): `guard` CLI subcommand (COMP-MCP-ENFORCE seam)
+
+- **What:** `stratum-mcp guard <register|transition|override|migrate|history>` exposes the STRAT-GUARD library over the CLI so clients that reach stratum via subprocess (compose's `server/stratum-client.js`) can drive guarded transitions without speaking the MCP stdio protocol. Wire format: each action reads ONE JSON kwargs object from stdin and prints the result; domain errors print the canonical `{status:"error",...}` dict and exit non-zero, while a verdict **refusal** is a normal exit-0 `{status:"refused"}`. Thin wrappers over the existing `guard/` library (no new guard logic); `transition` passes the module `stratum_agent_run` so LLM-tier edges still verify from the CLI.
+- **Tests:** `stratum-mcp/tests/test_guard_cli.py` (7 — golden flow, idempotent register, override, error harness). Full `stratum-mcp/tests/` **1370 passed, 2 skipped**.
+
 ### stratum — feat(STRAT-GUARD): standalone guarded-transition primitive (tamper-evident state machine over run_judge)
 
 - **What:** five new MCP tools (`stratum_guard_register`/`transition`/`override`/`migrate`/`history`) expose stratum's independent-verification engine (`run_judge`) as a **resource-agnostic, tamper-evident state machine** for clients that manage a resource lifecycle **outside** a stratum flow. A client registers a transition graph + per-edge evidence predicates; a transition is permitted only if the edge is legal **and** its predicates verify against **trusted, server-read evidence**. First consumer is compose (`COMP-MCP-ENFORCE`), which today hand-rolls a bypassable copy (self-approving gates, `force`, unverified completion). The driving insight: `stratum_judge`/`gate_resolve` enforce guarantees only *inside* a flow keyed by `flow_id`+current step; the engine underneath (`run_judge`, `kernel.py:56`) is FlowState-light and reusable as-is.
