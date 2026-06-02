@@ -4034,6 +4034,76 @@ def _cmd_gate(args: list[str]) -> None:
     }))
 
 
+# ---------------------------------------------------------------------------
+# CLI subcommand: guard (COMP-MCP-ENFORCE seam)
+# ---------------------------------------------------------------------------
+
+# Each guard action maps to one library coroutine (history is sync). The wire
+# format is uniform: ONE JSON object of kwargs is read from stdin and forwarded
+# verbatim to the library function. This avoids per-field flag/escaping fragility
+# and lets compose's CLI-subprocess adapter (server/stratum-client.js) build a
+# kwargs object and pipe it. Domain errors are canonicalised via _guard_error_dict
+# and exit non-zero so the adapter maps them to {error}. A refusal (verdict not
+# met) is a NORMAL outcome — exit 0 with {status: "refused"}.
+_GUARD_ACTIONS = {"register", "transition", "override", "migrate", "history"}
+
+
+def _cmd_guard(args: list[str]) -> None:
+    import asyncio
+
+    from stratum_mcp.guard import (
+        guard_history,
+        guard_migrate,
+        guard_override,
+        guard_transition,
+        register_guard,
+    )
+
+    if not args or args[0] not in _GUARD_ACTIONS:
+        print(
+            f"Unknown guard action: {args[0] if args else '(none)'}. "
+            f"Expected one of: {', '.join(sorted(_GUARD_ACTIONS))}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    action = args[0]
+
+    try:
+        raw = sys.stdin.read()
+        kwargs = json.loads(raw) if raw.strip() else {}
+        if not isinstance(kwargs, dict):
+            raise ValueError("guard stdin payload must be a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps(_guard_error_dict(exc)))
+        sys.exit(1)
+
+    try:
+        if action == "register":
+            result = asyncio.run(register_guard(**kwargs))
+        elif action == "transition":
+            result = asyncio.run(
+                guard_transition(stratum_agent_run=stratum_agent_run, **kwargs)
+            )
+        elif action == "override":
+            result = asyncio.run(guard_override(**kwargs))
+        elif action == "migrate":
+            result = asyncio.run(guard_migrate(**kwargs))
+        else:  # history (sync)
+            result = guard_history(**kwargs)
+    except TypeError as exc:
+        # bad/missing kwargs for the chosen action
+        print(json.dumps(_guard_error_dict(exc)))
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 — canonicalise like the MCP tools
+        print(json.dumps(_guard_error_dict(exc)))
+        sys.exit(1)
+
+    print(json.dumps(result, indent=2))
+    # A guard-layer error dict can come back without raising (defence in depth).
+    if isinstance(result, dict) and result.get("status") == "error":
+        sys.exit(1)
+
+
 def _cmd_help() -> None:
     print("Usage: stratum-mcp <command> [options]")
     print()
@@ -4046,6 +4116,9 @@ def _cmd_help() -> None:
     print("  gate approve <flow_id> <step_id>   Approve a gate")
     print("  gate reject  <flow_id> <step_id>   Reject (kill) a gate")
     print("  gate revise  <flow_id> <step_id>   Send back for revision")
+    print("  guard <action>       Guarded-transition primitive (STRAT-GUARD); reads")
+    print("                       a JSON kwargs object from stdin. Actions:")
+    print("                       register|transition|override|migrate|history")
     print("  validate <file>      Validate a .stratum.yaml spec file")
     print("  compile <dir>        Compile tasks/*.md files to .stratum.yaml")
     print("  migrate <file>       Upgrade a .stratum.yaml spec to the latest IR version")
@@ -4565,6 +4638,9 @@ def main() -> None:
             return
         if cmd == "gate":
             _cmd_gate(sys.argv[2:])
+            return
+        if cmd == "guard":
+            _cmd_guard(sys.argv[2:])
             return
         if cmd == "migrate":
             from . import migrate as _migrate
