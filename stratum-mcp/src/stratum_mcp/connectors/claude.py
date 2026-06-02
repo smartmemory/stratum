@@ -15,12 +15,22 @@ from claude_agent_sdk import (
     ResultMessage,
     query,
 )
-from claude_agent_sdk.types import TextBlock, ToolUseBlock
+from claude_agent_sdk.types import (
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
 
 from ..events import INTERNAL_RESULT_KIND, ConnectorEvent
 from .base import SENSITIVE_ENV_VARS, AgentConnector, Event, inject_schema
 
 DEFAULT_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+
+# STRAT-PAR-STREAM-TOOLDETAIL: cap raw tool input / result text surfaced on the
+# stream. The raw input is already visible to the agent + host, so v1 size-caps
+# only (no secret redaction — documented residual in the design doc).
+_TOOL_DETAIL_CAP = 2048
 
 
 class ClaudeConnector(AgentConnector):
@@ -189,6 +199,11 @@ class ClaudeConnector(AgentConnector):
                                 metadata={"text": block.text, "role": "assistant"},
                             )
                         elif isinstance(block, ToolUseBlock):
+                            # STRAT-PAR-STREAM-TOOLDETAIL: enrich the tool CALL
+                            # event with raw (size-capped) input + a tool_use_id
+                            # so consumers can recover input.file_path and
+                            # correlate with the tool_result event. tool/summary/
+                            # ok/duration_ms retained for back-compat.
                             yield ConnectorEvent(
                                 kind="tool_use_summary",
                                 metadata={
@@ -196,8 +211,30 @@ class ClaudeConnector(AgentConnector):
                                     "summary": _short_input_summary(block.input or {}),
                                     "ok": True,
                                     "duration_ms": 0,
+                                    "input": _capped_tool_input(block.input or {}),
+                                    "tool_use_id": block.id,
                                 },
                             )
+                elif isinstance(msg, UserMessage):
+                    # STRAT-PAR-STREAM-TOOLDETAIL: the SDK delivers tool RESULTS
+                    # as ToolResultBlocks inside a UserMessage. Emit a tool_result
+                    # event per block with ok (= not is_error) + size-capped
+                    # output, correlated to the call via tool_use_id. content may
+                    # be a string OR a list of content blocks — coerce safely.
+                    content = msg.content
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, ToolResultBlock):
+                                yield ConnectorEvent(
+                                    kind="tool_result",
+                                    metadata={
+                                        "tool_use_id": block.tool_use_id,
+                                        "ok": not getattr(block, "is_error", False),
+                                        "output": _cap_text(
+                                            _tool_result_text(block.content)
+                                        ),
+                                    },
+                                )
                 elif isinstance(msg, ResultMessage):
                     if msg.result:
                         final_text = msg.result
@@ -248,12 +285,76 @@ def _short_input_summary(inp: dict, limit: int = 80) -> str:
     return s if len(s) <= limit else s[: limit - 3] + "..."
 
 
+def _cap_text(s: str, limit: int = _TOOL_DETAIL_CAP) -> str:
+    """Size-cap a string for the stream so the emitted value stays within
+    ``limit`` characters INCLUDING the truncation marker. Over-cap → keep a
+    prefix and append ``"…[truncated N chars]"`` (N = chars dropped).
+
+    STRAT-PAR-STREAM-TOOLDETAIL Decision 4 (character-based cap, ~2 KiB ASCII).
+    """
+    if len(s) <= limit:
+        return s
+    # Reserve room for the marker using len(s) as an upper bound on the dropped
+    # count, so kept + marker is guaranteed <= limit (its digit count can only
+    # shrink for the real, smaller dropped value).
+    keep = max(0, limit - len(f"…[truncated {len(s)} chars]"))
+    dropped = len(s) - keep
+    return s[:keep] + f"…[truncated {dropped} chars]"
+
+
+def _capped_tool_input(inp: Any) -> Any:
+    """Surface the raw tool ``input`` on the stream, size-capped.
+
+    Shallow: under-cap dicts pass through unchanged so a consumer can read
+    ``input.file_path`` structurally (STRAT-PAR-STREAM-TOOLDETAIL Decision 1).
+    Over-cap inputs collapse to the capped JSON string with a truncation marker.
+    """
+    if not isinstance(inp, dict):
+        inp = {} if inp is None else inp
+    try:
+        serialized = json.dumps(inp)
+    except (TypeError, ValueError):
+        serialized = str(inp)
+    if len(serialized) <= _TOOL_DETAIL_CAP:
+        # Return the raw dict (not the JSON string) so structural access works.
+        return inp
+    return _cap_text(serialized)
+
+
+def _tool_result_text(content: Any) -> str:
+    """Coerce a ToolResultBlock's ``content`` (str | list[dict|block] | None)
+    into a single string. STRAT-PAR-STREAM-TOOLDETAIL Decision 2."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                # SDK content blocks are {"type": "text", "text": "..."} etc.
+                text = item.get("text")
+                parts.append(text if isinstance(text, str) else json.dumps(item))
+            else:
+                text = getattr(item, "text", None)
+                parts.append(text if isinstance(text, str) else str(item))
+        return "\n".join(parts)
+    return str(content)
+
+
 def _normalize(msg: Any, active_model: str) -> list[Event]:
     """Convert an SDK message into zero or more envelope events.
 
     SDK usage fields are plain dicts (type: dict[str, Any] | None). AssistantMessage
     has `content` (list of blocks) and optional `usage`. ResultMessage has `result`
     (final text) and optional `usage`.
+
+    STRAT-PAR-STREAM-TOOLDETAIL note: this non-streaming `run()` path already
+    surfaces the full raw `input` on its `tool_use` event (uncapped) and feeds the
+    legacy Node-envelope consumer, NOT parallel_dispatch. The tool-detail
+    enrichment (tool_use_id + tool_result) lives only on the streaming
+    `stream_events()` loop, which is what feeds parallel_dispatch. Left
+    unenriched here to keep the run() envelope contract stable.
     """
     if isinstance(msg, AssistantMessage):
         events: list[Event] = []

@@ -13,6 +13,13 @@ Schema history:
             Adds optional top-level reply_required: boolean (Option A,
             STRAT-PAR-STREAM-CONSUMER-VALIDATE).
             Contract: contracts/build-stream-event.v0.2.6.schema.json
+  v0.2.7 — STRAT-PAR-STREAM-TOOLDETAIL: enriches the claude streaming connector.
+            `tool_use_summary` metadata gains optional `input` (raw, size-capped
+            tool input) + `tool_use_id`; a new `tool_result` kind carries
+            {tool_use_id, ok, output} per ToolResultBlock. Both ride the existing
+            open catch-all metadata block (no new closed schema). The 6 closed
+            kinds are unchanged.
+            Contract: contracts/build-stream-event.v0.2.7.schema.json
 
 `INTERNAL_RESULT_KIND` is a private kind used by `stream_events()` to hand
 the final agent text back to the executor without polluting the wire schema.
@@ -51,8 +58,8 @@ class BuildStreamEvent:
     kind: str
     metadata: dict[str, Any]
     task_id: Optional[str] = None
-    # STRAT-PAR-STREAM-LEGACY-CLOSE: bumped to v0.2.6
-    schema_version: str = "0.2.6"
+    # STRAT-PAR-STREAM-TOOLDETAIL: bumped to v0.2.7
+    schema_version: str = "0.2.7"
     # STRAT-PAR-STREAM-CONSUMER-VALIDATE Option A: reply_required reserved slot.
     # False for all current live kinds; true for future gate/permission/question kinds.
     reply_required: bool = False
