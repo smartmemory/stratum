@@ -251,6 +251,11 @@ def _translate_opencode_event(event: dict, resolved_model: str) -> list[Event]:
         return []
 
     if etype == "tool_use":
+        # STRAT-PAR-STREAM-TOOLDETAIL parity note: opencode has no stream_events()
+        # (only this run()/_translate path), so it does NOT feed parallel_dispatch's
+        # per-task stream — no tool_detail enrichment is needed here. The raw input
+        # is already surfaced on the tool_use event below; tool_use_id is not in
+        # opencode's event model. Gap left intentionally (see design Decision 5).
         part = event.get("part") or {}
         state = part.get("state") or {}
         input_ = state.get("input") or {}

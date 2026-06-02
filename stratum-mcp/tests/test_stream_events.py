@@ -44,7 +44,7 @@ def test_build_stream_event_to_json_round_trip():
         metadata={"text": "hello", "role": "assistant"},
     )
     obj = json.loads(ev.to_json())
-    assert obj["schema_version"] == "0.2.6"
+    assert obj["schema_version"] == "0.2.7"
     assert obj["flow_id"] == "f1"
     assert obj["step_id"] == "execute"
     assert obj["task_id"] == "t1"
@@ -93,7 +93,9 @@ class _FakeTextBlock:
 
 
 class _FakeToolUseBlock:
-    def __init__(self, name, input_):
+    def __init__(self, name, input_, id="toolu_fake"):
+        # Mirrors claude_agent_sdk.types.ToolUseBlock (id, name, input).
+        self.id = id
         self.name = name
         self.input = input_
 
@@ -154,6 +156,9 @@ async def test_claude_stream_events_translation():
     assert tus.metadata["ok"] is True
     assert tus.metadata["duration_ms"] == 0
     assert tus.metadata["summary"] == "/tmp/x"
+    # STRAT-PAR-STREAM-TOOLDETAIL: raw input + tool_use_id now ride along.
+    assert tus.metadata["input"] == {"file_path": "/tmp/x"}
+    assert tus.metadata["tool_use_id"] == "toolu_fake"
     assert events[-1].kind == INTERNAL_RESULT_KIND
     assert events[-1].metadata == {"content": "done"}
 
@@ -262,9 +267,13 @@ async def test_codex_stream_events_translation():
         "summary": "ls -la",
         "ok": True,
         "duration_ms": 42,
+        # STRAT-PAR-STREAM-TOOLDETAIL parity: codex bash summary now carries input.
+        "input": {"command": "ls -la"},
     }
     edit = next(e for e in events if e.kind == "tool_use_summary" and e.metadata["tool"] == "edit")
     assert edit.metadata["summary"] == "edit /tmp/x.py"
+    # STRAT-PAR-STREAM-TOOLDETAIL parity: codex file_change exposes input.file_path.
+    assert edit.metadata["input"] == {"file_path": "/tmp/x.py"}
     reasoning = next(
         e for e in events if e.kind == "agent_relay" and e.metadata.get("role") == "system"
     )
@@ -376,7 +385,7 @@ async def test_run_one_emits_envelopes(monkeypatch):
     assert drained[1].kind == "tool_use_summary"
     assert drained[2].kind == "agent_relay"
     for e in drained:
-        assert e.schema_version == "0.2.6"
+        assert e.schema_version == "0.2.7"
         assert e.flow_id == "f1"
         assert e.step_id == "execute"
 

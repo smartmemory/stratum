@@ -95,7 +95,7 @@ async def test_streaming_emits_envelopes_in_order(monkeypatch):
     ]
     cid = result["correlation_id"]
     for p in parsed:
-        assert p["schema_version"] == "0.2.6"
+        assert p["schema_version"] == "0.2.7"
         assert p["flow_id"] == cid
         assert p["step_id"] == "_agent_run"
         assert "task_id" not in p

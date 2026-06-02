@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-PAR-STREAM-TOOLDETAIL): per-task tool-use detail in the parallel-dispatch stream
+
+- **What:** the streaming **claude** connector now surfaces, per tool call, the raw (size-capped) tool **input** + a `tool_use_id` on `tool_use_summary`, and emits a new **`tool_result`** event (`{tool_use_id, ok, output}`) per `ToolResultBlock` in a `UserMessage` — so a stream consumer can recover `input.file_path` structurally and observe per-call success/error text. Previously `tool_use_summary` carried only `{tool, summary(80-char), ok:true (hardcoded), duration_ms}` on the call (no raw input, no result/error), making per-task observability impossible. First consumer: compose `COMP-GSD-5` (gsd stuck detection).
+- **Schema:** `BuildStreamEvent.schema_version` 0.2.6 → **0.2.7** (new `contracts/build-stream-event.v0.2.7.schema.json`). `tool_use_summary` + `tool_result` ride the open catch-all (no closed-kind change; the 6 closed kinds are byte-identical). Compose consumer accepts 0.2.7 (`build-stream-schema.js` `KNOWN_VERSIONS`).
+- **Caps/parity:** input/output each capped to ≤2048 chars *including* a `…[truncated N chars]` marker (`_cap_text`); the codex connector is brought to parity (raw `input.command` capped at the same tool-detail bound, **not** the ~4 MiB stdout cap); opencode has no parallel-dispatch stream path (noted, no change).
+- **Tests:** `tests/test_stream_tooldetail.py` (14) + strengthened existing connector/version-pin assertions. Full `stratum-mcp/tests/` **1384 passed, 2 skipped**. Codex review 2 rounds (cap exceeded bound + reported bytes-not-chars; codex parity used the 4 MiB cap) → **REVIEW CLEAN**. `docs/features/STRAT-PAR-STREAM-TOOLDETAIL/design.md`.
+
 ### stratum — feat(STRAT-GUARD): `guard` CLI subcommand (COMP-MCP-ENFORCE seam)
 
 - **What:** `stratum-mcp guard <register|transition|override|migrate|history>` exposes the STRAT-GUARD library over the CLI so clients that reach stratum via subprocess (compose's `server/stratum-client.js`) can drive guarded transitions without speaking the MCP stdio protocol. Wire format: each action reads ONE JSON kwargs object from stdin and prints the result; domain errors print the canonical `{status:"error",...}` dict and exit non-zero, while a verdict **refusal** is a normal exit-0 `{status:"refused"}`. Thin wrappers over the existing `guard/` library (no new guard logic); `transition` passes the module `stratum_agent_run` so LLM-tier edges still verify from the CLI.

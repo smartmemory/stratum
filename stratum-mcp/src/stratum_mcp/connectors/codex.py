@@ -172,6 +172,10 @@ def _emit_for_codex_event(
                     "summary": summary,
                     "ok": bool(ok),
                     "duration_ms": int(item.get("duration_ms") or 0),
+                    # STRAT-PAR-STREAM-TOOLDETAIL parity: surface raw input so
+                    # consumers can read it structurally. Codex's event model has
+                    # no per-call tool_use_id, so that field is omitted (gap).
+                    "input": {"command": cmd_s[:_TOOL_DETAIL_CAP]},
                 },
             ))
         elif itype == "reasoning":
@@ -190,6 +194,10 @@ def _emit_for_codex_event(
                     "summary": f"edit {path}"[:80],
                     "ok": True,
                     "duration_ms": 0,
+                    # STRAT-PAR-STREAM-TOOLDETAIL parity: expose the changed path
+                    # as input.file_path so same-file thrash is detectable.
+                    # (Codex has no per-call tool_use_id — omitted, noted gap.)
+                    "input": {"file_path": path},
                 },
             ))
     elif etype == "turn.completed" and event.get("usage"):
@@ -234,6 +242,10 @@ def _resolve_stdout_limit() -> int:
 
 
 _CODEX_STDOUT_LIMIT = _resolve_stdout_limit()
+# STRAT-PAR-STREAM-TOOLDETAIL: cap the raw `input` surfaced on tool_use_summary
+# at the same ~2 KiB tool-detail bound the claude connector uses, so per-call
+# stream payloads stay consistent across connectors (NOT the ~4 MiB stdout cap).
+_TOOL_DETAIL_CAP = 2048
 _CHUNK_OVERRUN_HINT = (
     "codex stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES "
     f"(current limit {_CODEX_STDOUT_LIMIT} bytes). Raise the env knob and retry."
