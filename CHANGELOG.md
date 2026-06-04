@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### stratum — feat(COMP-PAR-MERGE-QUEUE-CONSUMER): surface the resolved pre-merge gate + structured parallel_done
+
+Substrate for the Compose consumer-dispatch gate (agents run in Compose, not Stratum's `_run_one`).
+
+- **Shared resolver** (`executor.py` `resolve_pre_merge_verify`): the `pre_merge_verify` resolution (list / `$.input.*` ref → list, dangling ref → `[]`) is now one function used by both the server-start site (`server.py`, via alias) and the dispatch-surface builder.
+- **Dispatch surface** (`executor.py` `get_current_step_info`): the parallel_dispatch envelope now carries the **resolved `pre_merge_verify`** so the Compose consumer path can enforce it — added **only when non-empty**, so a step without a gate produces a byte-identical envelope.
+- **`stratum_parallel_done`** (`server.py`): accepts `merge_status` as a bare string (back-compat) **or** a structured `{status, bounced_tasks}` (the consumer assembles gate-failed + merge-conflict bounces Compose-side). `_evaluate_parallel_results` derives human-readable `violations` strings from the structured bounces (appended to `per_task_cert_strs`).
+- Full `stratum-mcp/tests/` **1413 passing**; Codex review → CLEAN.
+
 ### stratum — feat(COMP-PAR-MERGE-QUEUE): per-task pre-merge verify gate + bounce-into-reprompt for parallel_dispatch
 
 - **What:** an optional **`pre_merge_verify`** gate on `parallel_dispatch` (isolation=worktree, server-dispatch). A list of shell commands (or a `$.input.*` JSONPath ref resolved from a flow input) runs in each task's worktree, via `worktree.run_pre_merge_gate`, **before** its diff is captured — first non-zero exit (or not-found / timeout) marks the task `failed`, records a structured `gate_failed` bounce on its state, and **skips diff capture** so the bad work never merges. `node_modules` is best-effort symlinked from base (bare worktrees lack it). Absent ⇒ byte-identical (no gate).

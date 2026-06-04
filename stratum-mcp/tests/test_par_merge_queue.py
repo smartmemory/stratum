@@ -199,3 +199,127 @@ def test_render_prompt_without_bounce_is_unchanged():
     ex = _exec_with_tasks({"t1": ts})
     prompt = ex._render_prompt({"id": "t1"})
     assert prompt == "Implement t1"
+
+
+# ---------------------------------------------------------------------------
+# COMP-PAR-MERGE-QUEUE-CONSUMER: resolved pre_merge_verify on the dispatch surface
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+from stratum_mcp.executor import _flows, get_current_step_info  # noqa: E402
+from stratum_mcp.server import stratum_plan, stratum_step_done  # noqa: E402
+
+_SPEC_GATE_SURFACE = """\
+version: "0.3"
+contracts:
+  TaskGraph:
+    tasks: {type: array}
+flows:
+  main:
+    input: {}
+    steps:
+      - id: analyze
+        type: decompose
+        agent: claude
+        intent: "Break down"
+        output_contract: TaskGraph
+      - id: execute
+        type: parallel_dispatch
+        source: "$.steps.analyze.output.tasks"
+        agent: claude
+        isolation: worktree
+        require: all
+        pre_merge_verify: ["pnpm lint", "pnpm build"]
+        intent_template: "Do: {desc}"
+        depends_on: [analyze]
+"""
+
+
+def test_dispatch_surface_carries_resolved_pre_merge_verify():
+    """get_current_step_info surfaces the resolved gate so the Compose
+    consumer-dispatch path can enforce it."""
+    async def _drive():
+        result = await stratum_plan(spec=_SPEC_GATE_SURFACE, flow="main", inputs={}, ctx=None)
+        flow_id = result["flow_id"]
+        task_graph = {"tasks": [{"id": "t1", "desc": "x", "files_owned": ["a.py"], "depends_on": []}]}
+        await stratum_step_done(flow_id, "analyze", task_graph, ctx=None)
+        return _flows[flow_id]
+
+    state = asyncio.run(_drive())
+    try:
+        surface = get_current_step_info(state)
+        assert surface["step_mode"] == "parallel_dispatch"
+        assert surface["pre_merge_verify"] == ["pnpm lint", "pnpm build"]
+    finally:
+        _flows.pop(state.flow_id, None)
+
+
+def test_dispatch_surface_omits_pre_merge_verify_when_absent():
+    """A parallel step without pre_merge_verify omits the key entirely (byte-identical
+    envelope — the consumer reads `dispatchResponse.pre_merge_verify ?? []`)."""
+    async def _drive():
+        spec = _SPEC_GATE_SURFACE.replace(
+            '        pre_merge_verify: ["pnpm lint", "pnpm build"]\n', ""
+        )
+        result = await stratum_plan(spec=spec, flow="main", inputs={}, ctx=None)
+        flow_id = result["flow_id"]
+        task_graph = {"tasks": [{"id": "t1", "desc": "x", "files_owned": ["a.py"], "depends_on": []}]}
+        await stratum_step_done(flow_id, "analyze", task_graph, ctx=None)
+        return _flows[flow_id]
+
+    state = asyncio.run(_drive())
+    try:
+        surface = get_current_step_info(state)
+        # Byte-identical: the key is omitted entirely when no gate is declared.
+        assert "pre_merge_verify" not in surface
+    finally:
+        _flows.pop(state.flow_id, None)
+
+
+# ---------------------------------------------------------------------------
+# COMP-PAR-MERGE-QUEUE-CONSUMER: done-path structured bounces + readable violations
+# ---------------------------------------------------------------------------
+
+from stratum_mcp.server import _evaluate_parallel_results  # noqa: E402
+
+
+def test_evaluate_surfaces_consumer_bounces_and_readable_violations():
+    """The consumer-dispatch path passes gate + conflict bounces via a structured
+    merge_status; they surface on bounced_tasks AND as readable violation strings."""
+    state = _NS(parallel_tasks={}, inputs={}, step_outputs={})
+    step = _NS(
+        task_reasoning_template=None, agent="claude", require="all",
+        step_type="parallel_dispatch", stages=None, source="$.x", step_ensure=[],
+    )
+    task_results = [
+        {"task_id": "t1", "status": "complete", "result": {}},
+        {"task_id": "t2", "status": "failed", "error": "gate"},
+    ]
+    gate_b = {"task_id": "t2", "reason": "gate_failed", "command": "pnpm build",
+              "exit_code": 1, "files": ["a.ts"], "excerpt": "e"}
+    conf_b = {"task_id": "t1", "reason": "merge_conflict", "files": ["b.ts"],
+              "command": None, "exit_code": None, "excerpt": "c"}
+    merge_status = {"status": "conflict", "bounced_tasks": [gate_b, conf_b]}
+
+    can_advance, ev = _evaluate_parallel_results(state, step, task_results, merge_status)
+    assert can_advance is False
+    reasons = sorted(b["reason"] for b in ev["bounced_tasks"])
+    assert reasons == ["gate_failed", "merge_conflict"]
+    joined = " ".join(ev["per_task_cert_strs"])
+    assert "pre-merge gate" in joined
+    assert "merge conflict" in joined
+    assert "t2" in joined and "pnpm build" in joined
+
+
+def test_evaluate_bare_clean_no_bounces_byte_identical():
+    """No bounces + clean + all complete ⇒ can_advance True, empty bounced_tasks."""
+    state = _NS(parallel_tasks={}, inputs={}, step_outputs={})
+    step = _NS(
+        task_reasoning_template=None, agent="claude", require="all",
+        step_type="parallel_dispatch", stages=None, source="$.x", step_ensure=[],
+    )
+    task_results = [{"task_id": "t1", "status": "complete", "result": {}}]
+    can_advance, ev = _evaluate_parallel_results(state, step, task_results, "clean")
+    assert can_advance is True
+    assert ev["bounced_tasks"] == []

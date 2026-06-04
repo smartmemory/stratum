@@ -956,6 +956,23 @@ def _evaluate_parallel_results(
             "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
         }
 
+    # COMP-PAR-MERGE-QUEUE-CONSUMER: derive human-readable violation strings from
+    # the structured bounces so a gate failure / merge conflict is actionable in the
+    # failure envelope's `violations` (not only in the structured bounced_tasks).
+    # per_task_cert_strs is appended to `violations` at every failure site.
+    for _b in bounced_tasks:
+        _tid = _b.get("task_id", "?")
+        if _b.get("reason") == "gate_failed":
+            per_task_cert_strs.append(
+                f"task '{_tid}' failed pre-merge gate `{_b.get('command')}` "
+                f"(exit {_b.get('exit_code')}) — diff NOT merged"
+            )
+        elif _b.get("reason") == "merge_conflict":
+            _files = ", ".join(_b.get("files") or []) or "(unknown files)"
+            per_task_cert_strs.append(
+                f"task '{_tid}' merge conflict on {_files}"
+            )
+
     can_advance = require_satisfied and merge_ok
     evaluation = {
         "aggregate": aggregate,
@@ -977,14 +994,16 @@ def _evaluate_parallel_results(
     "Report results for a completed parallel_dispatch step. "
     "Inputs: flow_id (str), step_id (str), "
     "task_results (list of {task_id, result, status}), "
-    "merge_status ('clean' or 'conflict'). "
+    "merge_status — either a bare string ('clean' | 'conflict') or a structured "
+    "object {status: 'clean'|'conflict', bounced_tasks?: [ParMergeBounce]} carrying "
+    "gate-failed / merge-conflict bounce records (COMP-PAR-MERGE-QUEUE-CONSUMER). "
     "Validates ensure postconditions against the aggregate result and advances the flow."
 ))
 async def stratum_parallel_done(
     flow_id: str,
     step_id: str,
     task_results: list[dict[str, Any]],
-    merge_status: str,
+    merge_status: str | dict,
     ctx: Context,
 ) -> dict[str, Any]:
     state = _flows.get(flow_id)
@@ -1087,7 +1106,9 @@ async def stratum_parallel_done(
         max_retries = cur_step.step_retries or 2
         attempt = state.attempts.get(step_id, 0)
 
-        if merge_status == "conflict":
+        # COMP-PAR-MERGE-QUEUE: merge_status may be a structured dict; use the
+        # derived status the aggregate already carries (merge_status_str).
+        if aggregate.get("merge_status") == "conflict":
             fail_reasons = ["merge conflict: merge_status='conflict'"]
         else:
             fail_reasons = [f"require='{require}' not satisfied: {len(completed)} completed, {len(failed)} failed"]
@@ -1239,34 +1260,11 @@ def _resolve_dispatch_tasks(state: FlowState, step: Any) -> list[dict]:
     return source_items
 
 
-def _resolve_pre_merge_verify(state: FlowState, step: Any) -> list[str]:
-    """Resolve a parallel_dispatch step's pre_merge_verify gate to a list of
-    command strings (COMP-PAR-MERGE-QUEUE).
-
-    Accepts a literal list of strings, or a JSONPath input reference
-    (e.g. "$.input.pre_merge_gate") resolved via the same machinery as `source`.
-    Absent/None/empty resolves to an empty list (no gate — byte-identical to the
-    pre-feature behavior).
-    """
-    pmv = getattr(step, "pre_merge_verify", None)
-    if pmv is None:
-        return []
-    if isinstance(pmv, str):
-        if pmv.startswith("$"):
-            from .executor import resolve_ref
-            try:
-                resolved = resolve_ref(pmv, state.inputs, state.step_outputs)
-            except Exception:
-                # A dangling input ref degrades to "no gate" rather than crashing
-                # the dispatch — byte-identical to the pre-feature behavior.
-                return []
-        else:
-            # A bare non-JSONPath string is a single command.
-            resolved = [pmv]
-        pmv = resolved
-    if not isinstance(pmv, (list, tuple)):
-        return []
-    return [str(c) for c in pmv if isinstance(c, str) and c.strip()]
+# COMP-PAR-MERGE-QUEUE: the gate resolver is shared with the dispatch-surface
+# builder (it must resolve identically for the consumer-dispatch path). Single
+# source of truth lives in executor.py; kept as a module name here for the
+# server-start call site and for back-compat with importers/tests.
+from .executor import resolve_pre_merge_verify as _resolve_pre_merge_verify
 
 
 async def _advance_after_parallel(
