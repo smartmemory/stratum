@@ -542,6 +542,36 @@ def resolve_ref(ref: str, flow_inputs: dict[str, Any], step_outputs: dict[str, A
     raise RefResolutionError(f"Unknown $ prefix '{parts[0]}' in {ref!r}")
 
 
+def resolve_pre_merge_verify(state: "FlowState", step: Any) -> list[str]:
+    """Resolve a parallel_dispatch step's pre_merge_verify gate to a list of
+    command strings (COMP-PAR-MERGE-QUEUE).
+
+    Shared by the server-dispatch start site (which passes the list into the
+    ParallelExecutor) and the dispatch-surface builder (which surfaces it on the
+    envelope for the Compose consumer-dispatch path, COMP-PAR-MERGE-QUEUE-CONSUMER).
+
+    Accepts a literal list of strings, or a JSONPath input reference
+    (e.g. "$.input.pre_merge_gate"). Absent / unresolvable ⇒ empty list (no gate —
+    byte-identical to the pre-feature behavior).
+    """
+    pmv = getattr(step, "pre_merge_verify", None)
+    if pmv is None:
+        return []
+    if isinstance(pmv, str):
+        if pmv.startswith("$"):
+            try:
+                resolved = resolve_ref(pmv, state.inputs, state.step_outputs)
+            except Exception:
+                # A dangling input ref degrades to "no gate" rather than crashing.
+                return []
+        else:
+            resolved = [pmv]  # a bare non-JSONPath string is a single command
+        pmv = resolved
+    if not isinstance(pmv, (list, tuple)):
+        return []
+    return [str(c) for c in pmv if isinstance(c, str) and c.strip()]
+
+
 def resolve_inputs(
     input_refs: dict[str, str],
     flow_inputs: dict[str, Any],
@@ -1886,6 +1916,14 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "ensure": step.step_ensure or [],
             "retries_remaining": (step.step_retries or 2) - attempts_so_far,
         }
+        # COMP-PAR-MERGE-QUEUE-CONSUMER: surface the resolved pre-merge gate so the
+        # Compose consumer-dispatch path (executeParallelDispatch — agents run in
+        # Compose, not Stratum's _run_one) can enforce it. The server-dispatch path
+        # resolves it independently at parallel_start. Only added when non-empty so a
+        # step without a gate produces a byte-identical envelope.
+        _pmv = resolve_pre_merge_verify(state, step)
+        if _pmv:
+            info["pre_merge_verify"] = _pmv
         if _is_pipeline:
             info["pipeline"] = True
             info["stages"] = [dict(st) for st in (step.stages or [])]
