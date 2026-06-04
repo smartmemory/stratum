@@ -65,7 +65,12 @@ from .run_budget import (
 )
 from .pricing import _maybe_warn_unpriced
 from .proc_identity import pid_alive, proc_start_time
-from .worktree import capture_worktree_diff, create_worktree, remove_worktree
+from .worktree import (
+    capture_worktree_diff,
+    create_worktree,
+    remove_worktree,
+    run_pre_merge_gate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +151,40 @@ def _task_env(flow_id: str, step_id: str, task_id: str) -> dict[str, str]:
     return env
 
 
+def _format_bounce_for_prompt(bounce: dict) -> str:
+    """COMP-PAR-MERGE-QUEUE: render a prior-attempt bounce record (gate_failed or
+    merge_conflict) into a prompt section so a re-dispatched task knows exactly
+    why its previous attempt was rejected before merge.
+    """
+    reason = bounce.get("reason")
+    files = bounce.get("files") or []
+    files_str = ", ".join(files) if files else "(none reported)"
+    lines = ["## Previous attempt was rejected before merge — fix this before finishing"]
+    if reason == "gate_failed":
+        cmd = bounce.get("command") or "?"
+        code = bounce.get("exit_code")
+        code_str = "?" if code is None else str(code)
+        lines.append(
+            f"Your last attempt FAILED the pre-merge gate `{cmd}` (exit {code_str}). "
+            "It was not merged."
+        )
+    elif reason == "merge_conflict":
+        lines.append(
+            "Your last attempt produced changes that CONFLICTED with another task's "
+            "changes at merge time. It was not merged."
+        )
+    else:
+        lines.append("Your last attempt was rejected before merge.")
+    lines.append(f"Files involved: {files_str}")
+    excerpt = bounce.get("excerpt")
+    if excerpt:
+        lines.append("Failure output:")
+        lines.append("```")
+        lines.append(str(excerpt))
+        lines.append("```")
+    return "\n".join(lines)
+
+
 def _detect_dependency_cycle(tasks: list[dict[str, Any]]) -> Optional[list[str]]:
     """Return the first cycle found as an ordered list of task_ids, or None.
 
@@ -201,6 +240,7 @@ class ParallelExecutor:
         model_id: Optional[str] = None,
         persist_callable: Optional[Callable[[FlowState], None]] = None,
         capture_diff: bool = False,
+        pre_merge_verify: Optional[list] = None,
         is_pipeline: bool = False,
         ctx: Any = None,
     ) -> None:
@@ -220,6 +260,18 @@ class ParallelExecutor:
         self.model_id = model_id
         self._persist_callable = persist_callable or persist_flow
         self.capture_diff = capture_diff
+        # COMP-PAR-MERGE-QUEUE: per-task pre-merge gate command list (already
+        # resolved to concrete strings by the caller). Empty => no gate.
+        self.pre_merge_verify = pre_merge_verify or []
+        # COMP-PAR-MERGE-QUEUE: capture any bounce record left on a task from its
+        # PRIOR attempt (gate failure persisted on ts.gate_bounce, or a merge
+        # conflict persisted by the advance handler) BEFORE _run_one clears it,
+        # so this re-dispatch can inject the failure context into the task prompt.
+        self._inbound_bounces = {
+            tid: ts.gate_bounce
+            for tid, ts in state.parallel_tasks.items()
+            if getattr(ts, "gate_bounce", None)
+        }
         self._ctx = ctx
         self._seq_counter = TaskSeqCounter()
         self._emit_failed: dict[str, bool] = {}
@@ -382,6 +434,15 @@ class ParallelExecutor:
                     rendered = inject_cert_instructions(rendered, eff_cert)
                 except Exception:
                     pass
+        # COMP-PAR-MERGE-QUEUE: if this task bounced on a prior attempt (gate
+        # failure or merge conflict), inject the failure context so the re-run is
+        # informed rather than blind. Degrade gracefully on any formatting error.
+        bounce = self._inbound_bounces.get(task.get("id"))
+        if bounce:
+            try:
+                rendered = rendered + "\n\n" + _format_bounce_for_prompt(bounce)
+            except Exception:
+                pass
         return rendered
 
     def _predecessor_result(self, task: dict) -> Any:
@@ -793,6 +854,9 @@ class ParallelExecutor:
         ts = self.state.parallel_tasks[tid]
         worktree_path_obj: Optional[Path] = None
         connector: Optional[AgentConnector] = None
+        # COMP-PAR-MERGE-QUEUE: a fresh dispatch clears any gate bounce left from a
+        # prior attempt so a now-passing retry isn't poisoned by stale failure.
+        ts.gate_bounce = None
 
         try:
             # T2-F5-DEPENDS-ON: wait for upstream dependencies before acquiring
@@ -996,6 +1060,31 @@ class ParallelExecutor:
                                 )
                             else:
                                 self._fanout_lists[tid] = L
+                    # COMP-PAR-MERGE-QUEUE: run the per-task pre-merge gate in the
+                    # worktree AFTER cert/fanout resolution and BEFORE the finally
+                    # captures the diff. Only on a still-`complete` task with a
+                    # configured gate and a live worktree. A non-zero command marks
+                    # the task `failed`, records a structured gate_bounce, and (via
+                    # the capture guard below) skips diff capture for the bad task.
+                    if (
+                        ts.state == "complete"
+                        and self.pre_merge_verify
+                        and worktree_path_obj is not None
+                    ):
+                        bounce = await asyncio.to_thread(
+                            run_pre_merge_gate,
+                            worktree_path_obj,
+                            self.pre_merge_verify,
+                            _eff_timeout,
+                            self.state.cwd,
+                        )
+                        if bounce is not None:
+                            bounce["task_id"] = tid
+                            ts.gate_bounce = bounce
+                            ts.state = "failed"
+                            ts.error = (
+                                f"pre_merge_verify failed: {bounce.get('command')}"
+                            )
         except asyncio.CancelledError:
             # Cascade cancel arrived while we were blocked on the semaphore,
             # the initial _persist, or connector setup — still register a
@@ -1083,7 +1172,9 @@ class ParallelExecutor:
                     # CancelledError is caught here so cascade-cancel / shutdown
                     # cannot leak the worktree — cleanup must always run.
                     cancelled_during_capture = False
-                    if self.capture_diff:
+                    # COMP-PAR-MERGE-QUEUE: a gate-failed task has no mergeable
+                    # diff — skip capture so the failed work never reaches base.
+                    if self.capture_diff and ts.gate_bounce is None:
                         try:
                             ts.diff = await asyncio.to_thread(
                                 capture_worktree_diff, worktree_path_obj,

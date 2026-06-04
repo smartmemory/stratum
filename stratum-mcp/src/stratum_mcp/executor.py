@@ -945,6 +945,11 @@ class ParallelTaskState:
     # T2-F5-DIFF-EXPORT: error string if diff capture raised (kept separate from
     # `error` which carries task-execution error semantics).
     diff_error: str | None = None
+    # COMP-PAR-MERGE-QUEUE: structured gate-failure bounce record (None unless a
+    # pre_merge_verify command exited non-zero in this task's worktree). Shape:
+    # {task_id, reason:"gate_failed", files, command, exit_code, excerpt}.
+    # When set, diff capture is skipped (the task failed its gate).
+    gate_bounce: dict | None = None
     # STRAT-WORKFLOW-BUDGET: per-task consumption, debited to the flow's run
     # budget on completion and surfaced in the trace.
     tokens: int = 0
@@ -1140,6 +1145,9 @@ def _step_fingerprint(step: "IRStepDef") -> dict:
         "accumulate_key": step.accumulate_key,
         "capture_diff": getattr(step, "capture_diff", False),
         "defer_advance": getattr(step, "defer_advance", False),
+        # COMP-PAR-MERGE-QUEUE: the pre-merge gate is load-bearing (it can fail a
+        # task and skip its diff), so a mid-run edit must be tamper-detected.
+        "pre_merge_verify": getattr(step, "pre_merge_verify", None),
         # STRAT-WORKFLOW-RESUME: step_guardrails are load-bearing (applied
         # before ensure), so a guardrail change must invalidate any cached
         # result — include them in the tamper/cache checksum. Toggling

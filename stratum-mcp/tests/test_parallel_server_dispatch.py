@@ -803,3 +803,115 @@ async def test_advance_fails_on_tampered_spec(monkeypatch):
     finally:
         server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
         _flows.pop(flow_id, None)
+
+
+# ---------------------------------------------------------------------------
+# COMP-PAR-MERGE-QUEUE: gate-failed + structured-conflict bounce surfacing
+# ---------------------------------------------------------------------------
+
+def _make_fake_run_gate_fail_first():
+    """Fake run: task 0 fails its pre-merge gate (gate_bounce set), rest complete."""
+    async def fake_run(self):
+        import time as _t
+        for i, t in enumerate(self.tasks):
+            ts = self.state.parallel_tasks[t["id"]]
+            ts.started_at = _t.time()
+            ts.finished_at = _t.time()
+            if i == 0:
+                ts.state = "failed"
+                ts.error = "pre_merge_verify failed: pnpm build"
+                ts.gate_bounce = {
+                    "task_id": t["id"],
+                    "reason": "gate_failed",
+                    "files": ["src/foo.ts"],
+                    "command": "pnpm build",
+                    "exit_code": 1,
+                    "excerpt": "TS2304: cannot find name 'Foo'",
+                }
+            else:
+                ts.state = "complete"
+                ts.result = {"ok": True}
+        self._persist_callable(self.state)
+    return fake_run
+
+
+async def test_advance_surfaces_gate_bounce_on_failure_envelope(monkeypatch):
+    """A server-side gate_bounce surfaces as a structured bounced_tasks record on
+    the advance failure envelope (the bounce that Compose injects into the retry
+    prompt). require:all + one gate-failed task => ensure_failed, not advance."""
+    monkeypatch.setattr(
+        parallel_exec_mod.ParallelExecutor, "run", _make_fake_run_gate_fail_first()
+    )
+    flow_id = await _dispatch_to_parallel(_SPEC_DEFER, num_tasks=2)
+    try:
+        await stratum_parallel_start(flow_id=flow_id, step_id="execute", ctx=None)
+        task = server_mod._RUNNING_EXECUTORS.get((flow_id, "execute"))
+        if task is not None:
+            await task
+        poll = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+        assert poll["outcome"]["status"] == "awaiting_consumer_advance"
+        # require not satisfied is visible pre-advance.
+        assert poll["can_advance"] is False
+
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute", merge_status="clean", ctx=None,
+        )
+        # Must NOT silently advance past the failed task.
+        assert result.get("status") in ("ensure_failed", "schema_failed",
+                                        "guardrail_blocked", "on_fail_routed")
+        bounced = result.get("bounced_tasks") or []
+        gate = next((b for b in bounced if b.get("reason") == "gate_failed"), None)
+        assert gate is not None, f"expected a gate_failed bounce, got {result!r}"
+        assert gate["command"] == "pnpm build"
+        assert gate["exit_code"] == 1
+        assert "src/foo.ts" in gate["files"]
+        assert "Foo" in gate["excerpt"]
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_accepts_structured_conflict_dict(monkeypatch):
+    """merge_status may be {status:'conflict', bounced_tasks:[...]} — the conflict
+    bounce flows onto the failure envelope (back-compat: bare string still works)."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    try:
+        poll = await stratum_parallel_poll(flow_id=flow_id, step_id="execute", ctx=None)
+        assert poll["outcome"]["status"] == "awaiting_consumer_advance"
+
+        conflict_bounce = {
+            "task_id": "task-1",
+            "reason": "merge_conflict",
+            "files": ["src/bar.ts"],
+            "command": None,
+            "exit_code": None,
+            "excerpt": "error: patch failed: src/bar.ts:10",
+        }
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute",
+            merge_status={"status": "conflict", "bounced_tasks": [conflict_bounce]},
+            ctx=None,
+        )
+        # Not rejected as invalid; surfaces a failure with the conflict bounce.
+        assert result.get("error") != "invalid_merge_status"
+        bounced = result.get("bounced_tasks") or []
+        conf = next((b for b in bounced if b.get("reason") == "merge_conflict"), None)
+        assert conf is not None, f"expected a merge_conflict bounce, got {result!r}"
+        assert "src/bar.ts" in conf["files"]
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)
+
+
+async def test_advance_structured_dict_invalid_status_rejected(monkeypatch):
+    """A dict merge_status with a bad status is still rejected."""
+    flow_id = await _setup_deferred_to_sentinel(monkeypatch)
+    try:
+        result = await stratum_parallel_advance(
+            flow_id=flow_id, step_id="execute",
+            merge_status={"status": "bogus"}, ctx=None,
+        )
+        assert result.get("error") == "invalid_merge_status"
+    finally:
+        server_mod._RUNNING_EXECUTORS.pop((flow_id, "execute"), None)
+        _flows.pop(flow_id, None)

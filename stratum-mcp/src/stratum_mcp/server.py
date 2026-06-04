@@ -817,7 +817,7 @@ def _evaluate_parallel_results(
     state: FlowState,
     step: Any,
     task_results: list[dict[str, Any]],
-    merge_status: str = "clean",
+    merge_status: str | dict = "clean",
 ) -> tuple[bool, dict[str, Any]]:
     """Evaluate whether a parallel_dispatch step can advance.
 
@@ -834,6 +834,27 @@ def _evaluate_parallel_results(
       - ``require_satisfied``: require policy check
       - ``merge_ok``: merge_status != 'conflict'
     """
+    # COMP-PAR-MERGE-QUEUE: merge_status may be a bare string (back-compat) or a
+    # structured dict {status, bounced_tasks} carrying merge-conflict bounce
+    # records from the Compose consumer. Derive the bare status for the existing
+    # merge_ok / aggregate logic, and pull out any conflict bounce records.
+    if isinstance(merge_status, dict):
+        merge_status_str = merge_status.get("status", "clean")
+        conflict_bounces = list(merge_status.get("bounced_tasks") or [])
+    else:
+        merge_status_str = merge_status
+        conflict_bounces = []
+
+    # COMP-PAR-MERGE-QUEUE: gate-failed bounce records are computed server-side
+    # in the executor and live on each task's ParallelTaskState. Unify them with
+    # any consumer-supplied merge-conflict bounces into one bounced_tasks list.
+    gate_bounces = [
+        ts.gate_bounce
+        for ts in getattr(state, "parallel_tasks", {}).values()
+        if getattr(ts, "gate_bounce", None) and ts.state == "failed"
+    ]
+    bounced_tasks = gate_bounces + conflict_bounces
+
     # STRAT-CERT-PAR: per-task certificate validation before require evaluation.
     # Only for claude-agent steps with a task_reasoning_template.
     # Cert-failed tasks are flipped to status="failed" so they count against the
@@ -893,7 +914,7 @@ def _evaluate_parallel_results(
         failed = [t for t in task_results if t.get("status") != "complete"]
 
     require = step.require or "all"
-    merge_ok = merge_status != "conflict"
+    merge_ok = merge_status_str != "conflict"
 
     if is_pipeline:
         # Collapse stage tasks into per-item verdicts (item-scoped require).
@@ -914,7 +935,7 @@ def _evaluate_parallel_results(
         aggregate = {
             "items": items,
             "require_satisfied": require_satisfied,
-            "merge_status": merge_status,
+            "merge_status": merge_status_str,
             "tasks": task_results,
             "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
         }
@@ -929,7 +950,7 @@ def _evaluate_parallel_results(
             require_satisfied = len(failed) == 0  # default to "all"
         aggregate = {
             "tasks": task_results,
-            "merge_status": merge_status,
+            "merge_status": merge_status_str,
             "completed": completed,
             "failed": failed,
             "outcome": "complete" if (require_satisfied and merge_ok) else "failed",
@@ -939,6 +960,10 @@ def _evaluate_parallel_results(
     evaluation = {
         "aggregate": aggregate,
         "per_task_cert_strs": per_task_cert_strs,
+        # COMP-PAR-MERGE-QUEUE: unified gate-failed + merge-conflict bounce records
+        # (structured), surfaced on every failure-response envelope alongside the
+        # back-compat `violations` strings.
+        "bounced_tasks": bounced_tasks,
         "require": require,
         "completed": completed,
         "failed": failed,
@@ -1031,6 +1056,10 @@ async def stratum_parallel_done(
         state, cur_step, task_results, merge_status=merge_status,
     )
     per_task_cert_strs = evaluation["per_task_cert_strs"]
+    # COMP-PAR-MERGE-QUEUE: structured bounce records, surfaced additively on
+    # every failure envelope (empty on the consumer-dispatch `done` path — its
+    # agents don't run in Stratum's executor, so no server-side gate bounces).
+    bounced_tasks = evaluation["bounced_tasks"]
     require = evaluation["require"]
     completed = evaluation["completed"]
     failed = evaluation["failed"]
@@ -1083,6 +1112,7 @@ async def stratum_parallel_done(
                     **(next_step or {}),
                     "routed_from": step_id,
                     "violations": fail_reasons,
+                    "bounced_tasks": bounced_tasks,
                 }
             delete_persisted_flow(flow_id)
             return {
@@ -1094,6 +1124,7 @@ async def stratum_parallel_done(
                 "agent": cur_step.agent,
                 "message": f"Step '{step_id}' exhausted all retries",
                 "violations": fail_reasons,
+                "bounced_tasks": bounced_tasks,
             }
 
         # Retry available
@@ -1106,6 +1137,7 @@ async def stratum_parallel_done(
             **step_info,
             "status": "ensure_failed",
             "violations": fail_reasons,
+            "bounced_tasks": bounced_tasks,
         }
 
     # Standard status handling (same pattern as stratum_step_done)
@@ -1122,6 +1154,7 @@ async def stratum_parallel_done(
             "agent": _step.agent,
             "message": f"Step '{step_id}' exhausted all retries",
             "violations": violations + per_task_cert_strs,
+            "bounced_tasks": bounced_tasks,
         }
 
     if status == "on_fail_routed":
@@ -1135,6 +1168,7 @@ async def stratum_parallel_done(
             **(next_step or {}),
             "routed_from": step_id,
             "violations": violations + per_task_cert_strs,
+            "bounced_tasks": bounced_tasks,
         }
 
     if status in ("ensure_failed", "schema_failed", "guardrail_blocked"):
@@ -1147,6 +1181,7 @@ async def stratum_parallel_done(
             **step_info,
             "status": status,
             "violations": violations + per_task_cert_strs,
+            "bounced_tasks": bounced_tasks,
         }
 
     # "ok" — flow advanced
@@ -1204,10 +1239,41 @@ def _resolve_dispatch_tasks(state: FlowState, step: Any) -> list[dict]:
     return source_items
 
 
+def _resolve_pre_merge_verify(state: FlowState, step: Any) -> list[str]:
+    """Resolve a parallel_dispatch step's pre_merge_verify gate to a list of
+    command strings (COMP-PAR-MERGE-QUEUE).
+
+    Accepts a literal list of strings, or a JSONPath input reference
+    (e.g. "$.input.pre_merge_gate") resolved via the same machinery as `source`.
+    Absent/None/empty resolves to an empty list (no gate — byte-identical to the
+    pre-feature behavior).
+    """
+    pmv = getattr(step, "pre_merge_verify", None)
+    if pmv is None:
+        return []
+    if isinstance(pmv, str):
+        if pmv.startswith("$"):
+            from .executor import resolve_ref
+            try:
+                resolved = resolve_ref(pmv, state.inputs, state.step_outputs)
+            except Exception:
+                # A dangling input ref degrades to "no gate" rather than crashing
+                # the dispatch — byte-identical to the pre-feature behavior.
+                return []
+        else:
+            # A bare non-JSONPath string is a single command.
+            resolved = [pmv]
+        pmv = resolved
+    if not isinstance(pmv, (list, tuple)):
+        return []
+    return [str(c) for c in pmv if isinstance(c, str) and c.strip()]
+
+
 async def _advance_after_parallel(
     state: FlowState,
     step_id: str,
     aggregate: dict[str, Any],
+    bounced_tasks: list | None = None,
 ) -> dict[str, Any]:
     """Run a completed parallel step's aggregate through process_step_result
     and return the next-step dispatch (or flow-complete payload).
@@ -1215,11 +1281,91 @@ async def _advance_after_parallel(
     Mirrors the "ok" / non-ok handling in ``stratum_parallel_done`` — enough
     to cover the path taken by ``stratum_parallel_poll`` when all tasks
     settle. Errors surface as structured dicts, not exceptions.
+
+    COMP-PAR-MERGE-QUEUE: ``bounced_tasks`` (gate-failed + merge-conflict bounce
+    records) is surfaced additively on every failure envelope so the Compose
+    consumer can build an informed retry prompt.
     """
+    bounced_tasks = bounced_tasks or []
     try:
         status, violations = process_step_result(state, step_id, aggregate)
     except MCPExecutionError as exc:
         return {"status": "error", **exception_to_mcp_error(exc)}
+
+    # COMP-PAR-MERGE-QUEUE: process_step_result only evaluates `ensure`
+    # postconditions, so a parallel step with no ensure clause returns "ok" even
+    # when require wasn't satisfied or the merge conflicted (aggregate
+    # outcome == "failed"). On the deferred path (now used by GSD) that would
+    # WRONGLY advance past a gate-failed / conflicted task to the next step.
+    # Mirror stratum_parallel_done: revert the advance and surface a failure
+    # envelope carrying violations + bounce records so the consumer re-dispatches.
+    if status == "ok" and aggregate.get("outcome") == "failed":
+        cur_step = next((s for s in state.ordered_steps if s.id == step_id), None)
+        # Revert the advance process_step_result performed.
+        state.step_outputs.pop(step_id, None)
+        try:
+            state.current_idx = next(
+                i for i, s in enumerate(state.ordered_steps) if s.id == step_id
+            )
+        except StopIteration:
+            pass
+        if state.records and state.records[-1].step_id == step_id:
+            state.records.pop()
+
+        completed = aggregate.get("completed", [])
+        failed = aggregate.get("failed", [])
+        if aggregate.get("merge_status") == "conflict":
+            fail_reasons = ["merge conflict: merge_status='conflict'"]
+        else:
+            fail_reasons = [
+                f"require not satisfied: {len(completed)} completed, {len(failed)} failed"
+            ]
+
+        max_retries = (cur_step.step_retries if cur_step else None) or 2
+        attempt = state.attempts.get(step_id, 0)
+        if attempt >= max_retries:
+            if cur_step is not None and cur_step.on_fail:
+                state.step_outputs[step_id] = aggregate
+                from .executor import _find_step_idx, _clear_from
+                target_idx = _find_step_idx(state, cur_step.on_fail)
+                _clear_from(state, target_idx, preserve={step_id})
+                state.current_idx = target_idx
+                try:
+                    next_step = get_current_step_info(state)
+                    next_step = _apply_policy_loop(state, next_step)
+                except MCPExecutionError as exc:
+                    return {"status": "error", **exception_to_mcp_error(exc)}
+                persist_flow(state)
+                return {
+                    **(next_step or {}),
+                    "routed_from": step_id,
+                    "violations": fail_reasons,
+                    "bounced_tasks": bounced_tasks,
+                }
+            delete_persisted_flow(state.flow_id)
+            return {
+                "status": "error",
+                "error_type": "retries_exhausted",
+                "flow_id": state.flow_id,
+                "step_id": step_id,
+                "step_mode": "parallel_dispatch",
+                "agent": cur_step.agent if cur_step is not None else None,
+                "message": f"Step '{step_id}' exhausted all retries",
+                "violations": fail_reasons,
+                "bounced_tasks": bounced_tasks,
+            }
+        # Retry available — surface ensure_failed so the consumer re-dispatches.
+        try:
+            step_info = get_current_step_info(state)
+        except MCPExecutionError as exc:
+            return {"status": "error", **exception_to_mcp_error(exc)}
+        persist_flow(state)
+        return {
+            **step_info,
+            "status": "ensure_failed",
+            "violations": fail_reasons,
+            "bounced_tasks": bounced_tasks,
+        }
 
     if status == "retries_exhausted":
         delete_persisted_flow(state.flow_id)
@@ -1233,6 +1379,7 @@ async def _advance_after_parallel(
             "agent": _step.agent,
             "message": f"Step '{step_id}' exhausted all retries",
             "violations": violations,
+            "bounced_tasks": bounced_tasks,
         }
     if status == "on_fail_routed":
         try:
@@ -1245,6 +1392,7 @@ async def _advance_after_parallel(
             **(next_step or {}),
             "routed_from": step_id,
             "violations": violations,
+            "bounced_tasks": bounced_tasks,
         }
     if status in ("ensure_failed", "schema_failed", "guardrail_blocked"):
         try:
@@ -1256,6 +1404,7 @@ async def _advance_after_parallel(
             **step_info,
             "status": status,
             "violations": violations,
+            "bounced_tasks": bounced_tasks,
         }
     # "ok" — flow advanced
     state.iteration_outcome.pop(step_id, None)
@@ -1392,6 +1541,15 @@ async def stratum_parallel_start(
 
     task_timeout = cur_step.task_timeout or DEFAULT_TASK_TIMEOUT
 
+    # COMP-PAR-MERGE-QUEUE: resolve the per-task pre-merge gate (list or
+    # $.input ref). Only meaningful for worktree isolation (the gate runs in the
+    # task worktree before diff capture); ignored for isolation=none.
+    pre_merge_verify = (
+        _resolve_pre_merge_verify(state, cur_step)
+        if isolation == "worktree"
+        else []
+    )
+
     executor = ParallelExecutor(
         state=state,
         step_id=step_id,
@@ -1404,6 +1562,7 @@ async def stratum_parallel_start(
         task_reasoning_template=cur_step.task_reasoning_template,
         require=cur_step.require or "all",
         capture_diff=cur_step.capture_diff and isolation == "worktree",
+        pre_merge_verify=pre_merge_verify,
         is_pipeline=_is_pipeline_step(cur_step),
         ctx=ctx,
     )
@@ -1560,6 +1719,7 @@ async def stratum_parallel_poll(
             else:
                 advance_result = await _advance_after_parallel(
                     state, step_id, evaluation["aggregate"],
+                    bounced_tasks=evaluation["bounced_tasks"],
                 )
                 outcome = advance_result
                 # If the flow advanced, drop the executor handle from the
@@ -1600,7 +1760,10 @@ async def stratum_parallel_poll(
 
 @mcp.tool(description=(
     "Advance a parallel_dispatch step whose spec declared defer_advance: true. "
-    "Inputs: flow_id (str), step_id (str), merge_status ('clean' | 'conflict'). "
+    "Inputs: flow_id (str), step_id (str), merge_status. "
+    "merge_status is either a bare string ('clean' | 'conflict') or a structured "
+    "object {status: 'clean'|'conflict', bounced_tasks?: [ParMergeBounce]} carrying "
+    "merge-conflict bounce records (COMP-PAR-MERGE-QUEUE). "
     "Call after observing 'awaiting_consumer_advance' from stratum_parallel_poll. "
     "Feeds merge_status into _evaluate_parallel_results and advances the flow. "
     "Idempotent: returns {status: 'already_advanced', step_id} if the flow has "
@@ -1609,7 +1772,7 @@ async def stratum_parallel_poll(
 async def stratum_parallel_advance(
     flow_id: str,
     step_id: str,
-    merge_status: str,
+    merge_status: str | dict,
     ctx: Context,
 ) -> dict[str, Any]:
     state = _flows.get(flow_id)
@@ -1641,10 +1804,17 @@ async def stratum_parallel_advance(
                 f"Auto-advance fires from stratum_parallel_poll; this tool is a no-op."
             ),
         }
-    if merge_status not in ("clean", "conflict"):
+    # COMP-PAR-MERGE-QUEUE: merge_status may be a bare string (back-compat) or a
+    # structured {status, bounced_tasks?} object. Validate the derived status.
+    _ms_status = merge_status.get("status") if isinstance(merge_status, dict) else merge_status
+    if _ms_status not in ("clean", "conflict"):
         return {
             "error": "invalid_merge_status",
-            "message": f"merge_status must be 'clean' or 'conflict', got {merge_status!r}",
+            "message": (
+                "merge_status must be 'clean' | 'conflict' or "
+                "{status: 'clean'|'conflict', bounced_tasks?}, got "
+                f"{merge_status!r}"
+            ),
         }
 
     # Idempotency check — if the flow has moved past this step, return minimal envelope
@@ -1690,8 +1860,19 @@ async def stratum_parallel_advance(
     _, evaluation = _evaluate_parallel_results(
         state, step, task_results, merge_status=merge_status,
     )
+    # COMP-PAR-MERGE-QUEUE: persist any merge_conflict bounce onto the conflicting
+    # task's state so the NEXT re-dispatch (if the step retries) injects the
+    # conflict context into that task's prompt. Gate failures already persist on
+    # ts.gate_bounce server-side; this covers the consumer-computed conflict case.
+    if isinstance(merge_status, dict):
+        for _b in (merge_status.get("bounced_tasks") or []):
+            _tid = _b.get("task_id")
+            _ts = state.parallel_tasks.get(_tid) if _tid else None
+            if _ts is not None:
+                _ts.gate_bounce = _b
     advance_result = await _advance_after_parallel(
         state, step_id, evaluation["aggregate"],
+        bounced_tasks=evaluation["bounced_tasks"],
     )
     _RUNNING_EXECUTORS.pop((flow_id, step_id), None)
     _PARALLEL_EXECUTORS.pop((flow_id, step_id), None)

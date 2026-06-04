@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### stratum — feat(COMP-PAR-MERGE-QUEUE): per-task pre-merge verify gate + bounce-into-reprompt for parallel_dispatch
+
+- **What:** an optional **`pre_merge_verify`** gate on `parallel_dispatch` (isolation=worktree, server-dispatch). A list of shell commands (or a `$.input.*` JSONPath ref resolved from a flow input) runs in each task's worktree, via `worktree.run_pre_merge_gate`, **before** its diff is captured — first non-zero exit (or not-found / timeout) marks the task `failed`, records a structured `gate_failed` bounce on its state, and **skips diff capture** so the bad work never merges. `node_modules` is best-effort symlinked from base (bare worktrees lack it). Absent ⇒ byte-identical (no gate).
+- **Bounce channel** (`server.py`): gate bounces are collected into a unified `ensure_failed.bounced_tasks[]`; `stratum_parallel_advance` accepts `merge_status` as a bare string (back-compat) **or** a structured `{status, bounced_tasks}` carrying consumer-computed merge-conflict bounces, and persists those onto the conflicting task's state. `_advance_after_parallel` now reverts + surfaces `ensure_failed` when require/merge fails on a step with no `ensure` clause (previously such a deferred-path failure silently advanced).
+- **Bounce-into-reprompt** (`parallel_exec.py`): a re-dispatched task's prompt carries its prior-attempt bounce — `ParallelExecutor` snapshots inbound bounces at construction (`_inbound_bounces`), `_run_one` clears a task's bounce for a fresh attempt, and `_render_prompt` appends `_format_bounce_for_prompt(...)`. This is the server-side delivery point (the server re-resolves tasks on each re-dispatch, so a consumer-side prompt edit can't reach the re-run task).
+- **IR** (`spec.py`): `pre_merge_verify` accepted on `parallel_dispatch` (oneOf array-of-strings | string); included in `_step_fingerprint` (tamper-detected).
+- First consumer: compose GSD `execute` (closes COMP-GSD-3). Full `stratum-mcp/tests/` **1409 passing** (new `tests/test_par_merge_queue.py` + server-dispatch cases); Codex review 3 rounds → CLEAN.
+
 ### stratum — feat(STRAT-PAR-STREAM-TOOLDETAIL): per-task tool-use detail in the parallel-dispatch stream
 
 - **What:** the streaming **claude** connector now surfaces, per tool call, the raw (size-capped) tool **input** + a `tool_use_id` on `tool_use_summary`, and emits a new **`tool_result`** event (`{tool_use_id, ok, output}`) per `ToolResultBlock` in a `UserMessage` — so a stream consumer can recover `input.file_path` structurally and observe per-call success/error text. Previously `tool_use_summary` carried only `{tool, summary(80-char), ok:true (hardcoded), duration_ms}` on the call (no raw input, no result/error), making per-task observability impossible. First consumer: compose `COMP-GSD-5` (gsd stuck detection).

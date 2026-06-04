@@ -432,3 +432,74 @@ def test_parallel_dispatch_defer_advance_rejects_non_bool():
     )
     with pytest.raises(_IRValidationError, match="boolean"):
         parse_and_validate(spec_bad)
+
+
+# ---------------------------------------------------------------------------
+# COMP-PAR-MERGE-QUEUE: pre_merge_verify field on parallel_dispatch steps
+# ---------------------------------------------------------------------------
+
+def test_parallel_dispatch_pre_merge_verify_accepts_literal_list():
+    """pre_merge_verify accepts a literal list of command strings."""
+    spec_yaml = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n"
+        "        pre_merge_verify: [\"pnpm lint\", \"pnpm build\"]\n",
+    )
+    ir = parse_and_validate(spec_yaml)
+    steps = {s.id: s for s in ir.flows["build"].steps}
+    assert steps["execute"].pre_merge_verify == ["pnpm lint", "pnpm build"]
+
+
+def test_parallel_dispatch_pre_merge_verify_accepts_jsonpath_string():
+    """pre_merge_verify accepts a JSONPath input reference, stored verbatim at parse."""
+    spec_yaml = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n"
+        "        pre_merge_verify: \"$.input.pre_merge_gate\"\n",
+    )
+    ir = parse_and_validate(spec_yaml)
+    steps = {s.id: s for s in ir.flows["build"].steps}
+    assert steps["execute"].pre_merge_verify == "$.input.pre_merge_gate"
+
+
+def test_parallel_dispatch_pre_merge_verify_omitted_defaults_to_none():
+    """Specs without pre_merge_verify parse and the step has pre_merge_verify=None
+    (byte-identical current behavior — no gate)."""
+    spec = parse_and_validate(_VALID_V03_SPEC)
+    steps = {s.id: s for s in spec.flows["build"].steps}
+    assert steps["execute"].pre_merge_verify is None
+
+
+def test_parallel_dispatch_pre_merge_verify_rejects_scalar_int():
+    """pre_merge_verify must be a list-of-strings or a string — a bare int is
+    rejected at the JSON schema layer before _build_step runs."""
+    from stratum_mcp.errors import IRValidationError as _IRValidationError
+    spec_bad = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n        pre_merge_verify: 5\n",
+    )
+    with pytest.raises(_IRValidationError):
+        parse_and_validate(spec_bad)
+
+
+def test_parallel_dispatch_pre_merge_verify_in_step_fingerprint():
+    """A mid-run edit of pre_merge_verify must be tamper-detected: the field is
+    included in _step_fingerprint, so two specs differing only in pre_merge_verify
+    produce different fingerprints."""
+    from stratum_mcp.executor import _step_fingerprint
+
+    with_gate = _VALID_V03_SPEC.replace(
+        "        isolation: worktree\n",
+        "        isolation: worktree\n"
+        "        pre_merge_verify: [\"pnpm lint\"]\n",
+    )
+    ir_gate = parse_and_validate(with_gate)
+    ir_none = parse_and_validate(_VALID_V03_SPEC)
+    step_gate = {s.id: s for s in ir_gate.flows["build"].steps}["execute"]
+    step_none = {s.id: s for s in ir_none.flows["build"].steps}["execute"]
+
+    fp_gate = _step_fingerprint(step_gate)
+    fp_none = _step_fingerprint(step_none)
+    assert fp_gate["pre_merge_verify"] == ["pnpm lint"]
+    assert fp_none["pre_merge_verify"] is None
+    assert fp_gate != fp_none
