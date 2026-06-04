@@ -152,6 +152,13 @@ class IRStepDef:
     # ({status: "awaiting_consumer_advance"}) instead of auto-advancing;
     # consumer must call stratum_parallel_advance(flow_id, step_id, merge_status).
     defer_advance: bool = False
+    # COMP-PAR-MERGE-QUEUE: optional per-task pre-merge verify gate for
+    # parallel_dispatch (isolation=worktree, server-dispatch). A list of shell
+    # command strings run in each task's worktree *before* its diff is captured;
+    # first non-zero exit marks the task failed and bounces it. May also be a
+    # JSONPath string (e.g. "$.input.pre_merge_gate") resolved from a flow input
+    # at dispatch. Absent/None => current behavior, byte-identical (no gate).
+    pre_merge_verify: list | str | None = None
     # STRAT-WORKFLOW-PIPELINE: ordered stage list for `pipeline` step type.
     # Each stage is a dict {intent_template, agent?}. A pipeline step desugars
     # (source x stages) into a depends_on task graph; see executor.expand_pipeline_tasks.
@@ -646,6 +653,15 @@ _IR_SCHEMA_V03: dict = {
                 "capture_diff": {"type": "boolean"},
                 # T2-F5-DEFER-ADVANCE: opt-in deferred flow advance
                 "defer_advance": {"type": "boolean"},
+                # COMP-PAR-MERGE-QUEUE: per-task pre-merge verify gate.
+                # Either a literal list of command strings or a JSONPath ref
+                # (e.g. "$.input.pre_merge_gate") resolved from a flow input.
+                "pre_merge_verify": {
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string", "minLength": 1}},
+                        {"type": "string"},
+                    ]
+                },
                 # STRAT-JUDGE v1: tiered-judge step config — mutually exclusive
                 # with function/intent/flow.
                 "judge": {
@@ -1324,6 +1340,8 @@ def _build_step(s: dict) -> IRStepDef:
         task_timeout=s.get("task_timeout"),
         capture_diff=s.get("capture_diff", False),
         defer_advance=s.get("defer_advance", False),
+        # COMP-PAR-MERGE-QUEUE: per-task pre-merge verify gate (list or JSONPath ref)
+        pre_merge_verify=s.get("pre_merge_verify"),
         # STRAT-WORKFLOW-PIPELINE: normalize stages to a tuple of plain dicts
         stages=tuple(dict(st) for st in s["stages"]) if s.get("stages") else None,
         judge=judge_cfg,
