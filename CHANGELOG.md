@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-LEARN-INLINE): inline judge self-patch harvester edge (default-OFF)
+
+Closes the gap between within-step self-correction (regenerate-until-met) and across-run learning (offline postmortem `--all`): when a judge turn produces a `must-fix` finding, classify the fix target and — for the ones that generalize — emit a **staged, described** skill/MEMORY patch *candidate* for review. Nothing is ever applied; the running spec is never touched (STRAT-IMMUTABLE).
+
+- **Trigger (v1):** the `stratum_judge` MCP judge-step path only. `run_judge` also runs from the goal orchestrator (deferred → `STRAT-LEARN-INLINE-GOAL`) and guard transitions (deliberately excluded — a lifecycle gate, not a dev-work diagnosis).
+- **Classifier** (`src/stratum/judge/inline_learn.py`): each `not_met` predicate → `transient` / `step-local` / `durable`. Heuristic by default (`judged`→durable, `deterministic`+flaky-marker→transient, else step-local); opt-in fail-open LLM classifier (`classifier="llm"`) reuses `stratum_agent_run`. Only `durable` emits a `PatchCandidate` (described intent: target + op + rationale + suggested-change prose — never a literal diff).
+- **Inline sidecar** (`src/stratum/judge/postmortem/corpus.py`): candidates append to `.stratum/postmortem/inline_candidates.jsonl` — a **separate** file with its own `inline-1.0` schema (`origin:"inline"`, **no `label`**), never the transcript corpus `candidates.jsonl` (whose readers + replay `label` ground-truth can't absorb a synthetic row). `fcntl.flock`-guarded, idempotent on a turn-scoped `candidate_id`.
+- **Surfacing:** `stratum_audit` gains `learn_inline:{evaluated,durable}` (distinguishes "ran, none durable" from "never ran") + `staged_patch_candidates`. New additive `FlowState.learn_candidates` / `learn_inline_evaluated`.
+- **Config (opt-in, default OFF):** `[learn.inline_patch] enabled/classifier` in `stratum.toml`, env override `STRATUM_LEARN_INLINE_PATCH_ENABLED`. When off, the harvest is skipped entirely; the judge return dict, persisted flow JSON, and audit snapshot are **byte-identical** (new keys omitted-when-empty, no kernel/`JudgeResult`/judge-contract change). The harvest helper is **wholly fail-open** — a config/classifier/IO error is warned and swallowed, never turning a valid judge result into a tool failure.
+- **Tests:** `tests/test_inline_learn.py`, `tests/test_inline_corpus.py`, `tests/test_project_config.py` (+10), `stratum-mcp/tests/test_server_inline_learn.py`. Full suites green: `tests/` **711**, `stratum-mcp/tests/` **1418** (2 Docker-gate skips). Codex design gate CLEAN (3 rounds 8→2→0); blueprint gate CLEAN (2 rounds 6→1→0); impl review (Codex rate-limited → independent-reviewer fallback) caught a dead LLM-classifier path (`ctx` not threaded, masked by `**kwargs` stubs) → fixed + regression-tested → CLEAN. `docs/features/STRAT-LEARN-INLINE/`.
+
 ### stratum — feat(COMP-PAR-MERGE-QUEUE-CONSUMER): surface the resolved pre-merge gate + structured parallel_done
 
 Substrate for the Compose consumer-dispatch gate (agents run in Compose, not Stratum's `_run_one`).

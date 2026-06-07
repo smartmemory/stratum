@@ -1914,7 +1914,7 @@ def _build_audit_snapshot(state: FlowState) -> dict[str, Any]:
     else:
         flow_status = "in_progress"
 
-    return {
+    snap = {
         "flow_id": state.flow_id,
         "flow_name": state.flow_name,
         "status": flow_status,
@@ -1948,6 +1948,17 @@ def _build_audit_snapshot(state: FlowState) -> dict[str, Any]:
         ],
         "child_audits": state.child_audits,
     }
+    # STRAT-LEARN-INLINE: surface inline-learn results only when the edge ran.
+    # Omit-when-empty keeps the off-path snapshot byte-identical. `learn_inline`
+    # distinguishes "ran, found nothing durable" (durable:0) from "never ran".
+    if state.learn_inline_evaluated:
+        snap["learn_inline"] = {
+            "evaluated": state.learn_inline_evaluated,
+            "durable": len(state.learn_candidates),
+        }
+    if state.learn_candidates:
+        snap["staged_patch_candidates"] = state.learn_candidates
+    return snap
 
 
 @mcp.tool(description=(
@@ -2420,8 +2431,55 @@ async def stratum_judge(
         }
 
     state.record_judge_turn(step_id, result)
+    await _harvest_inline_learn(state, result, step_id, workspace_root, ctx)
     persist_flow(state)
     return result_dict
+
+
+async def _harvest_inline_learn(state, result, step_id: str, workspace_root, ctx) -> None:
+    """STRAT-LEARN-INLINE: harvest staged skill/MEMORY patch candidates from a
+    judge turn's must-fix findings. Default-OFF and **wholly fail-open** — it
+    runs after the judge result is validated, so any error (config parse,
+    classifier, sidecar IO) is swallowed with a warning and never turns a valid
+    judge result into a tool failure. The returned judge dict is untouched;
+    candidates surface only via the audit trace + the inline sidecar.
+    """
+    try:
+        from stratum.project_config import resolve_inline_learn
+        from stratum.judge.inline_learn import emit_candidates
+        from stratum.judge.postmortem.corpus import (
+            append_inline_candidates,
+            inline_sidecar_path,
+        )
+
+        cfg = resolve_inline_learn(workspace_root)
+        if not cfg.enabled:
+            return
+
+        # Bind ctx so the (optional) LLM classifier can call stratum_agent_run,
+        # whose signature requires a ctx positional. Without this binding the
+        # `classifier="llm"` path would TypeError and silently degrade.
+        async def _agent_run(prompt: str, type: str = "claude"):  # noqa: A002
+            return await stratum_agent_run(prompt=prompt, ctx=ctx, type=type)
+
+        cands = await emit_candidates(result, cfg, agent_run=_agent_run)
+        evaluated = sum(1 for pr in result.predicates if pr.verdict == "not_met")
+        state.learn_inline_evaluated += evaluated
+        if cands:
+            state.learn_candidates.extend(c.to_dict() for c in cands)
+            append_inline_candidates(
+                inline_sidecar_path(workspace_root),
+                cands,
+                flow_id=state.flow_id,
+                step_id=step_id,
+                turn=result.budget_consumed.turns,
+                project=Path(workspace_root).name,
+            )
+    except Exception as exc:  # noqa: BLE001 — harvester must never break the judge
+        print(
+            f"stratum-mcp: warning: inline-learn harvest skipped: {exc}",
+            file=sys.stderr,
+        )
 
 
 _JUDGE_RESULT_VALIDATOR = None

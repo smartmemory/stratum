@@ -1062,6 +1062,12 @@ class FlowState:
     #     with evidence + tier_history).
     judge_history: dict[str, list[dict]] = field(default_factory=dict)
     judge_outcome: dict[str, dict] = field(default_factory=dict)
+    # STRAT-LEARN-INLINE: staged durable skill/MEMORY patch candidates harvested
+    # from must-fix judge findings, plus the count of must-fix predicates the
+    # inline edge evaluated. Both stay empty/0 (and are omitted from persistence
+    # + audit) unless the opt-in default-OFF harvester is enabled.
+    learn_candidates: list[dict] = field(default_factory=list)
+    learn_inline_evaluated: int = 0
     # STRAT-GOAL v1: marks flows created synthetically by the goal orchestrator.
     # When True, delete_persisted_flow skips judge-tree cleanup (PRD M14) so that
     # the orchestrator can inspect judge audit artifacts after the synthetic flow completes.
@@ -1432,6 +1438,12 @@ def persist_flow(state: FlowState) -> None:
         "bg_status":          state.bg_status,
         "bg_pause_reason":    state.bg_pause_reason,
     }
+    # STRAT-LEARN-INLINE: omit-when-empty so the off-path persisted JSON is
+    # byte-identical to the pre-feature baseline.
+    if state.learn_candidates:
+        payload["learn_candidates"] = state.learn_candidates
+    if state.learn_inline_evaluated:
+        payload["learn_inline_evaluated"] = state.learn_inline_evaluated
     (_FLOWS_DIR / f"{state.flow_id}.json").write_text(json.dumps(payload, indent=2))
 
 
@@ -1499,6 +1511,8 @@ def restore_flow(flow_id: str) -> "FlowState | None":
         cwd=payload.get("cwd", ""),
         judge_history=payload.get("judge_history", {}),
         judge_outcome=payload.get("judge_outcome", {}),
+        learn_candidates=payload.get("learn_candidates", []),
+        learn_inline_evaluated=payload.get("learn_inline_evaluated", 0),
         synthetic=payload.get("synthetic", False),
         budget_state=payload.get("budget_state"),
         flow_mode=payload.get("flow_mode", "consumer_turn"),
