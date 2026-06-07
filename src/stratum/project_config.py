@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import tomllib
 import types
 from collections.abc import Mapping
@@ -39,6 +40,19 @@ class PipelineConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class LearnConfig:
+    """
+    Parsed [learn.*] sections from stratum.toml.
+
+    STRAT-LEARN-INLINE: opt-in, default-OFF inline judge self-patch harvester.
+    When ``inline_patch_enabled`` is False (the default), the harvester edge
+    never runs and the judge path is byte-identical to the no-config baseline.
+    """
+    inline_patch_enabled:    bool = False
+    inline_patch_classifier: str = "heuristic"   # "heuristic" | "llm"
+
+
+@dataclasses.dataclass(frozen=True)
 class StratumConfig:
     """
     Loaded stratum.toml project config.
@@ -48,6 +62,7 @@ class StratumConfig:
     specific connectors without touching the pipeline definition.
     """
     pipeline: PipelineConfig
+    learn:    LearnConfig = dataclasses.field(default_factory=LearnConfig)
 
     # -----------------------------------------------------------------------
     # Construction
@@ -150,12 +165,42 @@ class StratumConfig:
                 )
             connector[key] = value
 
+        # -- learn (STRAT-LEARN-INLINE) --------------------------------------
+        learn = cls._parse_learn(raw)
+
         return cls(
             pipeline=PipelineConfig(
                 policy=policy,
                 capabilities=capabilities,
                 connector=connector,
+            ),
+            learn=learn,
+        )
+
+    @staticmethod
+    def _parse_learn(raw: dict[str, Any]) -> "LearnConfig":
+        learn_raw = raw.get("learn", {})
+        if not isinstance(learn_raw, dict):
+            raise StratumCompileError("stratum.toml: [learn] must be a table")
+        inline_raw = learn_raw.get("inline_patch", {})
+        if not isinstance(inline_raw, dict):
+            raise StratumCompileError(
+                "stratum.toml: [learn.inline_patch] must be a table"
             )
+        enabled = inline_raw.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise StratumCompileError(
+                "stratum.toml: [learn.inline_patch] enabled must be a boolean"
+            )
+        classifier = inline_raw.get("classifier", "heuristic")
+        if classifier not in ("heuristic", "llm"):
+            raise StratumCompileError(
+                f"stratum.toml: [learn.inline_patch] classifier must be "
+                f"'heuristic' or 'llm', got {classifier!r}"
+            )
+        return LearnConfig(
+            inline_patch_enabled=enabled,
+            inline_patch_classifier=classifier,
         )
 
     # -----------------------------------------------------------------------
@@ -206,3 +251,38 @@ class StratumConfig:
         model selection (e.g. "haiku", "sonnet", "claude-sonnet-4-6").
         """
         return self.pipeline.capabilities.get(capability)
+
+
+# ---------------------------------------------------------------------------
+# STRAT-LEARN-INLINE — resolved inline-learn config (TOML + env precedence)
+# ---------------------------------------------------------------------------
+
+_INLINE_LEARN_ENV = "STRATUM_LEARN_INLINE_PATCH_ENABLED"
+
+
+def resolve_inline_learn(workspace_root: Path | str | None) -> "InlineLearnConfig":
+    """Resolve the effective inline-learn config for a workspace.
+
+    Reads ``[learn.inline_patch]`` from ``<workspace_root>/stratum.toml`` and
+    applies the ``STRATUM_LEARN_INLINE_PATCH_ENABLED`` env override on top:
+    a truthy env value (``1``/``true``/``yes``, case-insensitive) forces
+    ``enabled=True`` regardless of TOML; any other set value forces
+    ``enabled=False``; unset → TOML wins. Default is disabled.
+
+    Returns the small ``InlineLearnConfig`` (defined in
+    ``stratum.judge.inline_learn``), imported lazily to avoid an import cycle.
+    """
+    from .judge.inline_learn import InlineLearnConfig  # late import: no cycle
+
+    root = Path(workspace_root) if workspace_root is not None else Path(".")
+    cfg = StratumConfig.load(root / "stratum.toml")
+    enabled = cfg.learn.inline_patch_enabled
+
+    raw_env = os.environ.get(_INLINE_LEARN_ENV)
+    if raw_env is not None:
+        enabled = raw_env.strip().lower() in ("1", "true", "yes")
+
+    return InlineLearnConfig(
+        enabled=enabled,
+        classifier=cfg.learn.inline_patch_classifier,
+    )

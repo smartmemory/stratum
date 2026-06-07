@@ -75,6 +75,80 @@ def test_load_connector_routing(tmp_path):
     assert cfg.pipeline.connector["implement"] == "codex"
 
 
+# ---------------------------------------------------------------------------
+# STRAT-LEARN-INLINE — [learn.inline_patch] + resolve_inline_learn
+# ---------------------------------------------------------------------------
+
+from stratum.project_config import resolve_inline_learn  # noqa: E402
+
+
+def test_learn_defaults_disabled():
+    cfg = StratumConfig.empty()
+    assert cfg.learn.inline_patch_enabled is False
+    assert cfg.learn.inline_patch_classifier == "heuristic"
+
+
+def test_load_no_learn_section_is_default(tmp_path):
+    (tmp_path / "stratum.toml").write_text('[pipeline.policy]\npre = "flag"\n')
+    cfg = StratumConfig.load(tmp_path / "stratum.toml")
+    assert cfg.learn.inline_patch_enabled is False
+
+
+def test_load_learn_inline_patch(tmp_path):
+    (tmp_path / "stratum.toml").write_text(
+        '[learn.inline_patch]\nenabled = true\nclassifier = "llm"\n'
+    )
+    cfg = StratumConfig.load(tmp_path / "stratum.toml")
+    assert cfg.learn.inline_patch_enabled is True
+    assert cfg.learn.inline_patch_classifier == "llm"
+
+
+def test_load_learn_invalid_classifier_raises(tmp_path):
+    (tmp_path / "stratum.toml").write_text(
+        '[learn.inline_patch]\nclassifier = "psychic"\n'
+    )
+    with pytest.raises(StratumCompileError):
+        StratumConfig.load(tmp_path / "stratum.toml")
+
+
+def test_load_learn_non_table_raises(tmp_path):
+    (tmp_path / "stratum.toml").write_text('[learn]\ninline_patch = "yes"\n')
+    with pytest.raises(StratumCompileError):
+        StratumConfig.load(tmp_path / "stratum.toml")
+
+
+def test_load_learn_enabled_non_bool_raises(tmp_path):
+    (tmp_path / "stratum.toml").write_text(
+        '[learn.inline_patch]\nenabled = "true"\n'
+    )
+    with pytest.raises(StratumCompileError):
+        StratumConfig.load(tmp_path / "stratum.toml")
+
+
+def test_resolve_inline_learn_toml_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("STRATUM_LEARN_INLINE_PATCH_ENABLED", raising=False)
+    (tmp_path / "stratum.toml").write_text(
+        '[learn.inline_patch]\nenabled = true\nclassifier = "llm"\n'
+    )
+    cfg = resolve_inline_learn(tmp_path)
+    assert cfg.enabled is True and cfg.classifier == "llm"
+
+
+def test_resolve_inline_learn_env_overrides_toml(tmp_path, monkeypatch):
+    (tmp_path / "stratum.toml").write_text(
+        '[learn.inline_patch]\nenabled = false\n'
+    )
+    monkeypatch.setenv("STRATUM_LEARN_INLINE_PATCH_ENABLED", "1")
+    assert resolve_inline_learn(tmp_path).enabled is True
+    monkeypatch.setenv("STRATUM_LEARN_INLINE_PATCH_ENABLED", "no")
+    assert resolve_inline_learn(tmp_path).enabled is False
+
+
+def test_resolve_inline_learn_default_when_no_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("STRATUM_LEARN_INLINE_PATCH_ENABLED", raising=False)
+    assert resolve_inline_learn(tmp_path).enabled is False
+
+
 def test_load_full_config(tmp_path):
     (tmp_path / "stratum.toml").write_text(
         '[pipeline.policy]\npre_gate = "flag"\n\n'
