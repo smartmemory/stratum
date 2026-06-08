@@ -16,6 +16,10 @@ package-lock.json
 .claude/
 .playwright-mcp/
 
+# Stratum local run state + internal specs
+.stratum/
+docs/features/*/.stratum.yaml
+
 # Secrets
 .mcpregistry_*_token
 
