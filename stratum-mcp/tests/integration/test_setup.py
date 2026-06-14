@@ -177,7 +177,12 @@ def test_setup_done_message_on_changes(tmp_path, capsys):
 # Skills
 # ---------------------------------------------------------------------------
 
-EXPECTED_SKILLS = ["stratum-review", "stratum-feature", "stratum-debug", "stratum-refactor"]
+EXPECTED_SKILLS = ["stratum-review", "stratum-feature", "stratum-debug", "stratum-refactor", "distill"]
+# Flow-orchestration skills drive the stratum_plan/stratum_step_done loop and carry
+# the "never show it to the user" (.stratum.yaml) privacy instruction. Tool-wrapper
+# skills like `distill` (which front the stratum_distill tool) legitimately do not,
+# so the flow-instruction assertion is scoped to this subset.
+FLOW_SKILLS = ["stratum-review", "stratum-feature", "stratum-debug", "stratum-refactor"]
 SKILLS_HOME = Path.home() / ".claude" / "skills"
 
 
@@ -197,7 +202,7 @@ def test_setup_skill_contains_frontmatter(tmp_path):
 
 def test_setup_skill_contains_key_instructions(tmp_path):
     _run_setup(tmp_path)
-    for skill in EXPECTED_SKILLS:
+    for skill in FLOW_SKILLS:
         content = (SKILLS_HOME / skill / "SKILL.md").read_text()
         assert "stratum_plan" in content, f"{skill} missing stratum_plan reference"
         assert "stratum_step_done" in content, f"{skill} missing stratum_step_done reference"

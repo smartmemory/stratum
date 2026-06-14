@@ -46,7 +46,7 @@ pre-existing `test_e2e.py` real-LLM timeouts, unrelated/untouched); stratum-mcp
 **New (src):** `src/stratum/judge/distill/{__init__,detector,candidate,synthesize,runner,cli}.py`
 **Modified (src):** `src/stratum/judge/postmortem/corpus.py` (distill sidecar writer); `stratum-mcp/src/stratum_mcp/server.py` (`stratum_distill` tool)
 **New (tests):** `tests/test_distill_{detector,corpus,synthesize,cli}.py`, `stratum-mcp/tests/test_server_distill.py`
-**New (skill):** `~/.claude/skills/distill/SKILL.md`
+**New (skill, vendored):** `stratum-mcp/src/stratum_mcp/skills/distill/SKILL.md` — bundled in the package (ships in the wheel; verified `stratum_mcp-0.2.68-py3-none-any.whl` contains it), installed/upgraded to `~/.claude/skills/distill/` by `stratum-mcp install` (idempotent content-compare + `.stratum-skills.json` manifest, same path as the other bundled skills). `EXPECTED_SKILLS` in `tests/integration/test_setup.py` extended to cover it (flow-instruction assertion scoped to `FLOW_SKILLS` since distill is a tool-wrapper, not a flow-orchestration skill).
 **Docs:** `docs/features/STRAT-DISTILL/{design,blueprint,plan,report}.md`
 
 ## Known limits / follow-ups filed
