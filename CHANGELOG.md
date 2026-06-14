@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### stratum — feat(STRAT-DISTILL): repeated-workflow → staged reusable-asset distiller (v1, manual)
+
+The success-pattern complement to STRAT-LEARN-INLINE (failure-triggered, patches existing scaffold): DISTILL is recurrence-triggered and synthesizes *new* assets. Mines Claude Code session transcripts for repeated tool-call workflows and **stages** asset candidates (skill / subagent / command) for review — never auto-applied (STRAT-IMMUTABLE). Lifted from a Xiaomi MiMoCode `/distill` teardown (2026-06-13).
+
+- **Detector** (`src/stratum/judge/distill/detector.py`, net-new): cross-session recurrence counting over tool-call sequences — `(tool, canonical_input)` singletons + tool-name n-grams (n=2..4). `canonicalize_input` reuses the `signals.py` meaningful-key priority (`command`/`file_path`/`path`/`pattern`/`url`/`notebook_path`). Reads the postmortem loader's `Session`/`Event` model directly (does NOT depend on judge verdicts). Pure + deterministic; an empty result ("nothing recurred → create nothing") is a valid success. Bar: recurred ≥ `min_count` (default 2).
+- **Staging** (`src/stratum/judge/distill/candidate.py` + `postmortem/corpus.py`): `AssetCandidate` (mirrors `PatchCandidate`; `asset_kind` skill|subagent|command, `patch_type="create"` locked) → `append_distill_candidates` writes `.stratum/postmortem/distill_candidates.jsonl` — own `distill-1.0` schema (`origin:"distill"`), `fcntl.flock`-guarded, idempotent on a stable `cluster_id`. Never touches the inline or canonical corpora.
+- **Synthesis** (`src/stratum/judge/distill/synthesize.py`): smallest-form heuristic (single recurring invocation → `command`; multi-step → `skill`; read-only investigation → `subagent`) with an opt-in, fail-open LLM override (`llm_form`). Produces *described* content only — never writes a file. Below-bar / formless → `None`.
+- **Surfaces:** stateless `stratum_distill` MCP tool (mirrors `stratum_decompose`; no FlowState, returns `{candidates, evaluated, written, reason, out_path, applied}`); `distill extract|top|stats` CLI (`src/stratum/judge/distill/cli.py`, mirrors postmortem CLI); shared `runner.py` (`run_distill`); thin `~/.claude/skills/distill/SKILL.md`. `apply` is reserved (v1 always stages).
+- **Scope (ship-narrow-first):** v1 is the manual distiller — a stateless tool is inherently opt-in, so there is no off-path / dead config. Auto-run + `[learn.distill]` config deferred to `STRAT-DISTILL-AUTO`; real asset scaffolding deferred to `STRAT-DISTILL-APPLY`.
+- **Tests (32 new, all green):** `tests/test_distill_{detector,corpus,synthesize,cli}.py`, `stratum-mcp/tests/test_server_distill.py`. Full suites: `tests/` **743 passed** (14 pre-existing `test_e2e.py` real-LLM timeouts, untouched); `stratum-mcp/tests/` **1421 passed, 2 skipped**. Stratum flow `7022b74f` — all 6 slices passed `ensure` on attempt 1. `docs/features/STRAT-DISTILL/`.
+
 ### stratum — feat(STRAT-LEARN-INLINE): inline judge self-patch harvester edge (default-OFF)
 
 Closes the gap between within-step self-correction (regenerate-until-met) and across-run learning (offline postmortem `--all`): when a judge turn produces a `must-fix` finding, classify the fix target and — for the ones that generalize — emit a **staged, described** skill/MEMORY patch *candidate* for review. Nothing is ever applied; the running spec is never touched (STRAT-IMMUTABLE).

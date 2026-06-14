@@ -2778,6 +2778,49 @@ async def stratum_decompose(
 
 
 @mcp.tool(description=(
+    "STRAT-DISTILL v1: Stateless transcript-distiller. Mines Claude Code session "
+    "transcripts for repeated tool-call workflows and stages reusable-asset "
+    "candidates (skill / subagent / command) — the success-pattern complement to "
+    "STRAT-LEARN-INLINE (failure-triggered, patches existing scaffold). No flow "
+    "state, no persistence beyond an append-only staged sidecar. Inputs: "
+    "project_dir (str, transcript dir; default this project's ~/.claude/projects dir), "
+    "out_path (str, optional sidecar path; default <cwd>/.stratum/postmortem/"
+    "distill_candidates.jsonl), window_days (int, default 30), min_count (int, "
+    "recurrence bar, default 2), apply (bool, reserved — v1 always STAGES, never "
+    "writes the asset). Returns {candidates: list[dict], evaluated: int, written: "
+    "int, reason: str, out_path: str, applied: bool}. 'Nothing to distill' "
+    "(evaluated/written 0) is a valid, successful result — candidates are described "
+    "suggestions for review, never auto-applied to the working tree."
+))
+async def stratum_distill(
+    ctx: Context,
+    project_dir: str = "",
+    out_path: str = "",
+    window_days: int = 30,
+    min_count: int = 2,
+    apply: bool = False,
+) -> dict[str, Any]:
+    import asyncio
+    from pathlib import Path
+
+    from stratum.judge.distill.runner import run_distill
+
+    pdir = project_dir or str(Path.home() / ".claude" / "projects" / "-Users-ruze-reg-my-forge")
+    res = await asyncio.to_thread(
+        run_distill,
+        pdir,
+        out_path=(out_path or None),
+        window_days=window_days,
+        min_count=min_count,
+        write=True,
+    )
+    # `apply` is reserved for STRAT-DISTILL-APPLY; v1 always stages (never writes
+    # the asset itself), so report applied=False regardless of the request.
+    res["applied"] = False
+    return res
+
+
+@mcp.tool(description=(
     "STRAT-GOAL v1: Read-only status surface for a running or paused goal. "
     "Does NOT advance the loop. "
     "Returns a status envelope shaped like GoalResult: "

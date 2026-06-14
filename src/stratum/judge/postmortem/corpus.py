@@ -101,3 +101,66 @@ def append_inline_candidates(
             return written
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+# --- STRAT-DISTILL: asset-candidate sidecar (own schema/file; never the inline
+# or canonical corpora) -------------------------------------------------------
+
+DISTILL_SCHEMA_VERSION = "distill-1.0"
+
+if TYPE_CHECKING:
+    from ..distill.candidate import AssetCandidate
+
+
+def distill_sidecar_path(workspace_root: Path | str) -> Path:
+    """Canonical distill-sidecar location for a workspace."""
+    return Path(workspace_root) / ".stratum" / "postmortem" / "distill_candidates.jsonl"
+
+
+def _distill_candidate_id(cluster_id: str) -> str:
+    return f"distill:{cluster_id}"
+
+
+def append_distill_candidates(
+    sidecar_path: Path | str,
+    candidates: "Sequence[AssetCandidate]",
+    *,
+    project: str = "",
+) -> int:
+    """Append distill asset-candidates to the sidecar, flock-guarded and
+    idempotent on a stable ``cluster_id``. Returns the number of rows written
+    (skips ids already present). A no-op for empty ``candidates``. Mirrors
+    ``append_inline_candidates``; writes only to the distill sidecar."""
+    if not candidates:
+        return 0
+    path = Path(sidecar_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(path, "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.seek(0)
+            seen = _existing_ids(fh.read())
+            written = 0
+            fh.seek(0, 2)  # end — append
+            for cand in candidates:
+                cid = _distill_candidate_id(cand.cluster_id)
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                record = {
+                    "candidate_id": cid,
+                    "origin": "distill",
+                    "_schema_version": DISTILL_SCHEMA_VERSION,
+                    "project": project,
+                    "asset_kind": cand.asset_kind,
+                    "asset_name": cand.asset_name,
+                    "confidence": cand.confidence,
+                    "distill_candidate": cand.to_dict(),
+                }
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                written += 1
+            fh.flush()
+            return written
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
