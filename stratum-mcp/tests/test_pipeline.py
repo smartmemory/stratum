@@ -250,6 +250,9 @@ class FakeFlowState:
     terminal_status: str | None = None
     budget: Any = None
     budget_state: Any = None
+    # STRAT-AGENT-INTERP: the cert path now resolves a step's agent from flow state.
+    inputs: dict = field(default_factory=dict)
+    step_outputs: dict = field(default_factory=dict)
 
 
 class ScriptedConnector:

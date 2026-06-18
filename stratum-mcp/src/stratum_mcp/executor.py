@@ -584,6 +584,65 @@ def resolve_inputs(
 
 
 # ---------------------------------------------------------------------------
+# STRAT-AGENT-INTERP: interpolatable per-step `agent`
+# ---------------------------------------------------------------------------
+
+def resolve_agent(
+    agent: str | None,
+    flow_inputs: dict[str, Any],
+    step_outputs: dict[str, Any],
+) -> str | None:
+    """Resolve a step's ``agent`` field through the same resolver as ``inputs``.
+
+    - ``None``                       → ``None`` (agentless step — unchanged).
+    - literal (no ``$`` prefix)      → returned as-is. No new validation, so every
+      existing spec's dispatch is byte-identical (downstream ``make_agent_connector``
+      still validates the literal as it always has).
+    - ``$`` reference                → resolved via ``resolve_ref`` from recorded flow
+      state (a router step's output / a flow input), then its **connector prefix** is
+      validated against ``VALID_AGENT_TYPES``. Profile agents like ``claude:reviewer``
+      are first-class — only the part before ``:`` must be a known type.
+
+    Raises ``MCPExecutionError`` if a ``$``-ref resolves to a non-string or an unknown
+    connector prefix (a router that forgot to emit a valid agent fails loudly at the
+    consuming step instead of silently dispatching the wrong executor). A reference to a
+    step that has not run yet raises ``RefResolutionError`` (unchanged resolver
+    behavior) — prevented statically by the spec validator's depends_on check.
+
+    Pure in its inputs: the result depends only on persisted flow state, so audit,
+    resume, and result-cache replay recompute the identical value.
+    """
+    if agent is None:
+        return None
+    if not agent.startswith("$"):
+        return agent
+    # Lazy import: keep executor's module-load import graph free of the connectors
+    # package. _scan_guardrails runs regexes in a multiprocessing-spawned worker that
+    # re-imports this module; a heavier import chain at module load breaks that worker.
+    from .connectors.factory import VALID_AGENT_TYPES
+    resolved = resolve_ref(agent, flow_inputs, step_outputs)
+    base = resolved.split(":", 1)[0] if isinstance(resolved, str) else None
+    if base not in VALID_AGENT_TYPES:
+        raise MCPExecutionError(
+            f"Interpolated agent {agent!r} resolved to {resolved!r}; expected a known "
+            f"connector prefix {sorted(VALID_AGENT_TYPES)} (optionally with a ':profile' "
+            f"suffix)"
+        )
+    return resolved
+
+
+def effective_agent(state: "FlowState", step: Any) -> str | None:
+    """The concrete executor for a step — the single accessor every runtime consumer
+    of ``step.agent`` routes through (dispatch envelopes, cert gating, the completion
+    StepRecord, the result-cache key, server-side parallel dispatch, error envelopes).
+
+    Recomputes from persisted flow state rather than storing mutable state, so a
+    crash/restore replays the identical value.
+    """
+    return resolve_agent(step.agent, state.inputs, state.step_outputs)
+
+
+# ---------------------------------------------------------------------------
 # skip_if evaluation
 # ---------------------------------------------------------------------------
 
@@ -1281,7 +1340,12 @@ def cache_enabled(step: "IRStepDef", fn_def: "IRFunctionDef | None") -> bool:
     return bool(step.cache or (fn_def is not None and getattr(fn_def, "cache", False)))
 
 
-def result_cache_key(state: "FlowState", step: "IRStepDef", resolved: Any) -> str | None:
+def result_cache_key(
+    state: "FlowState",
+    step: "IRStepDef",
+    resolved: Any,
+    resolved_agent: str | None = None,
+) -> str | None:
     """Content-addressed cache key for a step's about-to-run dispatch.
 
     ``sha256(CACHE_VERSION ‖ flow_name ‖ step_id ‖ step_fingerprint ‖
@@ -1296,20 +1360,31 @@ def result_cache_key(state: "FlowState", step: "IRStepDef", resolved: Any) -> st
     own key changes, and every step downstream of it misses because its
     ``resolved`` input (which threads the edited step's output) changes. A changed
     flow input cascades the same way from step 1.
+
+    STRAT-AGENT-INTERP: ``_step_fingerprint`` carries the **literal** ``step.agent``
+    (the spec text — correct for tamper detection). For an *interpolated* agent the
+    literal is the same ``$``-ref regardless of what it resolves to, so two runs that
+    resolve to claude vs codex would collide. We therefore fold ``resolved_agent``
+    into the key **only when the agent is interpolated** — keeping literal-agent keys
+    byte-identical to before (no existing cache is invalidated) while disambiguating
+    interpolated dispatches.
     """
     payload = canonical_json(resolved)
     if payload is None:
         return None
     step_fp = canonical_json(_step_fingerprint(step)) or ""
     fn_fp = canonical_json(_fn_fingerprint(step.function, state.spec)) or ""
-    raw = _CACHE_KEY_SEP.join((
+    parts = [
         str(_RESULT_CACHE_VERSION),
         state.flow_name or "",
         step.id,
         step_fp,
         fn_fp,
         payload,
-    ))
+    ]
+    if isinstance(step.agent, str) and step.agent.startswith("$"):
+        parts.append(resolved_agent or "")
+    raw = _CACHE_KEY_SEP.join(parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -1756,6 +1831,17 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
 
     mode = _step_mode(step)
 
+    # STRAT-AGENT-INTERP: resolve the step's executor once for every dispatch
+    # surface below. Literal agents pass through unchanged (byte-identical
+    # envelopes); a `$`-ref is resolved from recorded flow state and validated.
+    # A ref to an unrun step surfaces as MCPExecutionError (same conversion the
+    # inputs path does below), so callers that only catch MCPExecutionError don't
+    # leak a RefResolutionError.
+    try:
+        resolved_agent = resolve_agent(step.agent, state.inputs, state.step_outputs)
+    except RefResolutionError as exc:
+        raise MCPExecutionError(str(exc)) from exc
+
     if is_gate:
         # Use wall-clock time for gate dispatch so timeout detection works correctly.
         state.dispatched_at[step.id] = time.time()
@@ -1767,7 +1853,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "step_id": step.id,
             "step_mode": "function",
             "function": step.function,
-            "agent": step.agent,
+            "agent": resolved_agent,
             "on_approve": step.on_approve,
             "on_revise": step.on_revise,
             "on_kill": step.on_kill,
@@ -1791,7 +1877,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         # a normal dispatch. The hit is recorded with cache_hit=True so the audit
         # never passes a replay off as a fresh run.
         if cache_enabled(step, fn_def) and not result_cache.cache_disabled():
-            ckey = result_cache_key(state, step, resolved)
+            ckey = result_cache_key(state, step, resolved, resolved_agent)
             cached = result_cache.result_cache_get(ckey) if ckey else None
             if cached is not None and _revalidate_cached(state, step, fn_def, cached):
                 dispatched = state.dispatched_at.get(step.id, time.monotonic())
@@ -1803,7 +1889,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
                     duration_ms=duration_ms,
                     round=state.round,
                     round_start_step_id=state.round_start_step_id,
-                    agent=step.agent,
+                    agent=resolved_agent,
                     step_mode="function",
                     cache_hit=True,
                     cache_key=ckey,
@@ -1822,7 +1908,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "step_id": step.id,
             "step_mode": "function",
             "function": step.function,
-            "agent": step.agent,
+            "agent": resolved_agent,
             "mode": fn_def.mode,
             "intent": fn_def.intent,
             "inputs": resolved,
@@ -1837,8 +1923,9 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         contract = state.spec.contracts.get(step.output_contract or "")
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
         # STRAT-CERT: inject structured reasoning format for claude-agent steps
+        # (STRAT-AGENT-INTERP: gate on the RESOLVED agent, not the literal $-ref).
         intent = step.intent or ""
-        if step.reasoning_template and (step.agent or 'claude').startswith('claude'):
+        if step.reasoning_template and (resolved_agent or 'claude').startswith('claude'):
             intent = inject_cert_instructions(intent, step.reasoning_template)
         return {
             "status": "execute_step",
@@ -1848,7 +1935,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "step_id": step.id,
             "step_mode": "inline",
             "intent": intent,
-            "agent": step.agent,
+            "agent": resolved_agent,
             "inputs": resolved,
             "output_contract": step.output_contract,
             "output_fields": output_fields,
@@ -1869,7 +1956,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "total_steps": len(state.ordered_steps),
             "step_id": step.id,
             "step_mode": "judge",
-            "agent": step.agent,
+            "agent": resolved_agent,
             "predicates": list(step.judge.predicates),
             "stakes": step.judge.stakes,
             "budget": step.judge.budget,
@@ -1882,8 +1969,9 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
         contract = state.spec.contracts.get(step.output_contract or "")
         output_fields = {k: v.get("type", "any") for k, v in contract.fields.items()} if contract else {}
         # STRAT-CERT: inject structured reasoning format for claude-agent steps
+        # (STRAT-AGENT-INTERP: gate on the RESOLVED agent, not the literal $-ref).
         intent = step.intent or ""
-        if step.reasoning_template and (step.agent or 'claude').startswith('claude'):
+        if step.reasoning_template and (resolved_agent or 'claude').startswith('claude'):
             intent = inject_cert_instructions(intent, step.reasoning_template)
         return {
             "status": "execute_step",
@@ -1893,7 +1981,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "step_id": step.id,
             "step_mode": "decompose",
             "intent": intent,
-            "agent": step.agent,
+            "agent": resolved_agent,
             "inputs": resolved,
             "output_contract": step.output_contract,
             "output_fields": output_fields,
@@ -1921,7 +2009,7 @@ def get_current_step_info(state: FlowState) -> dict[str, Any] | None:
             "step_id": step.id,
             "step_mode": "parallel_dispatch",
             "tasks": tasks,
-            "agent": step.agent,
+            "agent": resolved_agent,
             "max_concurrent": step.max_concurrent or 3,
             "isolation": step.isolation or "worktree",
             "require": step.require or "all",
@@ -2042,7 +2130,7 @@ def process_step_result(
             duration_ms=dur_ms,
             round=state.round,
             round_start_step_id=state.round_start_step_id,
-            agent=step.agent,
+            agent=effective_agent(state, step),
             step_mode=mode,
             child_flow_id=state.active_child_flow_id if mode == "flow" else None,
         )
@@ -2091,7 +2179,8 @@ def process_step_result(
 
     # STRAT-CERT: validate reasoning certificate before ensure expressions
     # Only for claude-agent steps with a reasoning_template
-    if step.reasoning_template and (step.agent or 'claude').startswith('claude'):
+    # (STRAT-AGENT-INTERP: gate on the RESOLVED agent, not the literal $-ref).
+    if step.reasoning_template and (effective_agent(state, step) or 'claude').startswith('claude'):
         cert_violations = validate_certificate(step.reasoning_template, result)
         if cert_violations:
             if attempt >= max_retries:
@@ -2163,7 +2252,7 @@ def process_step_result(
             except RefResolutionError:
                 cache_resolved = None
             if cache_resolved is not None:
-                ckey = result_cache_key(state, step, cache_resolved)
+                ckey = result_cache_key(state, step, cache_resolved, effective_agent(state, step))
                 if ckey is not None:
                     result_cache.result_cache_put(
                         ckey,
