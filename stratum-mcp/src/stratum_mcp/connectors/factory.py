@@ -15,6 +15,11 @@ from .codex import CodexConnector
 
 _VALID_AGENT_TYPES = frozenset({"claude", "codex"})
 
+# Public alias — single source of truth for the known agent connector prefixes.
+# STRAT-AGENT-INTERP: executor.resolve_agent validates an interpolated agent's
+# connector prefix against this set.
+VALID_AGENT_TYPES = _VALID_AGENT_TYPES
+
 
 def make_agent_connector(
     agent_type: str,

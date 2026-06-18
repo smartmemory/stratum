@@ -46,6 +46,7 @@ from .executor import (
     revert_checkpoint,
     verify_spec_integrity,
     validate_certificate,
+    effective_agent,
 )
 from .spec import parse_and_validate
 from .connectors import AgentConnector, ClaudeConnector, CodexConnector
@@ -595,7 +596,7 @@ async def stratum_step_done(
             "flow_id": flow_id,
             "step_id": step_id,
             "step_mode": _step_mode(_step),
-            "agent": _step.agent,
+            "agent": effective_agent(state, _step),
             "message": f"Step '{step_id}' exhausted all retries",
             "violations": violations,
         }
@@ -879,10 +880,12 @@ def _evaluate_parallel_results(
             return effective_pipeline_task_cert(
                 meta.get("_task_reasoning_template"),
                 task_template,
-                meta.get("_agent") or step.agent,
+                # STRAT-AGENT-INTERP: fall back to the RESOLVED step agent, not the $-ref.
+                meta.get("_agent") or effective_agent(state, step),
             )
         # non-pipeline parallel_dispatch: step cert, claude-gated (unchanged)
-        if task_template and (step.agent or "claude").startswith("claude"):
+        # (STRAT-AGENT-INTERP: gate on the RESOLVED agent, not the literal $-ref).
+        if task_template and (effective_agent(state, step) or "claude").startswith("claude"):
             return task_template
         return None
 
@@ -1142,7 +1145,7 @@ async def stratum_parallel_done(
                 "flow_id": flow_id,
                 "step_id": step_id,
                 "step_mode": "parallel_dispatch",
-                "agent": cur_step.agent,
+                "agent": effective_agent(state, cur_step),
                 "message": f"Step '{step_id}' exhausted all retries",
                 "violations": fail_reasons,
                 "bounced_tasks": bounced_tasks,
@@ -1172,7 +1175,7 @@ async def stratum_parallel_done(
             "flow_id": flow_id,
             "step_id": step_id,
             "step_mode": _step_mode(_step),
-            "agent": _step.agent,
+            "agent": effective_agent(state, _step),
             "message": f"Step '{step_id}' exhausted all retries",
             "violations": violations + per_task_cert_strs,
             "bounced_tasks": bounced_tasks,
@@ -1347,7 +1350,7 @@ async def _advance_after_parallel(
                 "flow_id": state.flow_id,
                 "step_id": step_id,
                 "step_mode": "parallel_dispatch",
-                "agent": cur_step.agent if cur_step is not None else None,
+                "agent": effective_agent(state, cur_step) if cur_step is not None else None,
                 "message": f"Step '{step_id}' exhausted all retries",
                 "violations": fail_reasons,
                 "bounced_tasks": bounced_tasks,
@@ -1374,7 +1377,7 @@ async def _advance_after_parallel(
             "flow_id": state.flow_id,
             "step_id": step_id,
             "step_mode": _step_mode(_step),
-            "agent": _step.agent,
+            "agent": effective_agent(state, _step),
             "message": f"Step '{step_id}' exhausted all retries",
             "violations": violations,
             "bounced_tasks": bounced_tasks,
@@ -1555,7 +1558,10 @@ async def stratum_parallel_start(
         max_concurrent=cur_step.max_concurrent or 3,
         isolation=isolation,
         task_timeout=task_timeout,
-        agent=cur_step.agent,
+        # STRAT-AGENT-INTERP: resolve the step's executor from flow state so an
+        # interpolated `agent: "$.steps.route.output.agent"` drives the real
+        # server-side parallel dispatch, not just the advertised envelope.
+        agent=effective_agent(state, cur_step),
         intent_template=cur_step.intent_template or "",
         task_reasoning_template=cur_step.task_reasoning_template,
         require=cur_step.require or "all",

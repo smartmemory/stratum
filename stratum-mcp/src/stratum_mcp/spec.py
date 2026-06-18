@@ -1925,7 +1925,14 @@ def _validate_semantics(spec: IRSpec) -> None:
                 # Only count reasoning_template as validation for claude-agent steps
                 # (codex-agent steps silently skip cert at runtime).
                 # STRAT-CERT-PAR T2.2: startswith('claude') matches profile agents like 'claude:read-only-reviewer'.
-                has_cert = bool(step.reasoning_template) and (step.agent or "claude").startswith("claude")
+                # STRAT-AGENT-INTERP: an interpolated ($-ref) agent's concrete value is
+                # unknown at parse time. Treat it conservatively as cert-capable so a
+                # reasoning_template step is NOT spuriously flagged as having no
+                # validation; runtime still skips cert when it resolves to codex.
+                _agent_is_ref = isinstance(step.agent, str) and step.agent.startswith("$")
+                has_cert = bool(step.reasoning_template) and (
+                    _agent_is_ref or (step.agent or "claude").startswith("claude")
+                )
                 has_validation = has_ensure or has_guardrails or bool(step.output_schema) or has_cert
                 if step.on_fail and not has_validation:
                     raise IRSemanticError(
