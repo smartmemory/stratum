@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -18,7 +19,7 @@ from stratum_mcp.connectors import (
     OpencodeConnector,
     inject_schema,
 )
-from stratum_mcp.connectors.codex import _translate_codex_event
+from stratum_mcp.connectors.codex import _assert_codex_model, _translate_codex_event
 from stratum_mcp.connectors.opencode import _translate_opencode_event
 
 
@@ -287,17 +288,27 @@ def test_codex_connector_accepts_known_model():
     assert conn._default_model_id == "gpt-5.4"
 
 
-def test_codex_connector_rejects_unknown_model_at_construction():
-    with pytest.raises(ValueError, match="not a supported Codex model"):
-        CodexConnector(model_id="gpt-fake-9000")
+def test_codex_connector_accepts_unknown_model_at_construction(caplog):
+    """No hard gate: an unknown model warns but passes through (the codex CLI is
+    the authority on which models exist). Construction must not raise."""
+    with caplog.at_level(logging.WARNING):
+        conn = CodexConnector(model_id="gpt-fake-9000")
+    assert conn._default_model_id == "gpt-fake-9000"
+    assert any("gpt-fake-9000" in r.message for r in caplog.records)
 
 
-@pytest.mark.asyncio
-async def test_codex_connector_rejects_unknown_model_at_run_time():
-    """Override model via run() kwarg — validation still runs."""
-    conn = CodexConnector(model_id="gpt-5.4")
-    with pytest.raises(ValueError, match="not a supported Codex model"):
-        await _collect(conn.run("prompt", model_id="gpt-fake-9000"))
+def test_assert_codex_model_warns_but_never_raises_on_unknown(caplog):
+    """The shared validation chokepoint (construction + run-kwarg paths) warns
+    on an unknown model and returns without raising."""
+    with caplog.at_level(logging.WARNING):
+        _assert_codex_model("gpt-fake-9000")
+    assert any("gpt-fake-9000" in r.message for r in caplog.records)
+
+
+def test_assert_codex_model_silent_on_known(caplog):
+    with caplog.at_level(logging.WARNING):
+        _assert_codex_model("gpt-5.4")
+    assert not [r for r in caplog.records if "not in the known-models" in r.message]
 
 
 def test_codex_model_ids_snapshot():

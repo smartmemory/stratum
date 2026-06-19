@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -37,8 +38,15 @@ from ..events import INTERNAL_RESULT_KIND, ConnectorEvent
 from ..proc_identity import proc_start_time
 from .base import AgentConnector, Event, inject_schema
 
+logger = logging.getLogger(__name__)
+
 CODEX_MODEL_IDS: frozenset[str] = frozenset(
     {
+        "gpt-5.5",
+        "gpt-5.5/low",
+        "gpt-5.5/medium",
+        "gpt-5.5/high",
+        "gpt-5.5/xhigh",
         "gpt-5.4",
         "gpt-5.4/low",
         "gpt-5.4/medium",
@@ -262,11 +270,18 @@ def _is_limit_error(exc: BaseException) -> bool:
 
 
 def _assert_codex_model(model_id: str) -> None:
+    # Pass-through by design (no hard gate): the codex CLI is the authority on
+    # which models exist and rejects invalid ones itself. Blocking here only goes
+    # stale every model release — it rejected gpt-5.5 the day config.toml pinned it.
+    # CODEX_MODEL_IDS is kept ONLY as a typo hint; we warn but never block, so new
+    # models work with zero code changes. Pricing already degrades gracefully for
+    # unknown models (see pricing.is_priced / _maybe_warn_unpriced).
     if model_id not in CODEX_MODEL_IDS:
-        supported = ", ".join(sorted(CODEX_MODEL_IDS))
-        raise ValueError(
-            f"CodexConnector: '{model_id}' is not a supported Codex model.\n"
-            f"Supported models: {supported}"
+        logger.warning(
+            "CodexConnector: '%s' is not in the known-models hint list; passing it "
+            "through to the codex CLI anyway (the CLI validates). Known: %s",
+            model_id,
+            ", ".join(sorted(CODEX_MODEL_IDS)),
         )
 
 
