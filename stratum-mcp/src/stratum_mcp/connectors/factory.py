@@ -34,7 +34,10 @@ def make_agent_connector(
     stream_path: Optional[str] = None,
     stderr_path: Optional[str] = None,
 ) -> AgentConnector:
-    """Factory — raises ValueError on unknown type or bad codex model.
+    """Factory — raises ValueError on unknown agent type.
+
+    Codex model ids are NOT hard-gated: an unknown model warns and passes
+    through to the codex CLI, which is the authority on which models exist.
 
     "opencode" raises ValueError with T2-F5-OPENCODE-DISPATCH pointer — that
     agent type is not yet wired into server-dispatch.

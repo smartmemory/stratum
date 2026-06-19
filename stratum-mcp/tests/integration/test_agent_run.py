@@ -166,11 +166,16 @@ async def test_agent_run_assistant_takes_precedence_over_result(monkeypatch):
     assert result["text"] == "streamed"
 
 
-@pytest.mark.asyncio
-async def test_agent_run_codex_validates_model():
-    """Unknown codex model surfaces as ValueError (matches Node behavior)."""
-    with pytest.raises(ValueError, match="not a supported Codex model"):
-        await _run(prompt="hi", type="codex", modelID="gpt-fake-9000")
+def test_agent_run_codex_passes_through_unknown_model():
+    """No hard gate on codex models: the factory constructs the connector for an
+    unknown model without raising (the codex CLI is the authority on which models
+    exist). Asserted at the factory boundary so it doesn't spawn the real CLI."""
+    from stratum_mcp.connectors.codex import CodexConnector
+    from stratum_mcp.server import _make_agent_connector
+
+    conn = _make_agent_connector("codex", "gpt-fake-9000", cwd=None)
+    assert isinstance(conn, CodexConnector)
+    assert conn._default_model_id == "gpt-fake-9000"
 
 
 class _PromptCapturingConnector(AgentConnector):
