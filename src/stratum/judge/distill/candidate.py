@@ -26,6 +26,11 @@ class AssetCandidate:
     cluster_id: str           # stable idempotency key for the sidecar
     confidence: int
     patch_type: Literal["create"] = "create"
+    # CORE-RECALL-CENTERED-1 handle: (session_id, line_no) of the first observed
+    # occurrence of the workflow, so a reviewer can read_centered to the evidence.
+    # Additive with defaults — existing constructors / readers keep working.
+    source_session_id: str = ""
+    source_line_no: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -39,4 +44,6 @@ class AssetCandidate:
             "evidence_session_ids": list(self.evidence_session_ids),
             "cluster_id": self.cluster_id,
             "confidence": self.confidence,
+            "source_session_id": self.source_session_id,
+            "source_line_no": self.source_line_no,
         }

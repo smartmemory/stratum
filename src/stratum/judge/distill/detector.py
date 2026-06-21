@@ -55,23 +55,38 @@ def canonicalize_input(tool_input: dict | None) -> str:
         return _redact(str(tool_input))[:_PREVIEW_LEN]
 
 
-def tool_steps(session: Session) -> list[tuple[str, str]]:
-    """All (tool_name, canonical_input) steps in a session, in order.
+def tool_steps(session: Session) -> list[tuple[str, str, int]]:
+    """All (tool_name, canonical_input, line_no) steps in a session, in order.
 
-    Tolerates malformed events (missing kind / tool_name / tool_input) by skipping.
-    v1 reads the whole session event stream; goal-bounded spans (via segmenter) are
-    a deferred refinement (STRAT-DISTILL follow-up) — see blueprint.
+    The trailing ``line_no`` is the 1-indexed source line of the tool_use event —
+    the (session_id, line_no) handle that CORE-RECALL-CENTERED-1 feeds to
+    ``read_centered``. It is additive: positions 0/1 remain (tool, canon) so
+    existing tuple-unpacking and equality on a 2-slice still hold for callers that
+    only read the first two fields.
+
+    Tolerates malformed events (missing kind / tool_name / tool_input / line_no)
+    by skipping. v1 reads the whole session event stream; goal-bounded spans (via
+    segmenter) are a deferred refinement (STRAT-DISTILL follow-up) — see blueprint.
     """
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, int]] = []
     for ev in getattr(session, "events", None) or ():
         if getattr(ev, "kind", None) == "tool_use" and getattr(ev, "tool_name", None):
-            out.append((ev.tool_name, canonicalize_input(getattr(ev, "tool_input", None))))
+            line_no = getattr(ev, "line_no", 0) or 0
+            out.append(
+                (ev.tool_name, canonicalize_input(getattr(ev, "tool_input", None)), int(line_no))
+            )
     return out
 
 
 @dataclass(frozen=True)
 class WorkflowCandidate:
-    """A repeated workflow observed across sessions. Detection output, pre-synthesis."""
+    """A repeated workflow observed across sessions. Detection output, pre-synthesis.
+
+    ``source_session_id`` / ``source_line_no`` are the CORE-RECALL-CENTERED-1
+    handle: the (session_id, line_no) of the FIRST observed occurrence of this
+    workflow, so a reviewer can ``read_centered`` straight to the evidence. They
+    are additive with defaults so existing constructors / consumers keep working.
+    """
 
     signature: str
     kind: str  # "single" | "sequence"
@@ -80,6 +95,8 @@ class WorkflowCandidate:
     session_count: int
     evidence_session_ids: tuple
     sample_inputs: tuple
+    source_session_id: str = ""
+    source_line_no: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -90,6 +107,8 @@ class WorkflowCandidate:
             "session_count": self.session_count,
             "evidence_session_ids": list(self.evidence_session_ids),
             "sample_inputs": list(self.sample_inputs),
+            "source_session_id": self.source_session_id,
+            "source_line_no": self.source_line_no,
         }
 
 
@@ -117,31 +136,37 @@ def detect(
     single_count: Counter = Counter()
     single_sids: defaultdict = defaultdict(set)
     single_inputs: defaultdict = defaultdict(list)
+    single_handle: dict = {}   # key -> (session_id, line_no) of first occurrence
     seq_count: Counter = Counter()
     seq_sids: defaultdict = defaultdict(set)
+    seq_handle: dict = {}      # ngram -> (session_id, line_no) of first occurrence
     lo, hi = ngram_range
 
     for sess in sessions:
         sid = getattr(sess, "session_id", "") or ""
         steps = tool_steps(sess)
-        for tool, canon in steps:
+        for tool, canon, line_no in steps:
             key = (tool, canon)
             single_count[key] += 1
             single_sids[key].add(sid)
             if canon and canon not in single_inputs[key]:
                 single_inputs[key].append(canon)
-        names = [t for t, _ in steps]
+            single_handle.setdefault(key, (sid, line_no))
+        names = [t for t, _, _ in steps]
+        line_nos = [ln for _, _, ln in steps]
         for n in range(lo, hi + 1):
             for i in range(len(names) - n + 1):
                 ng = tuple(names[i : i + n])
                 seq_count[ng] += 1
                 seq_sids[ng].add(sid)
+                seq_handle.setdefault(ng, (sid, line_nos[i]))
 
     out: list[WorkflowCandidate] = []
 
     for (tool, canon), cnt in single_count.items():
         sids = single_sids[(tool, canon)]
         if cnt >= min_count and len(sids) >= min_sessions:
+            handle_sid, handle_line = single_handle.get((tool, canon), ("", 0))
             out.append(
                 WorkflowCandidate(
                     signature=f"{tool}({canon})" if canon else f"{tool}()",
@@ -151,12 +176,15 @@ def detect(
                     session_count=len(sids),
                     evidence_session_ids=tuple(sorted(sids)),
                     sample_inputs=tuple(single_inputs[(tool, canon)][:3]),
+                    source_session_id=handle_sid,
+                    source_line_no=handle_line,
                 )
             )
 
     for ng, cnt in seq_count.items():
         sids = seq_sids[ng]
         if cnt >= min_count and len(sids) >= min_sessions:
+            handle_sid, handle_line = seq_handle.get(ng, ("", 0))
             out.append(
                 WorkflowCandidate(
                     signature="→".join(ng),
@@ -166,6 +194,8 @@ def detect(
                     session_count=len(sids),
                     evidence_session_ids=tuple(sorted(sids)),
                     sample_inputs=(),
+                    source_session_id=handle_sid,
+                    source_line_no=handle_line,
                 )
             )
 

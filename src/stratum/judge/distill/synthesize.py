@@ -123,4 +123,6 @@ def synthesize(
         evidence_session_ids=tuple(workflow.evidence_session_ids),
         cluster_id=cluster_id,
         confidence=confidence,
+        source_session_id=workflow.source_session_id,
+        source_line_no=workflow.source_line_no,
     )

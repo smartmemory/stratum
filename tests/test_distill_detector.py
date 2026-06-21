@@ -50,7 +50,11 @@ def test_canonicalize_input_key_priority():
 def test_tool_steps_extracts_only_tool_use():
     s = _session("S", [("Bash", {"command": "ls"}), ("Edit", {"file_path": "a.js"})])
     steps = tool_steps(s)
-    assert steps == [("Bash", "command=ls"), ("Edit", "file_path=a.js")]
+    # CORE-RECALL-CENTERED-1: steps are now (tool, canon, line_no); the first two
+    # fields are unchanged (backward-compatible), with line_no added.
+    assert [(t, c) for t, c, _ in steps] == [("Bash", "command=ls"), ("Edit", "file_path=a.js")]
+    # _session lays tool_use events out starting at line 2
+    assert [ln for _, _, ln in steps] == [2, 3]
 
 
 def test_repeated_sequence_across_sessions_detected():

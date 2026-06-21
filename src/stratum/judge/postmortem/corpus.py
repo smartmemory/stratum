@@ -156,6 +156,11 @@ def append_distill_candidates(
                     "asset_kind": cand.asset_kind,
                     "asset_name": cand.asset_name,
                     "confidence": cand.confidence,
+                    # CORE-RECALL-CENTERED-1 handle surfaced at the top level so a
+                    # reviewer can read_centered without dereferencing the nested
+                    # candidate. Additive: existing distill-1.0 readers ignore it.
+                    "source_session_id": cand.source_session_id,
+                    "source_line_no": cand.source_line_no,
                     "distill_candidate": cand.to_dict(),
                 }
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")

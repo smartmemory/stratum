@@ -2827,6 +2827,60 @@ async def stratum_distill(
 
 
 @mcp.tool(description=(
+    "CORE-RECALL-CENTERED-1: Read a char-budgeted, ASYMMETRIC window of a Claude "
+    "Code session transcript around a (session_id, line_no) handle — the handle "
+    "stratum_distill now emits on every candidate. Mirrors crispy-recall's "
+    "30%-back / 70%-forward centered read: it walks OUTWARD from the line, "
+    "spending ~before_ratio of the budget backward and ~after_ratio forward, "
+    "spilling leftover budget to the other side if one runs out of lines, so the "
+    "total stays ≈ char_budget. A single line larger than the budget is "
+    "hard-truncated and returned alone. Inputs: session (str — a transcript path "
+    "OR a session_id resolved via project_dir / the cwd-hash convention), line_no "
+    "(int, 1-indexed), char_budget (int, default 20000), before_ratio (float, "
+    "default 0.3), after_ratio (float, default 0.7), cursor (dict, optional — a "
+    "prior continue_cursor to re-center on), project_dir (str, optional). Returns "
+    "{window, handle:{session_id,line_no}, continue_cursor:{prev_line,next_line}, "
+    "chars_used, char_budget}; prev_line/next_line are the next lines to read "
+    "further each way (null at a file edge), so a caller can page outward without "
+    "overlap or gap. Read-only; no flow state, no persistence."
+))
+async def read_centered(
+    ctx: Context,
+    session: str,
+    line_no: int,
+    char_budget: int = 20000,
+    before_ratio: float = 0.3,
+    after_ratio: float = 0.7,
+    cursor: Optional[dict] = None,
+    project_dir: str = "",
+) -> dict[str, Any]:
+    import asyncio
+
+    from stratum.judge.postmortem.loader import read_centered as _read_centered
+
+    try:
+        return await asyncio.to_thread(
+            _read_centered,
+            session,
+            line_no,
+            char_budget,
+            before_ratio,
+            after_ratio,
+            cursor,
+            project_dir=(project_dir or None),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        # The session/path could not be resolved (no such transcript) or was
+        # rejected by path confinement. Return an error envelope consistent with
+        # the sibling tools instead of raising an uncaught exception.
+        return {
+            "status": "error",
+            "error_type": "transcript_not_found",
+            "message": f"Could not resolve transcript for session {session!r}: {exc}",
+        }
+
+
+@mcp.tool(description=(
     "STRAT-GOAL v1: Read-only status surface for a running or paused goal. "
     "Does NOT advance the loop. "
     "Returns a status envelope shaped like GoalResult: "
