@@ -2881,6 +2881,104 @@ async def read_centered(
 
 
 @mcp.tool(description=(
+    "CORE-CODE-PROVENANCE-1: given a git COMMIT or a FILE:LINE, find which captured "
+    "agent session (Claude Code + Codex) AUTHORED that code — by structural evidence "
+    "(exact/normalized/block-hash/longest-common-substring, IDF-weighted tri-gram "
+    "fallback), NOT clock proximity. Returns ranked matches with a source-aware handle "
+    "that chains into read_transcript_centered, plus an honest status "
+    "(ok | no_clear_author | no_overlap | no_indexable_content | merge_no_direct_changes)."
+))
+async def blame_session(
+    ctx: Context,
+    commit: str = "",
+    file: str = "",
+    line: int = 0,
+    repo: str = "",
+    ref: str = "HEAD",
+    sources: str = "cc,codex",
+    cc_dir: str = "",
+    codex_dir: str = "",
+    top_k: int = 5,
+    window: int = 40,
+    min_score: float = 0.2,
+    margin_delta: float = 0.1,
+) -> dict:
+    import asyncio
+    from pathlib import Path
+
+    from stratum_mcp.provenance_crawl import blame as _blame
+
+    src = tuple(s.strip() for s in sources.split(",") if s.strip()) or ("cc", "codex")
+    repo_path = repo or str(Path.cwd())
+    ccd = cc_dir or str(Path.home() / ".claude" / "projects")
+    cxd = codex_dir or str(Path.home() / ".codex" / "sessions")
+    try:
+        return await asyncio.to_thread(
+            _blame,
+            commit=(commit or None),
+            file=(file or None),
+            line=(line or None),
+            repo=repo_path,
+            ref=ref,
+            cc_dir=ccd,
+            codex_dir=cxd,
+            sources=src,
+            top_k=top_k,
+            window=window,
+            min_score=min_score,
+            margin_delta=margin_delta,
+        )
+    except ValueError as exc:
+        return {"status": "error", "error_type": "git_error", "message": str(exc)}
+    except (FileNotFoundError, OSError) as exc:
+        return {"status": "error", "error_type": "io_error", "message": str(exc)}
+
+
+@mcp.tool(description=(
+    "CORE-CODE-PROVENANCE-1: read a char-budgeted, asymmetric window of a transcript "
+    "around line_no, for source 'cc' (Claude Code) OR 'codex'. The source-aware sibling "
+    "of read_centered — chains directly from a blame_session match handle "
+    "({source, source_path, line_no}) to read the authoring conversation."
+))
+async def read_transcript_centered(
+    ctx: Context,
+    source_path: str,
+    line_no: int,
+    source: str = "cc",
+    char_budget: int = 20000,
+    before_ratio: float = 0.3,
+    after_ratio: float = 0.7,
+    cursor: Optional[dict] = None,
+    project_dir: str = "",
+    codex_dir: str = "",
+) -> dict:
+    import asyncio
+
+    from stratum.judge.postmortem.transcript_reader import read_transcript_centered as _rtc
+
+    try:
+        return await asyncio.to_thread(
+            lambda: _rtc(
+                source_path,
+                line_no,
+                source,
+                char_budget,
+                before_ratio,
+                after_ratio,
+                cursor,
+                project_dir=(project_dir or None),
+                codex_dir=(codex_dir or None),
+            )
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return {
+            "status": "error",
+            "error_type": "transcript_not_found",
+            "message": f"Could not read transcript {source_path!r} ({source}): {exc}",
+        }
+
+
+@mcp.tool(description=(
     "STRAT-GOAL v1: Read-only status surface for a running or paused goal. "
     "Does NOT advance the loop. "
     "Returns a status envelope shaped like GoalResult: "

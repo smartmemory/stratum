@@ -360,6 +360,115 @@ def _default_project_dir() -> Path:
     return Path.home() / ".claude" / "projects" / hashed
 
 
+def center_over_rendered(
+    rendered: list[str],
+    line_no: int,
+    char_budget: int = 20000,
+    before_ratio: float = 0.3,
+    after_ratio: float = 0.7,
+    cursor: dict | None = None,
+) -> dict:
+    """Char-budgeted asymmetric centered window over already-rendered transcript
+    lines (1-indexed). Source-agnostic core shared by ``read_centered`` (CC) and
+    ``read_transcript_centered`` (CC + Codex). Returns ``{window, center,
+    continue_cursor, chars_used, char_budget}`` where ``center`` is the clamped
+    effective line; callers attach their own (source-aware) handle."""
+    directional = False
+    if cursor:
+        nxt = cursor.get("next_line")
+        prv = cursor.get("prev_line")
+        if line_no is None or line_no <= 0:
+            line_no = nxt or prv or 1
+        if line_no == nxt and nxt is not None:
+            before_ratio, after_ratio = 0.0, 1.0
+            directional = True
+        elif line_no == prv and prv is not None:
+            before_ratio, after_ratio = 1.0, 0.0
+            directional = True
+
+    total = len(rendered)
+    if total == 0:
+        return {
+            "window": "",
+            "center": line_no if line_no and line_no > 0 else 1,
+            "continue_cursor": {"prev_line": None, "next_line": None},
+            "chars_used": 0,
+            "char_budget": char_budget,
+        }
+
+    center = max(1, min(line_no, total))
+    center_text = rendered[center - 1]
+    if len(center_text) > char_budget:
+        window = center_text[:char_budget]
+        return {
+            "window": window,
+            "center": center,
+            "continue_cursor": {
+                "prev_line": center - 1 if center > 1 else None,
+                "next_line": center + 1 if center < total else None,
+            },
+            "chars_used": len(window),
+            "char_budget": char_budget,
+        }
+
+    included: dict[int, str] = {center: center_text}
+    chars_used = len(center_text)
+    remaining = char_budget - chars_used
+    back_budget = int(remaining * before_ratio)
+    fwd_budget = remaining - back_budget
+    lo = center - 1
+    hi = center + 1
+    back_used = 0
+    fwd_used = 0
+
+    def _back_available() -> bool:
+        return lo >= 1
+
+    def _fwd_available() -> bool:
+        return hi <= total
+
+    while True:
+        progressed = False
+        if _back_available():
+            text = rendered[lo - 1]
+            cost = len(text) + 1
+            within_side = (back_used + cost <= back_budget) or (not directional and not _fwd_available())
+            if within_side and chars_used + cost <= char_budget:
+                included[lo] = text
+                chars_used += cost
+                back_used += cost
+                lo -= 1
+                progressed = True
+        if _fwd_available():
+            text = rendered[hi - 1]
+            cost = len(text) + 1
+            within_side = (fwd_used + cost <= fwd_budget) or (not directional and not _back_available())
+            if within_side and chars_used + cost <= char_budget:
+                included[hi] = text
+                chars_used += cost
+                fwd_used += cost
+                hi += 1
+                progressed = True
+        if not progressed:
+            break
+        if not _back_available() and not _fwd_available():
+            break
+
+    ordered = sorted(included)
+    window = "\n".join(included[i] for i in ordered)
+    first, last = ordered[0], ordered[-1]
+    return {
+        "window": window,
+        "center": center,
+        "continue_cursor": {
+            "prev_line": first - 1 if first > 1 else None,
+            "next_line": last + 1 if last < total else None,
+        },
+        "chars_used": len(window),
+        "char_budget": char_budget,
+    }
+
+
 def read_centered(
     session: "Path | str",
     line_no: int,
@@ -394,140 +503,15 @@ def read_centered(
     """
     path = _resolve_transcript_path(session, project_dir)
     session_id = path.stem
-
-    # A CONTINUATION read (cursor given) is DIRECTIONAL: paging from a returned
-    # `next_line` walks forward-only from that line; paging from a `prev_line`
-    # walks backward-only. Either direction seeds on the cursor edge itself and
-    # spends the WHOLE budget that one way, so successive pages tile the
-    # transcript with no overlap and no gap (the prior page already ends at
-    # next_line-1 / starts at prev_line+1). An initial (cursor-less) read keeps
-    # the asymmetric 30/70 outward walk.
-    directional = False
-    if cursor:
-        nxt = cursor.get("next_line")
-        prv = cursor.get("prev_line")
-        if line_no is None or line_no <= 0:
-            line_no = nxt or prv or 1
-        if line_no == nxt and nxt is not None:
-            before_ratio, after_ratio = 0.0, 1.0   # forward-only from next_line
-            directional = True
-        elif line_no == prv and prv is not None:
-            before_ratio, after_ratio = 1.0, 0.0   # backward-only from prev_line
-            directional = True
-
-    # Render every line up front (1-indexed). Transcripts are line-oriented JSONL;
-    # rendering is len-based (no token counter in this codebase — chars are the
-    # consistent budget unit).
     rendered: list[str] = []
     with path.open("r", encoding="utf-8") as fh:
         for raw in fh:
             rendered.append(_render_record_line(raw))
-    total = len(rendered)
-    if total == 0:
-        return {
-            "window": "",
-            "handle": {"session_id": session_id, "line_no": line_no},
-            "continue_cursor": {"prev_line": None, "next_line": None},
-            "chars_used": 0,
-            "char_budget": char_budget,
-        }
-
-    center = max(1, min(line_no, total))  # clamp into range
-    center_text = rendered[center - 1]
-
-    # Hard-truncate the centered line if it alone busts the budget.
-    if len(center_text) > char_budget:
-        window = center_text[:char_budget]
-        return {
-            "window": window,
-            # Echo the CLAMPED/effective line (`center`), not the raw input — an
-            # out-of-range line_no must not point the handle at a nonexistent line.
-            "handle": {"session_id": session_id, "line_no": center},
-            "continue_cursor": {
-                "prev_line": center - 1 if center > 1 else None,
-                "next_line": center + 1 if center < total else None,
-            },
-            "chars_used": len(window),
-            "char_budget": char_budget,
-        }
-
-    # Seed with the centered line, then walk outward asymmetrically. Every line
-    # added beyond the seed costs len(text) + 1: the +1 charges the '\n' join
-    # separator that the final window = '\n'.join(included) inserts, so the
-    # INVARIANT chars_used (== len(window)) <= char_budget holds for this path.
-    included: dict[int, str] = {center: center_text}
-    chars_used = len(center_text)
-    remaining = char_budget - chars_used
-
-    back_budget = int(remaining * before_ratio)
-    fwd_budget = remaining - back_budget  # remainder to forward (≈ after_ratio)
-
-    lo = center - 1  # next backward line to consider
-    hi = center + 1  # next forward line to consider
-    back_used = 0
-    fwd_used = 0
-
-    def _back_available() -> bool:
-        return lo >= 1
-
-    def _fwd_available() -> bool:
-        return hi <= total
-
-    # Walk outward, honoring each side's budget; spill leftover to the other side
-    # when one runs out of lines so total chars ≈ char_budget.
-    while True:
-        progressed = False
-
-        # Backward step. While both sides have lines, honor this side's slice of
-        # the budget (back_budget). Once the OTHER side is exhausted, spill: the
-        # only cap is the remaining total budget.
-        if _back_available():
-            text = rendered[lo - 1]
-            cost = len(text) + 1  # +1 for the '\n' join separator
-            # A directional (cursor) read never spills across the seed, so a
-            # forward-only page can't reach back over the cursor boundary and
-            # overlap the prior page.
-            within_side = (back_used + cost <= back_budget) or (
-                not directional and not _fwd_available()
-            )
-            if within_side and chars_used + cost <= char_budget:
-                included[lo] = text
-                chars_used += cost
-                back_used += cost
-                lo -= 1
-                progressed = True
-
-        # Forward step. Symmetric: honor fwd_budget until backward is exhausted,
-        # then spill against the remaining total budget.
-        if _fwd_available():
-            text = rendered[hi - 1]
-            cost = len(text) + 1  # +1 for the '\n' join separator
-            within_side = (fwd_used + cost <= fwd_budget) or (
-                not directional and not _back_available()
-            )
-            if within_side and chars_used + cost <= char_budget:
-                included[hi] = text
-                chars_used += cost
-                fwd_used += cost
-                hi += 1
-                progressed = True
-
-        if not progressed:
-            break
-        if not _back_available() and not _fwd_available():
-            break
-
-    ordered = sorted(included)
-    window = "\n".join(included[i] for i in ordered)
-    first, last = ordered[0], ordered[-1]
+    r = center_over_rendered(rendered, line_no, char_budget, before_ratio, after_ratio, cursor)
     return {
-        "window": window,
-        # Echo the CLAMPED/effective line (`center`), not the raw input.
-        "handle": {"session_id": session_id, "line_no": center},
-        "continue_cursor": {
-            "prev_line": first - 1 if first > 1 else None,
-            "next_line": last + 1 if last < total else None,
-        },
-        "chars_used": len(window),
-        "char_budget": char_budget,
+        "window": r["window"],
+        "handle": {"session_id": session_id, "line_no": r["center"]},
+        "continue_cursor": r["continue_cursor"],
+        "chars_used": r["chars_used"],
+        "char_budget": r["char_budget"],
     }
