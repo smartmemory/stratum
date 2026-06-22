@@ -261,6 +261,22 @@ async def stratum_agent_run(
                         f"stratum_agent_run ({type}): "
                         f"{event.get('message', 'unknown error')}"
                     )
+    except Exception as exc:
+        # Surface the agent's actual last output instead of only the opaque
+        # subprocess failure. A connector streams the real message (e.g. an
+        # auth/API error the CLI emits as an assistant turn) BEFORE its process
+        # exits non-zero; without this that content is discarded and callers see
+        # only "Command failed with exit code 1 / Check stderr output for
+        # details". `parts[-1]` is the agent's last spoken text.
+        # (asyncio.CancelledError is BaseException, so cancellation is unaffected.)
+        detail = parts[-1].strip() if parts else ""
+        exc_str = str(exc)
+        if detail and detail not in exc_str:
+            raise RuntimeError(
+                f"stratum_agent_run ({type}) failed: {detail}\n"
+                f"(underlying: {exc_str})"
+            ) from exc
+        raise
     finally:
         _AGENT_RUN_TASKS.pop(flow_id, None)
         # STRAT-WORKFLOW-BUDGET: debit in finally so a connector error or

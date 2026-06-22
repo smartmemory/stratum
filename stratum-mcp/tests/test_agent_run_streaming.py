@@ -43,6 +43,25 @@ class _FakeLegacyConnector(AgentConnector):
             yield ev
 
 
+class _FakeRaisingStreamingConnector(AgentConnector):
+    """Streams some events, then raises — mirrors a connector whose underlying
+    CLI emits the real error as an assistant turn and then exits non-zero."""
+
+    def __init__(self, events: list[ConnectorEvent], exc: BaseException):
+        self._events = events
+        self._exc = exc
+
+    async def run(self, prompt, **_ignored) -> AsyncIterator[dict]:
+        if False:
+            yield {}
+        return
+
+    async def stream_events(self, prompt, **_ignored) -> AsyncIterator[ConnectorEvent]:
+        for ev in self._events:
+            yield ev
+        raise self._exc
+
+
 class FakeCtx:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str]] = []
@@ -140,6 +159,33 @@ async def test_legacy_connector_no_progress_emitted(monkeypatch):
     result = await stratum_agent_run(prompt="hi", ctx=ctx, type="claude")
     assert ctx.calls == []
     assert result["text"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_streaming_failure_surfaces_last_agent_message(monkeypatch):
+    """When the connector raises mid-stream, the agent's last real message (not
+    just the opaque subprocess error) must surface in the raised error."""
+    msg = (
+        'Failed to authenticate. API Error: 403 '
+        '{"error":{"type":"forbidden","message":"Request not allowed"}}'
+    )
+    conn = _FakeRaisingStreamingConnector(
+        [ConnectorEvent(kind="agent_relay", metadata={"text": msg, "role": "assistant"})],
+        RuntimeError(
+            "Command failed with exit code 1\nError output: Check stderr output for details"
+        ),
+    )
+    monkeypatch.setattr(server_mod, "_make_agent_connector", lambda *a, **k: conn)
+    ctx = FakeCtx()
+
+    with pytest.raises(RuntimeError) as ei:
+        await stratum_agent_run(prompt="hi", ctx=ctx, type="claude")
+
+    text = str(ei.value)
+    assert "Request not allowed" in text, text
+    assert "403" in text, text
+    # the opaque underlying error is still included for debugging
+    assert "Command failed with exit code 1" in text, text
 
 
 @pytest.mark.asyncio
