@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### distill — feat(CORE-CODE-PROVENANCE-1 P1): code↔conversation provenance (`blame_session`)
+
+Given a git **commit** or **`file:line`**, find which captured agent session (Claude Code + Codex) **authored** that code — a git-anchored evidence pipeline, NOT clock proximity. `git show` / `git blame -L` resolves the target, candidates are narrowed by repo + touched path, and authorship is proven strong→fuzzy: exact / normalized / block-hash / longest-common-substring, with an **IDF-weighted character-tri-gram fallback** (the denominator spans the whole target so a tiny shared fragment can't score 1.0; a fuzzy match must clear score + raw-coverage floors). Honest status (`ok | no_clear_author | no_overlap | no_indexable_content | merge_no_direct_changes`) with per-span resolution (strong ties → `no_clear_author`; multi-author commits → `ok`), span-scoped `survival`, and a source-aware `(source, source_path, line_no)` handle that chains into the new `read_transcript_centered` for both CC and Codex. New: `judge/postmortem/{provenance,codex_loader,transcript_reader}.py` (pure matcher + extractors + reader), `stratum_mcp/provenance_crawl.py` (git/FS orchestration), and the `blame_session` + `read_transcript_centered` MCP tools. `loader.py` refactored to share `center_over_rendered`. Codex-gate-clean design + blueprint + implementation; only successful (non-errored) edits count. SmartMemory feature CORE-CODE-PROVENANCE-1 / IDEA-445; product Phase 2 (graph index) deferred.
+
 ### stratum — feat(STRAT-AGENT-INTERP): interpolatable per-step `agent`
 
 A flow can now select a step's executor at runtime by interpolating the `agent:` field through the **same** JSONPath resolver that already handles `inputs` — e.g. a router step emits `{agent: "codex"}` and a later step uses `agent: "$.steps.route.output.agent"`. Stays entirely in the data plane (the resolved value comes only from recorded flow state, so audit/resume/result-cache replay identically); literal agents are byte-identical to before. The data-plane enabler for COMP-CODEX-IMPL (Codex-implements / Claude-reviews).
