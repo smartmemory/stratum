@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### stratum — fix(agent_run): accept tiered/profile agent suffixes in the connector factory
+
+`stratum_agent_run` rejected `claude::critical` / `claude::fast` (and would have
+rejected `claude:reviewer`) with `unknown type 'claude::critical'`, because
+`connectors/factory.make_agent_connector` validated the **full** agent string
+against `{claude, codex}` — while `executor.resolve_agent` already treats a
+`:profile` / `::tier` suffix as first-class and validates only the base prefix.
+The two dispatch paths disagreed, so a Compose build that uses tiered agents
+(`build.stratum.yaml`) died at the first `stratum_agent_run` step even though the
+flow-executor path accepts the same strings.
+
+Fix: a single shared parser `connectors.factory.connector_base()` extracts the
+connector prefix (the part before the first `:`). `make_agent_connector`,
+`executor.resolve_agent`, and `parallel_exec._connector_type_from_agent` all
+normalize through it, so connector selection is suffix-tolerant everywhere and
+the three paths can't drift again. The suffix stays metadata for the caller
+(Compose resolves it to model/effort/tools, passed via separate kwargs); it never
+gates connector selection. An unknown base (`bogus::x`) and `opencode` still
+raise as before. Tests: `tests/test_connector_factory.py`.
+
 ### stratum — fix(agent_run): surface the agent's last message on connector failure
 
 When a connector streams the real error as an assistant turn and then its

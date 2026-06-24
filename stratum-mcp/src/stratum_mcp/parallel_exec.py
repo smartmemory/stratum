@@ -38,7 +38,7 @@ from .connectors.codex import (
     _emit_for_codex_event,
     _read_text_file,
 )
-from .connectors.factory import make_agent_connector
+from .connectors.factory import connector_base, make_agent_connector
 from .events import (
     INTERNAL_RESULT_KIND,
     BuildStreamEvent,
@@ -120,7 +120,7 @@ def _connector_type_from_agent(agent: Optional[str]) -> str:
     """
     if not agent:
         agent = os.environ.get("STRATUM_DEFAULT_AGENT", "claude")
-    head = agent.split(":", 1)[0].strip()
+    head = connector_base(agent)
     if head == "opencode":
         raise ValueError(
             f"parallel_dispatch agent '{agent}' uses opencode, which is not "
