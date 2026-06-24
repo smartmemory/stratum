@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from stratum_mcp.connectors import ClaudeConnector, CodexConnector
-from stratum_mcp.connectors.factory import make_agent_connector
+from stratum_mcp.connectors.factory import connector_base, make_agent_connector
 
 
 def test_make_claude():
@@ -66,3 +66,51 @@ def test_claude_ignores_stream_path():
     """stream_path is codex-only; passing it for claude is harmless."""
     conn = make_agent_connector("claude", None, None, stream_path="/tmp/x.jsonl")
     assert isinstance(conn, ClaudeConnector)
+
+
+# ---------------------------------------------------------------------------
+# Tiered / profile suffixes — the make_agent_connector path must accept a
+# ':profile' or '::tier' suffix exactly like executor.resolve_agent does, so
+# Compose's `claude::critical` / `claude:read-only-reviewer` agents dispatch
+# instead of being rejected as an "unknown type".
+# ---------------------------------------------------------------------------
+
+def test_connector_base_strips_suffixes():
+    assert connector_base("claude") == "claude"
+    assert connector_base("claude::critical") == "claude"      # '::tier'
+    assert connector_base("claude:read-only-reviewer") == "claude"  # ':profile'
+    assert connector_base("claude:read-only-reviewer:critical") == "claude"
+    assert connector_base("codex:reviewer") == "codex"
+    assert connector_base(None) is None  # non-string passes through
+
+
+def test_make_claude_tier_suffix():
+    """`claude::critical` (tier) selects the claude connector, not an error."""
+    conn = make_agent_connector("claude::critical", None, None)
+    assert isinstance(conn, ClaudeConnector)
+
+
+def test_make_claude_profile_suffix():
+    """`claude:read-only-reviewer` (profile) selects the claude connector."""
+    conn = make_agent_connector("claude:read-only-reviewer", None, None)
+    assert isinstance(conn, ClaudeConnector)
+
+
+def test_make_codex_suffix():
+    """A suffix on codex still selects the codex connector."""
+    conn = make_agent_connector("codex::fast", None, None)
+    assert isinstance(conn, CodexConnector)
+
+
+def test_make_opencode_suffix_still_raises_roadmap_pointer():
+    """A suffixed opencode is still rejected by base, with the roadmap pointer."""
+    with pytest.raises(ValueError) as excinfo:
+        make_agent_connector("opencode::critical", None, None)
+    assert "T2-F5-OPENCODE-DISPATCH" in str(excinfo.value)
+
+
+def test_make_unknown_base_with_suffix_raises():
+    """An unknown base prefix (even with a suffix) still raises."""
+    with pytest.raises(ValueError) as excinfo:
+        make_agent_connector("bogus::critical", None, None)
+    assert "bogus::critical" in str(excinfo.value)

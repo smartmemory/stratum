@@ -21,6 +21,24 @@ _VALID_AGENT_TYPES = frozenset({"claude", "codex"})
 VALID_AGENT_TYPES = _VALID_AGENT_TYPES
 
 
+def connector_base(agent_type: str) -> str:
+    """The connector prefix of an agent-type string — the part before the first ``:``.
+
+    Agent strings may carry a ``:profile`` or ``::tier`` suffix
+    (e.g. ``claude:reviewer``, ``claude::critical``); only the prefix selects
+    the connector. Every dispatch path — ``make_agent_connector``
+    (``stratum_agent_run``), ``executor.resolve_agent`` (flow steps), and
+    ``parallel_exec`` — normalizes through this one parser so they can never
+    drift on what counts as a valid type.
+
+    Non-strings (e.g. a ``$``-ref that resolved to a non-string) pass through
+    unchanged for the caller to reject.
+    """
+    if not isinstance(agent_type, str):
+        return agent_type
+    return agent_type.split(":", 1)[0].strip()
+
+
 def make_agent_connector(
     agent_type: str,
     model_id: Optional[str],
@@ -46,18 +64,25 @@ def make_agent_connector(
     durable-stream (reparentable) mode. They are codex-only — ignored for
     claude (in-process, nothing to reparent).
     """
-    if agent_type == "opencode":
+    # Select the connector by the base prefix so a ':profile' / '::tier' suffix
+    # (e.g. claude::critical, claude:reviewer) is accepted here exactly as it is
+    # on the flow-executor path (executor.resolve_agent). The suffix is metadata
+    # for the caller (Compose resolves it to model/effort/tools, passed via the
+    # kwargs above); it never gates connector selection.
+    base = connector_base(agent_type)
+    if base == "opencode":
         raise ValueError(
             "stratum_agent_run: agent_type 'opencode' is not yet supported "
             "in server-dispatch (see T2-F5-OPENCODE-DISPATCH). "
             f"Valid types for v1: {sorted(_VALID_AGENT_TYPES)}"
         )
-    if agent_type not in _VALID_AGENT_TYPES:
+    if base not in _VALID_AGENT_TYPES:
         raise ValueError(
             f"stratum_agent_run: unknown type '{agent_type}'. "
-            f"Valid types: {sorted(_VALID_AGENT_TYPES)}"
+            f"Valid types: {sorted(_VALID_AGENT_TYPES)} "
+            "(an optional ':profile' or '::tier' suffix is allowed)"
         )
-    if agent_type == "codex":
+    if base == "codex":
         codex_kwargs: dict[str, Any] = {
             "model_id": model_id or "gpt-5.4",
             "cwd": cwd,

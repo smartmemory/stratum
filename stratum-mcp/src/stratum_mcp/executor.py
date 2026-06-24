@@ -619,9 +619,9 @@ def resolve_agent(
     # Lazy import: keep executor's module-load import graph free of the connectors
     # package. _scan_guardrails runs regexes in a multiprocessing-spawned worker that
     # re-imports this module; a heavier import chain at module load breaks that worker.
-    from .connectors.factory import VALID_AGENT_TYPES
+    from .connectors.factory import VALID_AGENT_TYPES, connector_base
     resolved = resolve_ref(agent, flow_inputs, step_outputs)
-    base = resolved.split(":", 1)[0] if isinstance(resolved, str) else None
+    base = connector_base(resolved) if isinstance(resolved, str) else None
     if base not in VALID_AGENT_TYPES:
         raise MCPExecutionError(
             f"Interpolated agent {agent!r} resolved to {resolved!r}; expected a known "
