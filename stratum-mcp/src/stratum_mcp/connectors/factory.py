@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from .base import AgentConnector
 from .claude import ClaudeConnector
-from .codex import CodexConnector
+from .codex import DEFAULT_CODEX_MODEL, CodexConnector
 
 _VALID_AGENT_TYPES = frozenset({"claude", "codex"})
 
@@ -84,7 +84,7 @@ def make_agent_connector(
         )
     if base == "codex":
         codex_kwargs: dict[str, Any] = {
-            "model_id": model_id or "gpt-5.4",
+            "model_id": model_id or DEFAULT_CODEX_MODEL,
             "cwd": cwd,
             "read_jail": read_jail,
             "stream_path": stream_path,
