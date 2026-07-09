@@ -26,6 +26,7 @@ import json
 import re
 from pathlib import Path
 
+from .codex_models import DEFAULT_CODEX_MODEL
 from .errors import CitationFormatError
 from .result import Evidence, Predicate, TierRecord
 from .sandbox import read_jail_available
@@ -67,7 +68,7 @@ T3_DISALLOWED_TOOLS = T2_DISALLOWED_TOOLS  # already includes Bash
 # STRAT-JUDGE-T3-READJAIL: T3 is now a true cross-model adversary —
 # jailed Codex when an OS read-jail is available, else the v1 in-process
 # Claude cold-read as the honest probe-time degrade.
-T3_DEFAULT_MODEL = "gpt-5.4"  # codex (cross-model) when jailed
+T3_DEFAULT_MODEL = DEFAULT_CODEX_MODEL  # codex (cross-model) when jailed
 T3_FALLBACK_MODEL = T2_DEFAULT_MODEL  # claude cold-read degrade
 
 # Machine tag prefixed onto the T3 TierRecord.reason so the kernel can

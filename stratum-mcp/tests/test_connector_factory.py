@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from stratum.judge.codex_models import DEFAULT_CODEX_MODEL
 from stratum_mcp.connectors import ClaudeConnector, CodexConnector
 from stratum_mcp.connectors.factory import connector_base, make_agent_connector
 
@@ -19,10 +20,10 @@ def test_make_claude():
 
 
 def test_make_codex_default_model():
-    """make_agent_connector("codex", None, None) returns a CodexConnector with default model."""
+    """make_agent_connector("codex", None, None) returns a CodexConnector with the canonical default model."""
     conn = make_agent_connector("codex", None, None)
     assert isinstance(conn, CodexConnector)
-    assert conn._default_model_id == "gpt-5.4"
+    assert conn._default_model_id == DEFAULT_CODEX_MODEL
 
 
 def test_make_unknown_agent_raises():

@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
+from stratum.judge.codex_models import CODEX_MODEL_IDS, DEFAULT_CODEX_MODEL
 from stratum.judge.sandbox import (
     JailDriver,
     JailUnavailableError,
@@ -40,39 +41,7 @@ from .base import AgentConnector, Event, inject_schema
 
 logger = logging.getLogger(__name__)
 
-CODEX_MODEL_IDS: frozenset[str] = frozenset(
-    {
-        "gpt-5.5",
-        "gpt-5.5/low",
-        "gpt-5.5/medium",
-        "gpt-5.5/high",
-        "gpt-5.5/xhigh",
-        "gpt-5.4",
-        "gpt-5.4/low",
-        "gpt-5.4/medium",
-        "gpt-5.4/high",
-        "gpt-5.4/xhigh",
-        "gpt-5.2-codex",
-        "gpt-5.2-codex/low",
-        "gpt-5.2-codex/medium",
-        "gpt-5.2-codex/high",
-        "gpt-5.2-codex/xhigh",
-        "gpt-5.1-codex-max",
-        "gpt-5.1-codex-max/low",
-        "gpt-5.1-codex-max/medium",
-        "gpt-5.1-codex-max/high",
-        "gpt-5.1-codex-max/xhigh",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex/low",
-        "gpt-5.1-codex/medium",
-        "gpt-5.1-codex/high",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-codex-mini/medium",
-        "gpt-5.1-codex-mini/high",
-    }
-)
-
-_DEFAULT_MODEL_ID = os.environ.get("CODEX_MODEL", "gpt-5.4")
+_DEFAULT_MODEL_ID = DEFAULT_CODEX_MODEL
 _AGENT_NAME = "codex"
 
 # Cross-provider creds to scrub from codex's env. OPENAI_API_KEY is NOT scrubbed:
