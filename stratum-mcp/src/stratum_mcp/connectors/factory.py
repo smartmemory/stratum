@@ -51,6 +51,7 @@ def make_agent_connector(
     read_jail: Optional[str] = None,
     stream_path: Optional[str] = None,
     stderr_path: Optional[str] = None,
+    sandbox_mode: str = "read-only",
 ) -> AgentConnector:
     """Factory — raises ValueError on unknown agent type.
 
@@ -89,6 +90,7 @@ def make_agent_connector(
             "read_jail": read_jail,
             "stream_path": stream_path,
             "stderr_path": stderr_path,
+            "sandbox_mode": sandbox_mode,
         }
         return CodexConnector(**codex_kwargs)
     kwargs: dict[str, Any] = {"cwd": cwd}

@@ -66,3 +66,35 @@ async def test_run_init_event_reports_sandbox():
     await agen.aclose()
     assert first["subtype"] == "init"
     assert first["sandbox"] == "workspace-write"
+
+
+from stratum_mcp.connectors.factory import make_agent_connector
+
+
+def test_factory_defaults_codex_read_only():
+    conn = make_agent_connector("codex", "gpt-5.5", "/work")
+    assert conn.sandbox_mode == "read-only"
+
+
+def test_factory_threads_workspace_write():
+    conn = make_agent_connector(
+        "codex", "gpt-5.5", "/work", sandbox_mode="workspace-write"
+    )
+    assert conn.sandbox_mode == "workspace-write"
+
+
+def test_factory_suffix_variant_still_gets_write():
+    # A '::tier' suffix selects the codex connector by base and must still
+    # receive the sandbox mode.
+    conn = make_agent_connector(
+        "codex::fast", "gpt-5.5", "/work", sandbox_mode="workspace-write"
+    )
+    assert conn.sandbox_mode == "workspace-write"
+
+
+def test_factory_write_plus_read_jail_rejected():
+    with pytest.raises(ValueError, match="read_jail"):
+        make_agent_connector(
+            "codex", "gpt-5.5", "/work",
+            sandbox_mode="workspace-write", read_jail="/staging",
+        )
