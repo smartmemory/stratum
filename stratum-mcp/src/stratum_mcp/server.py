@@ -50,7 +50,10 @@ from .executor import (
 )
 from .spec import parse_and_validate
 from .connectors import AgentConnector, ClaudeConnector, CodexConnector
-from .connectors.factory import make_agent_connector as _make_agent_connector
+from .connectors.factory import (
+    make_agent_connector as _make_agent_connector,
+    connector_base,
+)
 from .events import (
     BuildStreamEvent,
     INTERNAL_RESULT_KIND,
@@ -133,6 +136,39 @@ def _extract_json_result(text: str) -> tuple[Optional[dict], Optional[str]]:
     return None, "Response was not valid JSON"
 
 
+_CODEX_WRITE_DISABLED_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def _codex_write_allowed() -> bool:
+    """STRATUM_CODEX_ALLOW_WRITE kill-switch. Absent = enabled."""
+    val = os.environ.get("STRATUM_CODEX_ALLOW_WRITE")
+    if val is None:
+        return True
+    return val.strip().lower() not in _CODEX_WRITE_DISABLED_VALUES
+
+
+def _resolve_sandbox_mode(base: str, write: bool, cwd: Optional[str]) -> str:
+    """Map the public write flag to a codex sandbox mode. Fail-loud."""
+    if not write:
+        return "read-only"
+    if base != "codex":
+        raise ValueError(
+            "stratum_agent_run: write=True is only supported for type='codex' "
+            f"(got base {base!r}); claude write is governed by allowed_tools/"
+            "disallowed_tools"
+        )
+    if not cwd or not cwd.strip():
+        raise ValueError(
+            "stratum_agent_run: write=True requires an explicit cwd "
+            "(otherwise codex would write into the server process's cwd)"
+        )
+    if not _codex_write_allowed():
+        raise ValueError(
+            "stratum_agent_run: codex write disabled by STRATUM_CODEX_ALLOW_WRITE"
+        )
+    return "workspace-write"
+
+
 @mcp.tool(description=(
     "Run a prompt against an AI agent (claude or codex). "
     "Returns the full response text. If schema is provided, the agent is instructed "
@@ -142,6 +178,9 @@ def _extract_json_result(text: str) -> tuple[Optional[dict], Optional[str]]:
     "context strings, Stratum does no file reading or feature-code detection); "
     "schema (dict, optional JSON Schema for structured output); modelID (str, optional); "
     "cwd (str, optional working directory). "
+    "write (bool, default False): codex-only — when True, codex runs with "
+    "--sandbox workspace-write and may create/edit files in cwd (cwd required); "
+    "rejected for claude, when STRATUM_CODEX_ALLOW_WRITE is off, or with read_jail. "
     "Returns {text: str, result?: dict, parseError?: str}."
 ))
 async def stratum_agent_run(
@@ -158,6 +197,7 @@ async def stratum_agent_run(
     effort: Optional[str] = None,
     cwd: Optional[str] = None,
     read_jail: Optional[str] = None,
+    write: bool = False,
     correlation_id: Optional[str] = None,
 ) -> dict[str, Any]:
     if not prompt or not prompt.strip():
@@ -186,6 +226,8 @@ async def stratum_agent_run(
     _budget_usage = new_usage_acc()
     _budget_t0 = time.monotonic()
 
+    sandbox_mode = _resolve_sandbox_mode(connector_base(type), write, cwd)
+
     connector = _make_agent_connector(
         type,
         active_model_id,
@@ -195,6 +237,7 @@ async def stratum_agent_run(
         thinking=thinking,
         effort=effort,
         read_jail=read_jail,
+        sandbox_mode=sandbox_mode,
     )
 
     flow_id = correlation_id or str(_uuid.uuid4())
