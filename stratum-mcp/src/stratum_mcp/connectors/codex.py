@@ -297,6 +297,7 @@ class CodexConnector(AgentConnector):
         jail_driver: Optional[JailDriver] = None,
         stream_path: Optional[str] = None,
         stderr_path: Optional[str] = None,
+        sandbox_mode: str = "read-only",
     ):
         _assert_codex_model(model_id)
         self._default_model_id = model_id
@@ -323,6 +324,31 @@ class CodexConnector(AgentConnector):
         # None`); jail teardown is now owned by the driver.
         self._jail_profile: Optional[str] = None
         self._jail_scratch: Optional[str] = None
+
+        # STRAT-CODEX-WRITE: sandbox mode drives the codex `--sandbox <mode>`
+        # flag. v1 accepts only read-only and workspace-write; danger-full-access
+        # is nameable but not constructible until it has its own guardrails.
+        if sandbox_mode not in ("read-only", "workspace-write"):
+            raise ValueError(
+                f"CodexConnector: unsupported sandbox_mode {sandbox_mode!r}; "
+                "v1 accepts 'read-only' or 'workspace-write'"
+            )
+        if sandbox_mode != "read-only":
+            if read_jail is not None:
+                raise ValueError(
+                    "CodexConnector: write (sandbox_mode="
+                    f"{sandbox_mode!r}) with read_jail is not supported in v1 "
+                    "(the Docker jail mounts :ro and would silently eat writes; "
+                    "see STRAT-CODEX-WRITE-JAIL)"
+                )
+            if stream_path is not None:
+                raise ValueError(
+                    "CodexConnector: write (sandbox_mode="
+                    f"{sandbox_mode!r}) with the durable stream is not supported "
+                    "in v1 (a durable child survives teardown and could keep "
+                    "editing after cancel; see STRAT-CODEX-WRITE-DURABLE)"
+                )
+        self.sandbox_mode = sandbox_mode
 
     def _build_codex_cmd(
         self, args: list[str], env: Optional[dict] = None
@@ -368,6 +394,26 @@ class CodexConnector(AgentConnector):
             return
         await _terminate_child(proc)
 
+    def _exec_args(
+        self, base_model: str, effort: str, resolved_cwd: str
+    ) -> list[str]:
+        """Build the `codex exec` argv. Single source of the --sandbox flag."""
+        args = [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            self.sandbox_mode,
+            "-m",
+            base_model,
+            "-C",
+            resolved_cwd,
+        ]
+        if effort:
+            args.extend(["-c", f'model_reasoning_effort="{effort}"'])
+        args.append("-")  # read prompt from stdin
+        return args
+
     async def run(
         self,
         prompt: str,
@@ -396,28 +442,20 @@ class CodexConnector(AgentConnector):
             "subtype": "init",
             "agent": _AGENT_NAME,
             "model": resolved_model_id,
+            "sandbox": self.sandbox_mode,
         }
 
-        args = [
-            "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--sandbox",
-            "read-only",
-            "-m",
-            base_model,
-            "-C",
-            resolved_cwd,
-        ]
-        if effort:
-            args.extend(["-c", f'model_reasoning_effort="{effort}"'])
-        args.append("-")  # read prompt from stdin
+        args = self._exec_args(base_model, effort, resolved_cwd)
 
         clean_env = dict(env) if env is not None else dict(os.environ)
         for var in _CODEX_SCRUB_VARS:
             clean_env.pop(var, None)
 
         codex_cmd = self._build_codex_cmd(args, clean_env)
+        logger.info(
+            "codex spawn sandbox=%s cwd=%s model=%s",
+            self.sandbox_mode, resolved_cwd, resolved_model_id,
+        )
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *codex_cmd,
@@ -573,26 +611,17 @@ class CodexConnector(AgentConnector):
 
         base_model, _, effort = resolved_model_id.partition("/")
 
-        args = [
-            "exec",
-            "--json",
-            "--skip-git-repo-check",
-            "--sandbox",
-            "read-only",
-            "-m",
-            base_model,
-            "-C",
-            resolved_cwd,
-        ]
-        if effort:
-            args.extend(["-c", f'model_reasoning_effort="{effort}"'])
-        args.append("-")
+        args = self._exec_args(base_model, effort, resolved_cwd)
 
         clean_env = dict(env) if env is not None else dict(os.environ)
         for var in _CODEX_SCRUB_VARS:
             clean_env.pop(var, None)
 
         codex_cmd = self._build_codex_cmd(args, clean_env)
+        logger.info(
+            "codex spawn sandbox=%s cwd=%s model=%s",
+            self.sandbox_mode, resolved_cwd, resolved_model_id,
+        )
 
         # T2-F5-RESUME: durable-stream mode — spawn detached under the wrapper,
         # tail the file the child owns. Shares _emit_for_codex_event with the
