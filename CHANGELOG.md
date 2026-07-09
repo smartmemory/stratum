@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### stratum — feat(codex): codex write mode (STRAT-CODEX-WRITE)
+
+`stratum_agent_run(type="codex", write=True)` now runs codex with
+`--sandbox workspace-write` so it can create and edit files in `cwd` — codex is
+no longer read-only-only. Read-only stays the default (`write` defaults to
+False), so the existing adversarial-review path is byte-for-byte unchanged.
+
+Write is guarded, fail-loud: it is codex-only (rejected for `type="claude"`),
+requires an explicit `cwd` (otherwise codex would write into the server's own
+cwd), and honors the `STRATUM_CODEX_ALLOW_WRITE` kill-switch (absent = enabled;
+`0`/`false`/`no`/`off` hard-disables and raises rather than silently downgrading).
+Combining `write` with the read-only `read_jail` Docker path or the durable
+stream is rejected at the connector (follow-ups `STRAT-CODEX-WRITE-JAIL` /
+`STRAT-CODEX-WRITE-DURABLE`); a dedicated `stratum_codegen` tool and an
+allowed-workspace-root policy are also filed as follow-ups. Verified end-to-end
+against codex-cli 0.143.0: an empty dir + a write prompt produced a working
+source file.
+
 ### stratum — fix(agent_run): accept tiered/profile agent suffixes in the connector factory
 
 `stratum_agent_run` rejected `claude::critical` / `claude::fast` (and would have
