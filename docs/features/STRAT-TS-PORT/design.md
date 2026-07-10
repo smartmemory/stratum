@@ -420,6 +420,7 @@ Files (new): `src/connectors/*`, tests
 - [ ] MUST: gate resolve (approve/revise/kill), revise targets ancestor only, `max_rounds` enforced (E3 fixtures)
 - [ ] MUST: fanout concurrency cap, `require` semantics, worktree isolation (create/apply/cleanup), sequential merge with conflict = flow error
 - [ ] MUST: observability contract lands — `ts/contracts/events.json` (P1 kinds enumerated retroactively), per-item fanout lifecycle events with ledger debits, `status: "running"` response variant + `stratum_flow_poll`
+- [ ] MUST: `iterate: { max, until }` on agent tasks — bounded re-dispatch with structured feedback, `until` evaluated through the ensure evaluator seam, `max` exhaustion takes the normal validation-failure/on_fail path (pinned 2026-07-10: previously owned by no phase — same orphan pattern that briefly left `ensure` unenforced)
 - [ ] Gate: golden flows incl. a fanout-with-stages flow
 
 ### P5 — MCP server + CLI + watch
