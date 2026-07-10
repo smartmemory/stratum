@@ -37,7 +37,7 @@ def pid_alive(pid: int) -> bool:
 def proc_start_time(pid: int) -> Optional[str]:
     """A stable per-process start-time token, or None if unreadable.
 
-    darwin / BSD: ``ps -o lstart=`` (human start timestamp, stable per process).
+    darwin: ``libproc.proc_pidinfo(PROC_PIDTBSDINFO)`` start timeval.
     Linux: field 22 (``starttime``, clock ticks since boot) from
     ``/proc/<pid>/stat`` — read directly to avoid a `ps` format dependency.
     """
@@ -58,7 +58,51 @@ def proc_start_time(pid: int) -> Optional[str]:
         if len(rest) < 20:
             return None
         return rest[19] or None
-    # darwin / other POSIX
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+
+            class _ProcBsdInfo(ctypes.Structure):
+                _fields_ = [
+                    ("pbi_flags", ctypes.c_uint32),
+                    ("pbi_status", ctypes.c_uint32),
+                    ("pbi_xstatus", ctypes.c_uint32),
+                    ("pbi_pid", ctypes.c_uint32),
+                    ("pbi_ppid", ctypes.c_uint32),
+                    ("pbi_uid", ctypes.c_uint32),
+                    ("pbi_gid", ctypes.c_uint32),
+                    ("pbi_ruid", ctypes.c_uint32),
+                    ("pbi_rgid", ctypes.c_uint32),
+                    ("pbi_svuid", ctypes.c_uint32),
+                    ("pbi_svgid", ctypes.c_uint32),
+                    ("rfu_1", ctypes.c_uint32),
+                    ("pbi_comm", ctypes.c_char * 16),
+                    ("pbi_name", ctypes.c_char * 32),
+                    ("pbi_nfiles", ctypes.c_uint32),
+                    ("pbi_pgid", ctypes.c_uint32),
+                    ("pbi_pjobc", ctypes.c_uint32),
+                    ("e_tdev", ctypes.c_uint32),
+                    ("e_tpgid", ctypes.c_uint32),
+                    ("pbi_nice", ctypes.c_int32),
+                    ("pbi_start_tvsec", ctypes.c_uint64),
+                    ("pbi_start_tvusec", ctypes.c_uint64),
+                ]
+
+            libproc = ctypes.CDLL("libproc.dylib")
+            info = _ProcBsdInfo()
+            ret = libproc.proc_pidinfo(
+                ctypes.c_int(pid),
+                ctypes.c_int(3),  # PROC_PIDTBSDINFO
+                ctypes.c_uint64(0),
+                ctypes.byref(info),
+                ctypes.c_int(ctypes.sizeof(info)),
+            )
+            if ret == ctypes.sizeof(info) and info.pbi_start_tvsec:
+                return f"{info.pbi_start_tvsec}.{info.pbi_start_tvusec}"
+        except Exception:
+            return None
+        return None
+    # other POSIX fallback
     try:
         out = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],

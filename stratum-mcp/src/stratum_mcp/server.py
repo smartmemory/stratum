@@ -5,10 +5,11 @@ import dataclasses
 import json
 import os
 import re
+import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -50,6 +51,12 @@ from .executor import (
 )
 from .spec import parse_and_validate
 from .connectors import AgentConnector, ClaudeConnector, CodexConnector
+from .connectors.codex import (
+    _CODEX_ERROR_KIND,
+    DEFAULT_CODEX_MODEL,
+    T2F5_DONE_SENTINEL,
+    _emit_for_codex_event,
+)
 from .connectors.factory import (
     make_agent_connector as _make_agent_connector,
     connector_base,
@@ -64,6 +71,8 @@ import asyncio
 import uuid as _uuid
 
 _AGENT_RUN_TASKS: "dict[str, asyncio.Task[Any]]" = {}
+
+_AGENT_BG_TEXT_CAP = 20_000
 
 mcp = FastMCP(
     "stratum-mcp",
@@ -169,6 +178,254 @@ def _resolve_sandbox_mode(base: str, write: bool, cwd: Optional[str]) -> str:
     return "workspace-write"
 
 
+def _agent_runs_dir() -> Path:
+    """Background agent registry root. Reads HOME at call time for tests."""
+    return Path.home() / ".stratum" / "agent_runs"
+
+
+# run_ids are always uuid4().hex[:12]; rejecting anything else at the single
+# lookup chokepoint keeps caller-supplied ids from traversing outside the
+# registry (e.g. "../..") and from ever reaching the killpg path.
+_AGENT_RUN_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+def _agent_run_dir(run_id: str) -> Path:
+    return _agent_runs_dir() / run_id
+
+
+def _new_agent_run_dir() -> tuple[str, Path]:
+    root = _agent_runs_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    while True:
+        run_id = _uuid.uuid4().hex[:12]
+        run_dir = root / run_id
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            continue
+        return run_id, run_dir
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_agent_run_meta(run_id: str) -> tuple[Optional[Path], Optional[dict[str, Any]]]:
+    if not _AGENT_RUN_ID_RE.fullmatch(run_id or ""):
+        return None, None
+    run_dir = _agent_run_dir(run_id)
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return (run_dir if run_dir.exists() else None), None
+    if not isinstance(meta, dict) or meta.get("run_id") != run_id:
+        return run_dir, None
+    return run_dir, meta
+
+
+def _iter_complete_jsonl(path: Path) -> "Iterator[dict[str, Any]]":
+    """Yield parsed records from complete JSONL lines only, one line at a time
+    (never the whole file in memory); tolerate a partial trailing line."""
+    try:
+        f = open(path, "rb")
+    except (FileNotFoundError, OSError):
+        return
+    with f:
+        for raw in f:
+            if not raw.endswith(b"\n"):
+                break  # partial trailing line — a live writer owns it
+            s = raw.decode("utf-8", errors="replace").strip()
+            if not s:
+                continue
+            try:
+                rec = json.loads(s)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                yield rec
+
+
+def _tail_text_file(path: Path, limit: int = _AGENT_BG_TEXT_CAP) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, OSError):
+        return ""
+    return _cap_text(text, stream_path=str(path), cap=limit)
+
+
+def _cap_text(text: str, *, stream_path: str, cap: int = _AGENT_BG_TEXT_CAP) -> str:
+    if len(text) <= cap:
+        return text
+    prefix = f"[truncated, full stream at {stream_path}]\n"
+    keep = max(0, cap - len(prefix))
+    if keep == 0:
+        return prefix[:cap]
+    return prefix + text[-keep:]
+
+
+def _bg_pid_alive(meta: dict[str, Any]) -> bool:
+    from .proc_identity import pid_alive, proc_start_time
+
+    try:
+        pid = int(meta.get("child_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    expected = meta.get("proc_start_time")
+    if not expected or not pid_alive(pid):
+        return False
+    return proc_start_time(pid) == expected
+
+
+def _scan_agent_run_stream(
+    stream_path: Path,
+    *,
+    model_id: Optional[str],
+    prompt: str,
+) -> dict[str, Any]:
+    text_parts: list[str] = []
+    text_len = 0
+    # Rolling tail bound: every consumer caps text at _AGENT_BG_TEXT_CAP, so
+    # keep only ~2x that in memory (2x leaves slack for the schema-result
+    # parse, which reads the FINAL agent message). A stream of any size scans
+    # in O(cap) memory.
+    text_budget = 2 * _AGENT_BG_TEXT_CAP
+    usage = new_usage_acc()
+    sentinel_rc: Optional[int] = None
+    error_message: Optional[str] = None
+    events_seen = 0
+    for rec in _iter_complete_jsonl(stream_path):
+        events_seen += 1
+        if T2F5_DONE_SENTINEL in rec:
+            try:
+                sentinel_rc = int(rec[T2F5_DONE_SENTINEL])
+            except (TypeError, ValueError):
+                sentinel_rc = 1
+            continue
+        for ev in _emit_for_codex_event(
+            rec, model=model_id or "", prompt=prompt,
+        ):
+            if ev.kind == _CODEX_ERROR_KIND:
+                if error_message is None:
+                    error_message = str(ev.metadata.get("message") or "codex error")
+                continue
+            accumulate_usage(usage, ev)
+            if ev.kind == "agent_relay" and ev.metadata.get("role") == "assistant":
+                text = ev.metadata.get("text", "")
+                if text:
+                    text_parts.append(text)
+                    text_len += len(text)
+                    while text_len > text_budget and len(text_parts) > 1:
+                        text_len -= len(text_parts.pop(0))
+    return {
+        "text": "".join(text_parts)[-text_budget:],
+        "usage": usage,
+        "sentinel_rc": sentinel_rc,
+        "error_message": error_message,
+        "events_seen": events_seen,
+    }
+
+
+def _agent_run_terminal_status(run_id: str) -> dict[str, Any]:
+    run_dir, meta = _load_agent_run_meta(run_id)
+    if run_dir is None or meta is None:
+        return {"status": "not_found", "run_id": run_id}
+    stream_path = Path(str(meta.get("stream_path") or (run_dir / "stream.jsonl")))
+    scan = _scan_agent_run_stream(
+        stream_path,
+        model_id=meta.get("model_id"),
+        prompt="x" * int(meta.get("prompt_chars") or 0),
+    )
+    rc = scan["sentinel_rc"]
+    if rc is None:
+        if _bg_pid_alive(meta):
+            return {"status": "running", "run_id": run_id}
+        return {
+            "status": "error",
+            "run_id": run_id,
+            "reason": "child_died_without_sentinel",
+        }
+    if int(rc) == 0 and scan["error_message"] is None:
+        return {"status": "complete", "run_id": run_id, "exit_code": 0}
+    return {"status": "error", "run_id": run_id, "exit_code": int(rc)}
+
+
+async def _start_agent_run_background(
+    *,
+    type: str,
+    full_prompt: str,
+    schema: Optional[dict],
+    model_id: Optional[str],
+    cwd: Optional[str],
+    allowed_tools: Optional[list[str]],
+    disallowed_tools: Optional[list[str]],
+    thinking: Optional[dict],
+    effort: Optional[str],
+    read_jail: Optional[str],
+    sandbox_mode: str,
+    write: bool,
+    correlation_id: Optional[str],
+) -> dict[str, Any]:
+    run_id, run_dir = _new_agent_run_dir()
+    stream_path = run_dir / "stream.jsonl"
+    stderr_path = run_dir / "stream.jsonl.err"
+    # Persist the RESOLVED model: poll re-derives usage dollars from the
+    # stream via the pricing table, and a null model prices every run as $0.
+    model_id = model_id or DEFAULT_CODEX_MODEL
+    connector = _make_agent_connector(
+        type,
+        model_id,
+        cwd,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        thinking=thinking,
+        effort=effort,
+        read_jail=read_jail,
+        stream_path=str(stream_path),
+        stderr_path=str(stderr_path),
+        sandbox_mode=sandbox_mode,
+    )
+    agen = connector.stream_events(
+        full_prompt, schema=schema, model_id=model_id, cwd=cwd
+    )
+    handle: Optional[dict[str, Any]] = None
+    try:
+        async for ev in agen:
+            if ev.kind == "durable_spawned":
+                handle = dict(ev.metadata)
+                break
+    finally:
+        await agen.aclose()
+    if handle is None:
+        raise RuntimeError("stratum_agent_run background: durable_spawned was not emitted")
+
+    meta = {
+        "run_id": run_id,
+        "type": type,
+        "model_id": model_id,
+        "cwd": cwd,
+        "sandbox_mode": sandbox_mode,
+        "write": bool(write),
+        "prompt_chars": len(full_prompt),
+        "correlation_id": correlation_id,
+        "created_at": now_iso(),
+        "child_pid": handle.get("child_pid"),
+        "proc_start_time": handle.get("proc_start_time"),
+        "stream_path": handle.get("stream_path") or str(stream_path),
+        "stderr_path": handle.get("stderr_path") or str(stderr_path),
+        "schema": schema,
+    }
+    _atomic_write_json(run_dir / "meta.json", meta)
+    return {
+        "status": "bg_started",
+        "run_id": run_id,
+        "stream_path": str(stream_path),
+        "pid": handle.get("child_pid"),
+        "watch_cmd": f"stratum-mcp watch {run_id}",
+    }
+
+
 @mcp.tool(description=(
     "Run a prompt against an AI agent (claude or codex). "
     "Returns the full response text. If schema is provided, the agent is instructed "
@@ -181,7 +438,11 @@ def _resolve_sandbox_mode(base: str, write: bool, cwd: Optional[str]) -> str:
     "write (bool, default False): codex-only — when True, codex runs with "
     "--sandbox workspace-write and may create/edit files in cwd (cwd required); "
     "rejected for claude, when STRATUM_CODEX_ALLOW_WRITE is off, or with read_jail. "
-    "Returns {text: str, result?: dict, parseError?: str}."
+    "background (bool, default False): codex-only durable background mode; returns "
+    "{status: 'bg_started', run_id, stream_path, pid, watch_cmd} immediately. "
+    "Bridge recipe: launch background=True, then run `stratum-mcp watch <run_id>` "
+    "via Bash run_in_background to stream output without blocking the MCP call. "
+    "Returns {text: str, result?: dict, parseError?: str} when background is false."
 ))
 async def stratum_agent_run(
     prompt: str,
@@ -199,6 +460,7 @@ async def stratum_agent_run(
     read_jail: Optional[str] = None,
     write: bool = False,
     correlation_id: Optional[str] = None,
+    background: bool = False,
 ) -> dict[str, Any]:
     if not prompt or not prompt.strip():
         raise ValueError("stratum_agent_run: prompt is required")
@@ -206,12 +468,23 @@ async def stratum_agent_run(
     active_model_id = modelID if modelID is not None else model_id
 
     full_prompt = f"{context}\n\n{prompt}" if context and context.strip() else prompt
+    base = connector_base(type)
+    if background and base != "codex":
+        raise ValueError(
+            "stratum_agent_run: background=True is codex-only in v1; "
+            "claude background support is tracked by STRAT-AGENT-BG-CLAUDE"
+        )
 
     # STRAT-WORKFLOW-BUDGET: resolve a budgeted flow from correlation_id. Only a
     # call attributed to a live, budgeted FlowState debits or gates; un-attributed
     # agent runs (no correlation_id, or a flow with no run budget) are unbounded.
     budget_flow = _flows.get(correlation_id) if correlation_id else None
     if budget_flow is not None and getattr(budget_flow, "budget_state", None):
+        if background:
+            raise ValueError(
+                "stratum_agent_run: background=True cannot debit run budgets yet "
+                "(see STRAT-AGENT-BG-BUDGET)"
+            )
         if budget_exhausted(budget_flow):
             budget_flow.terminal_status = BUDGET_EXHAUSTED
             persist_flow(budget_flow)
@@ -226,7 +499,24 @@ async def stratum_agent_run(
     _budget_usage = new_usage_acc()
     _budget_t0 = time.monotonic()
 
-    sandbox_mode = _resolve_sandbox_mode(connector_base(type), write, cwd)
+    sandbox_mode = _resolve_sandbox_mode(base, write, cwd)
+
+    if background:
+        return await _start_agent_run_background(
+            type=type,
+            full_prompt=full_prompt,
+            schema=schema,
+            model_id=active_model_id,
+            cwd=cwd,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            thinking=thinking,
+            effort=effort,
+            read_jail=read_jail,
+            sandbox_mode=sandbox_mode,
+            write=write,
+            correlation_id=correlation_id,
+        )
 
     connector = _make_agent_connector(
         type,
@@ -367,18 +657,115 @@ async def stratum_agent_run(
 
 
 @mcp.tool(description=(
-    "Cancel an in-flight stratum_agent_run identified by correlation_id. "
-    "Idempotent: returns {status: 'not_found'} if no matching task exists. "
-    "Input: correlation_id (str). "
-    "Returns {status: 'cancelled'|'not_found', correlation_id: str}."
+    "Poll a codex background agent run started by stratum_agent_run(background=True). "
+    "Input: run_id (str). Reads ~/.stratum/agent_runs/<run_id>/ only, so it works "
+    "after an MCP server restart. Returns running / complete / error / not_found; "
+    "large text fields are tail-capped and the full durable stream remains on disk. "
+    "For live streaming, run `stratum-mcp watch <run_id>` via Bash run_in_background."
+))
+async def stratum_agent_poll(run_id: str, ctx: Context) -> dict[str, Any]:
+    run_dir, meta = _load_agent_run_meta(run_id)
+    if run_dir is None or meta is None:
+        return {"status": "not_found", "run_id": run_id}
+    stream_path = Path(str(meta.get("stream_path") or (run_dir / "stream.jsonl")))
+    stderr_path = Path(str(meta.get("stderr_path") or (str(stream_path) + ".err")))
+    scan = _scan_agent_run_stream(
+        stream_path,
+        model_id=meta.get("model_id"),
+        prompt="x" * int(meta.get("prompt_chars") or 0),
+    )
+    text = str(scan["text"])
+    text_tail = _cap_text(text, stream_path=str(stream_path))
+    rc = scan["sentinel_rc"]
+    if rc is None:
+        if _bg_pid_alive(meta):
+            return {
+                "status": "running",
+                "run_id": run_id,
+                "text_tail": text_tail,
+                "events_seen": scan["events_seen"],
+                "stream_path": str(stream_path),
+            }
+        return {
+            "status": "error",
+            "run_id": run_id,
+            "reason": "child_died_without_sentinel",
+            "text_tail": text_tail,
+            "stderr_tail": _tail_text_file(stderr_path),
+            "events_seen": scan["events_seen"],
+            "stream_path": str(stream_path),
+        }
+
+    if int(rc) == 0 and scan["error_message"] is None:
+        capped = _cap_text(text, stream_path=str(stream_path))
+        out: dict[str, Any] = {
+            "status": "complete",
+            "run_id": run_id,
+            "text": capped,
+            "usage": scan["usage"],
+            "exit_code": 0,
+        }
+        if meta.get("schema") is not None:
+            result, parse_error = _extract_json_result(text)
+            if result is not None:
+                out["result"] = result
+            else:
+                out["result"] = None
+                out["parseError"] = parse_error
+        return out
+
+    err_out = {
+        "status": "error",
+        "run_id": run_id,
+        "exit_code": int(rc),
+        "text_tail": text_tail,
+        "stderr_tail": _tail_text_file(stderr_path),
+    }
+    if scan["error_message"]:
+        err_out["reason"] = scan["error_message"]
+    return err_out
+
+
+@mcp.tool(description=(
+    "Cancel an in-flight stratum_agent_run identified by correlation_id, or a "
+    "codex background run identified by run_id. Sync runs cancel the live asyncio "
+    "task; background runs SIGTERM the durable process group after pid/start-time "
+    "identity verification. Input: correlation_id (str). Returns cancelled, "
+    "already_complete, already_error, or not_found."
 ))
 async def stratum_cancel_agent_run(
     correlation_id: str,
     ctx: Context,
 ) -> dict[str, Any]:
     task = _AGENT_RUN_TASKS.get(correlation_id)
+    if task is not None and task.done():
+        _AGENT_RUN_TASKS.pop(correlation_id, None)
+        task = None
     if task is None:
-        return {"status": "not_found", "correlation_id": correlation_id}
+        run_dir, meta = _load_agent_run_meta(correlation_id)
+        if run_dir is None or meta is None:
+            return {"status": "not_found", "correlation_id": correlation_id}
+        terminal = _agent_run_terminal_status(correlation_id)
+        if terminal["status"] == "complete":
+            return {"status": "already_complete", "run_id": correlation_id}
+        if terminal["status"] == "error" and terminal.get("reason") != "child_died_without_sentinel":
+            return {"status": "already_error", "run_id": correlation_id}
+        if terminal["status"] == "error" and not _bg_pid_alive(meta):
+            return {"status": "already_error", "run_id": correlation_id}
+        if not _bg_pid_alive(meta):
+            return {"status": "already_error", "run_id": correlation_id}
+        try:
+            pid = int(meta.get("child_pid") or 0)
+            # The durable wrapper is spawned with start_new_session=True, so a
+            # genuine bg child is its own process-group leader (pgid == pid).
+            # A meta whose pid is NOT a group leader is not ours — refuse
+            # rather than SIGTERM an unrelated group.
+            if os.getpgid(pid) != pid:
+                return {"status": "already_error", "run_id": correlation_id}
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError, ValueError):
+            return {"status": "already_error", "run_id": correlation_id}
+        return {"status": "cancelled", "run_id": correlation_id}
     task.cancel()
     return {"status": "cancelled", "correlation_id": correlation_id}
 
@@ -4620,6 +5007,7 @@ def _cmd_help() -> None:
     print("  compile <dir>        Compile tasks/*.md files to .stratum.yaml")
     print("  migrate <file>       Upgrade a .stratum.yaml spec to the latest IR version")
     print("  doctor               Diagnose install/PATH/Python-version problems")
+    print("  watch <run_id> [--json]  Tail a bg agent run for Bash run_in_background; exits with agent rc")
     print()
     print("Run with no arguments to start the stdio MCP server (for Claude Code).")
 
@@ -4956,6 +5344,97 @@ def _guard_error_dict(exc: "Exception") -> dict[str, Any]:
     return {"status": "error", "error_type": type(exc).__name__, "message": str(exc)}
 
 
+def _cmd_watch_print_event(rec: dict[str, Any], meta: dict[str, Any], *, raw_json: bool) -> None:
+    if raw_json:
+        print(json.dumps(rec, separators=(",", ":")), flush=True)
+        return
+    for ev in _emit_for_codex_event(
+        rec,
+        model=str(meta.get("model_id") or ""),
+        prompt="x" * int(meta.get("prompt_chars") or 0),
+    ):
+        if ev.kind == "agent_relay" and ev.metadata.get("role") == "assistant":
+            text = str(ev.metadata.get("text") or "")
+            if text:
+                print(text, end="" if text.endswith("\n") else "\n", flush=True)
+        elif ev.kind == "tool_use_summary":
+            tool = ev.metadata.get("tool") or "tool"
+            summary = ev.metadata.get("summary") or ""
+            print(f"[{tool}] {summary}".rstrip(), flush=True)
+
+
+def _cmd_watch(argv: list[str]) -> None:
+    raw_json = False
+    args = list(argv)
+    if "--json" in args:
+        raw_json = True
+        args.remove("--json")
+    if len(args) != 1:
+        print("Usage: stratum-mcp watch <run_id> [--json]", file=sys.stderr)
+        sys.exit(2)
+    run_id = args[0]
+    run_dir, meta = _load_agent_run_meta(run_id)
+    if run_dir is None or meta is None:
+        print(f"stratum-mcp watch: unknown run_id {run_id}", file=sys.stderr)
+        sys.exit(2)
+    stream_path = Path(str(meta.get("stream_path") or (run_dir / "stream.jsonl")))
+    stderr_path = Path(str(meta.get("stderr_path") or (str(stream_path) + ".err")))
+    offset = 0
+    buf = b""
+    next_liveness_check = 0.0
+    while True:
+        try:
+            with open(stream_path, "rb") as f:
+                f.seek(offset)
+                chunk = f.read()
+        except FileNotFoundError:
+            chunk = b""
+        if chunk:
+            offset += len(chunk)
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                s = line.decode("utf-8", errors="replace").strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if T2F5_DONE_SENTINEL in rec:
+                    try:
+                        rc = int(rec[T2F5_DONE_SENTINEL])
+                    except (TypeError, ValueError):
+                        rc = 1
+                    if raw_json:
+                        # --json stdout is pure JSONL: the sentinel record IS
+                        # the terminal event; the human summary would break
+                        # line-oriented consumers (Monitor).
+                        print(json.dumps(rec, separators=(",", ":")), flush=True)
+                    else:
+                        print(f"run {run_id} finished rc={rc}", flush=True)
+                    sys.exit(rc)
+                _cmd_watch_print_event(rec, meta, raw_json=raw_json)
+            continue
+
+        now = time.monotonic()
+        if now >= next_liveness_check:
+            next_liveness_check = now + 5.0
+            if not _bg_pid_alive(meta):
+                print(
+                    f"run {run_id} died without completion sentinel",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                tail = _tail_text_file(stderr_path)
+                if tail:
+                    print(tail, file=sys.stderr, flush=True)
+                sys.exit(1)
+        time.sleep(0.5)
+
+
 @mcp.tool(description=(
     "STRAT-GUARD: register a guarded resource (state machine) with per-edge "
     "evidence predicates. Inputs: resource_id (str, client-namespaced e.g. "
@@ -5138,6 +5617,9 @@ def main() -> None:
             return
         if cmd == "guard":
             _cmd_guard(sys.argv[2:])
+            return
+        if cmd == "watch":
+            _cmd_watch(sys.argv[2:])
             return
         if cmd == "migrate":
             from . import migrate as _migrate
