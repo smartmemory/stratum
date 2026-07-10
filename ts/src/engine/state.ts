@@ -30,7 +30,7 @@ export interface StepState {
 
 export interface AuditEvent {
   at: string;
-  type: "planned" | "ready" | "result" | "routed" | "skipped" | "resumed" | "completed" | "failed" | "budget_exhausted";
+  type: "planned" | "ready" | "result" | "judged" | "routed" | "skipped" | "resumed" | "completed" | "failed" | "budget_exhausted";
   stepId?: string;
   detail?: unknown;
 }
@@ -40,6 +40,7 @@ export interface PersistedRun {
   spec: unknown;
   input: unknown;
   flowName: string;
+  workspaceRoot?: string;
   status: RunStatus;
   output?: unknown;
   failure?: FailureContext;
