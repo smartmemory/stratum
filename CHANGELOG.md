@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### ts — feat(mcp,cli): STRAT-TS-PORT Phase P5 — stdio MCP server + stratum CLI + watch
+
+`ts/src/mcp/`: stdio server (@modelcontextprotocol/sdk) exposing EXACTLY the
+frozen 10-tool surface from ts/contracts/mcp-surface.json — engine tools
+delegate to StratumEngine, agent tools to the P3 connectors; requests AND
+responses are runtime-validated against the frozen payload shapes
+(default-deny), and the contract test drives EVERY status variant of every
+tool through real execution paths over a real SDK client (no fabricated
+samples). `ts/src/cli/stratum.ts`: `stratum validate` (exit 0/1/2) and
+`stratum watch <run_id> [--json|--events [--kinds=...]]` porting the Python
+_cmd_watch matrix 1:1 (text + sentinel-rc exit, missing run exits 2, pure
+JSONL, curated/filtered events, 2000-char caps, died-without-sentinel), plus
+flow-run watch over the persisted event spine via flowPoll cursors. Agent
+watch reads incrementally by byte offset (positional fd reads; split
+multibyte characters stay whole) and skips JSONL primitive noise. Both bins
+run source-only under Node >=22.7 (engines raised to match the
+transform-types loader) and are smoke-tested as real child processes; MCP
+robustness covered (malformed args → MCP errors, connection survives;
+internal throws never crash the transport). terra/high build + sol/high
+review, 4 rounds → REVIEW CLEAN. Suite: 345 passing.
+
 ### ts — feat(engine): STRAT-TS-PORT Phase P4 — gates, engine-owned fanout, subflow execution, frozen observability contracts
 
 Gates: resolve approve/revise/kill with runtime decision validation; revise
