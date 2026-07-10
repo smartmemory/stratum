@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### stratum-mcp — feat(agent): curated background-run Monitor stream (STRAT-AGENT-BG-MONITOR)
+
+`stratum-mcp watch <run_id> --events [--kinds=...]` now emits compact curated
+JSONL for meaningful Codex run events (assistant, tool, and error by default),
+with opt-in started/reasoning/usage events and unconditional terminal done/died
+events. This is the live inline companion to the existing Bash watcher bridge:
+`Monitor(command: "stratum-mcp watch <run_id> --events")` receives one safe,
+line-buffered event per update while default and `--json` watch output remain
+unchanged.
+
 ### stratum-mcp — feat(agent): background agent runs + watch CLI (STRAT-AGENT-BG)
 
 `stratum_agent_run(background=True)` (codex-only in v1) spawns the agent as a
