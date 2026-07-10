@@ -31,11 +31,17 @@ export interface ReadyStep {
   previousFailure?: FailureContext;
 }
 
+/** Flow-ledger snapshot on every response: spend-so-far plus declared limits when present. */
+export interface LedgerInfo {
+  spent: Budget;
+  budget?: Budget;
+}
+
 export type EngineResponse =
-  | { status: "ready"; runId: string; ready: ReadyStep[] }
-  | { status: "completed"; runId: string; output: unknown }
-  | { status: "failed"; runId: string; failure: FailureContext }
-  | { status: "budget_exhausted"; runId: string; failure: FailureContext };
+  | { status: "ready"; runId: string; ready: ReadyStep[]; ledger: LedgerInfo }
+  | { status: "completed"; runId: string; output: unknown; ledger: LedgerInfo }
+  | { status: "failed"; runId: string; failure: FailureContext; ledger: LedgerInfo }
+  | { status: "budget_exhausted"; runId: string; failure: FailureContext; ledger: LedgerInfo };
 
 export interface AuditTrail {
   runId: string;
@@ -111,10 +117,14 @@ export class StratumEngine {
     }
 
     const attempt = state.attempts.length + 1;
-    const usage = result.usage ?? {};
-    if (!validUsage(usage)) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "invalid usage ledger entry", usage, result.output);
-    // The engine reserves one dispatch per attempt itself; a client-reported count would double-charge.
-    if (usage.dispatches !== undefined) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "dispatches are engine-accounted; do not report them in usage", usage, result.output);
+    const reported = result.usage ?? {};
+    // A shape-invalid report is untrustworthy — nothing recorded, attempt fails with feedback.
+    if (!validUsage(reported)) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "invalid usage ledger entry (nothing recorded)", {}, result.output);
+    // The engine reserves one dispatch per attempt itself; a client-reported count would
+    // double-charge. Valid keys still settle below — the attempt consumed them regardless.
+    const claimedDispatches = reported.dispatches !== undefined;
+    const usage = { ...reported };
+    delete usage.dispatches;
     // "settle": the agent already ran, so over-limit usage is still recorded in both ledgers.
     const budgetFailure = this.debit(run, step, state, usage, "settle");
     if (budgetFailure === "flow") {
@@ -126,6 +136,7 @@ export class StratumEngine {
       return this.terminalBudget(run, failure);
     }
     if (budgetFailure === "task") return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "task budget exhausted", usage, result.output);
+    if (claimedDispatches) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "dispatches are engine-accounted; do not report them in usage (other keys were recorded)", usage, result.output);
 
     if (result.failure !== undefined) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, result.failure, usage);
     const contractError = this.contractError(step, result.output, validated.contracts);
@@ -218,23 +229,28 @@ export class StratumEngine {
           await this.terminalFailure(run, { attempt: 0, reason: "construct is outside P1 engine scope" });
           break;
         }
-        const debit = this.debit(run, step, state, { dispatches: 1 }, "reserve");
-        if (debit === "flow") { await this.terminalBudget(run, { attempt: state.attempts.length + 1, reason: "flow budget exhausted" }); break; }
-        if (debit === "task") {
-          await this.failAttempt(run, spec, contracts, flow, step, state, state.attempts.length + 1, "task budget exhausted", { dispatches: 1 });
+        // Render BEFORE reserving: a render failure dispatches nothing, so it must not
+        // debit a dispatch — and its attempt record carries no usage.
+        let ready: ReadyStep;
+        try {
+          ready = this.readyStep(run, step, state);
+        } catch (error) {
+          await this.failAttempt(run, spec, contracts, flow, step, state, state.attempts.length + 1, message(error), {});
           changed = true;
           break;
         }
-        try {
-          const ready = this.readyStep(run, step, state);
-          state.status = "ready";
-          this.event(run, "ready", step.id, { attempt: ready.attempt });
-          await this.persist(run);
+        const debit = this.debit(run, step, state, { dispatches: 1 }, "reserve");
+        if (debit === "flow") { await this.terminalBudget(run, { attempt: state.attempts.length + 1, reason: "flow budget exhausted" }); break; }
+        if (debit === "task") {
+          // Over-limit reservation: nothing dispatched, nothing ledgered, no usage on the record.
+          await this.failAttempt(run, spec, contracts, flow, step, state, state.attempts.length + 1, "task budget exhausted", {});
           changed = true;
-        } catch (error) {
-          await this.failAttempt(run, spec, contracts, flow, step, state, state.attempts.length + 1, message(error), { dispatches: 1 });
-          changed = true;
+          break;
         }
+        state.status = "ready";
+        this.event(run, "ready", step.id, { attempt: ready.attempt });
+        await this.persist(run);
+        changed = true;
       }
     }
     if (run.status !== "running") return this.response(run);
@@ -242,7 +258,7 @@ export class StratumEngine {
       const state = run.steps[step.id]!;
       return step.do !== undefined && state.status === "ready" ? [this.readyStep(run, step, state)] : [];
     });
-    if (ready.length > 0) return { status: "ready", runId: run.id, ready };
+    if (ready.length > 0) return { status: "ready", runId: run.id, ready, ledger: this.ledgerInfo(run) };
     if (flow.steps.every((step) => terminal(run.steps[step.id]!.status))) {
       const output = this.resolveFlowOutput(run, flow);
       const outputError = contracts[flow.output.contract]?.safeParse(output);
@@ -419,9 +435,15 @@ export class StratumEngine {
   }
 
   private response(run: PersistedRun): EngineResponse {
-    if (run.status === "completed") return { status: "completed", runId: run.id, output: run.output };
-    if (run.status === "budget_exhausted") return { status: "budget_exhausted", runId: run.id, failure: requiredFailure(run) };
-    return { status: "failed", runId: run.id, failure: requiredFailure(run) };
+    const ledger = this.ledgerInfo(run);
+    if (run.status === "completed") return { status: "completed", runId: run.id, output: run.output, ledger };
+    if (run.status === "budget_exhausted") return { status: "budget_exhausted", runId: run.id, failure: requiredFailure(run), ledger };
+    return { status: "failed", runId: run.id, failure: requiredFailure(run), ledger };
+  }
+
+  private ledgerInfo(run: PersistedRun): LedgerInfo {
+    const budget = this.flowFor(run, this.validationFor(run).value).budget;
+    return { spent: structuredClone(run.flowSpent), ...(budget ? { budget: structuredClone(budget) } : {}) };
   }
 
   private event(run: PersistedRun, type: AuditEvent["type"], stepId?: string, detail?: unknown): void {

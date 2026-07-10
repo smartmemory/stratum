@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### ts — fix(engine): STRAT-TS-PORT ledger audit — no spend escapes, ledger on every response
+
+Owner-requested audit of the token/usage accounting: (1) a usage report
+rejected for containing `dispatches` now settles its valid keys first — the
+failed attempt's real tokens/usd/ms no longer vanish from the ledgers;
+(2) render happens BEFORE the dispatch reserve, so a render failure no
+longer ledgers a phantom dispatch, and non-dispatched failure attempts no
+longer stamp `{dispatches: 1}` usage; (3) a run terminalized mid-advance
+stops processing further steps (no stray "ready" persists on a failed run);
+(4) every EngineResponse now carries a `ledger: { spent, budget? }` flow
+snapshot so controllers get spend without a second audit call. +2 tests (67).
+
+### docs — STRAT-TS-PORT design amendment: observability contract
+
+"The engine may own execution, but it never owns information": one event
+spine, frozen event vocabulary (`ts/contracts/events.json`, lands P4),
+per-item fanout lifecycle events, non-blocking `status: "running"` +
+`stratum_flow_poll` (surface grows to 10 tools), connector telemetry hints
+(`durationMs` + model identity, P3). P1/P2 scope unchanged.
+
 ### ts — feat(engine): STRAT-TS-PORT Phase P1 — engine core (fake connectors)
 
 `ts/src/engine/`: StratumEngine client-driven core loop (plan → stepDone →

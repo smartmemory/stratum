@@ -312,8 +312,9 @@ ts/src/
 
 `engine/` imports nothing from `mcp/`/`cli/`. The MCP tool surface in v1 is
 the core loop only: `stratum_validate, stratum_plan, stratum_step_done,
-stratum_resume, stratum_audit, stratum_gate_resolve, stratum_agent_run,
-stratum_agent_poll, stratum_cancel_agent_run`.
+stratum_resume, stratum_audit, stratum_gate_resolve, stratum_flow_poll,
+stratum_agent_run, stratum_agent_poll, stratum_cancel_agent_run` (10 tools;
+`stratum_flow_poll` added by the observability amendment below).
 
 **Compatibility contract (corrected after design review):** tool NAMES match
 Python, but result shapes are NOT claimed byte-compatible — Python fanout
@@ -327,6 +328,47 @@ requires the `stratum_parallel_*` tools (client-driven advance via
   contract-tested. Version key `surface: 1`.
 - Clients (compose, CLAUDE.md skills) migrate against that contract file,
   not against recorded Python outputs.
+
+### Observability contract (amendment 2026-07-10, owner-approved post-review)
+
+Principle: **the engine may own execution, but it never owns information.**
+A controller layer above the engine (model or human) must be able to wait
+on, monitor, and optimize every flow without privileged access — from the
+same event stream regardless of how a step executes (client-driven,
+engine-owned fanout, or daemon-hosted later at G1).
+
+Normative requirements:
+
+- **One event spine.** Every state transition already lands in the persisted
+  run's ordered `events` log (P1). Everything added later (fanout items,
+  connector dispatches, judged predicates, gate waits) MUST emit into that
+  same log — no side channels.
+- **Frozen event vocabulary.** Event kinds and payload shapes are frozen in
+  `ts/contracts/events.json` (version key `events: 1`) and contract-tested,
+  same regime as `mcp-surface.json`. Consumers (compose, `watch`, future
+  optimizers) migrate against the contract file. Lands with P4 (the first
+  phase that widens the vocabulary), enumerating the P1 kinds retroactively.
+- **Per-item fanout visibility (P4).** Engine-owned fanout emits per-item,
+  per-stage lifecycle events: item ready/dispatched, attempt result (with
+  structured ensure/contract failure reasons), skip, per-item ledger debits.
+  A fanout is never a black box between "started" and "done".
+- **Non-blocking wait surface (P4/P5).** Any engine-owned execution phase
+  must be awaitable without blocking the MCP client: `stepDone`/`resume`
+  calls that trigger engine-owned work return a `status: "running"` response
+  immediately, and the surface gains `stratum_flow_poll` (restart-proof,
+  reads persisted state + an event cursor) — the flow-level analog of
+  `stratum_agent_poll`. `watch` (P5) is the streaming view of the same
+  events.
+- **Optimization hints (P3).** Attempt records carry `usage` (P1, shipped)
+  plus `durationMs` and the resolved model/effort identity once real
+  connectors report telemetry (P3). Judged-predicate results carry
+  `{holds, reason, stakes, model}` and their ledger debit.
+
+Surface impact: the frozen MCP surface grows from 9 to 10 tools
+(`stratum_flow_poll`), and `stepDone`/`resume` gain one response variant
+(`running`) — both enumerated in `ts/contracts/mcp-surface.json` before P4
+ships. P1/P2 are unaffected: P1's synchronous statuses remain valid, and the
+`running` variant appears only once engine-owned work exists.
 
 ## Phases — work packages for codex/terra-class implementers
 
@@ -371,15 +413,17 @@ Files (new): `src/connectors/*`, tests
 - [ ] MUST: durable bg mode — T2F5 shell wrapper, sentinel `{"__t2f5_done__":rc}`, 12-hex run registry under `~/.stratum/ts/agent_runs/`, proc-identity (pid + start-time) before any signal
 - [ ] MUST: cancel = killpg after identity check; poll = restart-proof registry read with 20k text caps
 - [ ] MUST: live e2e smoke with `gpt-5.3-codex-spark/low` (echo test), skipped when codex absent
+- [ ] MUST: attempt records carry `durationMs` + resolved model/effort identity from connector telemetry (observability contract)
 - [ ] Gate: port the Python `test_agent_run_bg.py` scenarios 1:1
 
 ### P4 — gates + fanout
 - [ ] MUST: gate resolve (approve/revise/kill), revise targets ancestor only, `max_rounds` enforced (E3 fixtures)
 - [ ] MUST: fanout concurrency cap, `require` semantics, worktree isolation (create/apply/cleanup), sequential merge with conflict = flow error
+- [ ] MUST: observability contract lands — `ts/contracts/events.json` (P1 kinds enumerated retroactively), per-item fanout lifecycle events with ledger debits, `status: "running"` response variant + `stratum_flow_poll`
 - [ ] Gate: golden flows incl. a fanout-with-stages flow
 
 ### P5 — MCP server + CLI + watch
-- [ ] MUST: stdio server exposing the frozen 9-tool surface; every response validates against `ts/contracts/mcp-surface.json` (contract test enumerating every status variant)
+- [ ] MUST: stdio server exposing the frozen 10-tool surface (incl. `stratum_flow_poll`); every response validates against `ts/contracts/mcp-surface.json` (contract test enumerating every status variant); `watch` streams the frozen event vocabulary
 - [ ] MUST: `stratum watch <run_id> [--json|--events [--kinds=...]]` — port STRAT-AGENT-BG-MONITOR semantics exactly (reuse its test matrix)
 - [ ] Gate: MCP integration test via SDK client
 
@@ -412,6 +456,11 @@ mostly migrator-rooted) → scope cut: semantic migrator removed entirely
 Round 4 (post-cut): 4 must-fixes — cut debris + the normative field matrix +
 `merge: manual` removal — all applied. Remaining findings were
 phase-brief-grade; implementation dispatches carry their own review gates.
+
+Amendment 2026-07-10 (post-review, owner-approved): observability contract —
+frozen event vocabulary, per-item fanout events, `stratum_flow_poll` +
+`running` variant, connector telemetry hints. See the section above; P1/P2
+scope unchanged.
 
 ## Risks / honest caveats
 

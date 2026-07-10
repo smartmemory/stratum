@@ -151,12 +151,41 @@ describe("P1 table-driven error harness", () => {
     expect((await fresh.resume(planned.runId)).status).toBe("budget_exhausted");
   });
 
-  it("rejects client-reported dispatches usage with structured feedback", async () => {
+  it("rejects client-reported dispatches usage but still settles the valid keys", async () => {
     const { engine } = await createEngine();
     const planned = await engine.plan(flow([{ id: "finish", do: "work", out: "Result", attempts: 1 }]), { name: "x" });
     if (planned.status !== "ready") throw new Error("expected ready");
-    const result = await engine.stepDone(planned.runId, "finish", { output: { value: "ok" }, usage: { dispatches: 1 } });
+    const result = await engine.stepDone(planned.runId, "finish", { output: { value: "ok" }, usage: { dispatches: 1, tokens: 500 } });
     expect(result).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("engine-accounted") } });
+    const audit = await engine.audit(planned.runId);
+    expect(audit.flowSpent.tokens).toBe(500);
+    expect(audit.steps.finish?.spent.tokens).toBe(500);
+  });
+
+  it("does not ledger a dispatch or stamp usage when rendering fails before dispatch", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow([
+      { id: "skip", do: "maybe", out: "Result", when: "false" },
+      { id: "finish", do: "finish ${skip.output.value}", out: "Result", attempts: 1 },
+    ]), { name: "x" });
+    expect(planned.status).toBe("failed");
+    if (planned.status !== "failed") return;
+    const audit = await engine.audit(planned.runId);
+    expect(audit.steps.finish?.spent).toEqual({});
+    expect(audit.flowSpent).toEqual({});
+    expect(audit.steps.finish?.attempts[0]?.usage).toBeUndefined();
+  });
+
+  it("carries the flow ledger snapshot on every response", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result" }],
+      { budget: { usd: 5, dispatches: 20 } },
+    ), { name: "x" });
+    expect(planned).toMatchObject({ status: "ready", ledger: { spent: { dispatches: 1 }, budget: { usd: 5, dispatches: 20 } } });
+    if (planned.status !== "ready") return;
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "ok" }, usage: { usd: 2 } });
+    expect(done).toMatchObject({ status: "completed", ledger: { spent: { usd: 2, dispatches: 1 } } });
   });
 
   it("does not re-resolve reference tokens inside resolved values", async () => {
