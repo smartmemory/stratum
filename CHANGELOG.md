@@ -18,7 +18,7 @@ through stratum_agent_run) runs codex on ChatGPT OAuth. New
 (read-only, same stakes routing spark/terra/sol, schema-validated verdict,
 fail-closed everywhere, paid dispatch charged even on unparseable verdicts,
 conservative output-rate pricing when the connector reports no usd,
-policy/data prompt fencing with < escaping making the fence markers
+policy/data prompt fencing with \u003c escaping making the fence markers
 unrepresentable in payload data). `judgeBackend()` in src/mcp/server.ts:
 explicit STRATUM_JUDGE_BACKEND=openai|codex (unknown values throw), default
 keyed to OPENAI_API_KEY presence. 6 sol/high review rounds (5 findings
