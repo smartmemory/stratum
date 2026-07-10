@@ -38,6 +38,16 @@ import os
 
 CODEX_MODEL_IDS: frozenset[str] = frozenset(
     {
+        "gpt-5.6-sol",
+        "gpt-5.6-sol/low",
+        "gpt-5.6-sol/medium",
+        "gpt-5.6-sol/high",
+        "gpt-5.6-sol/xhigh",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra/low",
+        "gpt-5.6-terra/medium",
+        "gpt-5.6-terra/high",
+        "gpt-5.6-terra/xhigh",
         "gpt-5.5",
         "gpt-5.5/low",
         "gpt-5.5/medium",
@@ -74,6 +84,8 @@ CODEX_MODEL_IDS: frozenset[str] = frozenset(
 )
 
 # Code-level fallback when CODEX_MODEL is unset. The env var always wins.
-_FALLBACK_DEFAULT = "gpt-5.5"
+# Effort pinned to /high explicitly (not xhigh, and not inherited from
+# ~/.codex/config.toml) per user preference.
+_FALLBACK_DEFAULT = "gpt-5.6-sol/high"
 
 DEFAULT_CODEX_MODEL = os.environ.get("CODEX_MODEL", _FALLBACK_DEFAULT)
