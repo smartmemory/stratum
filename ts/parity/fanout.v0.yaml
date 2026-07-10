@@ -1,0 +1,18 @@
+version: "0.3"
+contracts:
+  TaskGraph: {tasks: {type: array}}
+functions: {}
+flows:
+  main:
+    input: {tasks: {type: array}}
+    steps:
+      - id: fan
+        type: parallel_dispatch
+        source: "$.input.tasks"
+        agent: codex
+        max_concurrent: 2
+        isolation: none
+        require: all
+        merge: sequential_apply
+        intent_template: "work {task.name}"
+        ensure: ["result.outcome == 'complete'"]

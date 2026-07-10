@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### ts — feat(cli,migrate): STRAT-TS-PORT Phase P6 — compat linter + reference parity flows
+
+`ts/src/migrate/check.ts` + `stratum migrate --check <old.yaml>`: report-only
+compat linter — parses v0.1–0.3 YAML, classifies every construct the spec
+uses against the design guidance table (supported/unsupported/diagnostic,
+with spec paths), always exits 0, emits no YAML and performs no semantic
+translation (clean-break decision). `stratum validate` now parses YAML
+instead of JSON. The fixture-sweep gate classifies every checked-in
+.stratum.yaml document (docs/) plus every embedded v0 fixture across BOTH
+Python suites (repo-root tests/ and stratum-mcp/tests) without crashing —
+216 triple-quoted snippets + 2 concatenated-literal fixtures. `ts/parity/`:
+3 reference flows hand-authored in both IRs (linear+gate, fanout, subflow)
+run on both engines with fake connectors; the Python runner drives the real
+public test seam (stratum_plan/step_done/gate_resolve/parallel_done) and
+enforces expected terminal + ensure/gate outcomes, exiting non-zero on
+mismatch; P6-PARITY-REPORT.md committed. Authoring-cost specimen
+linear-gate.v1.yaml: exactly 5 task steps, 250 cl100k_base tokens, both
+CI-enforced from file bytes (limit 400). Deps: yaml@2.9.0,
+js-tiktoken@1.0.21. terra/high build; pre-gate self-adversary pass (3
+test-honesty fixes: dead sweep arm, missing 5-step assertion, hardcoded
+ensure literals) + sol/high review, 2 rounds (3 MUST-FIX + 1 SHOULD-FIX
+confirmed and fixed: both-suite + concatenated-literal sweep, enforced
+parity comparison, pipeline-nested unsupported classification,
+reasoning_template certificates) → REVIEW CLEAN. Suite: 356 passing.
+
 ### ts — feat(mcp,cli): STRAT-TS-PORT Phase P5 — stdio MCP server + stratum CLI + watch
 
 `ts/src/mcp/`: stdio server (@modelcontextprotocol/sdk) exposing EXACTLY the

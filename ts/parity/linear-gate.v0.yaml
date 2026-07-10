@@ -1,0 +1,17 @@
+version: "0.2"
+contracts:
+  Result: {value: {type: string}}
+functions:
+  work: {mode: infer, intent: work, input: {}, output: Result, ensure: ["result.value != ''"]}
+  review: {mode: gate}
+flows:
+  main:
+    max_rounds: 1
+    input: {name: {type: string}}
+    steps:
+      - {id: prepare, function: work, inputs: {name: "$.input.name"}}
+      - {id: draft, function: work, inputs: {}, depends_on: [prepare]}
+      - {id: check, function: work, inputs: {}, depends_on: [draft]}
+      - {id: review, function: review, inputs: {}, depends_on: [check], on_approve: refine, on_revise: prepare, on_kill: null}
+      - {id: refine, function: work, inputs: {}, depends_on: [review]}
+      - {id: publish, function: work, inputs: {}, depends_on: [refine]}
