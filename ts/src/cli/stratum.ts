@@ -8,6 +8,7 @@ import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
 import { checkLegacyYaml, renderCompatReport } from "../migrate/check.js";
 import { assertEvent, eventContract } from "../mcp/contracts.js";
+import { gateCommand, queryCommand } from "./query_gate.js";
 
 const AGENT_RUN_ID = /^[0-9a-f]{12}$/;
 const EVENT_TEXT_CAP = 2_000;
@@ -20,8 +21,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const [command, ...args] = argv;
   if (command === "validate") return validateCommand(args);
   if (command === "migrate") return migrateCommand(args);
+  if (command === "query") return queryCommand(args);
+  if (command === "gate") return gateCommand(args);
   if (command === "watch") return watchCommand(args);
-  process.stderr.write("Usage: stratum <validate|migrate|watch> ...\n");
+  process.stderr.write("Usage: stratum <validate|migrate|query|gate|watch> ...\n");
   return 2;
 }
 
