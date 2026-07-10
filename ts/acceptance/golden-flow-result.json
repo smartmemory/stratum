@@ -1,0 +1,58 @@
+{
+  "runId": "c329c798-388b-4798-aeeb-67e435a01861",
+  "judgeBackend": "codex",
+  "terminal": "completed",
+  "output": {
+    "value": "yellow"
+  },
+  "flowSpent": {
+    "dispatches": 3,
+    "usd": 0.325635,
+    "tokens": 64124,
+    "ms": 27560
+  },
+  "eventTypes": [
+    "planned",
+    "ready",
+    "judged",
+    "result",
+    "gate_waiting",
+    "gate_resolved",
+    "fanout_item_ready",
+    "fanout_ledger_debit",
+    "fanout_item_dispatched",
+    "fanout_attempt_result",
+    "completed"
+  ],
+  "judged": [
+    {
+      "at": "2026-07-10T15:24:38.769Z",
+      "type": "judged",
+      "stepId": "gather",
+      "detail": {
+        "statement": "result.value is a single factual statement about the topic named in input.topic",
+        "holds": true,
+        "reason": "result.value is one factual statement about the Moon, the input topic.",
+        "stakes": "default",
+        "model": "gpt-5.6-terra/high",
+        "usage": {
+          "tokens": 21709,
+          "usd": 0.325635
+        }
+      }
+    }
+  ],
+  "gate": [
+    {
+      "at": "2026-07-10T15:24:38.774Z",
+      "type": "gate_resolved",
+      "stepId": "review",
+      "detail": {
+        "decision": "approve",
+        "target": "fan"
+      }
+    }
+  ],
+  "fanoutEvents": 10,
+  "stateRoot": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/stratum-golden-state-0ewdAi"
+}

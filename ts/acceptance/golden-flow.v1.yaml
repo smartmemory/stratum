@@ -1,0 +1,30 @@
+version: 1
+contracts:
+  Fact: {value: string}
+flows:
+  entry: main
+  main:
+    input: {topic: string, items: "string[]"}
+    output: {from: "${fan.output[0]}", contract: Fact}
+    max_rounds: 2
+    steps:
+      - id: gather
+        agent: codex
+        do: "State one short factual sentence about ${input.topic}"
+        out: Fact
+        ensure:
+          - {expr: "result.value != ''"}
+          - {judged: {statement: "result.value is a single factual statement about the topic named in input.topic", stakes: "default"}}
+      - id: review
+        after: [gather]
+        gate: {on_approve: fan, on_revise: gather, on_kill: null}
+      - id: fan
+        after: [review]
+        fanout:
+          over: "${input.items}"
+          concurrency: 2
+          isolation: none
+          require: all
+          merge: sequential
+          steps:
+            - {do: "Name the typical color of ${item} in one word", agent: codex, out: Fact, ensure: [{expr: "result.value != ''"}]}

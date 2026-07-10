@@ -40,12 +40,12 @@ export interface JudgedResult {
   usage: Required<Pick<Budget, "tokens" | "usd">>;
 }
 
-const resultSchema = z.object({
+export const judgedResultSchema = z.object({
   holds: z.boolean(),
   reason: z.string().min(1),
 }).strict();
 
-const SYSTEM_PROMPT = [
+export const JUDGE_SYSTEM_PROMPT = [
   "You are a predicate judge.",
   "Decide only whether the supplied statement holds for the supplied JSON context.",
   "Return holds=false when evidence is missing or ambiguous.",
@@ -72,9 +72,9 @@ export async function evaluateJudged(predicate: JudgedPredicate, context: Judged
     const prompt = JSON.stringify({ statement: predicate.statement, context });
     const generated = await generateObject({
       model: openai.responses(tier.model),
-      schema: resultSchema,
+      schema: judgedResultSchema,
       schemaName: "judged_predicate",
-      system: SYSTEM_PROMPT,
+      system: JUDGE_SYSTEM_PROMPT,
       prompt,
       providerOptions: { openai: { reasoningEffort: tier.effort } },
     });

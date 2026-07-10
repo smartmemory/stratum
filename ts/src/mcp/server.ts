@@ -5,6 +5,7 @@ import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/
 import { StratumEngine, type AuditTrail, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
+import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { evaluateJudged } from "../judge/judged.js";
 import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface } from "./contracts.js";
 
@@ -21,11 +22,27 @@ export type ToolName =
 
 export interface ToolDispatcher { call(tool: ToolName, request: Record<string, unknown>): Promise<Record<string, unknown>> }
 
+/**
+ * Judged-ensure backend: explicit via STRATUM_JUDGE_BACKEND, otherwise keyed
+ * to the environment — the OpenAI-API judge can never succeed without
+ * OPENAI_API_KEY, so a keyless host routes through the codex connector
+ * (OAuth), matching the Python judge kernel. Unknown values fail loudly.
+ */
+export function judgeBackend(env: NodeJS.ProcessEnv = process.env): "openai" | "codex" {
+  const explicit = env.STRATUM_JUDGE_BACKEND;
+  if (explicit === "openai" || explicit === "codex") return explicit;
+  if (explicit !== undefined) throw new Error(`STRATUM_JUDGE_BACKEND must be "openai" or "codex", got ${JSON.stringify(explicit)}`);
+  return env.OPENAI_API_KEY ? "openai" : "codex";
+}
+
 function defaultEngine(): StratumEngine {
+  const judge = judgeBackend() === "openai"
+    ? (predicate: Parameters<typeof evaluateJudged>[0], context: Parameters<typeof evaluateJudged>[1]) => evaluateJudged(predicate, context)
+    : (predicate: Parameters<typeof evaluateJudged>[0], context: Parameters<typeof evaluateJudged>[1]) => evaluateJudgedViaCodex(predicate, context);
   return new StratumEngine({
     ...(process.env.STRATUM_STATE_ROOT ? { stateRoot: process.env.STRATUM_STATE_ROOT } : {}),
     evaluator: createEvaluator(),
-    judge: (predicate, context) => evaluateJudged(predicate, context),
+    judge,
   });
 }
 
