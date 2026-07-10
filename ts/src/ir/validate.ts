@@ -9,7 +9,12 @@ export interface ValidationError {
 }
 
 export type ValidationResult =
-  | { ok: true; value: Specification; contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">> }
+  | {
+      ok: true;
+      value: Specification;
+      contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>;
+      inputs: Record<string, z.ZodObject<z.ZodRawShape, "strict">>;
+    }
   | { ok: false; errors: ValidationError[] };
 
 type ContractNode =
@@ -162,6 +167,26 @@ function compileContracts(parsed: Record<string, ParsedContract>): Record<string
   return cache;
 }
 
+function compileFields(
+  fields: Record<string, ContractNode>,
+  contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
+): z.ZodObject<z.ZodRawShape, "strict"> {
+  const compileNode = (node: ContractNode): z.ZodTypeAny => {
+    let schema: z.ZodTypeAny;
+    if (node.kind === "scalar") schema = primitiveToZod(node.scalar);
+    else if (node.kind === "object") schema = z.record(z.unknown());
+    else if (node.kind === "array") schema = z.array(z.unknown());
+    else if (node.kind === "enum") schema = z.enum(node.values as [string, ...string[]]);
+    else if (node.kind === "ref") schema = contracts[node.name] ?? z.never();
+    else if (node.kind === "typed-array") schema = z.array(compileNode(node.item));
+    else schema = z.never();
+    return node.optional ? schema.optional() : schema;
+  };
+  const shape: z.ZodRawShape = Object.create(null);
+  for (const [field, node] of Object.entries(fields)) shape[field] = compileNode(node);
+  return z.object(shape).strict();
+}
+
 function containsPath(node: ContractNode, path: readonly PathSegment[], parsed: Record<string, ParsedContract>): boolean {
   if (path.length === 0) return true;
   const [head, ...tail] = path;
@@ -290,6 +315,7 @@ export function validateSpec(input: unknown): ValidationResult {
   const parsed = parsedResult.parsed;
   const contracts = compileContracts(parsed);
   const flows = Object.fromEntries(flowEntries(spec));
+  const inputs: Record<string, z.ZodObject<z.ZodRawShape, "strict">> = Object.create(null);
 
   if (!flows[spec.flows.entry]) return { ok: false, errors: [{ code: "FLOW_UNKNOWN_ENTRY", path: "flows.entry", message: "entry must name an existing flow" }] };
   const runError = preflightRuns(flows);
@@ -304,6 +330,7 @@ export function validateSpec(input: unknown): ValidationResult {
       if (unknownContractIn(node, parsed)) return { ok: false, errors: [{ code: "CONTRACT_UNKNOWN_REF", path: `flows.${flowName}.input.${field}`, message: "unknown input contract reference" }] };
       inputFields[field] = node;
     }
+    inputs[flowName] = compileFields(inputFields, contracts);
     const ids = new Map<string, { step: Step; index: number }>();
     for (const [index, step] of flow.steps.entries()) {
       if (ids.has(step.id)) return { ok: false, errors: [{ code: "STEP_DUPLICATE_ID", path: `flows.${flowName}.steps[${index}].id`, message: "duplicate step id" }] };
@@ -356,7 +383,17 @@ export function validateSpec(input: unknown): ValidationResult {
             }
             const sourceContract = contractForStep(source.step, flows);
             if (!sourceContract) return { ok: false, errors: [{ code: "REF_OUTPUT_CONTRACT_REQUIRED", path: leaf.path, message: "referenced output requires an out contract" }] };
-            if (!containsPathInContract(sourceContract, reference.path, parsed)) return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: leaf.path, message: "unknown output path" }] };
+            if (source.step.fanout !== undefined) {
+              // A fanout's output is the ARRAY of per-item final-stage outputs:
+              // `${fan.output}` is the array itself, `${fan.output[0].field}`
+              // indexes an element — a bare field path is a type error.
+              const [head, ...rest] = reference.path;
+              if (reference.path.length > 0 && (typeof head !== "number" || !containsPathInContract(sourceContract, rest, parsed))) {
+                return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: leaf.path, message: "fanout output is an array — index it before accessing fields" }] };
+              }
+            } else if (!containsPathInContract(sourceContract, reference.path, parsed)) {
+              return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: leaf.path, message: "unknown output path" }] };
+            }
             for (const refEdge of referenceEdges(step.id, [extractedReference])) {
               const error = add({ ...refEdge, path: leaf.path });
               if (error) return { ok: false, errors: [error] };
@@ -403,7 +440,16 @@ export function validateSpec(input: unknown): ValidationResult {
     }
     const sourceContract = contractForStep(source.step, flows);
     if (!sourceContract) return { ok: false, errors: [{ code: "REF_OUTPUT_CONTRACT_REQUIRED", path: `flows.${flowName}.output.from`, message: "flow output source has no contract" }] };
-    if (!containsPathInContract(sourceContract, outputReference.path, parsed)) return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: `flows.${flowName}.output.from`, message: "unknown flow output path" }] };
+    if (source.step.fanout !== undefined) {
+      // Same array typing as ordinary refs — and the bare array itself can
+      // never satisfy an object flow contract, so it must be indexed here.
+      const [head, ...rest] = outputReference.path;
+      if (typeof head !== "number" || !containsPathInContract(sourceContract, rest, parsed)) {
+        return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: `flows.${flowName}.output.from`, message: "fanout output is an array — index it before using it as flow output" }] };
+      }
+    } else if (!containsPathInContract(sourceContract, outputReference.path, parsed)) {
+      return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: `flows.${flowName}.output.from`, message: "unknown flow output path" }] };
+    }
   }
 
   const calls = new Map<string, Array<{ target: string; path: string }>>();
@@ -445,5 +491,21 @@ export function validateSpec(input: unknown): ValidationResult {
     }
   }
 
-  return { ok: true, value: spec, contracts };
+  // The v1 body restriction covers EVERY non-entry flow, reachable or not — an
+  // unused flow must not validate with constructs it could never legally run.
+  for (const [flowName, flow] of Object.entries(flows)) {
+    if (flowName === spec.flows.entry) continue;
+    for (const [index, step] of flow.steps.entries()) {
+      const kind = step.gate !== undefined ? "gate" : step.fanout !== undefined ? "fanout" : step.run !== undefined ? "run" : undefined;
+      if (kind !== undefined) {
+        return { ok: false, errors: [{
+          code: "SUBFLOW_BODY_RESTRICTED",
+          path: `flows.${flowName}.steps[${index}].${kind}`,
+          message: "non-entry flows may contain task steps only",
+        }] };
+      }
+    }
+  }
+
+  return { ok: true, value: spec, contracts, inputs };
 }

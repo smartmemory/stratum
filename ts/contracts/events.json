@@ -1,0 +1,65 @@
+{
+  "events": 1,
+  "shapeLanguage": "Each kind maps to the full event payload shape minus the implicit {at: string, type: string}. Leaf types: number|string|boolean|object|array|null|any, unions with '|', optional keys end in '?', nested objects are declared inline. Undeclared keys are contract violations.",
+  "kinds": {
+    "planned": {},
+    "ready": { "stepId": "string", "detail": { "attempt": "number" } },
+    "result": {
+      "stepId": "string",
+      "detail": {
+        "attempt": "number",
+        "result?": "any",
+        "failure?": { "attempt": "number", "reason": "string" },
+        "iterate?": { "iteration": "number", "max": "number" }
+      }
+    },
+    "judged": {
+      "stepId": "string",
+      "detail": {
+        "statement": "string",
+        "holds": "boolean",
+        "reason": "string",
+        "stakes": "string",
+        "model": "string",
+        "usage": { "tokens": "number", "usd": "number" },
+        "itemIndex?": "number",
+        "stage?": "number"
+      }
+    },
+    "routed": {
+      "stepId": "string",
+      "detail": { "target": "string", "failure": { "attempt": "number", "reason": "string" } }
+    },
+    "skipped": { "stepId": "string", "detail?": { "reason?": "string" } },
+    "resumed": {},
+    "completed": { "detail": { "output": "any" } },
+    "failed": { "detail": { "attempt": "number", "reason": "string" } },
+    "budget_exhausted": { "detail": { "attempt": "number", "reason": "string" } },
+    "gate_waiting": { "stepId": "string" },
+    "gate_resolved": { "stepId": "string", "detail": { "decision": "string", "target": "string|null" } },
+    "fanout_item_ready": { "stepId": "string", "detail": { "itemIndex": "number" } },
+    "fanout_item_dispatched": {
+      "stepId": "string",
+      "detail": { "itemIndex": "number", "stage": "number", "attempt": "number" }
+    },
+    "fanout_attempt_result": {
+      "stepId": "string",
+      "detail": {
+        "itemIndex": "number",
+        "stage": "number",
+        "attempt": "number",
+        "success": "boolean",
+        "failure?": { "kind": "string", "reason": "string" }
+      }
+    },
+    "fanout_item_skipped": { "stepId": "string", "detail": { "itemIndex": "number", "stage": "number" } },
+    "fanout_ledger_debit": {
+      "stepId": "string",
+      "detail": { "itemIndex": "number", "amount": "object", "source?": "string" }
+    },
+    "fanout_merge": {
+      "stepId": "string",
+      "detail": { "itemIndex": "number", "success": "boolean", "reason?": "string" }
+    }
+  }
+}

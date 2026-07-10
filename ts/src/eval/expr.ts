@@ -286,6 +286,8 @@ export class ExpressionEvaluator implements Evaluator {
     return {
       input: context.input,
       result: Object.hasOwn(context, "result") ? context.result : context.steps,
+      ...(Object.hasOwn(context, "item") ? { item: context.item } : {}),
+      ...(Object.hasOwn(context, "prev") ? { prev: context.prev } : {}),
     };
   }
 
