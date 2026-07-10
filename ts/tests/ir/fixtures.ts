@@ -102,6 +102,10 @@ export const validFixtures = [
       },
     },
   },
+  {
+    name: "an indexed fanout output reference",
+    spec: (() => { const s = clone(designExample); ((s.flows as any).main.steps[4].with as any).notes = "${fixups.output[0].path}"; return s; })(),
+  },
 ];
 
 export const invalidFixtures = [
@@ -216,6 +220,47 @@ export const invalidFixtures = [
   {
     name: "transitive recursive subflow", spec: (() => { const s = clone(simple); (s.flows as any).other = { input: { prompt: "string" }, output: { from: "${again.output}", contract: "Result" }, steps: [{ id: "again", run: "main", with: { prompt: "x" } }] }; (s.flows as any).main.steps[0] = { id: "work", run: "other", with: { prompt: "x" } }; return s; })(),
     errors: err("SUBFLOW_RECURSIVE", "flows.other.steps[0].run"),
+  },
+  ...(["gate", "fanout", "run"] as const).map((kind) => ({
+    name: `reachable subflow rejects ${kind}`,
+    spec: (() => {
+      const s = clone(simple);
+      (s.flows as any).main.steps[0] = { id: "work", run: "child", with: { prompt: "${input.prompt}" } };
+      const forbidden = kind === "gate"
+        ? { id: "bad", gate: { on_approve: null, on_revise: null, on_kill: null } }
+        : kind === "fanout"
+          ? { id: "bad", fanout: { over: "${input.prompt}", steps: [{ do: "${item}", out: "Result" }], concurrency: 1, isolation: "none", require: "all", merge: "sequential" } }
+          : { id: "bad", run: "unused", with: { prompt: "${input.prompt}" } };
+      (s.flows as any).child = { input: { prompt: "string" }, output: { from: "${done.output}", contract: "Result" }, steps: [forbidden, { id: "done", do: "done", out: "Result" }] };
+      if (kind === "run") (s.flows as any).unused = { input: { prompt: "string" }, output: { from: "${done.output}", contract: "Result" }, steps: [{ id: "done", do: "done", out: "Result" }] };
+      return s;
+    })(),
+    errors: err("SUBFLOW_BODY_RESTRICTED", `flows.child.steps[0].${kind}`),
+  })),
+  {
+    name: "fanout output field access without an index",
+    spec: (() => { const s = clone(designExample); ((s.flows as any).main.steps[4].with as any).notes = "${fixups.output.done}"; return s; })(),
+    errors: err("REF_UNKNOWN_PATH", "flows.main.steps[4].with.notes"),
+  },
+  {
+    name: "unindexed fanout output as flow output",
+    spec: (() => {
+      const s = clone(designExample);
+      (s.flows as any).main.output = { from: "${fixups.output}", contract: "Fixup" };
+      ((s.flows as any).main.steps as any[]).splice(4, 1); // drop wrap so fixups is the sink
+      delete (s.flows as any).summarize;
+      return s;
+    })(),
+    errors: err("REF_UNKNOWN_PATH", "flows.main.output.from"),
+  },
+  {
+    name: "unreachable non-entry flow rejects gate",
+    spec: (() => {
+      const s = clone(simple);
+      (s.flows as any).orphan = { input: { prompt: "string" }, output: { from: "${done.output}", contract: "Result" }, steps: [{ id: "watch", gate: { on_approve: null, on_revise: null, on_kill: null } }, { id: "done", do: "done", out: "Result" }] };
+      return s;
+    })(),
+    errors: err("SUBFLOW_BODY_RESTRICTED", "flows.orphan.steps[0].gate"),
   },
   {
     name: "empty budget", spec: (() => { const s = clone(simple); (s.flows as any).main.budget = {}; return s; })(),

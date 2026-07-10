@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### ts — feat(engine): STRAT-TS-PORT Phase P4 — gates, engine-owned fanout, subflow execution, frozen observability contracts
+
+Gates: resolve approve/revise/kill with runtime decision validation; revise
+targets a validated ancestor, resets its descendants over the SAME forward
+edges the validator walks (after/data refs + on_fail + gate routes), flow
+`max_rounds` + per-gate `max_rounds` enforced — gate revision counters
+survive upstream resets. Engine-owned fanout: concurrency-capped workers
+dispatch items through the P3 connectors WITHOUT holding the run lock
+(pinned-run registry; an independent stepDone proceeds during a slow batch),
+`require` all/any/N judged BEFORE any worktree patch merges, per-item
+lifecycle + ledger events on the one persisted spine (dispatch persisted
+pre-connector — restart-proof), worktree isolation with staged-changes-
+inclusive patches (git diff HEAD, 64MiB buffer) merged sequentially with
+per-item durable progress, restart skips terminal items, revise invalidates
+a live fanout via epoch + staleness checks. `run:` subflow execution
+(pinned to P4 — third phase-orphan after ensure/iterate): namespaced
+`<step>/<child>` ready steps, scoped rendering/eval, subflow output contract
+→ parent output, on_fail inside the child scope, resume mid-subflow; v1
+body restriction (non-entry flows are task-steps-only) enforced
+path-precisely for ALL non-entry flows. `iterate {max, until}` through the
+ensure evaluator seam with on_fail exhaustion. Frozen contracts:
+`ts/contracts/events.json` (events: 1) + `mcp-surface.json` (surface: 1)
+are PAYLOAD contracts (typed shapes, default-deny) validated by a contract
+test that exercises every event kind and engine status against real runs.
+Validator: fanout outputs are array-typed (`${fan.output[0].field}`, bare
+field paths rejected). Fixed latent P1 bugs surfaced along the way: engine
+dependency edges now include fanout over/stage and subflow `with` templates;
+fanout over-resolution failures no longer retry forever. Production default
+connector: contract-instructed JSON dispatch, previous-failure feedback,
+workspace-write for worktree codex stages. terra/high build + sol/high
+review, 11 rounds (23 findings fixed, 1 rejected with rationale) →
+REVIEW CLEAN. Suite: 334 passing.
+
 ### ts — feat(connectors): STRAT-TS-PORT Phase P3 — connectors + durable background runs
 
 `ts/src/connectors/`: claude connector over `@anthropic-ai/claude-agent-sdk`
