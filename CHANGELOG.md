@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### ts — feat(judge): codex-OAuth judge backend + STRAT-TS-PORT live acceptance PASSED
+
+Feature-level acceptance closed: the live golden flow (spec → codex task →
+judged ensure → gate → engine-owned fanout → audit) PASSED on the real
+binaries — `ts/acceptance/{golden-flow.v1.yaml,run_golden_flow.mjs,
+golden-flow-result.json}` drive the shipped stdio MCP server over a real SDK
+client with real codex dispatches and enforce the outcomes (judged
+holds=true on gather, gate approve→fan, exactly-once fanout success per
+item, keyless server env). The run surfaced an environment-parity gap: the
+default judged-ensure runner (@ai-sdk/openai) requires OPENAI_API_KEY, but
+this host (like the Python judge kernel, which routes judged predicates
+through stratum_agent_run) runs codex on ChatGPT OAuth. New
+`src/judge/codex_judged.ts`: judged predicates via the P3 codex connector
+(read-only, same stakes routing spark/terra/sol, schema-validated verdict,
+fail-closed everywhere, paid dispatch charged even on unparseable verdicts,
+conservative output-rate pricing when the connector reports no usd,
+policy/data prompt fencing with < escaping making the fence markers
+unrepresentable in payload data). `judgeBackend()` in src/mcp/server.ts:
+explicit STRATUM_JUDGE_BACKEND=openai|codex (unknown values throw), default
+keyed to OPENAI_API_KEY presence. 6 sol/high review rounds (5 findings
+fixed; 1 rejected — nonzero-exit-with-text tolerance is an exact Python
+parity port, codex.py:532/:684) → REVIEW CLEAN. Suite: 368 passing.
+
 ### ts — feat(cli,migrate): STRAT-TS-PORT Phase P6 — compat linter + reference parity flows
 
 `ts/src/migrate/check.ts` + `stratum migrate --check <old.yaml>`: report-only

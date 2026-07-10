@@ -447,6 +447,23 @@ feature's gate.
 - [ ] Live golden flow: spec → codex task → judged ensure → gate → fanout → audit, on the real binaries
 - [ ] Python engine untouched and green throughout (`pytest` suite stays 1517+)
 
+**Acceptance record (2026-07-10): ALL FOUR SATISFIED.** Specimen CI-enforced
+(250 tokens, exactly 5 task steps, P6 @ a1364da). Suite 368 passing +
+typecheck. Live golden flow PASSED on the real binaries (`ts/acceptance/`,
+run recorded in golden-flow-result.json): spec validated by the shipped CLI,
+client-driven codex task (spark, real dispatch), judged ensure via the
+codex-OAuth judge backend (gpt-5.6-terra/high, holds=true, usage charged;
+OPENAI_API_KEY deleted from the server env to prove keylessness), gate
+approve → fan, engine-owned fanout (2 real codex dispatches, exactly-once
+success per item asserted), audit event trail complete. Python suite 1517
+passed, 2 skipped, untouched. The run surfaced and closed an
+environment-parity gap: the default ai-sdk judge required a platform key
+this host never has — judged ensures now route through the codex connector
+when keyless (STRATUM_JUDGE_BACKEND, src/judge/codex_judged.ts), matching
+the Python judge kernel's stratum_agent_run path. 6 sol/high review rounds
+on that delta (5 findings fixed, 1 rejected on Python-parity evidence) →
+REVIEW CLEAN.
+
 ## Review trail
 
 Four adversarial design-review rounds (codex `gpt-5.6-sol/high`,
