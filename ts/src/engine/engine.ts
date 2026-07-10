@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { extractReferences, type ExtractedReference, type PathSegment, type Reference } from "../ir/refs.js";
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
@@ -9,12 +10,34 @@ import { type AttemptRecord, type AuditEvent, type FailureContext, type Persiste
 export interface EvaluatorContext {
   input: unknown;
   steps: Readonly<Record<string, unknown>>;
+  /** Present during ensure evaluation: the step output under test. */
+  result?: unknown;
+  /** Workspace root for file predicates (file_exists / file_contains jail). */
+  workspaceRoot?: string;
 }
 
 /** P1 owns only the seam. P2 supplies the expression grammar and sandbox. */
 export interface Evaluator {
   evaluate(expression: string, context: EvaluatorContext): unknown;
+  /** Optional richer surface: structured pass/fail with a reason (used for ensure). */
+  evaluatePredicate?(expression: string, context: EvaluatorContext): { holds: boolean; reason: string };
 }
+
+/** Result of a judged predicate, as produced by the injected judge runner (P2's evaluateJudged). */
+export interface JudgedOutcome {
+  holds: boolean;
+  reason: string;
+  stakes?: string;
+  model?: string;
+  usage?: Budget;
+}
+
+export type JudgeRunner = (
+  predicate: { statement: string; stakes?: "cheap" | "default" | "paranoid" },
+  context: { result: unknown; input: unknown },
+) => Promise<JudgedOutcome>;
+
+type EnsureOutcome = undefined | { kind: "fail"; reason: string } | { kind: "flow_budget" };
 
 export interface StepResult {
   output?: unknown;
@@ -55,6 +78,13 @@ export interface AuditTrail {
 export interface StratumEngineOptions {
   stateRoot?: string;
   evaluator: Evaluator;
+  /** Runner for `judged:` ensure predicates. Absent = judged predicates fail closed. */
+  judge?: JudgeRunner;
+}
+
+export interface PlanOptions {
+  /** Root directory that file predicates (file_exists / file_contains) are jailed to. */
+  workspaceRoot?: string;
 }
 
 export class SpecValidationError extends Error {
@@ -66,6 +96,7 @@ export class SpecValidationError extends Error {
 export class StratumEngine {
   private readonly store: StateStore;
   private readonly evaluator: Evaluator;
+  private readonly judge?: JudgeRunner;
   // Serializes load-modify-save per run: plan may hand out several ready steps, so
   // stepDone/resume can race in-process. The state root is owned by one engine process in v1.
   private readonly runLocks = new Map<string, Promise<unknown>>();
@@ -73,6 +104,7 @@ export class StratumEngine {
   constructor(options: StratumEngineOptions) {
     this.store = new StateStore(options.stateRoot);
     this.evaluator = options.evaluator;
+    if (options.judge) this.judge = options.judge;
   }
 
   private withRunLock<T>(runId: string, action: () => Promise<T>): Promise<T> {
@@ -86,7 +118,7 @@ export class StratumEngine {
     return result;
   }
 
-  async plan(specInput: unknown, input: unknown): Promise<EngineResponse> {
+  async plan(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<EngineResponse> {
     const validation = validateSpec(specInput);
     if (!validation.ok) throw new SpecValidationError(validation.errors);
     const flowName = validation.value.flows.entry;
@@ -97,6 +129,9 @@ export class StratumEngine {
     const run: PersistedRun = {
       id: randomUUID(), spec: validation.value, input, flowName, status: "running", flowSpent: {}, steps,
       events: [{ at: now(), type: "planned" }],
+      // Canonicalize at plan time: a relative root must never re-resolve against a
+      // different process cwd after restart.
+      ...(options.workspaceRoot !== undefined ? { workspaceRoot: resolve(options.workspaceRoot) } : {}),
     };
     await this.persist(run);
     return this.advance(run, validation.value, validation.contracts);
@@ -141,6 +176,17 @@ export class StratumEngine {
     if (result.failure !== undefined) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, result.failure, usage);
     const contractError = this.contractError(step, result.output, validated.contracts);
     if (contractError) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, contractError, usage, result.output);
+
+    const ensureOutcome = await this.runEnsures(run, step, state, result.output);
+    if (ensureOutcome?.kind === "flow_budget") {
+      const failure = { attempt, reason: "flow budget exhausted (judged predicate)" };
+      state.attempts.push({ attempt, at: now(), failure, ...(hasBudget(usage) ? { usage } : {}) });
+      state.status = "failed";
+      state.failure = failure;
+      this.event(run, "result", step.id, { attempt, failure });
+      return this.terminalBudget(run, failure);
+    }
+    if (ensureOutcome) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, ensureOutcome.reason, usage, result.output);
 
     state.attempts.push({ attempt, at: now(), result: result.output, ...(hasBudget(usage) ? { usage } : {}) });
     state.output = result.output;
@@ -217,6 +263,13 @@ export class StratumEngine {
           }
           const error = this.contractError(step, output, contracts);
           if (error) { await this.terminalFailure(run, { attempt: 0, reason: error }); break; }
+          // Set steps are pure: an ensure failure is deterministic, so it terminalizes.
+          const setEnsure = await this.runEnsures(run, step, state, output);
+          if (setEnsure?.kind === "flow_budget") {
+            await this.terminalBudget(run, { attempt: 0, reason: "flow budget exhausted (judged predicate)" });
+            break;
+          }
+          if (setEnsure) { await this.terminalFailure(run, { attempt: 0, reason: setEnsure.reason }); break; }
           state.status = "succeeded";
           state.output = output;
           state.attempts.push({ attempt: 1, at: now(), result: output });
@@ -293,6 +346,103 @@ export class StratumEngine {
       return this.advance(run, spec, contracts);
     }
     return this.terminalFailure(run, failure);
+  }
+
+  /** Evaluates a step's ensure list in order; the first failing predicate wins. */
+  private async runEnsures(run: PersistedRun, step: Step, state: StepState, output: unknown): Promise<EnsureOutcome> {
+    for (const predicate of step.ensure ?? []) {
+      if ("judged" in predicate) {
+        const { statement, stakes } = predicate.judged;
+        // The runner is an injected seam — validate its outcome; a malformed shape
+        // (non-boolean holds, invalid usage) must fail the attempt, never pass it.
+        let outcome: JudgedOutcome | undefined;
+        let failureReason: string | undefined;
+        if (!this.judge) {
+          failureReason = "judged predicate requires a configured judge runner";
+        } else {
+          try {
+            const raw = (await this.judge(predicate.judged, { result: output, input: run.input })) as
+              | { holds?: unknown; reason?: unknown; stakes?: unknown; model?: unknown; usage?: unknown }
+              | null
+              | undefined;
+            // Snapshot every runner-owned field exactly once, inside the guard —
+            // hostile or unstable getters must not throw past this block or
+            // return different values on a second read.
+            const holds = raw?.holds;
+            const reason = raw?.reason;
+            const stakesValue = raw?.stakes;
+            const modelValue = raw?.model;
+            const usageRaw = raw?.usage; // single read — unstable getters must not diverge across reads
+            const usageValue = typeof usageRaw === "object" && usageRaw !== null ? { ...(usageRaw as Record<string, unknown>) } : usageRaw;
+            if (typeof holds !== "boolean" || typeof reason !== "string" || (usageValue !== undefined && !validUsage(usageValue))) {
+              failureReason = "judge runner returned a malformed outcome";
+            } else {
+              outcome = {
+                holds,
+                reason,
+                ...(typeof stakesValue === "string" ? { stakes: stakesValue } : {}),
+                ...(typeof modelValue === "string" ? { model: modelValue } : {}),
+                ...(usageValue !== undefined ? { usage: usageValue } : {}),
+              };
+            }
+          } catch (error) {
+            failureReason = `judged predicate failed: ${message(error)}`;
+          }
+        }
+        const usage = outcome?.usage ?? {};
+        const budgetFailure = hasBudget(usage) ? this.debit(run, step, state, usage, "settle") : undefined;
+        // Fixed audit payload — every judged evaluation events, failures included.
+        this.event(run, "judged", step.id, {
+          statement,
+          holds: outcome?.holds ?? false,
+          reason: outcome?.reason ?? failureReason ?? "unknown judged failure",
+          // outcome fields are snapshot-normalized above — plain values, no getters.
+          stakes: outcome?.stakes ?? stakes,
+          model: outcome?.model ?? "none",
+          usage: { tokens: usage.tokens ?? 0, usd: usage.usd ?? 0 },
+        });
+        if (budgetFailure === "flow") return { kind: "flow_budget" };
+        if (budgetFailure === "task") return { kind: "fail", reason: "task budget exhausted (judged predicate)" };
+        if (failureReason !== undefined) return { kind: "fail", reason: failureReason };
+        if (!outcome!.holds) {
+          return { kind: "fail", reason: `ensure judged ${JSON.stringify(statement)} failed: ${outcome!.reason}` };
+        }
+        continue;
+      }
+      const expression = "expr" in predicate
+        ? predicate.expr
+        : "file_exists" in predicate
+          ? `file_exists(${JSON.stringify(predicate.file_exists)})`
+          : `file_contains(${JSON.stringify(predicate.file_contains.path)}, ${JSON.stringify(predicate.file_contains.text)})`;
+      const verdict = this.ensurePredicate(expression, run, output);
+      if (!verdict.holds) return { kind: "fail", reason: `ensure ${JSON.stringify(expression)} failed: ${verdict.reason}` };
+    }
+    return undefined;
+  }
+
+  private ensurePredicate(expression: string, run: PersistedRun, output: unknown): { holds: boolean; reason: string } {
+    const context: EvaluatorContext = {
+      ...this.context(run),
+      result: output,
+      ...(run.workspaceRoot !== undefined ? { workspaceRoot: run.workspaceRoot } : {}),
+    };
+    // The evaluator is an injected seam: a throw or malformed verdict fails the
+    // predicate with a structured reason — it never escapes stepDone unrecorded.
+    try {
+      if (this.evaluator.evaluatePredicate) {
+        const verdict = this.evaluator.evaluatePredicate(expression, context) as { holds?: unknown; reason?: unknown } | null | undefined;
+        if (typeof verdict?.holds !== "boolean" || typeof verdict.reason !== "string") {
+          return { holds: false, reason: "evaluator returned a malformed predicate verdict" };
+        }
+        return { holds: verdict.holds, reason: verdict.reason };
+      }
+      const value = this.evaluator.evaluate(expression, context);
+      return value === true
+        ? { holds: true, reason: "predicate evaluated to true" }
+        : { holds: false, reason: `predicate evaluated to ${JSON.stringify(value) ?? "undefined"}` };
+    } catch (error) {
+      return { holds: false, reason: message(error) };
+    }
   }
 
   /**
@@ -482,7 +632,16 @@ function stringLeaves(step: Step): string[] {
 
 function terminal(status: StepState["status"]): boolean { return status === "succeeded" || status === "failed" || status === "skipped"; }
 function now(): string { return new Date().toISOString(); }
-function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+// Total for arbitrary thrown values: Object.create(null) and hostile getters must
+// not turn an error-formatting call into a second unhandled throw.
+function message(error: unknown): string {
+  try {
+    const text = error instanceof Error ? error.message : String(error);
+    return typeof text === "string" ? text : String(text);
+  } catch {
+    return "unstringifiable thrown value";
+  }
+}
 function hasBudget(usage: Budget): boolean { return Object.keys(usage).length > 0; }
 function requiredFailure(run: PersistedRun): FailureContext { return run.failure ?? { attempt: 0, reason: "run failed without context" }; }
 function interpolate(value: unknown): string {

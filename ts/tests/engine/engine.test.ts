@@ -1,14 +1,16 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine, type Evaluator } from "../../src/engine/engine.js";
+import { createEvaluator } from "../../src/eval/expr.js";
 
 const evaluator: Evaluator = {
   evaluate(expression, context) {
     if (expression === "false") return false;
     if (expression === "true") return true;
     if (expression === "upper(input.name)") return String((context.input as { name: string }).name).toUpperCase();
+    if (expression === "result.ok == true") return (context.result as { ok?: unknown } | undefined)?.ok === true;
     throw new Error(`unexpected fake expression: ${expression}`);
   },
 };
@@ -16,10 +18,10 @@ const evaluator: Evaluator = {
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-async function createEngine() {
+async function createEngine(extra: Partial<ConstructorParameters<typeof StratumEngine>[0]> = {}) {
   const root = await mkdtemp(join(tmpdir(), "stratum-p1-"));
   roots.push(root);
-  return { root, engine: new StratumEngine({ stateRoot: root, evaluator }) };
+  return { root, engine: new StratumEngine({ stateRoot: root, evaluator, ...extra }) };
 }
 
 const flow = (steps: unknown[], options: { budget?: Record<string, number>; output?: string; contract?: Record<string, string> } = {}) => ({
@@ -290,6 +292,198 @@ describe("P1 table-driven error harness", () => {
     const audit = await engine.audit(planned.runId);
     expect(audit.flowSpent.tokens).toBe(5);
     expect(audit.steps.finish?.attempts[0]).toMatchObject({ usage: { tokens: 5 } });
+  });
+
+  it("retries an ensure expr failure with the structured reason, then succeeds", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 2, ensure: [{ expr: "result.ok == true" }] }],
+      { contract: { value: "string", ok: "boolean" } },
+    ), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const retry = await engine.stepDone(planned.runId, "finish", { output: { value: "v", ok: false } });
+    expect(retry).toMatchObject({ status: "ready", ready: [{ attempt: 2, previousFailure: { reason: expect.stringContaining("ensure") } }] });
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v", ok: true } });
+    expect(done.status).toBe("completed");
+  });
+
+  it("runs judged ensures through the injected runner, settles usage, and events the verdict", async () => {
+    const calls: unknown[] = [];
+    const { engine } = await createEngine({
+      judge: async (predicate, context) => {
+        calls.push({ predicate, context });
+        return { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.3-codex-spark/low", usage: { tokens: 100, usd: 0.01 } };
+      },
+    });
+    const planned = await engine.plan(flow([
+      { id: "finish", do: "work", out: "Result", ensure: [{ judged: { statement: "output is real", stakes: "cheap" } }] },
+    ]), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done.status).toBe("completed");
+    expect(calls).toEqual([{ predicate: { statement: "output is real", stakes: "cheap" }, context: { result: { value: "v" }, input: { name: "x" } } }]);
+    const audit = await engine.audit(planned.runId);
+    expect(audit.flowSpent).toMatchObject({ tokens: 100, usd: 0.01 });
+    expect(audit.events.find((event) => event.type === "judged")).toMatchObject({
+      stepId: "finish",
+      detail: { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.3-codex-spark/low", usage: { tokens: 100, usd: 0.01 } },
+    });
+  });
+
+  it("fails the attempt when a judged ensure does not hold", async () => {
+    const { engine } = await createEngine({
+      judge: async () => ({ holds: false, reason: "the output is fabricated", usage: { tokens: 10, usd: 0.001 } }),
+    });
+    const planned = await engine.plan(flow([
+      { id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ judged: { statement: "output is real", stakes: "default" } }] },
+    ]), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("fabricated") } });
+  });
+
+  it("fails closed when a judged ensure has no configured runner", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow([
+      { id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ judged: { statement: "s", stakes: "cheap" } }] },
+    ]), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("judge runner") } });
+  });
+
+  it("terminalizes the flow when judged usage exhausts the flow ledger", async () => {
+    const { engine } = await createEngine({
+      judge: async () => ({ holds: true, reason: "ok", usage: { usd: 0.01 } }),
+    });
+    const planned = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ judged: { statement: "s", stakes: "cheap" } }] }],
+      { budget: { usd: 0.005 } },
+    ), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done.status).toBe("budget_exhausted");
+    expect((await engine.audit(planned.runId)).flowSpent.usd).toBe(0.01);
+  });
+
+  it("fails an ensure structurally when the evaluator throws or returns a malformed verdict", async () => {
+    const throwing = await createEngine({
+      evaluator: { evaluate: () => true, evaluatePredicate: () => { throw new Error("evaluator exploded"); } },
+    });
+    const planned = await throwing.engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ expr: "x" }] }],
+    ), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await throwing.engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("evaluator exploded") } });
+
+    const malformed = await createEngine({
+      evaluator: { evaluate: () => true, evaluatePredicate: () => ({ holds: 1, reason: 2 }) as never },
+    });
+    const planned2 = await malformed.engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ expr: "x" }] }],
+    ), { name: "x" });
+    if (planned2.status !== "ready") throw new Error("expected ready");
+    const done2 = await malformed.engine.stepDone(planned2.runId, "finish", { output: { value: "v" } });
+    expect(done2).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("malformed predicate verdict") } });
+  });
+
+  it("survives unstringifiable thrown values and normalizes non-string event fields", async () => {
+    const hostile = await createEngine({
+      evaluator: { evaluate: () => true, evaluatePredicate: () => { throw Object.create(null); } },
+    });
+    const planned = await hostile.engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ expr: "x" }] }],
+    ), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await hostile.engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("unstringifiable") } });
+
+    const throwingGetter = await createEngine({
+      judge: async () => {
+        const raw = { holds: true, reason: "ok" };
+        Object.defineProperty(raw, "model", { get() { throw new Error("hostile getter"); }, enumerable: true });
+        return raw as never;
+      },
+    });
+    const planned3 = await throwingGetter.engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ judged: { statement: "s", stakes: "cheap" } }] }],
+    ), { name: "x" });
+    if (planned3.status !== "ready") throw new Error("expected ready");
+    const done3 = await throwingGetter.engine.stepDone(planned3.runId, "finish", { output: { value: "v" } });
+    expect(done3).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("hostile getter") } });
+
+    const weirdModel = await createEngine({
+      judge: async () => ({ holds: true, reason: "ok", model: 42 }) as never,
+    });
+    const planned2 = await weirdModel.engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", ensure: [{ judged: { statement: "s", stakes: "cheap" } }] }],
+    ), { name: "x" });
+    if (planned2.status !== "ready") throw new Error("expected ready");
+    await weirdModel.engine.stepDone(planned2.runId, "finish", { output: { value: "v" } });
+    const judgedEvent = (await weirdModel.engine.audit(planned2.runId)).events.find((event) => event.type === "judged");
+    expect(judgedEvent).toMatchObject({ detail: { model: "none", stakes: "cheap" } });
+  });
+
+  it("fails a judged ensure on a malformed runner outcome and always emits the judged event", async () => {
+    const { engine } = await createEngine({ judge: async () => ({ holds: "yes", reason: "ok" }) as never });
+    const planned = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ judged: { statement: "s", stakes: "cheap" } }] }],
+    ), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("malformed outcome") } });
+    const judgedEvent = (await engine.audit(planned.runId)).events.find((event) => event.type === "judged");
+    expect(judgedEvent).toMatchObject({
+      stepId: "finish",
+      detail: { statement: "s", holds: false, stakes: "cheap", model: "none", usage: { tokens: 0, usd: 0 } },
+    });
+  });
+
+  it("emits a judged event even when no runner is configured", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ judged: { statement: "s", stakes: "default" } }] }],
+    ), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    const judgedEvent = (await engine.audit(planned.runId)).events.find((event) => event.type === "judged");
+    expect(judgedEvent).toMatchObject({ detail: { holds: false, reason: expect.stringContaining("judge runner"), model: "none" } });
+  });
+
+  it("canonicalizes a relative workspace root at plan time", async () => {
+    const { root, engine } = await createEngine();
+    const planned = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result" }],
+    ), { name: "x" }, { workspaceRoot: "relative/workspace" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const persisted = JSON.parse(await readFile(join(root, `${planned.runId}.json`), "utf8")) as { workspaceRoot?: string };
+    expect(persisted.workspaceRoot).toBeDefined();
+    expect(isAbsolute(persisted.workspaceRoot!)).toBe(true);
+  });
+
+  it("jails real file predicates to the plan-time workspace root", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "stratum-ws-"));
+    roots.push(workspace);
+    await writeFile(join(workspace, "proof.txt"), "verified evidence", "utf8");
+    const { engine } = await createEngine({ evaluator: createEvaluator() });
+    const spec = flow([
+      { id: "finish", do: "work", out: "Result", attempts: 1, ensure: [
+        { file_exists: "proof.txt" },
+        { file_contains: { path: "proof.txt", text: "evidence" } },
+      ] },
+    ]);
+    const planned = await engine.plan(spec, { name: "x" }, { workspaceRoot: workspace });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const done = await engine.stepDone(planned.runId, "finish", { output: { value: "v" } });
+    expect(done.status).toBe("completed");
+
+    const escaping = await engine.plan(flow(
+      [{ id: "finish", do: "work", out: "Result", attempts: 1, ensure: [{ file_exists: "../outside.txt" }] }],
+    ), { name: "x" }, { workspaceRoot: workspace });
+    if (escaping.status !== "ready") throw new Error("expected ready");
+    const failed = await engine.stepDone(escaping.runId, "finish", { output: { value: "v" } });
+    expect(failed).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("ensure") } });
   });
 
   it("preserves a full-value flow output reference type and rejects the bound output contract", async () => {

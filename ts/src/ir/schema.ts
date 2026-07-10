@@ -14,7 +14,7 @@ export const BudgetSchema = z.object({
 export const EnsurePredicateSchema = z.union([
   z.object({ expr: z.string() }).strict(),
   z.object({ file_exists: z.string() }).strict(),
-  z.object({ file_contains: z.string() }).strict(),
+  z.object({ file_contains: z.object({ path: z.string(), text: z.string() }).strict() }).strict(),
   z.object({ judged: z.object({ statement: z.string(), stakes: z.enum(["cheap", "default", "paranoid"]) }).strict() }).strict(),
 ]);
 

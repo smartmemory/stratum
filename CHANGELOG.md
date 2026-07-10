@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### ts — feat(eval,judge,engine): STRAT-TS-PORT Phase P2 — ensure evaluator + judged tier, wired into the engine
+
+`ts/src/eval/`: recursive-descent evaluator over JSON values implementing the
+locked grammar exactly (result/input/item/prev, member/index own-property
+access, whitelisted functions), prototype access impossible by construction,
+bounded parse depth/nodes, and a group-transparent regex shape filter
+rejecting nested AND adjacent quantified atoms (a*a*, (x)*(y)*, (a*)(a*)).
+File helpers jailed to the workspace root: lexical + realpath containment,
+O_NOFOLLOW fd reads, bounded read loop (16MB default), ancestor-TOCTOU
+documented as accepted residual. `ts/src/judge/`: judged predicates via AI
+SDK generateObject with stakes routing (cheap=spark/low, default=terra/high,
+paranoid=sol/high), fail-closed on malformed stakes, conservative pricing
+(unattributed tokens at the output rate — never $0). Engine now ENFORCES
+`ensure` (the round-2 review catch): expr/file predicates through a
+validated evaluator seam with structured retry reasons, judged predicates
+through an injected JudgeRunner seam (fail closed when absent) with usage
+settled into both ledgers and a fixed-payload "judged" audit event on every
+path; plan() gains a canonicalized workspaceRoot; all injected-seam outputs
+snapshot-validated against hostile getters/throws. IR `file_contains`
+shorthand fixed to `{path, text}`. deps: ai + @ai-sdk/openai/anthropic.
+Codex sol/high build + 7 review rounds (5 build must-fixes, 4 wiring, 3
+hardening) → REVIEW CLEAN. Tests 67 → 258 (+1 env-gated live judged test).
+
 ### ts — fix(engine): STRAT-TS-PORT ledger audit — no spend escapes, ledger on every response
 
 Owner-requested audit of the token/usage accounting: (1) a usage report
