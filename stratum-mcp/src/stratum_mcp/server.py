@@ -73,6 +73,16 @@ import uuid as _uuid
 _AGENT_RUN_TASKS: "dict[str, asyncio.Task[Any]]" = {}
 
 _AGENT_BG_TEXT_CAP = 20_000
+_CMD_WATCH_EVENT_TEXT_CAP = 2_000
+_CMD_WATCH_EVENT_KINDS = (
+    "started",
+    "assistant",
+    "reasoning",
+    "tool",
+    "usage",
+    "error",
+)
+_CMD_WATCH_DEFAULT_EVENT_KINDS = {"assistant", "tool", "error"}
 
 mcp = FastMCP(
     "stratum-mcp",
@@ -440,8 +450,8 @@ async def _start_agent_run_background(
     "rejected for claude, when STRATUM_CODEX_ALLOW_WRITE is off, or with read_jail. "
     "background (bool, default False): codex-only durable background mode; returns "
     "{status: 'bg_started', run_id, stream_path, pid, watch_cmd} immediately. "
-    "Bridge recipe: launch background=True, then run `stratum-mcp watch <run_id>` "
-    "via Bash run_in_background to stream output without blocking the MCP call. "
+    "Monitor recipe: Bash run_in_background watch = task-list + completion wake; "
+    "Monitor(command: \"stratum-mcp watch <run_id> --events\") = live per-event inline stream. "
     "Returns {text: str, result?: dict, parseError?: str} when background is false."
 ))
 async def stratum_agent_run(
@@ -661,7 +671,8 @@ async def stratum_agent_run(
     "Input: run_id (str). Reads ~/.stratum/agent_runs/<run_id>/ only, so it works "
     "after an MCP server restart. Returns running / complete / error / not_found; "
     "large text fields are tail-capped and the full durable stream remains on disk. "
-    "For live streaming, run `stratum-mcp watch <run_id>` via Bash run_in_background."
+    "Monitor recipe: Bash run_in_background watch = task-list + completion wake; "
+    "Monitor(command: \"stratum-mcp watch <run_id> --events\") = live per-event inline stream."
 ))
 async def stratum_agent_poll(run_id: str, ctx: Context) -> dict[str, Any]:
     run_dir, meta = _load_agent_run_meta(run_id)
@@ -5007,7 +5018,7 @@ def _cmd_help() -> None:
     print("  compile <dir>        Compile tasks/*.md files to .stratum.yaml")
     print("  migrate <file>       Upgrade a .stratum.yaml spec to the latest IR version")
     print("  doctor               Diagnose install/PATH/Python-version problems")
-    print("  watch <run_id> [--json]  Tail a bg agent run for Bash run_in_background; exits with agent rc")
+    print("  watch <run_id> [--json | --events [--kinds=k1,k2,...]]  Tail a bg agent run; exits with agent rc")
     print()
     print("Run with no arguments to start the stdio MCP server (for Claude Code).")
 
@@ -5344,8 +5355,86 @@ def _guard_error_dict(exc: "Exception") -> dict[str, Any]:
     return {"status": "error", "error_type": type(exc).__name__, "message": str(exc)}
 
 
-def _cmd_watch_print_event(rec: dict[str, Any], meta: dict[str, Any], *, raw_json: bool) -> None:
-    if raw_json:
+def _cmd_watch_print_event_line(
+    ev: Any,
+    meta: dict[str, Any],
+    *,
+    kinds: set[str],
+) -> None:
+    """Emit one curated Monitor event line for a mapped ConnectorEvent."""
+    stream_path = str(meta.get("stream_path") or "")
+    event: Optional[str] = None
+    payload: dict[str, Any]
+    if ev.kind == "agent_started":
+        event = "started"
+        payload = {
+            "model": ev.metadata.get("model") or "",
+            "prompt_chars": int(ev.metadata.get("prompt_chars") or 0),
+        }
+    elif ev.kind == "agent_relay" and ev.metadata.get("role") == "assistant":
+        event = "assistant"
+        payload = {
+            "text": _cap_text(
+                str(ev.metadata.get("text") or ""),
+                stream_path=stream_path,
+                cap=_CMD_WATCH_EVENT_TEXT_CAP,
+            ),
+        }
+    elif ev.kind == "agent_relay" and ev.metadata.get("role") == "system":
+        event = "reasoning"
+        payload = {
+            "text": _cap_text(
+                str(ev.metadata.get("text") or ""),
+                stream_path=stream_path,
+                cap=_CMD_WATCH_EVENT_TEXT_CAP,
+            ),
+        }
+    elif ev.kind == "tool_use_summary":
+        event = "tool"
+        payload = {
+            "tool": ev.metadata.get("tool") or "tool",
+            "summary": _cap_text(
+                str(ev.metadata.get("summary") or ""),
+                stream_path=stream_path,
+                cap=_CMD_WATCH_EVENT_TEXT_CAP,
+            ),
+            "ok": bool(ev.metadata.get("ok")),
+            "duration_ms": int(ev.metadata.get("duration_ms") or 0),
+        }
+    elif ev.kind == "step_usage":
+        event = "usage"
+        payload = {
+            "input_tokens": int(ev.metadata.get("input_tokens") or 0),
+            "output_tokens": int(ev.metadata.get("output_tokens") or 0),
+            "cache_read_input_tokens": int(
+                ev.metadata.get("cache_read_input_tokens") or 0
+            ),
+        }
+    elif ev.kind == _CODEX_ERROR_KIND:
+        event = "error"
+        payload = {
+            "message": _cap_text(
+                str(ev.metadata.get("message") or "codex error"),
+                stream_path=stream_path,
+                cap=_CMD_WATCH_EVENT_TEXT_CAP,
+            ),
+        }
+    else:
+        return
+
+    if event not in kinds:
+        return
+    print(json.dumps({"event": event, **payload}, separators=(",", ":")), flush=True)
+
+
+def _cmd_watch_print_event(
+    rec: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    mode: str,
+    kinds: set[str],
+) -> None:
+    if mode == "json":
         print(json.dumps(rec, separators=(",", ":")), flush=True)
         return
     for ev in _emit_for_codex_event(
@@ -5353,6 +5442,9 @@ def _cmd_watch_print_event(rec: dict[str, Any], meta: dict[str, Any], *, raw_jso
         model=str(meta.get("model_id") or ""),
         prompt="x" * int(meta.get("prompt_chars") or 0),
     ):
+        if mode == "events":
+            _cmd_watch_print_event_line(ev, meta, kinds=kinds)
+            continue
         if ev.kind == "agent_relay" and ev.metadata.get("role") == "assistant":
             text = str(ev.metadata.get("text") or "")
             if text:
@@ -5364,17 +5456,54 @@ def _cmd_watch_print_event(rec: dict[str, Any], meta: dict[str, Any], *, raw_jso
 
 
 def _cmd_watch(argv: list[str]) -> None:
-    raw_json = False
+    mode = "text"
+    kinds = set(_CMD_WATCH_DEFAULT_EVENT_KINDS)
     args = list(argv)
-    if "--json" in args:
-        raw_json = True
+    has_json = "--json" in args
+    has_events = "--events" in args
+    kinds_args = [arg for arg in args if arg.startswith("--kinds=")]
+    if has_json:
         args.remove("--json")
+    if has_events:
+        args.remove("--events")
+    for arg in kinds_args:
+        args.remove(arg)
+    usage = "Usage: stratum-mcp watch <run_id> [--json | --events [--kinds=k1,k2,...]]"
+    if has_json and has_events:
+        print(usage, file=sys.stderr)
+        sys.exit(2)
+    if len(kinds_args) > 1 or (kinds_args and not has_events):
+        print(usage, file=sys.stderr)
+        sys.exit(2)
+    if has_json:
+        mode = "json"
+    elif has_events:
+        mode = "events"
+    if kinds_args:
+        kinds = set(kinds_args[0].split("=", 1)[1].split(","))
+        unknown_kinds = kinds.difference(_CMD_WATCH_EVENT_KINDS)
+        if unknown_kinds:
+            print(
+                "stratum-mcp watch: unknown --kinds value "
+                f"{', '.join(sorted(unknown_kinds))}; valid kinds: "
+                f"{', '.join(_CMD_WATCH_EVENT_KINDS)}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     if len(args) != 1:
-        print("Usage: stratum-mcp watch <run_id> [--json]", file=sys.stderr)
+        print(usage, file=sys.stderr)
         sys.exit(2)
     run_id = args[0]
     run_dir, meta = _load_agent_run_meta(run_id)
     if run_dir is None or meta is None:
+        if mode == "events":
+            print(
+                json.dumps(
+                    {"event": "error", "message": f"unknown run_id {run_id}"},
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
         print(f"stratum-mcp watch: unknown run_id {run_id}", file=sys.stderr)
         sys.exit(2)
     stream_path = Path(str(meta.get("stream_path") or (run_dir / "stream.jsonl")))
@@ -5408,27 +5537,48 @@ def _cmd_watch(argv: list[str]) -> None:
                         rc = int(rec[T2F5_DONE_SENTINEL])
                     except (TypeError, ValueError):
                         rc = 1
-                    if raw_json:
+                    if mode == "json":
                         # --json stdout is pure JSONL: the sentinel record IS
                         # the terminal event; the human summary would break
                         # line-oriented consumers (Monitor).
                         print(json.dumps(rec, separators=(",", ":")), flush=True)
+                    elif mode == "events":
+                        print(
+                            json.dumps({"event": "done", "rc": rc}, separators=(",", ":")),
+                            flush=True,
+                        )
                     else:
                         print(f"run {run_id} finished rc={rc}", flush=True)
                     sys.exit(rc)
-                _cmd_watch_print_event(rec, meta, raw_json=raw_json)
+                _cmd_watch_print_event(rec, meta, mode=mode, kinds=kinds)
             continue
 
         now = time.monotonic()
         if now >= next_liveness_check:
             next_liveness_check = now + 5.0
             if not _bg_pid_alive(meta):
+                tail = _tail_text_file(stderr_path)
+                if mode == "events":
+                    print(
+                        json.dumps(
+                            {
+                                "event": "died",
+                                "reason": "child_died_without_sentinel",
+                                "stderr_tail": _cap_text(
+                                    tail,
+                                    stream_path=str(stderr_path),
+                                    cap=_CMD_WATCH_EVENT_TEXT_CAP,
+                                ),
+                            },
+                            separators=(",", ":"),
+                        ),
+                        flush=True,
+                    )
                 print(
                     f"run {run_id} died without completion sentinel",
                     file=sys.stderr,
                     flush=True,
                 )
-                tail = _tail_text_file(stderr_path)
                 if tail:
                     print(tail, file=sys.stderr, flush=True)
                 sys.exit(1)

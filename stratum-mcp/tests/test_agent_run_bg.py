@@ -329,6 +329,168 @@ def test_watch_json_stdout_is_pure_jsonl(capsys, tmp_path):
         json.loads(line)
 
 
+def test_watch_events_default_kinds_are_curated_jsonl(capsys, tmp_path):
+    run_id = "ab12cd34ef58"
+    _write_registry_run(
+        tmp_path,
+        run_id,
+        [
+            THREAD_STARTED,
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "first\nsecond"},
+            },
+            {
+                "type": "item.completed",
+                "item": {"type": "reasoning", "text": "hidden reasoning"},
+            },
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "echo curated",
+                    "exit_code": 0,
+                    "duration_ms": 12,
+                },
+            },
+            TURN_DONE,
+            {"type": "error", "message": "codex unhappy"},
+            {T2F5_DONE_SENTINEL: 0},
+        ],
+    )
+
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch([run_id, "--events"])
+
+    assert ei.value.code == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    events = [json.loads(line) for line in lines]
+    assert [event["event"] for event in events] == ["assistant", "tool", "error", "done"]
+    assert len(lines) == 4, "embedded assistant newlines must remain one JSONL line"
+    assert events[0] == {"event": "assistant", "text": "first\nsecond"}
+    assert events[1] == {
+        "event": "tool",
+        "tool": "bash",
+        "summary": "echo curated",
+        "ok": True,
+        "duration_ms": 12,
+    }
+    assert "input" not in events[1]
+    assert all(
+        line == json.dumps(event, separators=(",", ":"))
+        for line, event in zip(lines, events)
+    )
+
+
+def test_watch_events_kinds_narrows_non_terminal_events(capsys, tmp_path):
+    run_id = "ab12cd34ef59"
+    _write_registry_run(
+        tmp_path,
+        run_id,
+        [THREAD_STARTED, AGENT_MSG, TURN_DONE, {T2F5_DONE_SENTINEL: 0}],
+    )
+
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch([run_id, "--events", "--kinds=usage"])
+
+    assert ei.value.code == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert events == [
+        {
+            "event": "usage",
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "cache_read_input_tokens": 0,
+        },
+        {"event": "done", "rc": 0},
+    ]
+
+
+def test_watch_events_died_ignores_kinds_filter(capsys, tmp_path):
+    run_id = "ab12cd34ef60"
+    _write_registry_run(tmp_path, run_id, [AGENT_MSG], stderr="child stderr")
+
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch([run_id, "--events", "--kinds=usage"])
+
+    assert ei.value.code == 1
+    captured = capsys.readouterr()
+    assert [json.loads(line) for line in captured.out.splitlines() if line] == [
+        {
+            "event": "died",
+            "reason": "child_died_without_sentinel",
+            "stderr_tail": "child stderr",
+        }
+    ]
+    assert "died without completion sentinel" in captured.err
+
+
+def test_watch_events_done_preserves_nonzero_sentinel_rc(capsys, tmp_path):
+    run_id = "ab12cd34ef61"
+    _write_registry_run(tmp_path, run_id, [{T2F5_DONE_SENTINEL: 7}])
+
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch([run_id, "--events", "--kinds=usage"])
+
+    assert ei.value.code == 7
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines() if line] == [
+        {"event": "done", "rc": 7}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "stderr_fragment"),
+    [
+        (["ab12cd34ef62", "--events", "--json"], "Usage:"),
+        (["ab12cd34ef62", "--kinds=assistant"], "Usage:"),
+        (["ab12cd34ef62", "--events", "--kinds=bogus"], "valid kinds:"),
+    ],
+)
+def test_watch_events_rejects_conflicting_or_unknown_flags(capsys, argv, stderr_fragment):
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch(argv)
+
+    assert ei.value.code == 2
+    assert stderr_fragment in capsys.readouterr().err
+
+
+def test_watch_events_unknown_run_emits_error_event_before_exit(capsys):
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch(["ab12cd34ef63", "--events"])
+
+    assert ei.value.code == 2
+    captured = capsys.readouterr()
+    assert [json.loads(line) for line in captured.out.splitlines() if line] == [
+        {"event": "error", "message": "unknown run_id ab12cd34ef63"}
+    ]
+    assert "unknown run_id ab12cd34ef63" in captured.err
+
+
+def test_watch_events_caps_text_fields_at_2000_chars(capsys, tmp_path):
+    run_id = "ab12cd34ef64"
+    _write_registry_run(
+        tmp_path,
+        run_id,
+        [
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "a" * 3_000},
+            },
+            {T2F5_DONE_SENTINEL: 0},
+        ],
+    )
+
+    with pytest.raises(SystemExit) as ei:
+        _cmd_watch([run_id, "--events"])
+
+    assert ei.value.code == 0
+    assistant = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert assistant["event"] == "assistant"
+    assert len(assistant["text"]) == 2_000
+    assert assistant["text"].startswith("[truncated, full stream at ")
+    assert assistant["text"].endswith("a" * 100)
+
+
 @pytest.mark.asyncio
 async def test_background_false_keeps_sync_path(monkeypatch):
     class _FakeConnector:
