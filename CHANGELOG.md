@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### stratum-mcp — feat(agent): background agent runs + watch CLI (STRAT-AGENT-BG)
+
+`stratum_agent_run(background=True)` (codex-only in v1) spawns the agent as a
+detached T2-F5 durable child and returns immediately with
+`{status: "bg_started", run_id, stream_path, pid, watch_cmd}` instead of
+blocking the MCP call for the whole run. The run registry lives at
+`~/.stratum/agent_runs/<run_id>/` (JSONL stream + completion sentinel +
+meta.json), so everything below survives an MCP server restart.
+
+New surfaces: `stratum_agent_poll(run_id)` (read-only status/text/usage,
+tail-capped at 20k chars, restart-proof) and the `stratum-mcp watch <run_id>
+[--json]` CLI — a line-buffered tailer that exits with the agent's rc, built
+to bridge background runs into harness-native task tracking (launch the watch
+via Claude Code's Bash `run_in_background`; `--json` stdout is pure JSONL for
+Monitor consumers). `stratum_cancel_agent_run` now also cancels background
+runs: pid/start-time identity check + group-leader check, then SIGTERM to the
+process group.
+
+Fail-loud guards: `background=True` rejects non-codex types
+(STRAT-AGENT-BG-CLAUDE) and budgeted flows (STRAT-AGENT-BG-BUDGET). run_ids
+are validated 12-hex at the single registry chokepoint (no path traversal,
+no killpg on foreign metadata). Sync path (`background=False`) is unchanged.
+
+Also: `proc_identity.proc_start_time` on macOS now uses native
+`libproc.proc_pidinfo` instead of spawning `ps` (works under sandboxes that
+deny exec). The identity token format changed on macOS — durable reparent
+handles persisted BEFORE this upgrade will classify as `failed` (safe
+degrade: consumer re-runs) across the upgrade boundary, never mis-reparent.
+
+Adversarial review (codex, read-only): 3 findings (registry path traversal →
+killpg exposure; unbounded stream scan; `watch --json` purity) — all fixed,
+each with a regression test. 48 targeted tests; full suite 1508 passed.
+
 ### stratum — chore(codex): GPT-5.6 Sol/Terra models; default gpt-5.6-sol/high
 
 Adds OpenAI's GPT-5.6 family (released 2026-07-09) to the codex model
