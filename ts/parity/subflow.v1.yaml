@@ -1,0 +1,18 @@
+version: 1
+contracts:
+  Result: {value: string}
+flows:
+  entry: main
+  main:
+    input: {name: string}
+    output: {from: "${after.output}", contract: Result}
+    steps:
+      - {id: before, do: "before ${input.name}", out: Result, ensure: [{expr: "result.value != ''"}]}
+      - {id: wrap, after: [before], run: child, with: {name: "${input.name}"}}
+      - {id: after, after: [wrap], do: after, out: Result, ensure: [{expr: "result.value != ''"}]}
+  child:
+    input: {name: string}
+    output: {from: "${child_two.output}", contract: Result}
+    steps:
+      - {id: child_one, do: "child one ${input.name}", out: Result, ensure: [{expr: "result.value != ''"}]}
+      - {id: child_two, after: [child_one], do: child-two, out: Result, ensure: [{expr: "result.value != ''"}]}

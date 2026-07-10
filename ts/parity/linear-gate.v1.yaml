@@ -1,0 +1,16 @@
+version: 1
+contracts:
+  Result: {value: string}
+flows:
+  entry: main
+  main:
+    input: {name: string}
+    output: {from: "${publish.output}", contract: Result}
+    max_rounds: 1
+    steps:
+      - {id: prepare, do: "prepare ${input.name}", out: Result, ensure: [{expr: "result.value != ''"}]}
+      - {id: draft, after: [prepare], do: draft, out: Result, ensure: [{expr: "result.value != ''"}]}
+      - {id: check, after: [draft], do: check, out: Result, ensure: [{expr: "result.value != ''"}]}
+      - {id: review, after: [check], gate: {on_approve: refine, on_revise: prepare, on_kill: null}}
+      - {id: refine, after: [review], do: refine, out: Result, ensure: [{expr: "result.value != ''"}]}
+      - {id: publish, after: [refine], do: publish, out: Result, ensure: [{expr: "result.value != ''"}]}

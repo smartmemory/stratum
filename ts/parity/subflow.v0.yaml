@@ -1,0 +1,18 @@
+version: "0.2"
+contracts:
+  Result: {value: {type: string}}
+functions:
+  work: {mode: infer, intent: work, input: {}, output: Result, ensure: ["result.value != ''"]}
+flows:
+  child:
+    input: {name: {type: string}}
+    output: Result
+    steps:
+      - {id: child_one, function: work, inputs: {}}
+      - {id: child_two, function: work, inputs: {}, depends_on: [child_one]}
+  main:
+    input: {name: {type: string}}
+    steps:
+      - {id: before, function: work, inputs: {}}
+      - {id: wrap, flow: child, inputs: {}, depends_on: [before]}
+      - {id: after, function: work, inputs: {}, depends_on: [wrap]}

@@ -1,0 +1,18 @@
+version: 1
+contracts:
+  Result: {value: string}
+flows:
+  entry: main
+  main:
+    input: {items: "string[]"}
+    output: {from: "${fan.output[0]}", contract: Result}
+    steps:
+      - id: fan
+        fanout:
+          over: "${input.items}"
+          concurrency: 2
+          isolation: none
+          require: all
+          merge: sequential
+          steps:
+            - {do: "work ${item}", out: Result, ensure: [{expr: "result.value != ''"}]}

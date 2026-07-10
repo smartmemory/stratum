@@ -1,10 +1,12 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseDocument } from "yaml";
 import { agentRunsRoot, T2F5_DONE_SENTINEL } from "../connectors/background.js";
 import { StratumEngine } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
+import { checkLegacyYaml, renderCompatReport } from "../migrate/check.js";
 import { assertEvent, eventContract } from "../mcp/contracts.js";
 
 const AGENT_RUN_ID = /^[0-9a-f]{12}$/;
@@ -17,23 +19,41 @@ type Mode = "text" | "json" | "events";
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const [command, ...args] = argv;
   if (command === "validate") return validateCommand(args);
+  if (command === "migrate") return migrateCommand(args);
   if (command === "watch") return watchCommand(args);
-  process.stderr.write("Usage: stratum <validate|watch> ...\n");
+  process.stderr.write("Usage: stratum <validate|migrate|watch> ...\n");
   return 2;
 }
 
 async function validateCommand(args: string[]): Promise<number> {
   if (args.length !== 1) {
-    process.stderr.write("Usage: stratum validate <spec.json>\n");
+    process.stderr.write("Usage: stratum validate <spec.yaml>\n");
     return 2;
   }
   try {
-    const spec = JSON.parse(await readFile(args[0]!, "utf8")) as unknown;
+    const source = await readFile(args[0]!, "utf8");
+    const parsed = parseDocument(source, { prettyErrors: false });
+    if (parsed.errors.length > 0) throw new Error(parsed.errors.map((error) => error.message).join("; "));
+    const spec = parsed.toJS() as unknown;
     const result = validateSpec(spec);
     process.stdout.write(`${JSON.stringify(result.ok ? { valid: true } : { valid: false, errors: result.errors })}\n`);
     return result.ok ? 0 : 1;
   } catch (error) {
     process.stderr.write(`stratum validate: ${message(error)}\n`);
+    return 2;
+  }
+}
+
+async function migrateCommand(args: string[]): Promise<number> {
+  if (args.length !== 2 || args[0] !== "--check") {
+    process.stderr.write("Usage: stratum migrate --check <old.yaml>\n");
+    return 2;
+  }
+  try {
+    process.stdout.write(renderCompatReport(checkLegacyYaml(await readFile(args[1]!, "utf8"))));
+    return 0;
+  } catch (error) {
+    process.stderr.write(`stratum migrate: ${message(error)}\n`);
     return 2;
   }
 }
