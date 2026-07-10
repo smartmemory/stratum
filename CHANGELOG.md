@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### ts — feat(cli): `stratum query` + `stratum gate` — the compose monitor seam (P7 prerequisite)
+
+`ts/src/cli/query_gate.ts`: `stratum query flows|flow <id>|gates` and
+`stratum gate approve|reject|revise <flow> <step> [--note] [--resolved-by]`,
+emitting the Python stratum-mcp CLI's JSON projections and exit-code
+contract (0 = result, 2 = idempotency conflict, 1 = error) so compose's
+stratum-client can drive either engine unchanged. Status vocabulary mapped
+to what compose branches on (complete/running/awaiting_gate/failed/
+budget_exhausted/killed); killed derives only from the canonical attempt-0
+gate-kill failure on a validator-accepted spec (no spoofing); listings skip
+unreadable AND semantically-corrupt run documents; gate misuse classified
+in Python resolve_gate order (terminal flow → conflict, wrong step →
+conflict, current-non-gate → not_a_gate_step) with a TS-DAG exception: an
+actually-waiting gate is always resolvable (multiple simultaneous gates are
+legal here, unlike Python's linear current_idx); gate results are
+route-derived (execute_step/killed/complete/max_rounds_exceeded — never
+inferred from downstream advancement, which can complete synchronously);
+revise on a null on_revise pre-checks to missing_on_revise WITHOUT
+terminalizing the run. Both bins now carry exec bits (direct-path
+invocation hit EACCES; npm sets bits only on install). STRATUM_STATE_ROOT
+honored. terra/high build + sol/high review, 5 rounds (12 findings fixed,
+1 rejected — compose-bin routing is compose-side by design) → REVIEW
+CLEAN. Suite: 380 passing. Consumed by compose COMP-STRATUM-TS (flag-gated
+engine cutover).
+
 ### ts — feat(judge): codex-OAuth judge backend + STRAT-TS-PORT live acceptance PASSED
 
 Feature-level acceptance closed: the live golden flow (spec → codex task →
