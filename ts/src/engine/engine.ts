@@ -5,7 +5,7 @@ import { extractReferences, type ExtractedReference, type PathSegment, type Refe
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
 import { BudgetLedger, type Budget, validUsage } from "./ledger.js";
-import { type AttemptRecord, type AuditEvent, type FailureContext, type PersistedRun, StateStore, type StepState } from "./state.js";
+import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type PersistedRun, StateStore, type StepState } from "./state.js";
 
 export interface EvaluatorContext {
   input: unknown;
@@ -44,6 +44,8 @@ export interface StepResult {
   failure?: string;
   /** Post-dispatch consumption (usd/tokens/ms). `dispatches` is engine-accounted and rejected here. */
   usage?: Budget;
+  /** Connector-owned wall time and resolved execution identity. */
+  telemetry?: AttemptTelemetry;
 }
 
 export interface ReadyStep {
@@ -152,9 +154,13 @@ export class StratumEngine {
     }
 
     const attempt = state.attempts.length + 1;
+    const telemetry = result.telemetry;
+    if (!validConnectorTelemetry(telemetry)) {
+      return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "invalid connector telemetry (nothing recorded)", {}, result.output);
+    }
     const reported = result.usage ?? {};
     // A shape-invalid report is untrustworthy — nothing recorded, attempt fails with feedback.
-    if (!validUsage(reported)) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "invalid usage ledger entry (nothing recorded)", {}, result.output);
+    if (!validUsage(reported)) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "invalid usage ledger entry (nothing recorded)", {}, result.output, telemetry);
     // The engine reserves one dispatch per attempt itself; a client-reported count would
     // double-charge. Valid keys still settle below — the attempt consumed them regardless.
     const claimedDispatches = reported.dispatches !== undefined;
@@ -164,31 +170,31 @@ export class StratumEngine {
     const budgetFailure = this.debit(run, step, state, usage, "settle");
     if (budgetFailure === "flow") {
       const failure = { attempt, reason: "flow budget exhausted" };
-      state.attempts.push({ attempt, at: now(), failure, ...(hasBudget(usage) ? { usage } : {}) });
+      state.attempts.push({ attempt, at: now(), failure, ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
       state.status = "failed";
       state.failure = failure;
       this.event(run, "result", step.id, { attempt, failure });
       return this.terminalBudget(run, failure);
     }
-    if (budgetFailure === "task") return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "task budget exhausted", usage, result.output);
-    if (claimedDispatches) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "dispatches are engine-accounted; do not report them in usage (other keys were recorded)", usage, result.output);
+    if (budgetFailure === "task") return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "task budget exhausted", usage, result.output, telemetry);
+    if (claimedDispatches) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, "dispatches are engine-accounted; do not report them in usage (other keys were recorded)", usage, result.output, telemetry);
 
-    if (result.failure !== undefined) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, result.failure, usage);
+    if (result.failure !== undefined) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, result.failure, usage, undefined, telemetry);
     const contractError = this.contractError(step, result.output, validated.contracts);
-    if (contractError) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, contractError, usage, result.output);
+    if (contractError) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, contractError, usage, result.output, telemetry);
 
     const ensureOutcome = await this.runEnsures(run, step, state, result.output);
     if (ensureOutcome?.kind === "flow_budget") {
       const failure = { attempt, reason: "flow budget exhausted (judged predicate)" };
-      state.attempts.push({ attempt, at: now(), failure, ...(hasBudget(usage) ? { usage } : {}) });
+      state.attempts.push({ attempt, at: now(), failure, ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
       state.status = "failed";
       state.failure = failure;
       this.event(run, "result", step.id, { attempt, failure });
       return this.terminalBudget(run, failure);
     }
-    if (ensureOutcome) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, ensureOutcome.reason, usage, result.output);
+    if (ensureOutcome) return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, ensureOutcome.reason, usage, result.output, telemetry);
 
-    state.attempts.push({ attempt, at: now(), result: result.output, ...(hasBudget(usage) ? { usage } : {}) });
+    state.attempts.push({ attempt, at: now(), result: result.output, ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
     state.output = result.output;
     state.status = "succeeded";
     this.event(run, "result", step.id, { attempt, result: result.output });
@@ -197,7 +203,7 @@ export class StratumEngine {
       state.status = "ready";
       delete state.output;
       state.attempts.pop();
-      return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, flowError, usage, result.output);
+      return this.failAttempt(run, validated.value, validated.contracts, flow, step, state, attempt, flowError, usage, result.output, telemetry);
     }
     await this.persist(run);
     return this.advance(run, validated.value, validated.contracts);
@@ -325,9 +331,9 @@ export class StratumEngine {
     return this.terminalFailure(run, { attempt: 0, reason: "no runnable steps remain" });
   }
 
-  private async failAttempt(run: PersistedRun, spec: Specification, contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>, flow: Flow, step: Step, state: StepState, attempt: number, reason: string, usage: Budget, result?: unknown): Promise<EngineResponse> {
+  private async failAttempt(run: PersistedRun, spec: Specification, contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>, flow: Flow, step: Step, state: StepState, attempt: number, reason: string, usage: Budget, result?: unknown, telemetry?: AttemptTelemetry): Promise<EngineResponse> {
     const failure = { attempt, reason };
-    state.attempts.push({ attempt, at: now(), failure, ...(result !== undefined ? { result } : {}), ...(hasBudget(usage) ? { usage } : {}) });
+    state.attempts.push({ attempt, at: now(), failure, ...(result !== undefined ? { result } : {}), ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
     state.failure = failure;
     this.event(run, "result", step.id, { attempt, failure });
     const maximum = step.attempts ?? 2;
@@ -643,6 +649,17 @@ function message(error: unknown): string {
   }
 }
 function hasBudget(usage: Budget): boolean { return Object.keys(usage).length > 0; }
+function validConnectorTelemetry(value: AttemptTelemetry | undefined): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if (Object.keys(value).some((key) => !["durationMs", "model", "effort"].includes(key))) return false;
+  return typeof value.durationMs === "number" && Number.isFinite(value.durationMs) && value.durationMs >= 0
+    && typeof value.model === "string" && value.model.length > 0
+    && (value.effort === undefined || (typeof value.effort === "string" && value.effort.length > 0));
+}
+function telemetryFields(value: AttemptTelemetry | undefined): Partial<AttemptTelemetry> {
+  return value === undefined ? {} : { durationMs: value.durationMs, model: value.model, ...(value.effort !== undefined ? { effort: value.effort } : {}) };
+}
 function requiredFailure(run: PersistedRun): FailureContext { return run.failure ?? { attempt: 0, reason: "run failed without context" }; }
 function interpolate(value: unknown): string {
   if (value === null || value === undefined) return "";

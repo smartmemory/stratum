@@ -164,6 +164,36 @@ describe("P1 table-driven error harness", () => {
     expect(audit.steps.finish?.spent.tokens).toBe(500);
   });
 
+  it("threads connector telemetry into successful and failed attempt records", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow([{ id: "finish", do: "work", out: "Result", attempts: 2 }]), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    await engine.stepDone(planned.runId, "finish", {
+      failure: "retry",
+      telemetry: { durationMs: 12, model: "gpt-5.3-codex-spark", effort: "low" },
+    });
+    await engine.stepDone(planned.runId, "finish", {
+      output: { value: "ok" },
+      telemetry: { durationMs: 34, model: "claude-sonnet-4-6" },
+    });
+
+    const attempts = (await engine.audit(planned.runId)).steps.finish?.attempts;
+    expect(attempts?.[0]).toMatchObject({ durationMs: 12, model: "gpt-5.3-codex-spark", effort: "low" });
+    expect(attempts?.[1]).toMatchObject({ durationMs: 34, model: "claude-sonnet-4-6" });
+    expect(attempts?.[1]).not.toHaveProperty("effort");
+  });
+
+  it("rejects malformed connector telemetry instead of persisting it", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow([{ id: "finish", do: "work", out: "Result", attempts: 1 }]), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const result = await engine.stepDone(planned.runId, "finish", {
+      output: { value: "ok" },
+      telemetry: { durationMs: -1, model: "gpt-5" },
+    });
+    expect(result).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("invalid connector telemetry") } });
+  });
+
   it("does not ledger a dispatch or stamp usage when rendering fails before dispatch", async () => {
     const { engine } = await createEngine();
     const planned = await engine.plan(flow([

@@ -11,7 +11,13 @@ export interface FailureContext {
   reason: string;
 }
 
-export interface AttemptRecord {
+export interface AttemptTelemetry {
+  durationMs: number;
+  model: string;
+  effort?: string;
+}
+
+export interface AttemptRecord extends Partial<AttemptTelemetry> {
   attempt: number;
   at: string;
   result?: unknown;

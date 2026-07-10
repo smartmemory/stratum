@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### ts — feat(connectors): STRAT-TS-PORT Phase P3 — connectors + durable background runs
+
+`ts/src/connectors/`: claude connector over `@anthropic-ai/claude-agent-sdk`
+query() (narrow SDK boundary, zod stays v3); codex connector shelling
+`codex exec --json` with argv byte-identical to Python `_exec_args`, streamed
+per-line parsing under `STRATUM_CODEX_STREAM_LIMIT_BYTES` (default 4MiB,
+floor 64KiB, counted in UTF-8 bytes, loud overrun + SIGKILL — same regime as
+Python's LimitOverrunError path). Durable background mode ports T2F5 exactly:
+detached shell wrapper with `{"__t2f5_done__":rc}` sentinel, 12-hex run
+registry under `~/.stratum/ts/agent_runs/` (0700 dirs / 0600 files),
+restart-proof poll with 20k text caps and paths derived from the validated
+run directory (serialized meta paths never trusted), cancel = killpg only
+after a twice-checked pid + microsecond start-time identity match; Darwin
+identity via libproc (fail-closed — no second-precision `ps` fallback,
+matching Python). Terminal polls and sync runs report telemetry
+`{durationMs, model, effort}`, threaded into engine attempt records per the
+observability contract; connectors never report `usage.dispatches`
+(engine-accounted). Python `test_agent_run_bg.py` scenarios ported 1:1; live
+spark echo smoke auto-skips when codex is absent or sandbox-denied.
+Codex sol/high build + 5 review rounds (4 hardening fixes, 2 stream-limit
+fixes, 1 telemetry-accuracy fix) → REVIEW CLEAN. Suite: 285 passing.
+
 ### ts — feat(eval,judge,engine): STRAT-TS-PORT Phase P2 — ensure evaluator + judged tier, wired into the engine
 
 `ts/src/eval/`: recursive-descent evaluator over JSON values implementing the
