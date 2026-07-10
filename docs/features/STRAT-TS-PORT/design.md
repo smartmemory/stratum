@@ -64,8 +64,10 @@ suffixed `?`. Field types: `string | integer | number | boolean |
 (untyped map) | `array` (untyped list) | `<ContractName>` (nested ref,
 non-recursive). Declared contract objects parse STRICT (unknown keys
 rejected); the bare `object` type alone admits arbitrary keys. Ref/contract
-path segments are contract field names (`[a-zA-Z_][a-zA-Z0-9_]*`) plus
-numeric indices (`[0]`); no escaping.
+path segments are contract field names (`[a-zA-Z_][a-zA-Z0-9_]*`, excluding
+the reserved `__proto__`/`constructor`/`prototype` — rejected loudly, since
+JS runtimes silently drop or misbind them) plus numeric indices (`[0]`);
+no escaping.
 The compat linter RECOGNIZES Python `{type, values}` descriptors within
 this enumerated subset (guidance for re-authoring); arbitrary type strings
 and general-JSON-Schema `output_schema` bodies are reported as
@@ -93,7 +95,8 @@ path. `input` in the evaluator and in refs denotes the flow's input object.
 Tasks receive data ONLY via refs in `do`; `with:` exists on subflow calls
 only, and its keys must exactly match the callee's input contract
 (full-value refs preserve type). `agent:` accepts the literals
-`claude | codex | none` only. `attempts: N` (replaces `retries`) = TOTAL
+`claude | codex` only and exists only on `do` tasks — compute steps are
+selected by `set:` and carry no agent field (the field matrix governs). `attempts: N` (replaces `retries`) = TOTAL
 attempts including the first, default 2.
 
 **Fanout output (locked):** `${<fanout-id>.output}` is the array of per-item
@@ -152,7 +155,7 @@ flows:                            # named map; `entry:` names the root flow
     steps:
     - id: build
       do: "Implement ${input.goal}. Follow the design at docs/x.md."
-      agent: codex                # claude (default) | codex | none — literals only
+      agent: codex                # claude (default) | codex — literals only
       out: Review                 # contract ref — ENFORCED on THIS step (E1)
       ensure:
         - expr: "result.verdict == 'pass'"
