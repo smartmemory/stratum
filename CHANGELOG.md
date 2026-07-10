@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### ts — feat(ir): STRAT-TS-PORT Phase P0 — v1 IR schema + strict validator
+
+New `ts/` pnpm workspace (`@smartmemory/stratum`, private until publish):
+zod schemas for the consolidated v1 IR (5 constructs, normative field
+matrix), the `${ref}` grammar parser with routing-edge extraction, and
+whole-spec validation (contract resolution, DAG acyclicity, gate-revise
+ancestry, fanout/subflow rules) with path-precise `E2_*` error codes.
+41 table-driven tests incl. an adversarial-review regression block
+(reserved `__proto__` contract fields rejected loudly; nested typed
+arrays; one error per unknown field). Design: docs/features/STRAT-TS-PORT/.
+
 ### stratum-mcp — feat(agent): curated background-run Monitor stream (STRAT-AGENT-BG-MONITOR)
 
 `stratum-mcp watch <run_id> --events [--kinds=...]` now emits compact curated
