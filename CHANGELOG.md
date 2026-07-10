@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### ts — feat(engine): STRAT-TS-PORT Phase P1 — engine core (fake connectors)
+
+`ts/src/engine/`: StratumEngine client-driven core loop (plan → stepDone →
+resume → audit) with durable per-transition JSON persistence (injectable
+state root, atomic unique-temp writes), `attempts` retries with structured
+failure context, `on_fail` routing (unreachable targets skip on success
+paths), local `when` skips that don't block `after:` successors, an injected
+Evaluator seam for `set:` steps (grammar lands in P2), reserve/settle budget
+ledgers (usd/tokens/ms client-settled even over limit; `dispatches`
+engine-accounted, client reports rejected loudly), and E1 zod enforcement of
+task `out` + flow `output`. Per-run promise lock serializes concurrent
+stepDone; reference interpolation rebuilds from original-template positions
+(immune to `$&` patterns and `${ref}` text in resolved values); all terminal
+paths persist before responding. 24 engine tests (65 total) incl. golden
+resume flow, table-driven error harness, and one regression per review
+finding — 2 codex adversarial rounds, 8 must-fixes applied, final verdict
+REVIEW CLEAN.
+
 ### ts — feat(ir): STRAT-TS-PORT Phase P0 — v1 IR schema + strict validator
 
 New `ts/` pnpm workspace (`@smartmemory/stratum`, private until publish):
