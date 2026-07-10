@@ -7,8 +7,9 @@
 Adds OpenAI's GPT-5.6 family (released 2026-07-09) to the codex model
 allowlist: `gpt-5.6-sol` and `gpt-5.6-terra`, each with `/low|medium|high|xhigh`
 effort variants (all verified live against codex-cli 0.144.0). The code-level
-default (`_FALLBACK_DEFAULT`) moves from `gpt-5.5` to `gpt-5.6-sol/high` —
-effort pinned explicitly to high. `CODEX_MODEL` env var still overrides.
+default (`_FALLBACK_DEFAULT`) moves from `gpt-5.5` to `gpt-5.6-terra/high`
+(balanced tier, ~gpt-5.5 quality at half the price; effort pinned explicitly
+to high). Sol stays available for hard passes. `CODEX_MODEL` still overrides.
 
 Also corrects stale rows in `stratum_mcp/pricing.py` against current published
 API pricing: gpt-5.5 $1.25/$10 → $5/$30, gpt-5.4 $1.25/$10 → $2.50/$15,

@@ -84,8 +84,9 @@ CODEX_MODEL_IDS: frozenset[str] = frozenset(
 )
 
 # Code-level fallback when CODEX_MODEL is unset. The env var always wins.
-# Effort pinned to /high explicitly (not xhigh, and not inherited from
-# ~/.codex/config.toml) per user preference.
-_FALLBACK_DEFAULT = "gpt-5.6-sol/high"
+# Terra (balanced tier, ~gpt-5.5 quality at half the price); effort pinned to
+# /high explicitly (not xhigh, and not inherited from ~/.codex/config.toml)
+# per user preference. Sol stays in the allowlist for hard adversarial passes.
+_FALLBACK_DEFAULT = "gpt-5.6-terra/high"
 
 DEFAULT_CODEX_MODEL = os.environ.get("CODEX_MODEL", _FALLBACK_DEFAULT)
