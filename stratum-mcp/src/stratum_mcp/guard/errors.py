@@ -72,3 +72,7 @@ class OverrideUnavailable(GuardError):
 
 class ResourceIdMismatch(GuardError):
     error_type = "resource_id_mismatch"
+
+
+class GuardEngineOwned(GuardError):
+    error_type = "guard_engine_owned"

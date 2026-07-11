@@ -3,7 +3,7 @@
 Ties the store (S1), checksum (S2), and trusted-evidence evaluator (S3) together,
 plus the LLM-tier verifier (``run_judge``, consumed as-is). Public surface:
 ``register_guard``, ``guard_transition``, ``guard_override``, ``guard_migrate``,
-``guard_history``.
+``guard_handoff``, ``guard_history``.
 
 Concurrency discipline (blueprint S4 / Codex finding-5): the cheap structural
 checks run under the per-resource lock; the potentially slow predicate evaluation
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +27,7 @@ from .errors import (
     CommandExecutionDisabled,
     EvidenceParseError,
     GuardAlreadyRegistered,
+    GuardEngineOwned,
     GuardNotFound,
     GuardTampered,
     IdempotencyConflict,
@@ -57,6 +59,16 @@ def _now_ms() -> int:
 
 def _edge_key(from_state: str, to_state: str) -> str:
     return f"{from_state}->{to_state}"
+
+
+def _check_python_engine_ownership(resource_id: str) -> None:
+    """Refuse Python mutations after one-way ownership passes to TypeScript.
+
+    Caller MUST hold the Python resource lock so the check and any following
+    mutation are serialized with ``guard_handoff``.
+    """
+    if store.read_engine_owner(resource_id) == "ts":
+        raise GuardEngineOwned(f"guard {resource_id!r} is owned by the ts engine")
 
 
 def _payload_digest(
@@ -251,6 +263,7 @@ async def register_guard(
     # The existence-check + persist must be atomic, else two concurrent first-time
     # registrations both observe "not found" and last-writer-wins (Codex finding-3).
     async with store.resource_lock(resource_id):
+        _check_python_engine_ownership(resource_id)
         existing = store._load_registry_raw(resource_id)
         if existing is not None:
             if existing.checksum == checksum:
@@ -328,6 +341,7 @@ async def guard_transition(
 
     # ----- Phase 1: structural checks under the lock --------------------- #
     async with store.resource_lock(resource_id):
+        _check_python_engine_ownership(resource_id)
         reg = store.load_registry(resource_id)  # may raise LedgerCorrupt
         if reg is None:
             raise GuardNotFound(f"no guard registered for {resource_id!r}")
@@ -396,6 +410,7 @@ async def guard_transition(
 
     # ----- Phase 3: optimistic commit under the lock --------------------- #
     async with store.resource_lock(resource_id):
+        _check_python_engine_ownership(resource_id)
         reg = store.load_registry(resource_id)
         if reg is None:
             raise GuardNotFound(f"no guard registered for {resource_id!r}")
@@ -466,6 +481,7 @@ async def guard_override(
         raise OverrideUnavailable("override requires a non-empty rationale")
 
     async with store.resource_lock(resource_id):
+        _check_python_engine_ownership(resource_id)
         reg = store.load_registry(resource_id)
         if reg is None:
             raise GuardNotFound(f"no guard registered for {resource_id!r}")
@@ -517,6 +533,7 @@ async def guard_migrate(
     new_stakes = new_stakes or {}
 
     async with store.resource_lock(resource_id):
+        _check_python_engine_ownership(resource_id)
         reg = store.load_registry(resource_id)
         if reg is None:
             raise GuardNotFound(f"no guard registered for {resource_id!r}")
@@ -564,6 +581,26 @@ async def guard_migrate(
         "ledger_ref": ledger_ref,
         "rationale": rationale,
     }
+
+
+async def guard_handoff(
+    resource_id: str,
+    override_token: str,
+    resolved_by: str = "human",
+) -> dict[str, Any]:
+    """Permanently hand a registered guard resource to the TypeScript engine."""
+    _check_override_token(override_token)
+    if resolved_by != "human":
+        raise OverrideUnavailable("handoff requires resolved_by='human'")
+
+    async with store.resource_lock(resource_id):
+        if store._load_registry_raw(resource_id) is None:
+            raise GuardNotFound(f"no guard registered for {resource_id!r}")
+        if store.read_engine_owner(resource_id) != "ts":
+            since = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            store.persist_engine_owner(resource_id, "ts", since)
+
+    return {"status": "handed_off", "resource_id": resource_id, "owner": "ts"}
 
 
 def guard_history(resource_id: str) -> dict[str, Any]:

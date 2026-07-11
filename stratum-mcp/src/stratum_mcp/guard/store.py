@@ -188,6 +188,28 @@ def persist_registry(reg: GuardRegistry) -> None:
     _atomic_write(path, json.dumps(reg.to_dict(), indent=2, sort_keys=True))
 
 
+def read_engine_owner(resource_id: str) -> Optional[str]:
+    """Return the cross-engine ownership marker's owner, if recognizable."""
+    path = resource_dir(resource_id) / "engine.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    owner = payload.get("owner") if isinstance(payload, dict) else None
+    return owner if isinstance(owner, str) else None
+
+
+def persist_engine_owner(resource_id: str, owner: str, since: str) -> None:
+    """Atomically write the one-way cross-engine ownership marker."""
+    path = resource_dir(resource_id) / "engine.json"
+    _atomic_write(
+        path,
+        json.dumps({"owner": owner, "since": since}, indent=2, sort_keys=True),
+    )
+
+
 def _load_registry_raw(resource_id: str) -> Optional[GuardRegistry]:
     path = resource_dir(resource_id) / "registry.json"
     if not path.exists():
