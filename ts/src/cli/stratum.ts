@@ -23,8 +23,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "migrate") return migrateCommand(args);
   if (command === "query") return queryCommand(args);
   if (command === "gate") return gateCommand(args);
+  if (command === "guard") return (await import("./guard.js")).guardCommand(args);
   if (command === "watch") return watchCommand(args);
-  process.stderr.write("Usage: stratum <validate|migrate|query|gate|watch> ...\n");
+  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|watch> ...\n");
   return 2;
 }
 

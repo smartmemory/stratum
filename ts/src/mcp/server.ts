@@ -7,6 +7,7 @@ import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
 import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { evaluateJudged } from "../judge/judged.js";
+import type { GuardJudge } from "../guard/transition.js";
 import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface } from "./contracts.js";
 
 export interface McpDependencies {
@@ -14,11 +15,14 @@ export interface McpDependencies {
   runAgent?: typeof runAgent;
   pollBackgroundRun?: typeof pollBackgroundRun;
   cancelBackgroundRun?: typeof cancelBackgroundRun;
+  /** Isolated-test seam for LLM-tier guard predicates. */
+  guardJudge?: GuardJudge | null;
 }
 
 export type ToolName =
   | "stratum_validate" | "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_audit"
-  | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run";
+  | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
+  | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_history";
 
 export interface ToolDispatcher { call(tool: ToolName, request: Record<string, unknown>): Promise<Record<string, unknown>> }
 
@@ -53,9 +57,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
   const agentCancel = dependencies.cancelBackgroundRun ?? cancelBackgroundRun;
   return {
     async call(tool, request) {
-      await assertToolRequest(tool, request);
-      let response: Record<string, unknown>;
-      switch (tool) {
+      try {
+        await assertToolRequest(tool, request);
+        let response: Record<string, unknown>;
+        switch (tool) {
         case "stratum_validate": {
           const validation = validateSpec(request.spec);
           response = validation.ok ? { status: "valid" } : { status: "invalid", errors: validation.errors };
@@ -81,12 +86,46 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         }
         case "stratum_agent_poll": response = await agentPoll(string(request, "runId")); break;
         case "stratum_cancel_agent_run": response = await agentCancel(string(request, "runId")); break;
+        case "stratum_guard_register": {
+          const { registerGuard } = await import("../guard/transition.js");
+          response = await registerGuard(string(request, "resource_id"), record(request, "graph") as Record<string, string[]>, record(request, "edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "initial"), optionalArray(request, "terminal"), optionalRecord(request, "stakes"), optionalString(request, "workspace_root") ?? null);
+          break;
+        }
+        case "stratum_guard_transition": {
+          const { guardTransition } = await import("../guard/transition.js");
+          response = await guardTransition(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), {
+            artifacts: record(request, "artifacts") as Record<string, string>, modifiedFiles: optionalArray(request, "modified_files"), idempotencyKey: optionalString(request, "idempotency_key") ?? null, resolvedBy: optionalString(request, "resolved_by") ?? "agent",
+            ...(dependencies.guardJudge !== undefined ? { judge: dependencies.guardJudge } : {}),
+          });
+          break;
+        }
+        case "stratum_guard_override": {
+          const { guardOverride } = await import("../guard/transition.js");
+          response = await guardOverride(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), string(request, "override_token"), string(request, "rationale"), optionalString(request, "resolved_by") ?? "human");
+          break;
+        }
+        case "stratum_guard_migrate": {
+          const { guardMigrate } = await import("../guard/transition.js");
+          response = await guardMigrate(string(request, "resource_id"), record(request, "new_graph") as Record<string, string[]>, record(request, "new_edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "override_token"), string(request, "rationale"), optionalArray(request, "new_terminal"), optionalRecord(request, "new_stakes"));
+          break;
+        }
+        case "stratum_guard_history": {
+          const { guardHistory } = await import("../guard/transition.js");
+          response = guardHistory(string(request, "resource_id"));
+          break;
+        }
       }
-      if ((tool === "stratum_audit" || tool === "stratum_flow_poll") && Array.isArray(response.events)) {
-        for (const event of response.events) await assertEvent(event);
+        if ((tool === "stratum_audit" || tool === "stratum_flow_poll") && Array.isArray(response.events)) {
+          for (const event of response.events) await assertEvent(event);
+        }
+        await assertToolResponse(tool, response);
+        return response;
+      } catch (error) {
+        if (!tool.startsWith("stratum_guard_")) throw error;
+        const response = guardErrorEnvelope(error);
+        await assertToolResponse(tool, response);
+        return response;
       }
-      await assertToolResponse(tool, response);
-      return response;
     },
   };
 }
@@ -120,6 +159,15 @@ function string(request: Record<string, unknown>, key: string): string { const v
 function optionalString(request: Record<string, unknown>, key: string): string | undefined { const value = request[key]; return typeof value === "string" ? value : undefined; }
 function optionalNumber(request: Record<string, unknown>, key: string): number | undefined { const value = request[key]; return typeof value === "number" ? value : undefined; }
 function record(request: Record<string, unknown>, key: string): Record<string, unknown> { const value = request[key]; if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${key} must be an object`); return value as Record<string, unknown>; }
+function optionalArray(request: Record<string, unknown>, key: string): string[] { const value = request[key]; return Array.isArray(value) ? value as string[] : []; }
+function optionalRecord(request: Record<string, unknown>, key: string): Record<string, string> { const value = request[key]; return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, string> : {}; }
+function guardErrorEnvelope(error: unknown): { status: "error"; error_type: string; message: string } {
+  if (typeof error === "object" && error !== null && "errorType" in error && typeof error.errorType === "string" && "message" in error && typeof error.message === "string") {
+    return { status: "error", error_type: error.errorType, message: error.message };
+  }
+  if (error instanceof Error) return { status: "error", error_type: error.name || "unexpected_error", message: error.message };
+  return { status: "error", error_type: "unexpected_error", message: String(error) };
+}
 
 function jsonSchema(shape: Record<string, unknown>): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
@@ -138,6 +186,6 @@ function schemaFor(shape: unknown): Record<string, unknown> {
   if (shape === "array") return { type: "array" };
   if (shape === "object") return { type: "object" };
   if (shape === "null") return { type: "null" };
-  if (shape.includes("|")) return { enum: shape.split("|") };
+  if (shape.includes("|")) return { anyOf: shape.split("|").map((alternative) => schemaFor(alternative)) };
   return { type: shape };
 }

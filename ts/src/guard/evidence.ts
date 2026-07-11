@@ -106,8 +106,9 @@ function isHex(char: string): boolean {
 /** Hand-rolled grammar for the deliberately tiny trusted-evidence language. */
 class PredicateStatementParser {
   private index = 0;
+  private readonly statement: string;
 
-  constructor(private readonly statement: string) {}
+  constructor(statement: string) { this.statement = statement; }
 
   parse(): ParsedPredicateStatement {
     this.skipWhitespace();

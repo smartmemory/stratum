@@ -57,14 +57,15 @@ export async function assertToolRequest(tool: string, request: unknown): Promise
   assertShape(request, definition.request, `${tool}.request`);
 }
 
-/** Validates the frozen payload shape, including the response status discriminator. */
+/** Validates the frozen payload shape, including raw status-less success responses. */
 export async function assertToolResponse(tool: string, response: unknown): Promise<void> {
-  if (!isRecord(response) || typeof response.status !== "string") throw new Error(`${tool}.response.status is required`);
+  if (!isRecord(response)) throw new Error(`${tool}.response must be an object`);
   const definition = (await mcpSurface()).tools[tool];
-  const shape = definition?.responses[response.status];
+  const status = typeof response.status === "string" ? response.status : "success";
+  const shape = definition?.responses[status];
   if (!shape) throw new Error(`${tool}.response has undeclared status ${JSON.stringify(response.status)}`);
   const payload = { ...response };
-  delete payload.status;
+  if ("status" in payload) delete payload.status;
   assertShape(payload, shape, `${tool}.response`);
 }
 
