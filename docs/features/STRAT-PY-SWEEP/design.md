@@ -29,7 +29,7 @@ rollback until removal day.
 | 1 | forge `.mcp.json` `stratum` server (`stratum-mcp` bin) | register TS stdio server (mechanism from COMP-STRATUM-TS-2) | session smoke: `stratum_plan` → `stratum_step_done` round-trip on TS | restore old entry |
 | 2 | compose `.mcp.json` | same | same | same |
 | 3 | forge workspace `.compose/compose.json` engine flag | `stratumEngine: "ts"` | monitor shows a real TS-store gate end to end | flip back |
-| 4 | compose `stratum-client.js` guard pin | delete pin (needs STRAT-TS-GUARD) | compose lifecycle-guard suite green on TS | re-pin |
+| 4 | compose `stratum-client.js` guard pin | run `stratum-mcp guard handoff` per existing resource (ownership marker, see STRAT-TS-GUARD Decision 3), then delete pin | compose lifecycle-guard suite green on TS; Python mutation refused with `guard_engine_owned` | re-pin (handoff is one-way; rollback = TS keeps serving) |
 | 5 | compose default engine | default `"ts"`, python branch KEPT one release | full compose suite + soak-style probe | env override |
 | 6 | `model-pricing-refresh.sh` cron → `src/stratum/judge/codex_models.py` | D4 relocation (below) | cron dry-run produces valid file; TS judge reads it | old path until removal |
 | 7 | CLAUDE.md chain + skills tool references | sweep instruction text to TS-served names | grep: no reference to a python-only tool | git revert |
@@ -45,9 +45,16 @@ Today: `src/stratum/judge/codex_models.py` holds `DEFAULT_CODEX_MODEL` +
 `CODEX_MODEL_IDS`; a monthly cron rewrites it; the Python MCP server
 imports it (undeclared dep).
 
-Target: **one JSON data file in the stratum repo** — `config/codex-models.json`
-(new) — `{ "default": "...", "allowlist": [...], "stakes": {"cheap": "...",
-"default": "...", "paranoid": "..."}, "updated": "YYYY-MM-DD" }`.
+Target: **one JSON data file INSIDE the npm package root** —
+`ts/config/codex-models.json` (new; round-2 correction: a repo-root
+`config/` would never ship in the published tarball, so global installs
+would silently fall back forever) — `{ "default": "...", "allowlist":
+[...], "stakes": {"cheap": "...", "default": "...", "paranoid": "..."},
+"updated": "YYYY-MM-DD" }`, listed in the package `files`. The loader
+resolves package-relative, overridable via `STRATUM_MODEL_CONFIG` (path)
+for external installs whose config the forge cron does not manage; the
+cron rewrites the source-checkout file (which IS the file our installs
+use, since they run from the checkout).
 
 Corrected by review (2026-07-11, CONFIRMED): the TS side has TWO separate
 model seams today, and neither reads any config file —
@@ -74,7 +81,7 @@ source is the anomaly being retired, not a pattern to preserve.
 
 | File | Action | Purpose |
 |---|---|---|
-| `config/codex-models.json` (new, stratum) | add | engine-neutral model allowlist + stakes routing |
+| `ts/config/codex-models.json` (new, stratum) | add | engine-neutral model allowlist + stakes routing (in package `files`) |
 | `ts/src/judge/model_config.ts` (new, stratum) | add | loader (validated, cached, fail-loud) |
 | `ts/src/judge/judged.ts`, `codex_judged.ts`, `ts/src/connectors/codex.ts` (existing) | modify | consume loader; hard-coded maps demoted to fallback |
 | `src/stratum/judge/codex_models.py` (existing) | modify | shim over JSON until Phase 5 |
@@ -88,8 +95,9 @@ source is the anomaly being retired, not a pattern to preserve.
 - [ ] Inventory re-verified at execution start (grep sweep; new consumers
       since 2026-07-11 added to the table)
 - [ ] Each row cut over in order, with its Verify step recorded in this doc
-- [ ] `config/codex-models.json` live governing BOTH seams (connector
-      default + per-stakes judge routing); loader tests: present /
+- [ ] `ts/config/codex-models.json` live governing BOTH seams (connector
+      default + per-stakes judge routing); in package `files`;
+      `STRATUM_MODEL_CONFIG` path override; loader tests: present /
       absent-fallback / env-override-wins / malformed-fails-loud; cron
       verified against the JSON
 - [ ] Two-week TS-only clock start date recorded (gates STRAT-PY-REMOVE)

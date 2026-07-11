@@ -51,8 +51,20 @@ TS engine has no equivalent; compose's client wraps all three.
 
 ## Design
 
-Straight port — this kernel is self-contained state-machine logic with
-no subprocess/concurrency surface:
+Port with one prerequisite the v1 IR must absorb (round-2 review
+finding, CONFIRMED): today's v1 `iterate` accepts only `{max, until}`
+(`ts/src/ir/schema.ts:21`) and the migration checker explicitly labels
+score/accumulate UNSUPPORTED (`ts/src/migrate/check.ts:37`) — so the
+loop config this port needs cannot currently exist on a TS run.
+
+- **IR extension first:** `iterate` gains optional `score_expr`,
+  `accumulate`, `accumulate_key` (v0→v1 mapping: `max_iterations`→`max`,
+  `exit_criterion`→`until`, rest name-identical). `ir/validate.ts`
+  validates the new fields; `migrate/check.ts` flips score/accumulate
+  from unsupported→mapped. This is part of THIS feature, not assumed.
+
+Otherwise a straight port — self-contained state-machine logic with no
+subprocess/concurrency surface:
 
 - **Expressions**: `exit_criterion` and `score_expr` compile through the
   TS engine's existing expression evaluator (`ts/src/eval/expr.ts` — the
@@ -75,6 +87,8 @@ no subprocess/concurrency surface:
 
 | File | Action | Purpose |
 |---|---|---|
+| `ts/src/ir/schema.ts` + `ir/validate.ts` (existing) | modify | iterate extension: score_expr/accumulate/accumulate_key |
+| `ts/src/migrate/check.ts` (existing) | modify | score/accumulate unsupported → mapped |
 | `ts/src/engine/iteration.ts` (new) | add | start/report/abort state machine |
 | `ts/src/engine/state.ts` (existing) | modify | six iteration keys on PersistedRun |
 | `ts/src/eval/expr.ts` (existing) | modify | enriched eval-context variables (if not already expressible) |
@@ -83,6 +97,9 @@ no subprocess/concurrency surface:
 
 ## Acceptance criteria
 
+- [ ] v1 `iterate` extension validated + migration checker updated
+      (score/accumulate no longer flagged unsupported); v0→v1 field
+      mapping table recorded here
 - [ ] 3 tools contract-identical (params, success envelopes incl.
       optional fields, all error_types)
 - [ ] Outcome precedence + stagnation (window 3, accumulate suppression)

@@ -49,7 +49,22 @@ applies — no cross-engine state concerns).
 
 ## Design
 
-Straight port, one decision:
+Port with an IR/state prerequisite (round-2 review finding, CONFIRMED):
+TS gates have no `timeout` field (`ts/src/ir/schema.ts:26`),
+`PersistedRun` has no `dispatched_at` (`ts/src/engine/state.ts:77`), and
+the gate query deliberately reports `timeout: null`
+(`ts/src/cli/query_gate.ts:178`) — `check_timeouts` parity is
+unimplementable until those exist:
+
+- **IR:** gate steps gain optional `timeout` (seconds), validated.
+- **State:** `PersistedRun` gains a durable `dispatchedAt` map (wall
+  clock, persisted — Python's monotonic-reset-on-restore inaccuracy is
+  NOT replicated; recorded as a deliberate improvement, envelope
+  unchanged).
+- **Query:** `stratum query gates` stops hard-coding `timeout: null`
+  and projects the real value (compose already tolerates both).
+
+One further decision:
 
 - **Checkpoint field mapping is explicit.** A `CHECKPOINT_FIELDS`
   manifest in `ts/src/engine/checkpoint.ts` lists every snapshotted key
@@ -69,6 +84,9 @@ Straight port, one decision:
 
 | File | Action | Purpose |
 |---|---|---|
+| `ts/src/ir/schema.ts` + `ir/validate.ts` (existing) | modify | gate `timeout` field |
+| `ts/src/engine/state.ts` (existing) | modify | durable `dispatchedAt` |
+| `ts/src/cli/query_gate.ts` (existing) | modify | project real timeout |
 | `ts/src/engine/checkpoint.ts` (new) | add | CHECKPOINT_FIELDS manifest + commit/revert |
 | `ts/src/engine/engine.ts` (existing) | modify | skip_step, check_timeouts over existing gate-resolve |
 | `ts/src/mcp/server.ts` + `ts/contracts/mcp-surface.json` (existing) | modify | 4 tools |

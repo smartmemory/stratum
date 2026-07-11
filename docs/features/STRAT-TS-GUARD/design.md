@@ -53,8 +53,12 @@ Phase 5 cannot delete the tree.
    `verified`/`judged` → judge at edge stakes; `combined_met =
    evidence.met AND judge.met`; LLM predicates with no verifier available
    → refused with "no verifier available".
-7. **Error slugs** (14) and the envelope are contract — compose branches
-   on `status` and maps spawn/timeout codes itself.
+7. **Error slugs** (14 today; Decision 3 adds `guard_engine_owned` as a
+   15th, emitted by BOTH engines during overlap — by Python for
+   handed-over resources, by TS for not-yet-handed-over ones; it
+   outlives Python as TS's not-owned refusal) and the envelope are
+   contract — compose branches on `status` and maps spawn/timeout codes
+   itself.
 8. **Override/migrate** are token-gated (`STRATUM_GUARD_OVERRIDE_TOKEN`),
    `resolved_by` must be `"human"` for override, rationale required,
    override bypasses predicates but NEVER the graph; migrate re-validates
@@ -110,20 +114,31 @@ optimistic state read can each build an entry against the same
 `prev_digest` — the second O_APPEND write lands as an INTERIOR chain
 break (`ledger_corrupt`), i.e. real corruption, not a graceful refusal.
 
-Therefore ownership is ENFORCED per resource, one-way:
+Therefore ownership is ENFORCED per resource, one-way, and the marker is
+created UNDER PYTHON'S LOCK so there is no handoff-instant race (round-2
+review finding: a TS-created marker under `.lock.ts` could land while a
+Python transition holds `.lock` mid-commit — both would append):
 
-- On its first write to a guard dir, TS creates `engine.json`
-  (`{"owner":"ts","since":...}`) under its lock. From then on TS owns
-  the resource.
-- Same phase, Python side (still in-repo during overlap): guard store
-  load checks for `engine.json` with `owner:"ts"` and refuses ALL
-  mutations with a new `guard_engine_owned` error slug (reads/history
-  stay allowed). ~10 lines in `store.py`, shipped with STRAT-TS-GUARD,
-  covered by one Python test.
-- The marker is never removed (retirement is one-way); compose's
-  workspace-scoped resource ids (`compose:<workspace-hash>:<FC>`) mean
-  in practice the handoff rides the engine-flag flip, and the marker
-  makes a violation loud instead of corrupting.
+- **Handoff is an explicit Python-side operation:**
+  `stratum-mcp guard handoff` (new CLI action + `stratum_guard_migrate`-
+  style token gating) writes `engine.json` (`{"owner":"ts","since":...}`)
+  while HOLDING Python's `flock` — serialized against every in-flight
+  Python mutation. STRAT-PY-SWEEP row 4 runs it per existing resource at
+  cutover.
+- **Python** (still in-repo during overlap): every mutation checks the
+  marker under its lock and refuses with the new `guard_engine_owned`
+  slug (reads/history stay allowed).
+- **TS refuses to mutate a guard dir that lacks `owner:"ts"`** — fails
+  loud with `guard_engine_owned` telling the operator to run the
+  handoff. For a FRESH resource (no dir), TS creates dir + marker
+  atomically at registration; a simultaneous fresh Python register of
+  the same brand-new resource is the one residual race, impossible under
+  compose's single-engine flag and bounded to first-registration (no
+  existing chain to corrupt).
+- The marker is never removed (retirement is one-way).
+- Test: a forced handoff race — Python transition in flight while
+  handoff runs — must serialize (handoff waits on flock) and the
+  post-handoff Python retry refuses.
 
 ### Decision 4 — evidence parser is a grammar, not eval
 
@@ -153,13 +168,14 @@ plumbing — this is the same seam `ensure` predicates already use.
 | `ts/src/mcp/server.ts` (existing) | modify | register 5 `stratum_guard_*` tools |
 | `ts/tests/guard/*.test.ts` (new) | add | ported contract tests + cross-engine golden fixtures |
 | `ts/tests/fixtures/guard-py-golden/` (new) | add | Python-written guard dir fixture |
-| `stratum-mcp/src/stratum_mcp/guard/store.py` (existing) | modify | `engine.json` ownership check → `guard_engine_owned` (Decision 3) |
-| `stratum-mcp/tests/test_guard_store.py` (existing) | modify | ownership-refusal test |
+| `stratum-mcp/src/stratum_mcp/guard/store.py` + `server.py` (existing) | modify | `guard handoff` CLI action (marker under flock) + ownership check → `guard_engine_owned` (Decision 3) |
+| `stratum-mcp/tests/test_guard_store.py` (existing) | modify | ownership-refusal + forced handoff-race tests |
 
 ## Acceptance criteria
 
-- [ ] All 5 operations on TS: params, return shapes, and all 14 error
-      slugs contract-identical to Python (table-driven tests ported from
+- [ ] All 5 operations on TS: params, return shapes, and all 15 error
+      slugs (14 legacy + `guard_engine_owned`) contract-identical to
+      Python (table-driven tests ported from
       `test_guard_transition.py` / `test_server_guard.py` /
       `test_guard_cli.py`)
 - [ ] Cross-engine golden fixtures pass BOTH directions (Python-written

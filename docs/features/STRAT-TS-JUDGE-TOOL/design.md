@@ -73,15 +73,20 @@ Consequences made explicit rather than lost silently:
   `statement` + `stakes` (`ts/src/ir/schema.ts:14-19`) and the engine
   passes the step output + flow input as context
   (`engine.ts:961-962`) — there is no artifact-selection field. The
-  ACTUAL property TS provides, now stated as the contract: **judged
-  context is engine-constructed from flow state only (step output +
-  flow input), never live workspace reads**, with injection hardening
-  already present (`<<<JUDGE_INPUT>>>` separation + `<` escaping in
-  `codex_judged.ts:55-63`). One contract test pins engine-constructed-
-  only; the difference vs Python's staged-evidence model is a row in
-  the capability-delta table. An IR artifact-selection field is NOT
-  added here (scope growth with no consumer); it goes in the delta
-  table as follow-up-on-demand.
+  ACTUAL property is per-backend (round-2 correction — the blanket
+  "never live workspace reads" was false for codex):
+  - **openai backend** (`judged.ts`): a pure `generateObject` API call —
+    the model sees ONLY the engine-constructed context object (step
+    output + flow input). Provable; one contract test pins it.
+  - **codex backend** (`codex_judged.ts`): launches codex read-only in
+    `process.cwd()` (`connectors/codex.ts:81`) — read-only PERMITS
+    filesystem reads, so the property is prompt-bounded best-effort,
+    not an invariant. Recorded as a capability-delta row, with the
+    Python precedent (T3 used an ephemeral read-jail) named as the
+    follow-up-on-demand hardening. Injection hardening
+    (`<<<JUDGE_INPUT>>>` + `<` escaping) stays as-is.
+  An IR artifact-selection field is NOT added here (scope growth with
+  no consumer); it goes in the delta table as follow-up-on-demand.
 - **Budget accounting — regression verification, NOT implementation.**
   The engine ALREADY debits judged usage into the ledger and fails
   closed on flow/subflow/task exhaustion (`engine.ts:989-1009`,
@@ -116,9 +121,10 @@ the engine uses.
 - [ ] Budget regression tests: usage debited exactly once; exhaustion
       returns the three budget failure kinds; per-item fanout ledger
       events (no new wiring — engine.ts:989-1009 already does this)
-- [ ] Context contract test: judged context is engine-constructed from
-      flow state only (step output + flow input), never live workspace
-      reads
+- [ ] Context contract test (openai backend): judged context is the
+      engine-constructed object only (step output + flow input)
+- [ ] Codex-backend read-scope delta recorded in the capability-delta
+      table with the read-jail follow-up named
 - [ ] Triage coupling recorded: goal-kernel disposition names its judge
       requirements or confirms none
 

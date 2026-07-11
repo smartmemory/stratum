@@ -42,14 +42,19 @@ consumer-facing surface.
    Compose handles both. The port replicates the inconsistency EXACTLY
    site by site (fidelity over aesthetics); normalizing is a
    post-retirement cleanup, never a port-time change.
-   **Contract-layer consequence (review finding 2026-07-11, CONFIRMED):**
+   **Contract-layer consequence (review findings rounds 1+2, CONFIRMED):**
    the TS surface layer selects response schemas by a required string
-   `status` (`ts/src/mcp/contracts.ts:60-68`) — bare `{error}` shapes
-   cannot pass it today. The surface format gains a per-tool
-   legacy-envelope variant (response matched by `error`-key presence
-   when no `status` field), which is a change to `contracts.ts` +
-   `mcp-surface.json`, listed in Files below and covered by tests for
-   all three bare-error tools.
+   `status` (`ts/src/mcp/contracts.ts:60-68`) — and Python's parallel
+   surface is status-less on BOTH sides: bare `{error}` failures AND
+   `parallel_poll`'s normal SUCCESS envelope (`{flow_id, step_id,
+   summary, tasks, require_satisfied, can_advance, outcome}` — no
+   `status` field, `server.py:2211`). The surface format therefore gains
+   a per-tool **key-discriminated variant mode**: a tool may declare its
+   response variants matched by presence of a named discriminator key
+   (`error` → bare-error shape; `summary` → poll success; `status` →
+   modern envelopes), replacing status-only selection for these tools.
+   Change lands in `contracts.ts` + `mcp-surface.json`, covered by tests
+   for the three bare-error tools AND poll success.
 3. **Two dispatch modes** share one evaluation core: consumer-dispatch
    (compose runs agents, calls `parallel_done`) and server-dispatch
    (executor spawns agents; poll → optional deferred advance).
@@ -125,7 +130,8 @@ not.
 - [ ] 4 tools contract-identical incl. bare-`{error}` vs
       `{status:error}` site-by-site parity (a generated parity table for
       ALL THREE bare-error tools: start, poll, advance) and ParMergeBounce
-      shape; legacy-envelope variant lands in contracts.ts with tests
+      shape; key-discriminated variant mode lands in contracts.ts with
+      tests incl. status-less poll SUCCESS
 - [ ] Require matrix (all/any/N; pipeline vs non-pipeline skipped
       semantics) table-driven-tested
 - [ ] Merge-retry loop: gate bounce persisted, injected on re-dispatch;

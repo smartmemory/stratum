@@ -23,6 +23,22 @@
 
 ## Design
 
+### Step 0 — npm publication (D3; FIRST, because Step 1's notices need a target)
+
+The TS package already declares both bins (`ts/package.json:7-10`) but is
+`private: true` — nothing is installable, so the deprecation notices
+below have no replacement to point at until this ships:
+
+- Un-private, set a real version, publish `@smartmemory/stratum` to npm
+  via CI (repo has CI; house rule: no manual deploys). This is
+  private-flag + versioning + publish-workflow work, not bin work — the
+  bins ride along.
+- Alternative recorded if publication is rejected: an explicit
+  local-only stance with the notices worded for a source install.
+- Verify: `npm i -g @smartmemory/stratum` on a clean prefix →
+  `stratum-mcp --help` / `stratum --help` resolve to TS; node >= 26
+  works (stratum#6 fixed back in Phase 2).
+
 ### Step 1 — Deprecation releases (both packages, same day)
 
 For `stratum-mcp` and `stratum-py`:
@@ -47,26 +63,12 @@ For `stratum-mcp` and `stratum-py`:
 - Git history is the archive — no archive branch, no tarball (repo
   precedent: never delete implementation reports; those stay).
 
-### Step 3 — npm publication (D3 corrected; separate commit after removal)
+### Step 3 — post-removal PATH note
 
-The TS package already declares both bins (`ts/package.json:7-10`) but is
-`private: true` — nothing is installable, so the deprecation notices in
-Step 1 have no target until this step. Publication is therefore part of
-THIS feature, not an afterthought:
-
-- Un-private, set a real version, publish `@smartmemory/stratum` to npm
-  (publish workflow decided here: manual `npm publish` vs CI — repo has
-  CI, so CI per house rules).
-- The published bins claim `stratum-mcp` and `stratum` for installers
-  (the miniconda shadow problem dies with the Python env dependency;
-  PATH docs get a note).
-- Verify: `npm i -g @smartmemory/stratum` on a clean machine/prefix →
-  `stratum-mcp --help` and `stratum --help` resolve to TS; node >= 26
-  works (stratum#6 fixed back in Phase 2).
-- ORDERING: Step 1's PyPI notices must name the npm package — so the
-  publish (or a decided local-only stance with adjusted notice wording)
-  happens BEFORE Step 1's releases go out, even though the bin
-  visibility only matters after removal.
+With Python gone, the published bins (Step 0) are the only `stratum` /
+`stratum-mcp` on a fresh install; the miniconda shadow problem dies with
+the Python env dependency. PATH docs get a one-line note; nothing else —
+publication already happened in Step 0.
 
 ### Rollback posture
 
@@ -81,7 +83,7 @@ migration to unwind (epic D1: drain-and-cutover).
 |---|---|---|
 | `stratum-mcp/**`, `src/stratum/**`, `pyproject.toml`, `uv.lock` (existing) | delete | the removal |
 | `CHANGELOG.md`, `README.md`, `CLAUDE.md` (existing) | modify | same-commit identity update |
-| `ts/package.json` (existing) | modify | `stratum-mcp` + `stratum` bin claims |
+| `ts/package.json` (existing) | modify | remove `private`, real version, publish metadata (bins already declared) |
 | `docs/features/STRAT-PY-REMOVE/design.md` (this doc) | modify | removal record (SHA, suite, versions) |
 
 ## Acceptance criteria
@@ -92,11 +94,10 @@ migration to unwind (epic D1: drain-and-cutover).
 - [ ] Publisher configs/tokens retired
 - [ ] Removal commit lands with CHANGELOG/README/CLAUDE.md in the same
       commit; removal record (SHA, final suite numbers, versions) in this doc
-- [ ] npm publication executed (or explicit local-only stance recorded)
-      BEFORE the PyPI deprecation releases; notices point at a real
-      install target
-- [ ] TS bins claim `stratum-mcp` and `stratum` via the published
-      package; verified with a clean-prefix global install
+- [ ] Step 0 npm publication executed via CI (or explicit local-only
+      stance recorded) BEFORE the PyPI deprecation releases; notices
+      point at a real install target; clean-prefix global install
+      verified
 - [ ] Epic roadmap Phase 5 checkboxes ticked; epic marked COMPLETE
 
 ## Open questions
