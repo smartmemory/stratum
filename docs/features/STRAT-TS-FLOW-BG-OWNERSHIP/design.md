@@ -1,7 +1,21 @@
 # STRAT-TS-FLOW-BG-OWNERSHIP — attempt-bound dispatch for the detached driver
 
-**Status:** PLANNED (follow-up filed from STRAT-TS-FLOW-BG v1 review)
+**Status:** PARTIAL — sole-mutator lockout SHIPPED (2026-07-11); attempt/epoch-bound
+dispatch for multi-branch revise remains (gated on multi-branch bg scope).
 **Surfaced by:** STRAT-TS-FLOW-BG (adversarial codex review, 2026-07-11)
+
+## Shipped (slice 1): sole-mutator lockout
+
+The reachable vector in v1 (linear + fanout) is an **external `stepDone` on a
+bg-driven run**. Closed directly: the public `StratumEngine.stepDone` refuses
+when the run is actively bg-driven (`bg.status` running or paused_gate), and the
+driver calls a private `stepDoneOwned` that bypasses the guard. Gates still
+resolve through `gateResolve`. `stepDone` is now async so the refusal surfaces
+as a rejection to every awaiting caller (including the MCP dispatcher). Once the
+bg run reaches a terminal state the guard no longer applies — a normal "not
+awaiting a client result" error surfaces instead. Proven by two process-backed
+tests (lockout while in flight; permitted-again post-terminal). This makes the
+external-`stepDone` reset — and therefore the stale-result acceptance — impossible.
 
 ## Problem
 
@@ -37,26 +51,26 @@ A driver-side best-effort guard (re-check attempt before submit) is leaky
 correct fix touches the shared mutation guard, which is deferred to avoid
 regressing the session-driven path.
 
-## Proposed fix
+## Remaining (slice 2): attempt/epoch-bound dispatch for multi-branch revise
 
-Make dispatch attempt/epoch-bound, atomically:
+Only reachable once multi-branch detached flows (a `ready` `do`-step concurrent
+with a revisable gate) are in scope — not producible by v1 linear+fanout. When
+that lands:
 - Thread the dispatched `attempt` (and, once ordinary steps carry one, an
-  `epoch`) from the `ReadyStep` into `stepDone`, and have `stepDoneLocked` reject
-  a result whose `(attempt, epoch)` no longer matches the step's current
+  `epoch`) from the `ReadyStep` into `stepDoneOwned`, and have `stepDoneLocked`
+  reject a result whose `(attempt, epoch)` no longer matches the step's current
   expectation — under the run lock, so there is no TOCTOU window.
-- Alternatively / additionally: lock out external `stepDone` on a bg-registered
-  run (the driver calls an internal, un-gated path), while still allowing
-  `gateResolve` (gates must resume the driver). This closes the external-`stepDone`
-  vector cleanly without a shared-contract change.
 - Assign ordinary steps an epoch on `revise` (mirroring fanout's `fanoutEpoch`)
   so a pre-revision result is unambiguously stale.
 
 ## Acceptance criteria
 
-- [ ] A stale connector result from a pre-reset attempt is rejected (or diverted),
-      never committed against a newer attempt/epoch — proven with a process-backed
-      test that blocks the driver's connector, externally resets the step, releases,
-      and asserts the stale result is not recorded.
-- [ ] The session-driven (non-bg) `stepDone` path is unchanged (full suite green).
+- [x] An external `stepDone` on an actively bg-driven run is refused, so it cannot
+      reset the driven step mid-dispatch — proven by a process-backed test that
+      blocks the driver's connector, attempts an external stepDone (rejected), and
+      asserts the driver completes the flow alone.
+- [x] The guard is scoped to active bg states — post-terminal `stepDone` behaves
+      normally (proven by a second test).
+- [x] The session-driven (non-bg) `stepDone` path is unchanged (full suite green).
 - [ ] Multi-branch (gate + independent `do`) detached flows are safe under revise
-      racing an in-flight dispatch (once multi-branch bg is in scope).
+      racing an in-flight dispatch (slice 2, once multi-branch bg is in scope).

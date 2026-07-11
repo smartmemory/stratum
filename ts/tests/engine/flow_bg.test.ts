@@ -151,7 +151,7 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     expect(connectorCalls).toBe(1);
   });
 
-  it("does not fail a healthy run when a concurrent stepDone advances a driven step", async () => {
+  it("locks out an external stepDone on a bg-driven run and completes under the driver alone", async () => {
     let release!: () => void;
     let markStarted!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });
@@ -164,13 +164,46 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     });
     const started = await engine.flowRunBg(linearFlow, { name: "Ada" });
     await dispatched;
-    // An out-of-contract external pump advances "first" while the driver's connector is in flight.
-    await engine.stepDone(started.runId, "first", { output: { value: "first Ada" } });
+    // The driver owns the mutation surface: an external stepDone while a step is
+    // in flight would race a stale result in — it must be refused, not accepted.
+    await expect(engine.stepDone(started.runId, "first", { output: { value: "stale" } }))
+      .rejects.toThrow(/background-driven/);
     release();
     const terminal = await waitForBg(engine, started.runId, "completed");
     expect(terminal.status).toBe("completed");
-    // The driver re-derived instead of terminally failing; the flow still completed.
+    // The driver drove every step itself; the external pump never advanced anything.
     expect(prompts).toEqual(["first Ada", "second"]);
+    // The "stale" external result was never committed — "first" holds the driver's output.
+    const audit = await engine.audit(started.runId);
+    expect(audit.steps.first?.output).toEqual({ value: "first Ada" });
+  });
+
+  it("refuses an external stepDone on a cancelled (abandoned-but-running) bg run", async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const dispatched = new Promise<void>((resolve) => { markStarted = resolve; });
+    const engine = await subject(async ({ prompt }) => {
+      if (prompt.startsWith("first")) { markStarted(); await blocked; }
+      return { output: { value: prompt } };
+    });
+    const started = await engine.flowRunBg(linearFlow, { name: "Ada" });
+    await dispatched;
+    await engine.flowCancelBg(started.runId);
+    release();
+    await waitForBg(engine, started.runId, "cancelled");
+    // A cancelled run is abandoned; its still-ready step must not be externally pumped.
+    await expect(engine.stepDone(started.runId, "second", { output: { value: "sneak" } }))
+      .rejects.toThrow(/background-driven/);
+  });
+
+  it("permits stepDone again once the bg run reaches a terminal state", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await engine.flowRunBg(linearFlow, { name: "Ada" });
+    await waitForBg(engine, started.runId, "completed");
+    // Post-terminal, the guard no longer refuses — the natural "not awaiting" error surfaces instead.
+    await expect(engine.stepDone(started.runId, "first", { output: { value: "x" } }))
+      .rejects.toThrow(/not awaiting a client result/);
   });
 });
 

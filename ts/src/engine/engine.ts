@@ -254,7 +254,27 @@ export class StratumEngine {
     return { runId: first.runId, status: "running" };
   }
 
-  stepDone(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
+  async stepDone(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
+    // Sole-mutator enforcement (STRAT-TS-FLOW-BG-OWNERSHIP): while a run is
+    // actively bg-driven, the driver owns its mutation surface — an external
+    // stepDone would race an in-flight connector dispatch and could commit a
+    // stale result against a reset attempt. Poll via flow_bg_poll instead;
+    // gates are the one exception and resolve through gateResolve.
+    // Refuse for every non-cleanly-terminal bg state: running, paused_gate, AND
+    // cancelled (a cancelled run is durably abandoned but may still hold a
+    // `ready` step, so an external pump could mutate it). Only a genuinely
+    // finished bg run (completed/failed/budget_exhausted) falls through, where
+    // stepDone raises the normal "not awaiting" error anyway.
+    const bg = this.bgFlows.get(runId);
+    if (bg !== undefined && bg.status !== "completed" && bg.status !== "failed" && bg.status !== "budget_exhausted") {
+      throw new Error(`run ${runId} is background-driven; external stepDone is not permitted (poll via flow_bg_poll)`);
+    }
+    return this.stepDoneOwned(runId, stepId, result);
+  }
+
+  /** Lock-wrapped stepDone used by the bg driver itself, bypassing the
+   * sole-mutator guard on the public entry point. */
+  private stepDoneOwned(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
     return this.withRunLock(runId, () => this.stepDoneLocked(runId, stepId, result));
   }
 
@@ -539,12 +559,13 @@ export class StratumEngine {
             result = { failure: message(error) };
           }
           try {
-            response = await this.stepDone(runId, step.id, result);
+            response = await this.stepDoneOwned(runId, step.id, result);
           } catch (error) {
-            // A concurrent stepDone/cancel/revise may have moved this step out of
-            // `ready` while our connector was in flight — that is not a driver
-            // failure. Re-derive current state and keep driving; a genuinely
-            // unexpected error (still-ready step) surfaces to the terminal catch.
+            // A concurrent cancel/revise may have moved this step out of `ready`
+            // while our connector was in flight — that is not a driver failure.
+            // (External stepDone is locked out by the sole-mutator guard.)
+            // Re-derive current state and keep driving; a genuinely unexpected
+            // error (still-ready step) surfaces to the terminal catch.
             const current = await this.loadRun(runId);
             const stepState = current.steps[step.id];
             if (current.status !== "running" || (stepState !== undefined && stepState.status !== "ready")) {
