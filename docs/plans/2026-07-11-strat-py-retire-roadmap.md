@@ -63,6 +63,17 @@ deleting the Python engine from the repo and deprecating it on PyPI.
   delete the Python tree.
 - **D5 — Node ≥ 26 packaging fix (stratum#6) is a Phase 2 entry gate.**
   Wide cutover cannot ride on a node-22-pinned wrapper.
+- **D6 — This epic retires the ENGINE (`stratum-mcp`), not the `stratum-py`
+  library.** `src/stratum/` is a separate PyPI product (`@pipeline`,
+  `@phase`, `stratum.run()` — Python-native authoring, "LLM calls that
+  behave like the rest of your code"). The TS port never ported that
+  surface, so deleting it here would silently end Python-native authoring —
+  a product decision, not a cleanup step. Its fate (keep as independent
+  product / freeze / deprecate — possibly later a thin Python SDK over the
+  TS engine) is decided separately with PyPI usage data, OUTSIDE this epic.
+  Entanglement to sever regardless: `stratum-mcp` imports
+  `stratum.judge.codex_models` + `stratum.judge.sandbox` from the library
+  (undeclared dependency) — the D4 relocation covers both.
 
 ## Phases
 
@@ -136,10 +147,11 @@ Python fallback used.
 
 - [ ] Final `stratum-mcp` PyPI release with deprecation notice (notes from
       Phase 1); Trusted Publisher config retired after
-- [ ] Python suite (1517 passed / 2 skipped) frozen at the removal SHA —
-      recorded here, then deleted with the tree
-- [ ] `stratum-mcp/` package + `src/stratum/` Python tree removed from the
-      repo (git history preserves them; no archive branch needed)
+- [ ] `stratum-mcp` suite (1517 passed / 2 skipped) frozen at the removal
+      SHA — recorded here, then deleted with the tree
+- [ ] `stratum-mcp/` package removed from the repo (git history preserves
+      it; no archive branch needed). `src/stratum/` (`stratum-py`) is NOT
+      removed here — its fate is a separate decision per D6
 - [ ] TS package claims the `stratum-mcp` bin name (D3)
 - [ ] CHANGELOG + README updated in the removal commit
 
@@ -153,6 +165,10 @@ Phase 3 can run any time before 4.
 
 - Does anything outside forge/compose consume the PyPI `stratum-mcp`
   package? Check download stats / known installs before Phase 5 wording.
+- `stratum-py` disposition (D6): keep as independent Python-authoring
+  product, freeze, or deprecate — needs PyPI usage data. If kept alive
+  long-term, the natural shape is a thin Python SDK that authors specs and
+  drives the TS engine, so there is one engine and two authoring surfaces.
 - Transcript tools (`read_centered` etc.) are session-ergonomics, not
   engine — they may belong in a separate small server rather than the TS
   engine (Phase 3 decides).
