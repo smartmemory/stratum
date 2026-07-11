@@ -53,10 +53,16 @@ deleting the Python engine from the repo and deprecating it on PyPI.
   else gets an explicit port / park / kill disposition with usage evidence
   (transcripts, compose greps). Kills get `**KILLED (date):** reason`
   provenance at the tool's origin.
-- **D3 — Bin naming.** The TS package's `stratum-mcp` bin-name collision
-  resolves itself at Phase 5: TS claims the name only after the Python
-  package is deprecated. Until then TS is invoked as `stratum` /
-  `COMPOSE_STRATUM_TS_BIN` only.
+- **D3 (corrected 2026-07-11) — Bin naming + npm distribution.** The TS
+  package ALREADY declares both `stratum` and `stratum-mcp` bins
+  (`ts/package.json:7-10`) — but the package is `private: true`, so
+  nothing is claimed publicly and there is no installable replacement to
+  point the PyPI deprecation notice at. The real Phase 5 gate is
+  **publication**: un-private + version + publish `@smartmemory/stratum`
+  to npm (or record an explicit local-only stance and word the
+  deprecation notice accordingly). Until cutover, TS is invoked via
+  absolute path / `COMPOSE_STRATUM_TS_BIN` only — the collision is
+  avoided by non-installation, not by deferred declaration.
 - **D4 — Codex model allowlist relocation.** `codex_models.py` (default +
   allowlist, monthly refresh cron) must move to an engine-neutral home (a
   data file the TS judge backend and the cron both read) before Phase 5 can

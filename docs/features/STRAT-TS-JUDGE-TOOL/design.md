@@ -65,22 +65,30 @@ Consequences made explicit rather than lost silently:
   a row in a "judge capability delta" table in THIS doc, with a filed-on-
   demand follow-up code (STRAT-TS-JUDGE-TIERS) if real usage misses them.
 
-### Decision 2 — the deltas that ARE worth closing now (small, high-value)
+### Decision 2 — the deltas, corrected by review (2026-07-11, both findings CONFIRMED)
 
-Two pieces of the Python kernel protect against classes of failure the TS
-seam is currently blind to, and are cheap to add to the existing
-evaluators (not a kernel port):
-
-- **Evidence-bounded prompts:** T1's principle — the judge sees staged
-  evidence, not the live workspace. TS `judged:` ensures currently get
-  `context` assembled by the engine; add an explicit contract test that
-  judged prompts contain only declared artifacts (the
-  `<<<JUDGE_INPUT>>>` separation in `codex_judged.ts` already does the
-  injection-hardening half).
-- **Budget accounting parity:** TS `JudgedResult.usage {tokens, usd}`
-  already exists; wire it into the engine's `BudgetLedger`
-  (`BUDGET_KEYS` includes usd/tokens) so judged ensures spend against
-  flow budgets the way Python's turn budget bounded runaway judging.
+- **Context bounding — reframed, not "declared artifacts only."** The
+  original criterion ("judged prompt contains only declared artifacts")
+  is unrepresentable: the v1 IR's judged predicate carries only
+  `statement` + `stakes` (`ts/src/ir/schema.ts:14-19`) and the engine
+  passes the step output + flow input as context
+  (`engine.ts:961-962`) — there is no artifact-selection field. The
+  ACTUAL property TS provides, now stated as the contract: **judged
+  context is engine-constructed from flow state only (step output +
+  flow input), never live workspace reads**, with injection hardening
+  already present (`<<<JUDGE_INPUT>>>` separation + `<` escaping in
+  `codex_judged.ts:55-63`). One contract test pins engine-constructed-
+  only; the difference vs Python's staged-evidence model is a row in
+  the capability-delta table. An IR artifact-selection field is NOT
+  added here (scope growth with no consumer); it goes in the delta
+  table as follow-up-on-demand.
+- **Budget accounting — regression verification, NOT implementation.**
+  The engine ALREADY debits judged usage into the ledger and fails
+  closed on flow/subflow/task exhaustion (`engine.ts:989-1009`,
+  verified 2026-07-11). Implementing "wiring" as originally written
+  would double-debit every judged call. The work is a regression test
+  asserting: usage debited once, exhaustion returns the three budget
+  failure kinds, fanout items get per-item ledger events.
 
 ### Decision 3 — triage coupling
 
@@ -95,9 +103,8 @@ the engine uses.
 
 | File | Action | Purpose |
 |---|---|---|
-| `ts/src/judge/judged.ts` / `codex_judged.ts` (existing) | modify | evidence-bounding contract test hooks (Decision 2) |
-| `ts/src/engine/engine.ts` (existing) | modify | judged-ensure usage → BudgetLedger (Decision 2) |
-| `ts/tests/judge/*.test.ts` (existing) | modify | evidence-bounding + budget tests |
+| `ts/tests/judge/*.test.ts` (existing) | modify | engine-constructed-context contract test |
+| `ts/tests/engine/*.test.ts` (existing) | modify | judged budget regression tests (no-double-debit, exhaustion kinds) |
 | `docs/features/STRAT-TS-JUDGE-TOOL/design.md` (this doc) | modify | capability-delta table appended at execution |
 
 ## Acceptance criteria
@@ -106,10 +113,12 @@ the engine uses.
 - [ ] No `stratum_judge` tool on the TS server; decision + rationale
       recorded in the epic (roadmap Phase 2 row updated from "expose the
       tool" to this absorb decision)
-- [ ] Judged-ensure usage flows into the engine BudgetLedger; over-budget
-      judged ensure fails closed with a budget failure, tested
-- [ ] Evidence-bounding contract test: judged prompt contains only
-      declared artifact content
+- [ ] Budget regression tests: usage debited exactly once; exhaustion
+      returns the three budget failure kinds; per-item fanout ledger
+      events (no new wiring — engine.ts:989-1009 already does this)
+- [ ] Context contract test: judged context is engine-constructed from
+      flow state only (step output + flow input), never live workspace
+      reads
 - [ ] Triage coupling recorded: goal-kernel disposition names its judge
       requirements or confirms none
 

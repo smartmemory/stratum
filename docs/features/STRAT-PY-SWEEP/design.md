@@ -46,13 +46,26 @@ Today: `src/stratum/judge/codex_models.py` holds `DEFAULT_CODEX_MODEL` +
 imports it (undeclared dep).
 
 Target: **one JSON data file in the stratum repo** — `config/codex-models.json`
-(new) — `{ "default": "...", "allowlist": [...], "updated": "YYYY-MM-DD" }`.
+(new) — `{ "default": "...", "allowlist": [...], "stakes": {"cheap": "...",
+"default": "...", "paranoid": "..."}, "updated": "YYYY-MM-DD" }`.
 
-- TS judge backend reads it at spawn (with the existing `CODEX_MODEL` env
-  override taking precedence — behavior preserved).
-- The cron rewrites the JSON instead of the .py.
-- `codex_models.py` becomes a 5-line shim reading the JSON (keeps Python
-  green during overlap), deleted in Phase 5.
+Corrected by review (2026-07-11, CONFIRMED): the TS side has TWO separate
+model seams today, and neither reads any config file —
+
+- **Connector default**: `ts/src/connectors/codex.ts:22-24` reads
+  `CODEX_MODEL` env with a hard-coded fallback. The JSON's `default`
+  becomes that fallback (env still wins — precedence preserved).
+- **Per-stakes judge routing**: `judged.ts:16-20` and
+  `codex_judged.ts:32-43` use hard-coded `STAKES_MODEL` maps. The
+  JSON's `stakes` object becomes the source, hard-coded map demoted to
+  fallback-when-file-absent.
+
+So D4 ships a small loader (`ts/src/judge/model_config.ts` (new), read
+once, validated, cached) consumed by both seams, plus tests for: file
+present, file absent (fallbacks), env override wins, malformed file
+fails loud. The cron rewrites the JSON instead of the .py;
+`codex_models.py` becomes a shim reading the JSON (keeps Python green
+during overlap), deleted in Phase 5.
 
 Rationale: data belongs in data files; the cron currently editing Python
 source is the anomaly being retired, not a pattern to preserve.
@@ -61,8 +74,9 @@ source is the anomaly being retired, not a pattern to preserve.
 
 | File | Action | Purpose |
 |---|---|---|
-| `config/codex-models.json` (new, stratum) | add | engine-neutral model allowlist |
-| `ts/src/judge/*` (existing, stratum) | modify | read JSON config |
+| `config/codex-models.json` (new, stratum) | add | engine-neutral model allowlist + stakes routing |
+| `ts/src/judge/model_config.ts` (new, stratum) | add | loader (validated, cached, fail-loud) |
+| `ts/src/judge/judged.ts`, `codex_judged.ts`, `ts/src/connectors/codex.ts` (existing) | modify | consume loader; hard-coded maps demoted to fallback |
 | `src/stratum/judge/codex_models.py` (existing) | modify | shim over JSON until Phase 5 |
 | `forge/scripts/model-pricing-refresh.sh` (existing, forge — not git) | modify | rewrite JSON |
 | forge + compose `.mcp.json` (existing) | modify | TS server registration |
@@ -74,8 +88,10 @@ source is the anomaly being retired, not a pattern to preserve.
 - [ ] Inventory re-verified at execution start (grep sweep; new consumers
       since 2026-07-11 added to the table)
 - [ ] Each row cut over in order, with its Verify step recorded in this doc
-- [ ] `config/codex-models.json` live; cron + TS judge verified against it;
-      `CODEX_MODEL` env override still wins
+- [ ] `config/codex-models.json` live governing BOTH seams (connector
+      default + per-stakes judge routing); loader tests: present /
+      absent-fallback / env-override-wins / malformed-fails-loud; cron
+      verified against the JSON
 - [ ] Two-week TS-only clock start date recorded (gates STRAT-PY-REMOVE)
 - [ ] Zero Python `stratum-mcp` spawns observed during the clock (probe:
       grep compose logs / `ps` sampling note in this doc)
