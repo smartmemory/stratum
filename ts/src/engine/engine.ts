@@ -179,8 +179,8 @@ export class StratumEngine {
   // entry point mutates THIS instance (not a fresh disk copy), so the fanout
   // can release the run lock across connector awaits without divergent copies.
   private readonly activeRuns = new Map<string, { run: PersistedRun; refs: number }>();
-  // V1 loop ownership is in-process like runLocks; durable runs remain resumable,
-  // but rehydrating detached loops after process restart is a follow-up.
+  // V1 loop ownership is in-process like runLocks; startup rehydrates ownership
+  // for detached runs marked in their durable state.
   private readonly bgFlows = new Map<string, BgFlowState>();
 
   constructor(options: StratumEngineOptions) {
@@ -241,9 +241,14 @@ export class StratumEngine {
 
   async flowRunBg(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<{ runId: string; status: "running" }> {
     const first = await this.plan(specInput, input, options);
+    const run = await this.withRunLock(first.runId, async () => {
+      const current = await this.loadRun(first.runId);
+      current.bgDriven = true;
+      await this.persist(current);
+      return current;
+    });
     const bg: BgFlowState = { status: "running", cancelRequested: false };
     this.bgFlows.set(first.runId, bg);
-    const run = await this.loadRun(first.runId);
     // Pin before launch so the loop and any fanout always share one run object.
     this.retainRun(first.runId, run);
     const loop = this.driveBg(first.runId, first);
@@ -253,6 +258,52 @@ export class StratumEngine {
       if (bg.loop === loop) delete bg.loop;
     });
     return { runId: first.runId, status: "running" };
+  }
+
+  async rehydrateBgFlows(): Promise<void> {
+    for (const runId of await this.store.list()) {
+      let run: PersistedRun;
+      try {
+        run = await this.store.load(runId);
+      } catch (error) {
+        process.stderr.write(`stratum: unable to load persisted flow '${runId}': ${message(error)}\n`);
+        continue;
+      }
+      if (!run.bgDriven || this.bgFlows.has(run.id)) continue;
+      if (run.status !== "running") {
+        this.bgFlows.set(run.id, { status: run.status, cancelRequested: false });
+        continue;
+      }
+      if (run.cancelRequested === true) {
+        this.bgFlows.set(run.id, { status: "cancelled", cancelRequested: true });
+        continue;
+      }
+
+      // Launch the driver WITHOUT awaiting per-run advancement: a slow/stalled run
+      // must never block server startup, and a malformed persisted run must fail in
+      // its own (background) driver, not abort the whole scan. driveBg self-discovers
+      // the live state via reAdvance (which also re-schedules any in-flight fanout),
+      // so no explicit resume is needed; the synthesized initial's ledger is never
+      // read (driveBg re-derives it). retainRun and the launch are adjacent with no
+      // throwing await between them, so the retain can never leak.
+      //
+      // AT-LEAST-ONCE across restart: an in-flight connector was durable as `ready`,
+      // so the driver re-dispatches it — a step may run twice, and that second
+      // physical dispatch is NOT re-ledgered (a dispatch budget may under-count by the
+      // in-flight-at-crash count). Callers doing writes must be idempotent. A worktree
+      // fanout merge retains its pre-existing crash window (accepted residual). This
+      // assumes SINGLE-PROCESS ownership — the prior engine is gone; two live engines
+      // on one state root are unsupported in v1 (same single-owner model as runLocks).
+      const bg: BgFlowState = { status: "running", cancelRequested: false };
+      this.bgFlows.set(run.id, bg);
+      this.retainRun(run.id, run);
+      const loop = this.driveBg(run.id, { status: "running", runId: run.id, ledger: { spent: {} } });
+      bg.loop = loop;
+      void loop.finally(() => {
+        this.releaseRun(run.id);
+        if (bg.loop === loop) delete bg.loop;
+      });
+    }
   }
 
   async stepDone(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
@@ -600,13 +651,16 @@ export class StratumEngine {
         response = await this.reAdvance(runId);
       }
     } catch (error) {
-      bg.status = "failed";
       try {
         await this.withRunLock(runId, async () => {
           const run = await this.loadRun(runId);
           if (run.status === "running") await this.terminalFailure(run, { attempt: 0, reason: `background driver failed: ${message(error)}` });
         });
       } catch { /* persistence failure is already the terminal boundary */ }
+      // Flip the registry status only AFTER the durable terminalization settles, so
+      // a poller that observes "failed" can trust the persisted state is written —
+      // consistent with the response-driven terminal paths above.
+      bg.status = "failed";
     }
   }
 

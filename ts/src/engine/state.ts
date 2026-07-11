@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Budget } from "./ledger.js";
@@ -159,6 +159,8 @@ export interface PersistedRun {
   /** Cooperative cancel: set by flowCancelBg, observed by the detached driver and
    * in-flight fanout workers so neither dispatches further work after a cancel. */
   cancelRequested?: boolean;
+  /** Optional so runs created before detached-flow rehydration remain loadable. */
+  bgDriven?: boolean;
   /** Optional so persisted runs created before parallel dispatch remain loadable. */
   parallel?: ParallelRunState;
 }
@@ -185,8 +187,23 @@ export class StateStore {
     return JSON.parse(await readFile(this.path(runId), "utf8")) as PersistedRun;
   }
 
+  async list(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.root);
+    } catch (error) {
+      if (isNotFound(error)) return [];
+      throw error;
+    }
+    return names.filter((name) => name.endsWith(".json")).sort().map((name) => name.slice(0, -".json".length));
+  }
+
   private path(runId: string): string {
     if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error("invalid run id");
     return join(this.root, `${runId}.json`);
   }
+}
+
+function isNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }

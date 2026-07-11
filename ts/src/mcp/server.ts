@@ -149,7 +149,9 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
 }
 
 export async function serveStdio(): Promise<void> {
-  const server = await createMcpServer();
+  const engine = defaultEngine();
+  await engine.rehydrateBgFlows();
+  const server = await createMcpServer({ engine });
   await server.connect(new StdioServerTransport());
 }
 
