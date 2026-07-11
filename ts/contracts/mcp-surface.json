@@ -91,6 +91,44 @@
         "already_error": { "runId": "string" },
         "not_found": { "runId": "string" }
       }
+    },
+    "stratum_guard_register": {
+      "request": { "resource_id": "string", "graph": "object", "edge_predicates": "object", "initial": "string", "terminal?": "array|null", "stakes?": "object|null", "workspace_root?": "string|null" },
+      "responses": {
+        "registered": { "guard_id": "string", "checksum": "string" },
+        "exists": { "guard_id": "string", "checksum": "string" },
+        "error": { "error_type": "string", "message": "string" }
+      }
+    },
+    "stratum_guard_transition": {
+      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "artifacts": "object", "modified_files?": "array|null", "idempotency_key?": "string|null", "resolved_by?": "string" },
+      "responses": {
+        "applied": { "verdict": "object", "ledger_ref": "string", "current_state": "string" },
+        "refused": { "verdict": "object", "ledger_ref": "string", "current_state": "string" },
+        "replayed": { "verdict": "object", "ledger_ref": "string", "current_state": "string" },
+        "error": { "error_type": "string", "message": "string" }
+      }
+    },
+    "stratum_guard_override": {
+      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "override_token": "string", "rationale": "string", "resolved_by?": "string" },
+      "responses": {
+        "deviation": { "ledger_ref": "string", "current_state": "string", "rationale": "string" },
+        "error": { "error_type": "string", "message": "string" }
+      }
+    },
+    "stratum_guard_migrate": {
+      "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "override_token": "string", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
+      "responses": {
+        "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string" },
+        "error": { "error_type": "string", "message": "string" }
+      }
+    },
+    "stratum_guard_history": {
+      "request": { "resource_id": "string" },
+      "responses": {
+        "success": { "resource_id": "string", "current_state": "string", "graph_version": "number", "ledger": "array" },
+        "error": { "error_type": "string", "message": "string" }
+      }
     }
   }
 }

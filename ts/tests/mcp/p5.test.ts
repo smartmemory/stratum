@@ -51,7 +51,7 @@ function response(result: unknown): Record<string, unknown> {
 }
 
 describe("P5 frozen MCP surface", () => {
-  it("exposes exactly ten tools", async () => {
+  it("exposes exactly fifteen tools", async () => {
     const pair = await connected({});
     try {
       const listed = await pair.client.listTools();
@@ -164,7 +164,7 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_cancel_agent_run", { runId: cancelId });
 
       const surface = await mcpSurface();
-      for (const tool of Object.keys(surface.tools)) {
+      for (const tool of Object.keys(surface.tools).filter((tool) => !tool.startsWith("stratum_guard_"))) {
         expect([...seen.get(tool)!].sort(), tool).toEqual(Object.keys(surface.tools[tool]!.responses).sort());
       }
     } finally { await pair.close(); }

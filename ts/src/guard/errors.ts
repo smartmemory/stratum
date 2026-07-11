@@ -28,11 +28,14 @@ export type GuardErrorEnvelope = {
 
 /** An error transition/store code can throw; the CLI can emit its envelope. */
 export class GuardError extends Error {
+  readonly errorType: GuardErrorType;
+
   constructor(
-    readonly errorType: GuardErrorType,
+    errorType: GuardErrorType,
     message: string,
   ) {
     super(message);
+    this.errorType = errorType;
     this.name = "GuardError";
   }
 
