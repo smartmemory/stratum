@@ -99,34 +99,59 @@ deleting the Python engine from the repo and deprecating it on PyPI.
       `stratum-mcp` bin collision per D3)
 - [ ] PyPI deprecation notes drafted (land at Phase 5)
 
-### Phase 2 — TS parity for the used surface — PLANNED (stratum repo)
+### Phase 2 — TS parity for the used surface — RE-SCOPED 2026-07-11 (stratum repo)
 
 Entry gate: stratum#6 fixed (D5). Can start now; does not depend on Phase 0/1.
 
-- **STRAT-TS-GUARD** — port the guard subsystem (`guard_register`,
-  `guard_transition`, `guard_override`, `guard_history`, `guard_migrate`).
-  Largest chunk: STRAT-GUARD was never in the TS port scope. Exit: compose
-  `stratum-client.js` guard pin removed; `lifecycle-guard.js` green on TS.
-  - [ ] 5 guard tools on the TS server, contract-identical to Python
-  - [ ] compose guard* dispatches engine-selected (pin deleted)
-  - [ ] guard golden flow passes on TS (register → transition → override → history)
-- **STRAT-TS-PARALLEL** — port the parallel kernel
-  (`parallel_start/advance/poll/done`); compose batch builds depend on it.
-  - [ ] 4 tools contract-identical; compose batch-build golden flow on TS
-- **STRAT-TS-ITER** — port the iteration kernel
-  (`iteration_start/report/abort`).
-  - [ ] 3 tools contract-identical; compose iteration-loop tests on TS
-- **STRAT-TS-FLOWCTL** — port `skip_step`, `revert`, `commit`,
-  `check_timeouts`.
-  - [ ] 4 tools contract-identical, covered by TS contract tests
-- **STRAT-TS-JUDGE-TOOL** — judge surface parity. NOTE (2026-07-11):
-  design recon showed "expose the tool" was a category error — Python's
-  `stratum_judge` is a 3-tier kernel serving v0 `judge:` steps, which the
-  v1 IR replaces with engine `judged:` ensures. The design's
-  recommendation is ABSORB (no standalone tool; close two small deltas:
-  budget-ledger wiring + evidence-bounding tests). See the design doc.
-  - [ ] Design decision executed (absorb + deltas), capability-delta
-        table recorded
+**RE-SCOPE NOTE (2026-07-11, session 6aebbe19).** Executing GUARD (done) then
+PARALLEL surfaced that the original Phase-2 list conflated "a Python tool /
+compose wrapper exists" with "the surface is live." A usage audit + a field
+survey (deep-research, 26 sources, 23/25 claims verified — see memory
+`project-strat-py-retire` and the survey report) corrected two things:
+
+1. **Verify a real, non-redundant TS-engine caller before porting.** PARALLEL's
+   consumer surface is architecturally dead-on-arrival on the TS engine (no
+   `parallel_dispatch` step type by design; v1's parallel primitive is native
+   `fanout`, reached by re-authoring). ITER/JUDGE/FLOWCTL have NO live caller in
+   any consumer path (compose JS *or* agent skills) today.
+2. **But the field validates these primitives as first-class — so KEEP + WIRE,
+   don't kill.** iteration loops, LLM-as-judge, HITL gates, checkpoint, and
+   parallel fan-out are all first-class in LangGraph / Temporal / OpenAI Agents
+   SDK / Claude Code. Only `check_timeouts` (auto-kill an overdue human gate) has
+   no field precedent → PARK. `skip_step` = thin keep.
+
+- **STRAT-TS-GUARD** — ✅ **COMPLETE + PUSHED** (origin/main @ 25fb104, v0.2.97;
+  7 slices, cross-engine byte-parity + Python↔TS mutual-exclusion proven).
+  - [x] 5 guard tools on the TS server, contract-identical to Python
+  - [x] guard golden flow passes on TS (register → transition → override → history)
+  - [ ] compose guard* dispatches engine-selected (pin deleted) — deferred to
+        STRAT-PY-SWEEP row 4 (compose `guardBin()` unpin)
+- **STRAT-TS-PARALLEL** — ⏸️ **PAUSED after slices A+B** (committed+pushed @
+  83e42c1). A = persisted parallel state + key-discriminated contract variants;
+  B = non-pipeline evaluation core + certificate validator (reusable foundation).
+  The 4-tool consumer-surface port is dead-on-arrival: v1's parallel primitive is
+  native `fanout` (`migrate/check.ts:41`); compose must re-author `parallel_dispatch`
+  → `fanout` to run on TS at all. See design.md PAUSE NOTE.
+  - Real path (post TS-2): **STRAT-TS-PARALLEL-FANOUT** — fold STRAT-CERT-PAR
+    certificates + slice-B require/bounce semantics into native fanout so a
+    re-authored fanout is a full replacement. Pipeline mode → **STRAT-TS-PARALLEL-PIPELINE**.
+- **STRAT-TS-ITER** — iteration kernel. **KEEP (field-validated first-class), but
+  not a blind port.** No live caller today; the TS engine already auto-drives
+  `iterate`. Real work = wire the manual loop into a real flow + decide auto vs
+  manual need before porting the 3 tools. Reclassified PLANNED→NEEDS-WIRING.
+  - [ ] Confirm a concrete consumer for the manual loop; port only if one exists
+- **STRAT-TS-FLOWCTL** — split by the survey:
+  - `commit` / `revert` — checkpoint is field-validated; KEEP. GAP: field prefers
+    **non-destructive branching** over destructive revert → idea filed.
+  - `skip_step` — thin dynamic-control affordance; KEEP if a consumer appears.
+  - `check_timeouts` — ⛔ **PARK**: no field precedent for auto-killing an overdue
+    human gate (Temporal pause/unpause analogue refuted 0-3).
+- **STRAT-TS-JUDGE-TOOL** — **ABSORB, reaffirmed by the survey.** LLM-as-judge is
+  first-class in the field, but the v1 engine expresses it via `judged:` ensures
+  over the existing TS judge backend, not a standalone tool. Close the two deltas
+  (budget-ledger wiring + evidence-bounding tests). GAP idea: richer gate-decision
+  set (approve/edit/reject/respond) filed.
+  - [ ] Design decision executed (absorb + deltas), capability-delta table recorded
 
 ### Phase 3 — Disposition of the remaining surface (STRAT-PY-TRIAGE) — PLANNED
 
@@ -197,6 +222,16 @@ IR the engine already executes.
   `@pipeline`/`@phase` ergonomics for Python users without resurrecting a
   Python engine. Rough size: 1–2 weeks. Entry gate: STRAT-TS-AUTHOR
   (IR-authoring seam proven once, then mirrored).
+- **STRAT-TS-PARALLEL-FANOUT** — fold STRAT-CERT-PAR certificates + the
+  STRAT-TS-PARALLEL slice-B require/bounce semantics into native `fanout` so a
+  re-authored `parallel_dispatch` → `fanout` is a full replacement. Real path
+  for the paused parallel port. Entry gate: TS-2 (compose re-authors to v1).
+- **STRAT-TS-PARALLEL-PIPELINE** — pipeline-mode (`step_type: pipeline`)
+  evaluation, only if a consumer ever needs it (none does today).
+- **Gap ideas from the 2026-07-11 field survey** (filed in the ideabox):
+  non-destructive branching over destructive `commit`/`revert`
+  (`idea_nondestructive_branching`), and a richer gate-decision taxonomy
+  approve/edit/reject/respond vs binary (`idea_richer_gate_decisions`).
 
 ## Sequencing
 
