@@ -95,7 +95,7 @@ MCP tools (`stratum_guard_*` ×5) are registered on the TS server too —
 same names, same shapes — so agent-side flows keep working after the
 .mcp.json cutover.
 
-### Decision 3 — locking: correct within TS, safe across engines by policy
+### Decision 3 — locking: enforced per-resource ownership handoff, not policy
 
 Node has no portable `flock` without native deps (TS engine is
 source-only by design). TS uses: in-process mutex map (as Python) +
@@ -103,14 +103,27 @@ cross-process **O_EXCL lockfile with stale-PID takeover** on a NEW
 sidecar (`.lock.ts`), preserving eval-outside-lock + optimistic commit
 re-check.
 
-Cross-ENGINE mutual exclusion (Python flock vs TS lockfile don't see
-each other) is handled by POLICY, stated as a hard invariant: **one
-engine per workspace per time** — compose dispatches guard calls to
-exactly one engine (the flag), and the overlap window never runs both
-against the same resource concurrently. The optimistic
-`current_state==from_state` re-check at commit bounds the damage of a
-violation to a stale-state refusal, never a corrupted chain (appends are
-O_APPEND single-write).
+Cross-engine mutual exclusion cannot be policy-only (review finding
+2026-07-11, CONFIRMED): guard dirs are global per `resource_id`, Python
+flocks `.lock` which TS cannot see, and two engines that both pass the
+optimistic state read can each build an entry against the same
+`prev_digest` — the second O_APPEND write lands as an INTERIOR chain
+break (`ledger_corrupt`), i.e. real corruption, not a graceful refusal.
+
+Therefore ownership is ENFORCED per resource, one-way:
+
+- On its first write to a guard dir, TS creates `engine.json`
+  (`{"owner":"ts","since":...}`) under its lock. From then on TS owns
+  the resource.
+- Same phase, Python side (still in-repo during overlap): guard store
+  load checks for `engine.json` with `owner:"ts"` and refuses ALL
+  mutations with a new `guard_engine_owned` error slug (reads/history
+  stay allowed). ~10 lines in `store.py`, shipped with STRAT-TS-GUARD,
+  covered by one Python test.
+- The marker is never removed (retirement is one-way); compose's
+  workspace-scoped resource ids (`compose:<workspace-hash>:<FC>`) mean
+  in practice the handoff rides the engine-flag flip, and the marker
+  makes a violation loud instead of corrupting.
 
 ### Decision 4 — evidence parser is a grammar, not eval
 
@@ -140,6 +153,8 @@ plumbing — this is the same seam `ensure` predicates already use.
 | `ts/src/mcp/server.ts` (existing) | modify | register 5 `stratum_guard_*` tools |
 | `ts/tests/guard/*.test.ts` (new) | add | ported contract tests + cross-engine golden fixtures |
 | `ts/tests/fixtures/guard-py-golden/` (new) | add | Python-written guard dir fixture |
+| `stratum-mcp/src/stratum_mcp/guard/store.py` (existing) | modify | `engine.json` ownership check → `guard_engine_owned` (Decision 3) |
+| `stratum-mcp/tests/test_guard_store.py` (existing) | modify | ownership-refusal test |
 
 ## Acceptance criteria
 
@@ -161,9 +176,13 @@ plumbing — this is the same seam `ensure` predicates already use.
       seam (run with the pin locally overridden; the actual unpin ships in
       STRAT-PY-SWEEP row 4)
 - [ ] `migrate` ported and tested even though compose doesn't call it
+- [ ] Ownership handoff: TS writes `engine.json` on first mutation;
+      Python refuses mutations on owned resources with
+      `guard_engine_owned` (tested both sides); a forced mixed-write
+      attempt fails LOUD, never appends
 
 ## Open questions
 
-- None blocking. The `.lock.ts` sidecar vs reusing `.lock` with O_EXCL
-  semantics is settled at implementation by what the golden-fixture tests
-  tolerate; the invariant (one engine per workspace) holds either way.
+- None blocking. The `.lock.ts` sidecar naming is settled at
+  implementation; cross-engine safety comes from the ownership marker
+  (Decision 3), not the lock file.

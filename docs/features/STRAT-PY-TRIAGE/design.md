@@ -12,7 +12,7 @@
 
 ## Problem
 
-14 Python MCP tools have no compose consumer. Porting all of them to TS is
+15 Python MCP tools have no compose consumer. Porting all of them to TS is
 waste; deleting all of them silently is data loss. Each needs an explicit,
 evidence-based disposition before Phase 4 can sweep consumers and Phase 5
 can delete the Python tree.
@@ -78,7 +78,7 @@ counts, disposition, follow-up ref), plus:
 
 ## Acceptance criteria
 
-- [ ] Transcript-scan evidence gathered for all 14 tools (counts recorded,
+- [ ] Transcript-scan evidence gathered for all 15 tools (counts recorded,
       corpus window stated)
 - [ ] Every tool has a disposition row: PORT / PARK / KILL + evidence
 - [ ] Every KILL has a KILLED provenance line at its owning feature doc

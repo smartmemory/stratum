@@ -36,10 +36,20 @@ consumer-facing surface.
    `{task_id, reason: gate_failed|merge_conflict, files, command,
    exit_code, excerpt}`.
 2. **Python's error envelopes are INCONSISTENT** — some sites return
-   `{status:"error", error_type}` while parallel_poll/advance return bare
-   `{error: ...}`. Compose handles both. The port replicates the
-   inconsistency EXACTLY (fidelity over aesthetics); normalizing is a
+   `{status:"error", error_type}` while THREE tools (start, poll, advance
+   — start's flow_complete/step_mismatch/wrong_step_type/already_started
+   etc. are bare too, `server.py:1924-1996`) return bare `{error: ...}`.
+   Compose handles both. The port replicates the inconsistency EXACTLY
+   site by site (fidelity over aesthetics); normalizing is a
    post-retirement cleanup, never a port-time change.
+   **Contract-layer consequence (review finding 2026-07-11, CONFIRMED):**
+   the TS surface layer selects response schemas by a required string
+   `status` (`ts/src/mcp/contracts.ts:60-68`) — bare `{error}` shapes
+   cannot pass it today. The surface format gains a per-tool
+   legacy-envelope variant (response matched by `error`-key presence
+   when no `status` field), which is a change to `contracts.ts` +
+   `mcp-surface.json`, listed in Files below and covered by tests for
+   all three bare-error tools.
 3. **Two dispatch modes** share one evaluation core: consumer-dispatch
    (compose runs agents, calls `parallel_done`) and server-dispatch
    (executor spawns agents; poll → optional deferred advance).
@@ -105,6 +115,7 @@ not.
 | `ts/src/parallel/evaluate.ts` (new) | add | evaluation core: require matrix, cert validation, bounce aggregation |
 | `ts/src/parallel/state.ts` (new) | add | ParallelTaskState (shape-identical) inside PersistedRun |
 | `ts/src/mcp/server.ts` + `ts/contracts/mcp-surface.json` (existing) | modify | 4 tools registered, envelopes pinned in the surface contract |
+| `ts/src/mcp/contracts.ts` (existing) | modify | legacy bare-`{error}` response variant (contract fact 2) |
 | `ts/tests/parallel/*.test.ts` (new) | add | ported pinning tests + envelope-inconsistency tests |
 
 ## Acceptance criteria
@@ -112,7 +123,9 @@ not.
 - [ ] `capture_diff` port edge resolved with a live probe against Python
       first; observed dispatch envelope recorded here
 - [ ] 4 tools contract-identical incl. bare-`{error}` vs
-      `{status:error}` site-by-site parity and ParMergeBounce shape
+      `{status:error}` site-by-site parity (a generated parity table for
+      ALL THREE bare-error tools: start, poll, advance) and ParMergeBounce
+      shape; legacy-envelope variant lands in contracts.ts with tests
 - [ ] Require matrix (all/any/N; pipeline vs non-pipeline skipped
       semantics) table-driven-tested
 - [ ] Merge-retry loop: gate bounce persisted, injected on re-dispatch;
