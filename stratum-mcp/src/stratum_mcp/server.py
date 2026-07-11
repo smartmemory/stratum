@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 import re
-import signal
 import sys
 import time
 from pathlib import Path
@@ -67,6 +67,7 @@ from .events import (
     TaskSeqCounter,
     now_iso,
 )
+from .proc_identity import terminate_verified
 import asyncio
 import uuid as _uuid
 
@@ -83,6 +84,8 @@ _CMD_WATCH_EVENT_KINDS = (
     "error",
 )
 _CMD_WATCH_DEFAULT_EVENT_KINDS = {"assistant", "tool", "error"}
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "stratum-mcp",
@@ -767,16 +770,36 @@ async def stratum_cancel_agent_run(
             return {"status": "already_error", "run_id": correlation_id}
         try:
             pid = int(meta.get("child_pid") or 0)
-            # The durable wrapper is spawned with start_new_session=True, so a
-            # genuine bg child is its own process-group leader (pgid == pid).
-            # A meta whose pid is NOT a group leader is not ours — refuse
-            # rather than SIGTERM an unrelated group.
-            if os.getpgid(pid) != pid:
-                return {"status": "already_error", "run_id": correlation_id}
-            os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError, ValueError):
+        except (TypeError, ValueError):
             return {"status": "already_error", "run_id": correlation_id}
-        return {"status": "cancelled", "run_id": correlation_id}
+        termination = await terminate_verified(pid, meta.get("proc_start_time"))
+        termination_status = termination["status"]
+        if termination_status in {"terminated", "killed", "already_gone"}:
+            return {"status": "cancelled", "run_id": correlation_id}
+        if termination_status in {"identity_mismatch", "not_group_leader"}:
+            return {"status": "already_error", "run_id": correlation_id}
+        if termination_status == "unverifiable_alive":
+            # This can only occur in an OS-level identity/readability edge case:
+            # retain the stable cancellation vocabulary, but record that death
+            # was not positively confirmed.
+            logger.warning(
+                "background cancellation could not confirm child death: run_id=%s "
+                "pid=%s termination_status=%s",
+                correlation_id,
+                pid,
+                termination_status,
+            )
+            return {"status": "cancelled", "run_id": correlation_id}
+        if termination_status == "still_alive":
+            logger.warning(
+                "background cancellation termination could not be confirmed: run_id=%s "
+                "pid=%s termination_status=%s",
+                correlation_id,
+                pid,
+                termination_status,
+            )
+            return {"status": "already_error", "run_id": correlation_id}
+        return {"status": "already_error", "run_id": correlation_id}
     task.cancel()
     return {"status": "cancelled", "correlation_id": correlation_id}
 

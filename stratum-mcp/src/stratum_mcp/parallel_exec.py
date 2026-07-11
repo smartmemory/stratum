@@ -24,7 +24,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import sys
 import time
 from pathlib import Path
@@ -64,7 +63,7 @@ from .run_budget import (
     new_usage_acc,
 )
 from .pricing import _maybe_warn_unpriced
-from .proc_identity import pid_alive, proc_start_time
+from .proc_identity import pid_alive, proc_start_time, terminate_verified
 from .worktree import (
     capture_worktree_diff,
     create_worktree,
@@ -1411,7 +1410,7 @@ class ReattachReader:
         await self._finalize(
             ts, text_parts, acc, sentinel_rc, error_message, final_offset,
         )
-        self._maybe_cascade_cancel_siblings()
+        await self._maybe_cascade_cancel_siblings()
 
     def _require_unsatisfiable_over_siblings(self) -> bool:
         """Mirror ParallelExecutor._require_unsatisfiable, but over the persisted
@@ -1434,13 +1433,14 @@ class ReattachReader:
         # "all" / unknown
         return failed > 0
 
-    def _maybe_cascade_cancel_siblings(self) -> None:
+    async def _maybe_cascade_cancel_siblings(self) -> None:
         """T2-F5-RESUME (Codex review #3): reproduce _run_one's cascade-cancel
         after a restart. If this task's terminal state tips the run budget OR
-        makes the step's require policy unsatisfiable, kill the still-in-flight
-        sibling reparented children (killpg the wrapper = group leader). Each
-        sibling's own reader then sees its child die with no sentinel and
-        terminalizes it as failed — no cross-reader handle coordination needed.
+        makes the step's require policy unsatisfiable, terminate the still-in-
+        flight sibling reparented children only after verifying their persisted
+        pid/start-time identity and process-group leadership. Each sibling's own
+        reader then sees its child die with no sentinel and terminalizes it as
+        failed — no cross-reader handle coordination needed.
         """
         if not self.sibling_task_ids:
             return
@@ -1454,12 +1454,9 @@ class ReattachReader:
             if sib is None or sib.state not in ("running", "reparenting"):
                 continue
             pid = sib.child_pid
-            if not isinstance(pid, int) or not pid_alive(pid):
+            if not isinstance(pid, int):
                 continue
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            await terminate_verified(pid, sib.proc_start_time)
 
     async def _finalize(self, ts, text_parts, acc, sentinel_rc, error_message,
                         final_offset) -> None:

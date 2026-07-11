@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,8 +11,10 @@ from types import SimpleNamespace
 import pytest
 
 from stratum_mcp import server as server_mod
+from stratum_mcp.connectors import codex as codex_mod
 from stratum_mcp.connectors.codex import CodexConnector, T2F5_DONE_SENTINEL
 from stratum_mcp.events import ConnectorEvent, INTERNAL_RESULT_KIND
+from stratum_mcp.proc_identity import terminate_verified as real_terminate_verified
 from stratum_mcp.server import (
     _agent_run_dir,
     _bg_pid_alive,
@@ -199,6 +202,55 @@ async def test_background_cancel_kills_process_group_and_polls_terminal(monkeypa
     terminal = await _wait_for_not_running(run_id)
     assert terminal["status"] == "error"
     assert terminal.get("reason") == "child_died_without_sentinel"
+
+
+@pytest.mark.asyncio
+async def test_background_cancel_escalates_term_ignoring_durable_child(monkeypatch, tmp_path):
+    """Cancellation escalates to SIGKILL for a TERM-ignoring durable child."""
+    monkeypatch.setattr(
+        codex_mod,
+        "_T2F5_WRAPPER",
+        'exec "$@" > "$T2F5_OUT" 2> "$T2F5_ERR" < "$T2F5_IN"',
+    )
+    term_ignoring_child = [
+        sys.executable,
+        "-c",
+        (
+            "import signal, time; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"print({json.dumps(THREAD_STARTED)!r}, flush=True); "
+            "time.sleep(30)"
+        ),
+    ]
+    _install_fake_codex(monkeypatch, term_ignoring_child)
+
+    termination_results = []
+
+    async def quick_terminate(pid, start_time):
+        result = await real_terminate_verified(pid, start_time, grace_s=0.1, poll_s=0.01)
+        termination_results.append(result)
+        return result
+
+    monkeypatch.setattr(server_mod, "terminate_verified", quick_terminate)
+    started = await stratum_agent_run(
+        prompt="solve", ctx=None, type="codex", cwd=str(tmp_path), background=True
+    )
+    run_id = started["run_id"]
+    stream_path = Path(started["stream_path"])
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if json.dumps(THREAD_STARTED) in stream_path.read_text(encoding="utf-8"):
+            break
+        await asyncio.sleep(0.01)
+    assert json.dumps(THREAD_STARTED) in stream_path.read_text(encoding="utf-8")
+    assert (await _wait_for_poll(run_id, "running"))["status"] == "running"
+
+    cancelled = await stratum_cancel_agent_run(correlation_id=run_id, ctx=None)
+
+    assert cancelled == {"status": "cancelled", "run_id": run_id}
+    assert termination_results[0]["signaled"] == "KILL"
+    meta = json.loads((_agent_run_dir(run_id) / "meta.json").read_text(encoding="utf-8"))
+    assert not _bg_pid_alive(meta), "cancel must return only after the child is gone"
 
 
 def _write_registry_run(tmp_path: Path, run_id: str, records: list[dict], stderr: str = "") -> Path:
