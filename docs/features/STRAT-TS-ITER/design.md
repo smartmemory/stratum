@@ -70,12 +70,22 @@ loop config this port needs cannot currently exist on a TS run.
   - `auto` — engine-owned progression exactly as today;
     `stratum_iteration_start` on an auto step errors
     (`iteration_auto_managed`, new error_type, TS-only).
-  - `manual` — the three MCP tools own progression; `stepDone` on a
-    manual-iterate step with an active loop refuses ("call
+  - `manual` — the three MCP tools own progression; a manual-iterate
+    step NEVER enters the engine's auto-iterate branch, in any state:
+    (a) active loop → `stepDone` refuses ("call
     stratum_iteration_report", matching Python's pending-outcome
-    refusal) and performs NO iterate counting.
-  Mixed-use attempts are tested in both directions. v0→v1 migration
-  maps v0 tool-driven loops to `mode: "manual"`.
+    refusal), no counting; (b) terminal handoff (round-4 finding) —
+    after `iteration_report` exits the loop it clears
+    `active_iteration` and leaves a pending `iteration_outcome`, which
+    the NEXT `stepDone` must CONSUME as the step's final result
+    (Python semantics: `executor.py:2738`,
+    `test_iterations.py:392`) with zero auto-iterate counting or
+    redispatch; (c) no loop ever started → `stepDone` refuses
+    ("call stratum_iteration_start"), so a manual step cannot silently
+    complete un-looped.
+  Mixed-use attempts are tested in both directions PLUS the terminal
+  handoff. v0→v1 migration maps v0 tool-driven loops to
+  `mode: "manual"`.
 
 Otherwise a straight port — self-contained state-machine logic with no
 subprocess/concurrency surface:
@@ -116,8 +126,10 @@ subprocess/concurrency surface:
       loops map to mode:"manual"); v0→v1 field mapping table recorded
       here
 - [ ] Auto/manual exclusivity: iteration_start on auto step →
-      `iteration_auto_managed`; stepDone on manual step with active
-      loop refuses without counting; both directions tested
+      `iteration_auto_managed`; manual step never enters the
+      auto-iterate branch in ANY state (active-loop refusal, terminal
+      outcome consumed by stepDone with no counting/redispatch,
+      no-loop refusal); all paths tested
 - [ ] 3 tools contract-identical (params, success envelopes incl.
       optional fields, all error_types)
 - [ ] Outcome precedence + stagnation (window 3, accumulate suppression)

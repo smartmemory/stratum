@@ -31,7 +31,7 @@ rollback until removal day.
 | 3 | forge workspace `.compose/compose.json` engine flag | `stratumEngine: "ts"` | monitor shows a real TS-store gate end to end | flip back |
 | 4 | compose `stratum-client.js` guard pin | run `stratum-mcp guard handoff` per existing resource (ownership marker, see STRAT-TS-GUARD Decision 3), then delete pin | compose lifecycle-guard suite green on TS; Python mutation refused with `guard_engine_owned` | re-pin (handoff is one-way; rollback = TS keeps serving) |
 | 5 | compose default engine | default `"ts"`, python branch KEPT one release | full compose suite + soak-style probe | env override |
-| 5b | compose `lib/stratum-mcp-client.js` — compose's OWN MCP client, spawns the `stratum-mcp` bin directly (`:4`, `:126`) and is instantiated by the production build path (`build.js:1118`); a THIRD seam missed until review round 3 | engine-selected spawn: TS stdio server bin (`ts/src/mcp/bin.mjs`) vs python, same flag as row 5 | batch-build golden flow spawns ZERO python processes (ps-sampled) | flag flip |
+| 5b | compose `lib/stratum-mcp-client.js` — compose's OWN MCP client, spawns the `stratum-mcp` bin directly (`:4`, `:126`) and is instantiated by the production build path (`build.js:1118`); a THIRD seam missed until review round 3 | engine-selected spawn: TS stdio server bin (`ts/src/mcp/bin.mjs`) vs python, same flag as row 5 | batch-build golden flow spawns ZERO python processes (PATH-shim intercept, see acceptance) | flag flip |
 | 6 | `model-pricing-refresh.sh` cron → `src/stratum/judge/codex_models.py` | D4 relocation (below) | cron dry-run produces valid file; TS judge reads it | old path until removal |
 | 7 | CLAUDE.md chain + skills tool references | sweep instruction text to TS-served names | grep: no reference to a python-only tool | git revert |
 | 8 | soak cron `stratum-ts-soak.mjs` | retire (real traffic is the signal) | crontab entry removed | re-add |
@@ -103,8 +103,12 @@ source is the anomaly being retired, not a pattern to preserve.
       absent-fallback / env-override-wins / malformed-fails-loud; cron
       verified against the JSON
 - [ ] Two-week TS-only clock start date recorded (gates STRAT-PY-REMOVE)
-- [ ] Zero Python `stratum-mcp` spawns observed during the clock (probe:
-      grep compose logs / `ps` sampling note in this doc)
+- [ ] Zero Python `stratum-mcp` spawns during the clock, proven by an
+      INTERCEPTING seam, not sampling (round-4 finding: `ps` sampling
+      misses short-lived children): a `stratum-mcp` PATH shim ahead of
+      the real bin that logs AND fails every invocation during the
+      golden flows and the two-week window; shim log empty at clock end,
+      recorded here
 
 ## Open questions
 

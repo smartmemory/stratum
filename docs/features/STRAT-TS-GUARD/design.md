@@ -110,13 +110,22 @@ Stale takeover is token-verified and serialized, never blind
 unlink-and-retry (round-3 review finding: two processes observing the
 same stale lock can race — one creates a fresh lock, the other unlinks
 that LIVE replacement, and concurrent appends corrupt the chain).
-Protocol: the lock body is `{token: <uuid>, pid, since}`. A claimant
-that judges `.lock.ts` stale must (1) O_EXCL-create `.lock.ts.takeover`
-(the takeover mutex — losers back off), (2) re-read `.lock.ts` and
-verify it still holds the SAME token observed as stale, (3) only then
-unlink and O_EXCL-create its own lock, (4) remove the takeover mutex
-(itself staleness-bounded). A lock whose token changed is live — back
-off. A two-process stale-takeover race test is part of acceptance.
+Protocol: the lock body is `{token: <uuid>, pid, procStartTime, since}`.
+Staleness is DEATH, not age (round-4 finding: a paused holder can be
+"aged out", replaced, then resume and append under its unlinked lock —
+fencing violation): a claimant may take over ONLY after verifying the
+recorded pid is dead or recycled, via pid + process-start-time identity
+(same primitive T2-F5-RESUME already uses; guard state is same-host by
+construction, so this is sound). A live-but-slow holder is never taken
+over — claimants wait or fail with a timeout error. Takeover sequence:
+(1) O_EXCL-create `.lock.ts.takeover` (takeover mutex — losers back
+off), (2) re-read `.lock.ts`, verify SAME token as observed AND
+pid-dead, (3) unlink + O_EXCL-create own lock, (4) remove the takeover
+mutex (itself pid-identity-bounded). Defense-in-depth fence: every
+holder re-reads `.lock.ts` and verifies its OWN token immediately
+before the ledger append; mismatch → abort without writing. Race tests:
+two claimants over a dead holder, AND a paused-then-resumed holder
+whose append must abort on the token fence.
 
 Cross-engine mutual exclusion cannot be policy-only (review finding
 2026-07-11, CONFIRMED): guard dirs are global per `resource_id`, Python
@@ -207,9 +216,11 @@ plumbing — this is the same seam `ensure` predicates already use.
       Python's flock; Python refuses mutations on owned resources with
       `guard_engine_owned`; TS refuses un-handed-over dirs (tested both
       sides); a forced mixed-write attempt fails LOUD, never appends
-- [ ] Two-process stale-takeover race test: token-verified takeover
-      never unlinks a live lock; concurrent claimants serialize through
-      the takeover mutex
+- [ ] Takeover race tests: (a) two claimants over a dead holder
+      serialize through the takeover mutex, never unlink a live
+      replacement; (b) paused-then-resumed holder is NOT taken over
+      while alive, and its append aborts on the own-token fence if it
+      ever was
 
 ## Open questions
 
