@@ -80,8 +80,15 @@ loop config this port needs cannot currently exist on a TS run.
     the NEXT `stepDone` must CONSUME as the step's final result
     (Python semantics: `executor.py:2738`,
     `test_iterations.py:392`) with zero auto-iterate counting or
-    redispatch; (c) no loop ever started → `stepDone` refuses
-    ("call stratum_iteration_start"), so a manual step cannot silently
+    redispatch. **Result authority (round-5 finding):** the persisted
+    step result at terminal handoff is the ENGINE-DERIVED
+    `final_result` recorded at loop exit (best when score-tracked,
+    else last report; abort → the aborted record) — `stepDone`'s
+    caller-supplied output is IGNORED for persistence on this path
+    (today's `stepDone` trusts its argument, `engine.ts:300`, which
+    would let a best-A/last-B score loop complete with B); (c) no loop
+    ever started → `stepDone` refuses ("call
+    stratum_iteration_start"), so a manual step cannot silently
     complete un-looped.
   Mixed-use attempts are tested in both directions PLUS the terminal
   handoff. v0→v1 migration maps v0 tool-driven loops to
@@ -130,6 +137,9 @@ subprocess/concurrency surface:
       auto-iterate branch in ANY state (active-loop refusal, terminal
       outcome consumed by stepDone with no counting/redispatch,
       no-loop refusal); all paths tested
+- [ ] Terminal result authority: engine-derived final_result persisted,
+      caller output ignored on the handoff path; best-not-last and
+      abort-at-zero-iterations cases tested
 - [ ] 3 tools contract-identical (params, success envelopes incl.
       optional fields, all error_types)
 - [ ] Outcome precedence + stagnation (window 3, accumulate suppression)

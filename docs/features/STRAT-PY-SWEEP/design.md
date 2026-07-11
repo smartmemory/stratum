@@ -104,11 +104,18 @@ source is the anomaly being retired, not a pattern to preserve.
       verified against the JSON
 - [ ] Two-week TS-only clock start date recorded (gates STRAT-PY-REMOVE)
 - [ ] Zero Python `stratum-mcp` spawns during the clock, proven by an
-      INTERCEPTING seam, not sampling (round-4 finding: `ps` sampling
-      misses short-lived children): a `stratum-mcp` PATH shim ahead of
-      the real bin that logs AND fails every invocation during the
-      golden flows and the two-week window; shim log empty at clock end,
-      recorded here
+      INTERCEPTING seam covering EVERY launch surface (round-4/5
+      findings: `ps` sampling misses short-lived children; a PATH-only
+      shim misses absolute paths — compose writes an absolute
+      `stratum-mcp` path into `.mcp.json`, `compose/bin/compose.js:528`):
+      the failing+logging shim REPLACES the real console-script binary
+      at every resolved location (`which -a stratum-mcp` + each python
+      env's bin dir) for the window, so absolute-path spawns hit it too;
+      plus a clock-start config/code audit grepping `.mcp.json`s and
+      compose configs for `stratum-mcp` absolute paths and
+      `python -m stratum_mcp` (module-invocation surface — none known
+      today, audit proves it stays that way). Shim log empty at clock
+      end, recorded here
 
 ## Open questions
 

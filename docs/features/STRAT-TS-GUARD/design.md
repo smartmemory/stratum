@@ -121,7 +121,14 @@ over — claimants wait or fail with a timeout error. Takeover sequence:
 (1) O_EXCL-create `.lock.ts.takeover` (takeover mutex — losers back
 off), (2) re-read `.lock.ts`, verify SAME token as observed AND
 pid-dead, (3) unlink + O_EXCL-create own lock, (4) remove the takeover
-mutex (itself pid-identity-bounded). Defense-in-depth fence: every
+mutex. The takeover mutex carries the same `{token, pid,
+procStartTime}` body and the same death-verified recovery (round-5
+finding: a claimant dying while holding it would otherwise strand the
+resource): a later claimant that finds `.lock.ts.takeover` held by a
+verified-dead pid re-reads it, token-verifies, and unlinks it — no
+third lock is needed because the mutex guards only the idempotent
+verification step, so recovery is re-runnable. Crash-while-holding-
+takeover is a required test. Defense-in-depth fence: every
 holder re-reads `.lock.ts` and verifies its OWN token immediately
 before the ledger append; mismatch → abort without writing. Race tests:
 two claimants over a dead holder, AND a paused-then-resumed holder
@@ -220,7 +227,8 @@ plumbing — this is the same seam `ensure` predicates already use.
       serialize through the takeover mutex, never unlink a live
       replacement; (b) paused-then-resumed holder is NOT taken over
       while alive, and its append aborts on the own-token fence if it
-      ever was
+      ever was; (c) claimant crash while HOLDING the takeover mutex —
+      a later claimant recovers via death-verified mutex takeover
 
 ## Open questions
 
