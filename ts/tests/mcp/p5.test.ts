@@ -51,7 +51,7 @@ function response(result: unknown): Record<string, unknown> {
 }
 
 describe("P5 frozen MCP surface", () => {
-  it("exposes exactly fifteen tools", async () => {
+  it("exposes exactly eighteen tools", async () => {
     const pair = await connected({});
     try {
       const listed = await pair.client.listTools();
@@ -63,7 +63,10 @@ describe("P5 frozen MCP surface", () => {
     const root = await mkdtemp(join(tmpdir(), "stratum-p5-real-")); roots.push(root);
     const registryRoot = join(root, "agent_runs");
     const e = new StratumEngine({
-      stateRoot: root, evaluator: createEvaluator(), connector: async ({ prompt }) => ({ output: { value: prompt } }),
+      stateRoot: root, evaluator: createEvaluator(), connector: async ({ prompt }) => {
+        if (prompt === "bg slow") await new Promise((resolve) => setTimeout(resolve, 50));
+        return { output: { value: prompt } };
+      },
       judge: async () => ({ holds: true, reason: "ok", stakes: "cheap", model: "p5-judge", usage: { tokens: 2, usd: 0 } }),
     });
     const pair = await connected({
@@ -141,6 +144,25 @@ describe("P5 frozen MCP surface", () => {
         await call("stratum_audit", { runId });
         await call("stratum_flow_poll", { runId, cursor: 0 });
       }
+
+      // Whole-flow background tools: run_bg has one minimal start variant;
+      // bg_poll mirrors every durable run status; cancel reports every current bg state.
+      const bgGate = await call("stratum_flow_run_bg", { spec: initialGateFlow(), input: { name: "x" } });
+      await waitForFlowBg(call, bgGate.runId as string, "running", "paused_gate");
+      await call("stratum_flow_cancel_bg", { runId: bgGate.runId });
+      const bgComplete = await call("stratum_flow_run_bg", { spec: simpleFlow, input: { name: "x" } });
+      await waitForFlowBg(call, bgComplete.runId as string, "completed", "completed");
+      await call("stratum_flow_cancel_bg", { runId: bgComplete.runId });
+      const bgFailed = await call("stratum_flow_run_bg", { spec: setFlow("1"), input: { name: "x" } });
+      await waitForFlowBg(call, bgFailed.runId as string, "failed", "failed");
+      await call("stratum_flow_cancel_bg", { runId: bgFailed.runId });
+      const bgBudget = await call("stratum_flow_run_bg", { spec: budgetFlow(), input: { name: "x" } });
+      await waitForFlowBg(call, bgBudget.runId as string, "budget_exhausted", "budget_exhausted");
+      await call("stratum_flow_cancel_bg", { runId: bgBudget.runId });
+      const bgCancel = await call("stratum_flow_run_bg", { spec: flow([{ id: "build", do: "bg slow", out: "Result" }], "${build.output}"), input: { name: "x" } });
+      await call("stratum_flow_cancel_bg", { runId: bgCancel.runId });
+      await waitForFlowBg(call, bgCancel.runId as string, "completed", "cancelled");
+      await call("stratum_flow_cancel_bg", { runId: bgCancel.runId });
 
       // Sync complete uses the Codex connector spawn seam; the remainder uses
       // real durable background runs started/polled/cancelled through MCP.
@@ -381,6 +403,20 @@ async function gateWaiting(call: (tool: ToolName, args: Record<string, unknown>)
   const waiting = await call("stratum_step_done", { runId: planned.runId, stepId: "build", result: { output: { value: "built" } } });
   expect(waiting.status).toBe("running");
   return planned.runId as string;
+}
+
+async function waitForFlowBg(
+  call: (tool: ToolName, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  runId: string,
+  runStatus: string,
+  bgStatus: string,
+): Promise<void> {
+  for (let tick = 0; tick < 100; tick += 1) {
+    const polled = await call("stratum_flow_bg_poll", { runId, cursor: 0 });
+    if (polled.status === runStatus && (polled.bg as Record<string, unknown>).status === bgStatus) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`background flow ${runId} did not reach ${runStatus}/${bgStatus}`);
 }
 
 function fakeCodex(records: unknown[], options: { rc?: number; stderr?: string; sleep?: number } = {}): string[] {

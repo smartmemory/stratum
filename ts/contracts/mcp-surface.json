@@ -1,5 +1,5 @@
 {
-  "surface": 1,
+  "surface": 2,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "tools": {
     "stratum_validate": {
@@ -65,6 +65,31 @@
         "completed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" },
         "failed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" },
         "budget_exhausted": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" }
+      }
+    },
+    "stratum_flow_run_bg": {
+      "request": { "spec": "any", "input": "any", "workspaceRoot?": "string" },
+      "responses": {
+        "running": { "runId": "string" }
+      }
+    },
+    "stratum_flow_bg_poll": {
+      "request": { "runId": "string", "cursor?": "number" },
+      "responses": {
+        "running": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "gateStepId?": "string" } },
+        "completed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "gateStepId?": "string" } },
+        "failed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "gateStepId?": "string" } },
+        "budget_exhausted": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "gateStepId?": "string" } }
+      }
+    },
+    "stratum_flow_cancel_bg": {
+      "request": { "runId": "string" },
+      "responses": {
+        "running": {},
+        "completed": {},
+        "failed": {},
+        "budget_exhausted": {},
+        "cancelled": {}
       }
     },
     "stratum_agent_run": {

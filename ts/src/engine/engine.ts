@@ -119,6 +119,19 @@ export interface FlowPollResponse {
   failure?: FailureContext;
 }
 
+export type BgStatus = "running" | "paused_gate" | "completed" | "failed" | "budget_exhausted" | "cancelled";
+
+interface BgFlowState {
+  status: BgStatus;
+  cancelRequested: boolean;
+  loop?: Promise<void>;
+  gateStepId?: string;
+}
+
+export interface BgFlowPollResponse extends FlowPollResponse {
+  bg: { status: BgStatus; cancelRequested: boolean; gateStepId?: string };
+}
+
 export interface AuditTrail {
   runId: string;
   status: PersistedRun["status"];
@@ -165,6 +178,9 @@ export class StratumEngine {
   // entry point mutates THIS instance (not a fresh disk copy), so the fanout
   // can release the run lock across connector awaits without divergent copies.
   private readonly activeRuns = new Map<string, { run: PersistedRun; refs: number }>();
+  // V1 loop ownership is in-process like runLocks; durable runs remain resumable,
+  // but rehydrating detached loops after process restart is a follow-up.
+  private readonly bgFlows = new Map<string, BgFlowState>();
 
   constructor(options: StratumEngineOptions) {
     this.store = new StateStore(options.stateRoot);
@@ -220,6 +236,22 @@ export class StratumEngine {
     };
     await this.persist(run);
     return this.advance(run, validation.value, validation.contracts);
+  }
+
+  async flowRunBg(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<{ runId: string; status: "running" }> {
+    const first = await this.plan(specInput, input, options);
+    const bg: BgFlowState = { status: "running", cancelRequested: false };
+    this.bgFlows.set(first.runId, bg);
+    const run = await this.loadRun(first.runId);
+    // Pin before launch so the loop and any fanout always share one run object.
+    this.retainRun(first.runId, run);
+    const loop = this.driveBg(first.runId, first);
+    bg.loop = loop;
+    void loop.finally(() => {
+      this.releaseRun(first.runId);
+      if (bg.loop === loop) delete bg.loop;
+    });
+    return { runId: first.runId, status: "running" };
   }
 
   stepDone(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
@@ -350,8 +382,57 @@ export class StratumEngine {
     };
   }
 
-  gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill"): Promise<EngineResponse> {
-    return this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision));
+  async flowBgPoll(runId: string, cursor = 0): Promise<BgFlowPollResponse> {
+    const flow = await this.flowPoll(runId, cursor);
+    const bg = this.bgFlows.get(runId);
+    if (!bg) throw new Error(`background flow ${runId} not found`);
+    return {
+      ...flow,
+      bg: {
+        status: bg.status,
+        cancelRequested: bg.cancelRequested,
+        ...(bg.gateStepId !== undefined ? { gateStepId: bg.gateStepId } : {}),
+      },
+    };
+  }
+
+  async flowCancelBg(runId: string): Promise<{ status: BgStatus }> {
+    const bg = this.bgFlows.get(runId);
+    if (!bg) throw new Error(`background flow ${runId} not found`);
+    bg.cancelRequested = true;
+    // Durable cooperative flag: an in-flight fanout batch observes this on the
+    // shared run instance and stops dispatching further items (already-dispatched
+    // items finish). The driver loop observes bg.cancelRequested at its boundary.
+    await this.withRunLock(runId, async () => {
+      const run = await this.loadRun(runId);
+      if (run.status === "running" && !run.cancelRequested) { run.cancelRequested = true; await this.persist(run); }
+    });
+    // A gate-paused flow has no live loop to observe the flag, so cancel abandons
+    // the hand-off here instead of wedging at paused_gate forever.
+    if (bg.status === "paused_gate") { bg.status = "cancelled"; delete bg.gateStepId; }
+    return { status: bg.status };
+  }
+
+  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill"): Promise<EngineResponse> {
+    const response = await this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision));
+    const bg = this.bgFlows.get(runId);
+    if (bg?.status === "paused_gate" && response.status !== "ready" && response.status !== "running") {
+      bg.status = response.status;
+      delete bg.gateStepId;
+    } else if (bg?.status === "paused_gate") {
+      bg.status = "running";
+      delete bg.gateStepId;
+      const run = await this.loadRun(runId);
+      // Re-kick only after gateResolve releases the run lock; stepDone must interleave.
+      this.retainRun(runId, run);
+      const loop = this.driveBg(runId, response);
+      bg.loop = loop;
+      void loop.finally(() => {
+        this.releaseRun(runId);
+        if (bg.loop === loop) delete bg.loop;
+      });
+    }
+    return response;
   }
 
   private async gateResolveLocked(runId: string, stepId: string, decision: "approve" | "revise" | "kill"): Promise<EngineResponse> {
@@ -405,6 +486,96 @@ export class StratumEngine {
     this.event(run, "completed", undefined, { output });
     await this.persist(run);
     return this.response(run);
+  }
+
+  /** Re-derive a run's response after async fanout/subflow progress without
+   * emitting a `resumed` event on every detached-driver poll. */
+  private reAdvance(runId: string): Promise<EngineResponse> {
+    return this.withRunLock(runId, async () => {
+      const current = await this.loadRun(runId);
+      if (current.status !== "running") return this.response(current);
+      const validated = this.validationFor(current);
+      const flow = this.flowFor(current, validated.value);
+      for (const step of flow.steps) if (step.fanout && current.steps[step.id]?.status === "running") this.scheduleFanout(current, step.id);
+      return this.advance(current, validated.value, validated.contracts);
+    });
+  }
+
+  // SOLE-MUTATOR INVARIANT (v1): while a run is bg-driven, this driver owns its
+  // mutation surface — a session polls (flowBgPoll) and resolves gates
+  // (gateResolve), but must NOT externally call stepDone on it. The defensive
+  // catch below tolerates the benign case where an external mutation already
+  // advanced the driven step; it does NOT make a concurrently-mutated run fully
+  // safe — an external stepDone/revise that resets the step to a fresh
+  // attempt/epoch mid-dispatch could accept a stale connector result. That race
+  // is unreachable within v1's linear+fanout scope (no multi-branch gate+do
+  // concurrency) and is filed as STRAT-TS-FLOW-BG-OWNERSHIP for attempt-bound
+  // dispatch.
+  private async driveBg(runId: string, initial: EngineResponse): Promise<void> {
+    const bg = this.bgFlows.get(runId);
+    if (!bg) return;
+    let response = initial;
+    try {
+      while (true) {
+        if (bg.cancelRequested) {
+          bg.status = "cancelled";
+          return;
+        }
+        if (response.status === "ready") {
+          const step = response.ready[0];
+          if (!step) throw new Error("ready response contained no steps");
+          const run = await this.loadRun(runId);
+          let result: StepResult;
+          try {
+            result = await this.connector({
+              agent: step.agent,
+              prompt: step.do,
+              attempt: step.attempt,
+              ...(run.workspaceRoot !== undefined ? { cwd: run.workspaceRoot } : {}),
+              ...(step.previousFailure !== undefined ? { previousFailure: step.previousFailure } : {}),
+              sandbox: "read-only",
+            });
+          } catch (error) {
+            result = { failure: message(error) };
+          }
+          try {
+            response = await this.stepDone(runId, step.id, result);
+          } catch (error) {
+            // A concurrent stepDone/cancel/revise may have moved this step out of
+            // `ready` while our connector was in flight — that is not a driver
+            // failure. Re-derive current state and keep driving; a genuinely
+            // unexpected error (still-ready step) surfaces to the terminal catch.
+            const current = await this.loadRun(runId);
+            const stepState = current.steps[step.id];
+            if (current.status !== "running" || (stepState !== undefined && stepState.status !== "ready")) {
+              response = await this.reAdvance(runId);
+            } else { throw error; }
+          }
+          continue;
+        }
+        if (response.status === "completed" || response.status === "failed" || response.status === "budget_exhausted") {
+          bg.status = response.status;
+          return;
+        }
+        const run = await this.loadRun(runId);
+        const gate = Object.entries(run.steps).find(([, state]) => state.status === "waiting_gate");
+        if (gate) {
+          bg.status = "paused_gate";
+          bg.gateStepId = gate[0];
+          return;
+        }
+        await delay(25);
+        response = await this.reAdvance(runId);
+      }
+    } catch (error) {
+      bg.status = "failed";
+      try {
+        await this.withRunLock(runId, async () => {
+          const run = await this.loadRun(runId);
+          if (run.status === "running") await this.terminalFailure(run, { attempt: 0, reason: `background driver failed: ${message(error)}` });
+        });
+      } catch { /* persistence failure is already the terminal boundary */ }
+    }
   }
 
   private async advance(
@@ -666,7 +837,9 @@ export class StratumEngine {
     const fanoutRef = state.fanout;
     let next = 0;
     const workers = Array.from({ length: Math.min(step.fanout.concurrency, values.length) }, async () => {
-      while (next < values.length && run.status === "running" && state.fanout === fanoutRef) {
+      // `run.cancelRequested` is a cooperative brake: a background cancel stops
+      // dispatching further items (the in-flight one finishes) without hard-kill.
+      while (next < values.length && run.status === "running" && !run.cancelRequested && state.fanout === fanoutRef) {
         const index = next++;
         const item = fanoutRef.items[index]!;
         // A restart re-schedules the whole fanout; items that already reached a
@@ -677,6 +850,9 @@ export class StratumEngine {
     });
     await Promise.all(workers);
     if (state.fanout !== fanoutRef) return; // invalidated mid-flight — the fresh epoch owns the step now
+    // A cancelled batch must not settle (no spurious `require` failure or merge);
+    // the run is left running-but-abandoned, consistent with the cancelled driver.
+    if (run.cancelRequested) return;
     // Aggregation (merge, require, advance) mutates cross-step state — back
     // under the run lock like every other advancement path.
     await this.withRunLock(run.id, () => this.settleFanout(run, validated.value, validated.contracts, flow, step, state, fanoutRef));
@@ -1481,6 +1657,7 @@ function stringLeaves(step: Step): string[] {
 
 function terminal(status: StepState["status"]): boolean { return status === "succeeded" || status === "failed" || status === "skipped"; }
 function now(): string { return new Date().toISOString(); }
+function delay(ms: number): Promise<void> { return new Promise((resolveDelay) => setTimeout(resolveDelay, ms)); }
 // Total for arbitrary thrown values: Object.create(null) and hostile getters must
 // not turn an error-formatting call into a second unhandled throw.
 function message(error: unknown): string {

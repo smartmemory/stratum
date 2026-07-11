@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### feat: STRAT-TS-FLOW-BG — TS whole-flow detached driver + bg MCP tools
+
+The TypeScript engine can now run a whole pipeline **detached**: the server-side
+driver pumps every `ready` step through the engine's connector and `stepDone`
+without the session pumping each step, pausing (never auto-approving) at
+top-level gates and resuming after `gateResolve`. Judged ensures run through the
+existing judge path unchanged; async fanout is reused as-is. New MCP tools:
+`stratum_flow_run_bg` / `stratum_flow_bg_poll` / `stratum_flow_cancel_bg`
+(MCP surface bumped to v2). Scope is v1 linear + fanout; child-flow gate
+propagation and restart-rehydration of detached loops are follow-ups.
+
+Cancellation is cooperative and durable: `flowCancelBg` sets a persisted
+`cancelRequested` flag that both the driver and in-flight fanout workers observe,
+so no further items dispatch after cancel; a gate-paused flow cancels
+immediately instead of wedging. The driver tolerates a benign concurrent advance
+of a driven step (re-derives instead of failing a healthy run). A stale-result
+race under out-of-contract concurrent mutation (unreachable in v1's
+linear+fanout scope) is documented and filed as `STRAT-TS-FLOW-BG-OWNERSHIP`.
+
 ### feat: STRAT-CODEX-WRITE-DURABLE slices 3+4 — codex write + background
 
 `stratum_agent_run(type="codex", write=True, background=True)` is now allowed
