@@ -118,17 +118,24 @@ recorded pid is dead or recycled, via pid + process-start-time identity
 (same primitive T2-F5-RESUME already uses; guard state is same-host by
 construction, so this is sound). A live-but-slow holder is never taken
 over — claimants wait or fail with a timeout error. Takeover sequence:
-(1) O_EXCL-create `.lock.ts.takeover` (takeover mutex — losers back
-off), (2) re-read `.lock.ts`, verify SAME token as observed AND
-pid-dead, (3) unlink + O_EXCL-create own lock, (4) remove the takeover
-mutex. The takeover mutex carries the same `{token, pid,
-procStartTime}` body and the same death-verified recovery (round-5
-finding: a claimant dying while holding it would otherwise strand the
-resource): a later claimant that finds `.lock.ts.takeover` held by a
-verified-dead pid re-reads it, token-verifies, and unlinks it — no
-third lock is needed because the mutex guards only the idempotent
-verification step, so recovery is re-runnable. Crash-while-holding-
-takeover is a required test. Defense-in-depth fence: every
+recovery is serialized by a **token-keyed** O_EXCL file — the key
+property (round-6 finding closed structurally): recovery filenames are
+unique per stale token, so "unlink the live replacement" is impossible
+by construction — a replacement lock or a new recovery always has a
+DIFFERENT name.
+
+(1) observe `.lock.ts` holding token `T` with pid verified dead;
+(2) O_EXCL-create `.lock.ts.recovery.<T>` (body: own `{token, pid,
+procStartTime}`) — exactly one claimant can EVER win this name; losers
+back off permanently for `T`; (3) winner re-verifies `.lock.ts` still
+holds `T` (it cannot have been unlinked by anyone else — unlinking
+requires holding `recovery.<T>`), unlinks it, O_EXCL-creates its own
+`.lock.ts` (fresh token), then unlinks `recovery.<T>`. A crashed
+recovery winner leaves `recovery.<T>` behind: later claimants may
+unlink it ONLY after death-verifying ITS creator (pid+start-time in
+its body), then race to re-create the same name — O_EXCL picks one
+winner; a live creator is never unlinked. Crash-while-holding-recovery
+is a required test. Defense-in-depth fence: every
 holder re-reads `.lock.ts` and verifies its OWN token immediately
 before the ledger append; mismatch → abort without writing. Race tests:
 two claimants over a dead holder, AND a paused-then-resumed holder
@@ -227,8 +234,11 @@ plumbing — this is the same seam `ensure` predicates already use.
       serialize through the takeover mutex, never unlink a live
       replacement; (b) paused-then-resumed holder is NOT taken over
       while alive, and its append aborts on the own-token fence if it
-      ever was; (c) claimant crash while HOLDING the takeover mutex —
-      a later claimant recovers via death-verified mutex takeover
+      ever was; (c) claimant crash while HOLDING `recovery.<T>` — later
+      claimants recover only after death-verifying its creator, O_EXCL
+      serializes the re-claim; (d) two claimants racing recovery of the
+      same dead token — exactly one wins the token-keyed name, the
+      loser never unlinks anything
 
 ## Open questions
 

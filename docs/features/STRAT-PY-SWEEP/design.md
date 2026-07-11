@@ -113,9 +113,12 @@ source is the anomaly being retired, not a pattern to preserve.
       env's bin dir) for the window, so absolute-path spawns hit it too;
       plus a clock-start config/code audit grepping `.mcp.json`s and
       compose configs for `stratum-mcp` absolute paths and
-      `python -m stratum_mcp` (module-invocation surface — none known
-      today, audit proves it stays that way). Shim log empty at clock
-      end, recorded here
+      `python -m stratum_mcp`. **Every absolute path the audit
+      discovers is added to the required replacement set — shimmed or
+      the clock FAILS to start** (round-6 finding: a saved absolute
+      path outside PATH/enumerated envs would otherwise bypass the shim
+      while the audit "passes"). Shim log empty at clock end, recorded
+      here with the audited path list
 
 ## Open questions
 

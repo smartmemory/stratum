@@ -83,10 +83,17 @@ loop config this port needs cannot currently exist on a TS run.
     redispatch. **Result authority (round-5 finding):** the persisted
     step result at terminal handoff is the ENGINE-DERIVED
     `final_result` recorded at loop exit (best when score-tracked,
-    else last report; abort → the aborted record) — `stepDone`'s
-    caller-supplied output is IGNORED for persistence on this path
-    (today's `stepDone` trusts its argument, `engine.ts:300`, which
-    would let a best-A/last-B score loop complete with B); (c) no loop
+    else last report) — `stepDone`'s caller-supplied output is IGNORED
+    for persistence on this path (today's `stepDone` trusts its
+    argument, `engine.ts:300`, which would let a best-A/last-B score
+    loop complete with B). **Abort routes as failure, not output
+    (round-6 finding):** an `exit_abort` handoff must NOT pass the
+    abort record through the step's output schema/ensures (a typed
+    step's contract would reject `{aborted: true}` and spin the retry
+    path) — it bypasses output validation and resolves via the step's
+    failure routing (`on_fail` target if declared, else terminal flow
+    error `iteration_aborted`), with the abort record and any
+    `best_result` attached to the failure payload; (c) no loop
     ever started → `stepDone` refuses ("call
     stratum_iteration_start"), so a manual step cannot silently
     complete un-looped.
@@ -138,8 +145,10 @@ subprocess/concurrency surface:
       outcome consumed by stepDone with no counting/redispatch,
       no-loop refusal); all paths tested
 - [ ] Terminal result authority: engine-derived final_result persisted,
-      caller output ignored on the handoff path; best-not-last and
-      abort-at-zero-iterations cases tested
+      caller output ignored on the handoff path; best-not-last tested
+- [ ] Abort routing: exit_abort bypasses output schema/ensures and
+      resolves via failure routing (on_fail / `iteration_aborted`);
+      abort-at-zero on a TYPED step tested (no schema-retry spin)
 - [ ] 3 tools contract-identical (params, success envelopes incl.
       optional fields, all error_types)
 - [ ] Outcome precedence + stagnation (window 3, accumulate suppression)
