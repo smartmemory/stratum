@@ -12,6 +12,7 @@ Python IR verbatim.
 - Memory `project_stratum_ts_port` — 2026-06-02 litellm/AI-SDK de-risk spike (findings incorporated below)
 - `stratum-mcp/src/stratum_mcp/spec.py`, `executor.py`, `connectors/` — reference implementation being ported
 - Forge-top `ROADMAP.md` — STRAT-TS-PORT rows
+- `docs/plans/2026-07-11-strat-py-retire-roadmap.md` — STRAT-PY-RETIRE: full Python-retirement roadmap this port enables (forward)
 
 ## Goals (in vision order)
 
