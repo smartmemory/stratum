@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 
 import pytest
@@ -224,16 +225,18 @@ async def test_reattach_noop_if_not_reparenting(tmp_path):
 
 async def test_reattach_cascade_kills_siblings_on_require_all_failure(tmp_path, monkeypatch):
     """Codex review #3: after a restart there is no executor to cascade-cancel,
-    so a reader that finalizes its task `failed` under require=all must kill the
-    sibling reparented children's groups (killpg) — their readers then fail them.
-    We spy on os.killpg to test the cascade DECISION deterministically (the
-    killpg-actually-kills-the-wrapper behavior is covered by S1's interrupt test).
+    so a reader that finalizes its task `failed` under require=all must terminate
+    sibling reparented children. It delegates process identity safety to the
+    shared termination helper.
     """
     import stratum_mcp.parallel_exec as pe
-    killed = []
-    monkeypatch.setattr(pe.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(pe.os, "killpg", lambda pgid, sig: killed.append(pgid))
-    monkeypatch.setattr(pe, "pid_alive", lambda pid: True)
+    terminated = []
+
+    async def record_termination(pid, start_time):
+        terminated.append((pid, start_time))
+        return {"status": "terminated"}
+
+    monkeypatch.setattr(pe, "terminate_verified", record_termination)
 
     stream = _durable_stream(tmp_path, rc=1, with_result=False)  # → failed
     state = _budgeted()
@@ -247,17 +250,62 @@ async def test_reattach_cascade_kills_siblings_on_require_all_failure(tmp_path, 
     await reader.run()
 
     assert state.parallel_tasks["t1"].state == "failed"
-    # require=all + a failure → sibling t2's group (pid 55555) was killpg'd
-    assert 55555 in killed
+    # require=all + a failure → sibling t2 is terminated using persisted identity.
+    assert terminated == [(55555, "x")]
+
+
+async def test_reattach_cascade_does_not_signal_reused_pid(tmp_path, monkeypatch):
+    """A stale persisted start-time refuses to signal a live group leader."""
+    import stratum_mcp.parallel_exec as pe
+
+    target = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import time; time.sleep(60)",
+        start_new_session=True,
+    )
+    calls = []
+    monkeypatch.setattr(pe.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    start_time = proc_start_time(target.pid)
+    if start_time is None:
+        target.kill()
+        await target.wait()
+        pytest.skip("process start-time identity token is unavailable on this platform")
+    assert os.getpgid(target.pid) == target.pid
+
+    stream = _durable_stream(tmp_path, rc=1, with_result=False)  # → failed
+    state = _budgeted()
+    state.parallel_tasks["t1"] = _reparenting_task(stream)
+    state.parallel_tasks["t2"] = ParallelTaskState(
+        task_id="t2", state="reparenting", reparentable=True,
+        child_pid=target.pid, proc_start_time=start_time + "-stale",
+        stream_path=str(tmp_path / "sib.jsonl"),
+    )
+    reader = _reader(state, require="all", sibling_task_ids=["t1", "t2"])
+
+    try:
+        await reader.run()
+
+        assert calls == [], "identity mismatch must refuse to send any signal"
+        assert target.returncode is None
+        os.kill(target.pid, 0)
+        assert proc_start_time(target.pid) == start_time
+    finally:
+        if target.returncode is None:
+            target.kill()
+        await target.wait()
 
 
 async def test_reattach_no_cascade_when_require_satisfiable(tmp_path, monkeypatch):
     """A successful completion under require=all does NOT cascade-kill siblings."""
     import stratum_mcp.parallel_exec as pe
-    killed = []
-    monkeypatch.setattr(pe.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(pe.os, "killpg", lambda pgid, sig: killed.append(pgid))
-    monkeypatch.setattr(pe, "pid_alive", lambda pid: True)
+    terminated = []
+
+    async def record_termination(pid, start_time):
+        terminated.append((pid, start_time))
+        return {"status": "terminated"}
+
+    monkeypatch.setattr(pe, "terminate_verified", record_termination)
 
     stream = _durable_stream(tmp_path, rc=0)  # → complete
     state = _budgeted()
@@ -268,7 +316,7 @@ async def test_reattach_no_cascade_when_require_satisfiable(tmp_path, monkeypatc
     await reader.run()
 
     assert state.parallel_tasks["t1"].state == "complete"
-    assert killed == [], "no failure yet → require=all still satisfiable → no cascade"
+    assert terminated == [], "no failure yet → require=all still satisfiable → no cascade"
 
 
 async def test_ensure_reattach_readers_single_flight(tmp_path):
