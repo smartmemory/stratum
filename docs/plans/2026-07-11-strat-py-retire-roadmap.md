@@ -232,12 +232,14 @@ IR the engine already executes.
   non-destructive branching over destructive `commit`/`revert`
   (`idea_nondestructive_branching`), and a richer gate-decision taxonomy
   approve/edit/reject/respond vs binary (`idea_richer_gate_decisions`).
-- **STRAT-FLOW-DETACH** — detached stratum pipelines: the STRAT-WORKFLOW-BG
-  server-driven driver composed with background agent dispatch, so a whole
-  flow runs without the interactive session pumping it. Decided as the
-  strongest Phase-2 "keep + WIRE" move (it wires iteration/judge/gates into a
-  live flow instead of porting tools with no caller). Design + decisions:
-  `2026-07-11-agent-invocation-strategy.md` (D3).
+- **STRAT-FLOW-DETACH** — detached stratum pipelines: teach the whole-flow driver
+  to autonomously execute the step kinds it currently hands off (judge/parallel/
+  flow), so a full pipeline runs without the session pumping it. **Designed +
+  codex-reviewed 2026-07-11 → GATED ON A CONSUMER CHECK, likely PARK.** The linear
+  driver already detaches function/inline pipelines; a *fully* detached pipeline
+  has no confirmed caller (`flow_bg_*` is unused, D2). If a consumer appears, build
+  TS-native (option B) — new autonomous logic on the retiring Python driver is
+  throwaway debt. Design: `docs/features/STRAT-FLOW-DETACH/design.md`.
 
 ## Sequencing
 
