@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### feat: STRAT-TS-FLOW-BG-OWNERSHIP (slice 1) — sole-mutator lockout
+
+Closes the reachable stale-result vector from the STRAT-TS-FLOW-BG review: the
+public `stepDone` now refuses an actively bg-driven run (running / paused_gate /
+cancelled), so an external pump can't race a stale connector result into a reset
+step. The driver uses an internal `stepDoneOwned` that bypasses the guard;
+`gateResolve` still resolves gates; a cleanly-terminal bg run falls through to
+the normal "not awaiting" error. `stepDone` is now async so the refusal surfaces
+as a rejection. Attempt/epoch-bound dispatch for the multi-branch revise vector
+(out of v1 linear+fanout scope) remains as slice 2.
+
 ### feat: STRAT-TS-FLOW-BG — TS whole-flow detached driver + bg MCP tools
 
 The TypeScript engine can now run a whole pipeline **detached**: the server-side
