@@ -96,6 +96,17 @@ scope here; candidate follow-up after TS-2).
   legal task state in shapes (compose reads it) but is never produced by
   TS. Recorded as a capability delta; revisit only if soak shows restart
   pain.
+- **STRAT-WORKFLOW-PIPELINE mode (`step_type: pipeline`): NOT ported (v1).**
+  The evaluation core ports ONLY the non-pipeline `parallel_dispatch` path.
+  Verified 2026-07-11 during slice B: every compose build pipeline spec uses
+  `type: parallel_dispatch`; NONE use `type: pipeline` (grep of
+  `pipelines/*.stratum.yaml`). Pipeline mode pulls in the entire item×stage
+  desugaring model (`expand_pipeline_tasks`, `_collapse_pipeline_items`, lane/
+  split/join stage roles, stage certs), none of which exists on the TS engine.
+  Deferring it keeps v1 narrow (like the reparenting cut) with zero consumer
+  impact. Recorded as a capability delta; the surface layer (slice D) rejects a
+  `step_type: pipeline` step with a clear unsupported error rather than
+  mis-evaluating it. Filed as follow-up STRAT-TS-PARALLEL-PIPELINE.
 - **STRAT-CERT-PAR certificate validation: ported** (compose relies on
   cert-failed → task flipped failed with `cert_violations`).
 - **Worktree isolation + pre-merge gate: ported** (batch builds depend on
@@ -132,8 +143,9 @@ not.
       ALL THREE bare-error tools: start, poll, advance) and ParMergeBounce
       shape; key-discriminated variant mode lands in contracts.ts with
       tests incl. status-less poll SUCCESS
-- [ ] Require matrix (all/any/N; pipeline vs non-pipeline skipped
-      semantics) table-driven-tested
+- [x] Require matrix (all/any/N; **non-pipeline** skipped-counts-as-failed
+      anti-bypass) table-driven-tested (slice B, `evaluate.test.ts`). Pipeline
+      require semantics deferred with pipeline mode (Decision 2).
 - [ ] Merge-retry loop: gate bounce persisted, injected on re-dispatch;
       compose re-dispatch path exercised
 - [ ] STRAT-CERT-PAR: cert-failed task flips to failed with
