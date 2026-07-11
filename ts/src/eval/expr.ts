@@ -29,8 +29,11 @@ const MAX_REGEX_INPUT = 4096;
 type FailureCode = "parse_error" | "unknown_identifier" | "unknown_function" | "type_error" | "validation_error" | "resource_limit";
 
 class ExpressionError extends Error {
-  constructor(readonly code: FailureCode, message: string) {
+  readonly code: FailureCode;
+
+  constructor(code: FailureCode, message: string) {
     super(message);
+    this.code = code;
     this.name = "ExpressionError";
   }
 }
@@ -49,8 +52,11 @@ type Node =
 
 class Lexer {
   private position = 0;
+  private readonly source: string;
 
-  constructor(private readonly source: string) {}
+  constructor(source: string) {
+    this.source = source;
+  }
 
   next(): Token {
     while (/\s/u.test(this.source[this.position] ?? "")) this.position += 1;
@@ -129,8 +135,10 @@ class Parser {
   private current: Token;
   private depth = 0;
   private nodes = 0;
+  private readonly lexer: Lexer;
 
-  constructor(private readonly lexer: Lexer) {
+  constructor(lexer: Lexer) {
+    this.lexer = lexer;
     this.current = lexer.next();
   }
 
@@ -271,7 +279,11 @@ export function evaluatePredicate(expression: string, bindings: ExpressionBindin
  * completed step outputs. A context workspaceRoot overrides the constructor option.
  */
 export class ExpressionEvaluator implements Evaluator {
-  constructor(private readonly options: EvaluationOptions = {}) {}
+  private readonly options: EvaluationOptions;
+
+  constructor(options: EvaluationOptions = {}) {
+    this.options = options;
+  }
 
   evaluate(expression: string, context: EvaluatorContext): unknown {
     const result = evaluateExpression(expression, this.bindings(context), this.merged(context));
