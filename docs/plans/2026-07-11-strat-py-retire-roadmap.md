@@ -113,9 +113,14 @@ Entry gate: stratum#6 fixed (D5). Can start now; does not depend on Phase 0/1.
 - **STRAT-TS-FLOWCTL** — port `skip_step`, `revert`, `commit`,
   `check_timeouts`.
   - [ ] 4 tools contract-identical, covered by TS contract tests
-- **STRAT-TS-JUDGE-TOOL** — expose `stratum_judge` as a TS server tool over
-  the existing judged-predicate backend.
-  - [ ] Tool exposed; parity with Python T1+T2 behavior
+- **STRAT-TS-JUDGE-TOOL** — judge surface parity. NOTE (2026-07-11):
+  design recon showed "expose the tool" was a category error — Python's
+  `stratum_judge` is a 3-tier kernel serving v0 `judge:` steps, which the
+  v1 IR replaces with engine `judged:` ensures. The design's
+  recommendation is ABSORB (no standalone tool; close two small deltas:
+  budget-ledger wiring + evidence-bounding tests). See the design doc.
+  - [ ] Design decision executed (absorb + deltas), capability-delta
+        table recorded
 
 ### Phase 3 — Disposition of the remaining surface (STRAT-PY-TRIAGE) — PLANNED
 
@@ -159,6 +164,17 @@ Python fallback used.
       needed)
 - [ ] TS package claims the `stratum-mcp` bin name (D3)
 - [ ] CHANGELOG + README updated in the removal commit
+
+## Feature designs (all designed 2026-07-11)
+
+- Phase 2: `docs/features/STRAT-TS-GUARD/design.md` ·
+  `docs/features/STRAT-TS-PARALLEL/design.md` ·
+  `docs/features/STRAT-TS-ITER/design.md` ·
+  `docs/features/STRAT-TS-FLOWCTL/design.md` ·
+  `docs/features/STRAT-TS-JUDGE-TOOL/design.md`
+- Phase 3: `docs/features/STRAT-PY-TRIAGE/design.md`
+- Phase 4: `docs/features/STRAT-PY-SWEEP/design.md`
+- Phase 5: `docs/features/STRAT-PY-REMOVE/design.md`
 
 ## Follow-ups (filed 2026-07-11, PLANNED — post-retirement, not blockers)
 
