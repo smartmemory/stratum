@@ -45,6 +45,73 @@ export interface FanoutState {
   items: FanoutItemState[];
 }
 
+/** Structured merge-bounce record for a parallel task. */
+export interface ParMergeBounce {
+  /** wire: task_id */
+  taskId: string;
+  reason: "gate_failed" | "merge_conflict";
+  files: string[];
+  command: string;
+  /** wire: exit_code */
+  exitCode: number | null;
+  excerpt: string;
+}
+
+/** Persisted state for one server-dispatched parallel task. */
+export interface ParallelTaskState {
+  /** wire: task_id */
+  taskId: string;
+  /** Default: "pending". */
+  state: "pending" | "running" | "reparenting" | "complete" | "failed" | "cancelled";
+  /** wire: started_at; default: null. */
+  startedAt: number | null;
+  /** wire: finished_at; default: null. */
+  finishedAt: number | null;
+  /** Default: null. */
+  result: unknown;
+  /** Default: null. */
+  error: string | null;
+  /** wire: cert_violations; default: null. */
+  certViolations: unknown[] | null;
+  /** wire: worktree_path; default: null. */
+  worktreePath: string | null;
+  /** Default: null when not captured, "" when captured with no changes. */
+  diff: string | null;
+  /** wire: diff_error; default: null. */
+  diffError: string | null;
+  /** wire: gate_bounce; default: null. */
+  gateBounce: ParMergeBounce | null;
+  /** Default: 0. */
+  tokens: number;
+  /** wire: elapsed_s; default: 0. */
+  elapsedS: number;
+  /** wire: dollars_recorded; default: 0. */
+  dollarsRecorded: number;
+  // T2-F5-RESUME reparenting is NOT produced by the TS engine (capability delta);
+  // fields exist for shape parity only.
+  /** wire: child_pid; default: null. */
+  childPid: number | null;
+  /** wire: stream_path; default: null. */
+  streamPath: string | null;
+  /** wire: stderr_path; default: null. */
+  stderrPath: string | null;
+  /** wire: proc_start_time; default: null. */
+  procStartTime: string | null;
+  /** wire: stream_offset; default: 0. */
+  streamOffset: number;
+  /** Default: false. */
+  reparentable: boolean;
+  /** wire: dispatch_debited; default: false. */
+  dispatchDebited: boolean;
+}
+
+/** Per-flow persisted state for the currently dispatched parallel step. */
+export interface ParallelRunState {
+  /** wire: step_id */
+  stepId: string;
+  tasks: ParallelTaskState[];
+}
+
 export interface SubflowState {
   input: unknown;
   steps: Record<string, StepState>;
@@ -87,6 +154,8 @@ export interface PersistedRun {
   rounds?: number;
   steps: Record<string, StepState>;
   events: AuditEvent[];
+  /** Optional so persisted runs created before parallel dispatch remain loadable. */
+  parallel?: ParallelRunState;
 }
 
 let temporarySequence = 0;

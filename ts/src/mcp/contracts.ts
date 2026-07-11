@@ -4,7 +4,11 @@ export type Shape = string | { readonly [key: string]: Shape };
 
 export interface McpSurface {
   surface: number;
-  tools: Record<string, { request: Record<string, Shape>; responses: Record<string, Record<string, Shape>> }>;
+  tools: Record<string, {
+    request: Record<string, Shape>;
+    responses: Record<string, Record<string, Shape>>;
+    discriminator?: Record<string, string>;
+  }>;
 }
 
 export interface EventContract {
@@ -61,8 +65,11 @@ export async function assertToolRequest(tool: string, request: unknown): Promise
 export async function assertToolResponse(tool: string, response: unknown): Promise<void> {
   if (!isRecord(response)) throw new Error(`${tool}.response must be an object`);
   const definition = (await mcpSurface()).tools[tool];
-  const status = typeof response.status === "string" ? response.status : "success";
-  const shape = definition?.responses[status];
+  const status = typeof response.status === "string" ? response.status : undefined;
+  const variant = status
+    ?? Object.entries(definition?.discriminator ?? {}).find(([, key]) => key in response)?.[0]
+    ?? "success";
+  const shape = definition?.responses[variant];
   if (!shape) throw new Error(`${tool}.response has undeclared status ${JSON.stringify(response.status)}`);
   const payload = { ...response };
   if ("status" in payload) delete payload.status;
