@@ -80,6 +80,11 @@ hazards:
 - **Numbers:** guard payloads contain only ints (ts_ms, graph_version)
   and strings — the canonicalizer REJECTS non-integer numbers loudly
   rather than risking float-repr divergence.
+  TS-written verdicts recursively normalize float telemetry to integers, a
+  deliberate cross-engine shape divergence forced by JavaScript's inability
+  to preserve Python's `0.0`; compose lifecycle-guard and
+  `verdict_receipt_clean` do not read those fields, and C1 chain verification
+  uses raw ledger lines.
 
 Gate: **cross-engine golden fixtures** — a Python-written guard dir
 (committed as test fixture) must load, chain-verify, transition, and

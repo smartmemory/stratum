@@ -185,10 +185,8 @@ async function createExclusive(path: string, owner: LockOwner): Promise<boolean>
     try {
       await unlink(temporaryPath);
     } catch (error) {
-      // Cleanup is best-effort: after link() succeeds, failing the acquisition
-      // would strand a valid canonical lock while its caller believes it lost.
+      // Cleanup is best-effort: a truly failed unlink leaves only an inert uniquely-named orphan.
       if (!isErrno(error, "ENOENT")) {
-        // Unique temp files are never read as locks, so an orphan is harmless.
         void error;
       }
     }

@@ -9,7 +9,8 @@
 import { spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { GuardError } from "./errors.js";
+import { EvidenceParseError } from "./errors.js";
+export { EvidenceParseError } from "./errors.js";
 
 export const TRUSTED_BUILTINS = new Set([
   "server_file_exists",
@@ -22,13 +23,6 @@ export type TrustedBuiltin = "server_file_exists" | "git_commit_exists" | "comma
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 120;
 const NO_WORKSPACE_ROOT_REASON = "no workspace_root registered for trusted file/command/git evidence";
-
-export class EvidenceParseError extends GuardError {
-  constructor(message: string) {
-    super("evidence_parse_error", message);
-    this.name = "EvidenceParseError";
-  }
-}
 
 export type ParsedPredicateStatement = { name: TrustedBuiltin; args: unknown[] };
 
