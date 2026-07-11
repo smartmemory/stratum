@@ -80,6 +80,7 @@ export interface ReadyStep {
   do: string;
   agent: "claude" | "codex";
   attempt: number;
+  epoch: number;
   previousFailure?: FailureContext;
 }
 
@@ -254,7 +255,7 @@ export class StratumEngine {
     return { runId: first.runId, status: "running" };
   }
 
-  async stepDone(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
+  async stepDone(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
     // Sole-mutator enforcement (STRAT-TS-FLOW-BG-OWNERSHIP): while a run is
     // actively bg-driven, the driver owns its mutation surface — an external
     // stepDone would race an in-flight connector dispatch and could commit a
@@ -269,16 +270,16 @@ export class StratumEngine {
     if (bg !== undefined && bg.status !== "completed" && bg.status !== "failed" && bg.status !== "budget_exhausted") {
       throw new Error(`run ${runId} is background-driven; external stepDone is not permitted (poll via flow_bg_poll)`);
     }
-    return this.stepDoneOwned(runId, stepId, result);
+    return this.stepDoneOwned(runId, stepId, result, expectedEpoch);
   }
 
   /** Lock-wrapped stepDone used by the bg driver itself, bypassing the
    * sole-mutator guard on the public entry point. */
-  private stepDoneOwned(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
-    return this.withRunLock(runId, () => this.stepDoneLocked(runId, stepId, result));
+  private stepDoneOwned(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
+    return this.withRunLock(runId, () => this.stepDoneLocked(runId, stepId, result, expectedEpoch));
   }
 
-  private async stepDoneLocked(runId: string, stepId: string, result: StepResult): Promise<EngineResponse> {
+  private async stepDoneLocked(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
     const run = await this.loadRun(runId);
     const validated = this.validationFor(run);
     const located = this.locateStep(run, validated.value, stepId);
@@ -289,6 +290,9 @@ export class StratumEngine {
       throw new Error("step is not awaiting a client result");
     }
     if (!scope) throw new Error("step scope missing after lookup");
+    if (expectedEpoch !== undefined && (state.epoch ?? 0) !== expectedEpoch) {
+      throw new Error("step result is stale: dispatched for a superseded epoch");
+    }
 
     const attempt = state.attempts.length + 1;
     const telemetry = result.telemetry;
@@ -339,7 +343,12 @@ export class StratumEngine {
         const completedIterations = (state.iterations ?? 0) + 1;
         state.iterations = completedIterations;
         const failure = { attempt, reason: `iterate until ${JSON.stringify(step.iterate.until)} failed: ${until.reason}` };
-        if (completedIterations >= step.iterate.max) {
+        // Identical output can never satisfy a deterministic `until` predicate, so
+        // spinning to iterate.max on unchanged evidence is pointless — exhaust now
+        // (failAttempt marks the reason with the identical-evidence note).
+        const previousResult = state.attempts[state.attempts.length - 1]?.result;
+        const identicalEvidence = result.output !== undefined && previousResult !== undefined && deepEqual(result.output, previousResult);
+        if (completedIterations >= step.iterate.max || identicalEvidence) {
           // Max exhaustion is a normal validation failure, including on_fail routing.
           return this.failAttempt(run, validated.value, validated.contracts, scope, step, state, attempt, failure.reason, usage, result.output, telemetry, true);
         }
@@ -524,13 +533,7 @@ export class StratumEngine {
   // SOLE-MUTATOR INVARIANT (v1): while a run is bg-driven, this driver owns its
   // mutation surface — a session polls (flowBgPoll) and resolves gates
   // (gateResolve), but must NOT externally call stepDone on it. The defensive
-  // catch below tolerates the benign case where an external mutation already
-  // advanced the driven step; it does NOT make a concurrently-mutated run fully
-  // safe — an external stepDone/revise that resets the step to a fresh
-  // attempt/epoch mid-dispatch could accept a stale connector result. That race
-  // is unreachable within v1's linear+fanout scope (no multi-branch gate+do
-  // concurrency) and is filed as STRAT-TS-FLOW-BG-OWNERSHIP for attempt-bound
-  // dispatch.
+  // epoch-bound settlement below rejects any result dispatched before a revise.
   private async driveBg(runId: string, initial: EngineResponse): Promise<void> {
     const bg = this.bgFlows.get(runId);
     if (!bg) return;
@@ -542,36 +545,44 @@ export class StratumEngine {
           return;
         }
         if (response.status === "ready") {
-          const step = response.ready[0];
-          if (!step) throw new Error("ready response contained no steps");
+          const steps = response.ready;
+          if (steps.length === 0) throw new Error("ready response contained no steps");
           const run = await this.loadRun(runId);
-          let result: StepResult;
-          try {
-            result = await this.connector({
-              agent: step.agent,
-              prompt: step.do,
-              attempt: step.attempt,
-              ...(run.workspaceRoot !== undefined ? { cwd: run.workspaceRoot } : {}),
-              ...(step.previousFailure !== undefined ? { previousFailure: step.previousFailure } : {}),
-              sandbox: "read-only",
-            });
-          } catch (error) {
-            result = { failure: message(error) };
+          const results = await Promise.all(steps.map(async (step) => {
+            let result: StepResult;
+            try {
+              result = await this.connector({
+                agent: step.agent,
+                prompt: step.do,
+                attempt: step.attempt,
+                ...(run.workspaceRoot !== undefined ? { cwd: run.workspaceRoot } : {}),
+                ...(step.previousFailure !== undefined ? { previousFailure: step.previousFailure } : {}),
+                sandbox: "read-only",
+              });
+            } catch (error) {
+              result = { failure: message(error) };
+            }
+            return { step, result };
+          }));
+          for (const { step, result } of results) {
+            try {
+              await this.stepDoneOwned(runId, step.id, result, step.epoch);
+            } catch (error) {
+              // Swallow ONLY genuine supersession — the run ended, the step already
+              // advanced, or a revise bumped its epoch (a stale-epoch rejection);
+              // reAdvance reconciles those below. A throw while the step is still
+              // ready at the SAME epoch (e.g. a malformed connector result) is a
+              // real driver failure and must terminalize, not spin forever.
+              // Resolve via locateStep: subflow child ids are scoped (parent/child)
+              // and live in parentState.sub.steps, not the root steps map.
+              const current = await this.loadRun(runId);
+              const state = this.locateStep(current, this.validationFor(current).value, step.id)?.state;
+              const superseded = current.status !== "running" || state === undefined
+                || state.status !== "ready" || (state.epoch ?? 0) !== step.epoch;
+              if (!superseded) throw error;
+            }
           }
-          try {
-            response = await this.stepDoneOwned(runId, step.id, result);
-          } catch (error) {
-            // A concurrent cancel/revise may have moved this step out of `ready`
-            // while our connector was in flight — that is not a driver failure.
-            // (External stepDone is locked out by the sole-mutator guard.)
-            // Re-derive current state and keep driving; a genuinely unexpected
-            // error (still-ready step) surfaces to the terminal catch.
-            const current = await this.loadRun(runId);
-            const stepState = current.steps[step.id];
-            if (current.status !== "running" || (stepState !== undefined && stepState.status !== "ready")) {
-              response = await this.reAdvance(runId);
-            } else { throw error; }
-          }
+          response = await this.reAdvance(runId);
           continue;
         }
         if (response.status === "completed" || response.status === "failed" || response.status === "budget_exhausted") {
@@ -1100,12 +1111,14 @@ export class StratumEngine {
   }
 
   private async failAttempt(run: PersistedRun, spec: Specification, contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>, scope: ExecutionScope, step: Step, state: StepState, attempt: number, reason: string, usage: Budget, result?: unknown, telemetry?: AttemptTelemetry, forceExhausted = false): Promise<EngineResponse> {
-    const failure = { attempt, reason };
+    const previousResult = state.attempts[state.attempts.length - 1]?.result;
+    const identicalEvidence = result !== undefined && previousResult !== undefined && deepEqual(result, previousResult);
+    const failure = { attempt, reason: identicalEvidence ? `${reason} (no retry: identical evidence)` : reason };
     state.attempts.push({ attempt, at: now(), failure, ...(result !== undefined ? { result } : {}), ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
     state.failure = failure;
     this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
     const maximum = step.attempts ?? 2;
-    if (!forceExhausted && attempt < maximum) {
+    if (!forceExhausted && !identicalEvidence && attempt < maximum) {
       state.status = "pending";
       await this.persist(run);
       return this.advance(run, spec, contracts, scope);
@@ -1326,6 +1339,7 @@ export class StratumEngine {
       // A live fanout for this step must be invalidated, not just cleared:
       // the epoch bump makes in-flight workers/settlement stale (they check
       // object identity) and lets the re-activated step schedule freshly.
+      state.epoch = (state.epoch ?? 0) + 1;
       if (state.fanout) state.fanoutEpoch = (state.fanoutEpoch ?? 0) + 1;
       delete state.fanout;
       delete state.sub;
@@ -1358,7 +1372,7 @@ export class StratumEngine {
     if (step.do === undefined) throw new Error("not a do step");
     const attempt = state.attempts.length + 1;
     return {
-      id: this.scopedId(scope, step.id), do: this.render(step.do, scope), agent: step.agent ?? "claude", attempt,
+      id: this.scopedId(scope, step.id), do: this.render(step.do, scope), agent: step.agent ?? "claude", attempt, epoch: state.epoch ?? 0,
       ...(state.failure ? { previousFailure: state.failure } : state.routed ? { previousFailure: state.routed } : {}),
     };
   }
@@ -1674,6 +1688,22 @@ function stringLeaves(step: Step): string[] {
     }
   }
   return values;
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => deepEqual(value, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(rightRecord, key) && deepEqual(leftRecord[key], rightRecord[key]));
 }
 
 function terminal(status: StepState["status"]): boolean { return status === "succeeded" || status === "failed" || status === "skipped"; }

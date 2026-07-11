@@ -57,7 +57,7 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     expect(judgeCalls).toBe(1);
   });
 
-  it("retries adverse judged verdicts and fails at the declared attempt cap", async () => {
+  it("fails fast after two dispatches when an adverse retry returns identical evidence", async () => {
     let connectorCalls = 0;
     let judgeCalls = 0;
     const engine = await subject(
@@ -68,8 +68,79 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     const started = await engine.flowRunBg(spec, { name: "Ada" });
     const terminal = await waitForBg(engine, started.runId, "failed");
     expect(terminal.status).toBe("failed");
+    expect(terminal.failure?.reason).toMatch(/no retry: identical evidence/);
+    expect(connectorCalls).toBe(2);
+    expect(judgeCalls).toBe(2);
+  });
+
+  it("uses the full attempt budget when adverse retries return different evidence", async () => {
+    let connectorCalls = 0;
+    const engine = await subject(
+      async () => { connectorCalls += 1; return { output: { value: `attempt-${connectorCalls}` } }; },
+      async () => ({ holds: false, reason: "adverse" }),
+    );
+    const spec = flow([{ id: "build", do: "build", out: "Result", attempts: 3, ensure: [{ judged: { statement: "output is sound", stakes: "cheap" } }] }], "${build.output}");
+    const started = await engine.flowRunBg(spec, { name: "Ada" });
+    const terminal = await waitForBg(engine, started.runId, "failed");
+    expect(terminal.status).toBe("failed");
     expect(connectorCalls).toBe(3);
-    expect(judgeCalls).toBe(3);
+  });
+
+  it("fails fast on an iterate loop that returns identical evidence", async () => {
+    let connectorCalls = 0;
+    const engine = await subject(async () => { connectorCalls += 1; return { output: { value: "no" } }; });
+    // until can never hold on identical output — must stop after 2, not spin to max=5.
+    const spec = flow([{ id: "refine", do: "refine", out: "Result", iterate: { max: 5, until: "result.value == 'ok'" } }], "${refine.output}");
+    const started = await engine.flowRunBg(spec, { name: "Ada" });
+    const terminal = await waitForBg(engine, started.runId, "failed");
+    expect(terminal.status).toBe("failed");
+    expect(terminal.failure?.reason).toMatch(/no retry: identical evidence/);
+    expect(connectorCalls).toBe(2);
+  });
+
+  it("terminally fails (does not spin) when a connector returns a malformed result", async () => {
+    // A resolved-but-malformed result throws inside stepDone before the step leaves
+    // `ready`; the driver must terminalize, not re-dispatch forever.
+    const engine = await subject(async () => (undefined as unknown as { output: unknown }));
+    const spec = flow([{ id: "build", do: "build", out: "Result" }], "${build.output}");
+    const started = await engine.flowRunBg(spec, { name: "Ada" });
+    const terminal = await waitForBg(engine, started.runId, "failed");
+    expect(terminal.status).toBe("failed");
+  });
+
+  it("terminally fails (does not spin) on a malformed result inside a subflow child", async () => {
+    // Subflow child ids are scoped (wrap/child_one); the selective catch must
+    // resolve them via locateStep, else an absent root lookup reads as superseded
+    // and the driver re-dispatches the malformed child forever.
+    let childCalls = 0;
+    const engine = await subject(async ({ prompt }) => {
+      if (prompt.startsWith("child one")) { childCalls += 1; return undefined as unknown as { output: unknown }; }
+      return { output: { value: prompt } };
+    });
+    const started = await engine.flowRunBg(await fixture("subflow"), { name: "Ada" });
+    const terminal = await waitForBg(engine, started.runId, "failed");
+    expect(terminal.status).toBe("failed");
+    expect(childCalls).toBe(1); // rethrown on first throw, not re-dispatched
+  });
+
+  it("dispatches independent top-level ready steps concurrently", async () => {
+    const startedPrompts: string[] = [];
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const engine = await subject(async ({ prompt }) => {
+      startedPrompts.push(prompt);
+      if (startedPrompts.length === 2) release();
+      await barrier;
+      return { output: { value: prompt } };
+    });
+    const spec = flow([
+      { id: "left", do: "left ${input.name}", out: "Result" },
+      { id: "right", do: "right ${input.name}", out: "Result" },
+    ], "${right.output}");
+    const started = await engine.flowRunBg(spec, { name: "Ada" });
+    const terminal = await waitForBg(engine, started.runId, "completed");
+    expect(terminal.status).toBe("completed");
+    expect(startedPrompts).toEqual(["left Ada", "right Ada"]);
   });
 
   it("pauses at a top-level gate and resumes driving after approval", async () => {
@@ -204,6 +275,31 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     // Post-terminal, the guard no longer refuses — the natural "not awaiting" error surfaces instead.
     await expect(engine.stepDone(started.runId, "first", { output: { value: "x" } }))
       .rejects.toThrow(/not awaiting a client result/);
+  });
+
+  it("rejects a superseded epoch after gate revise and accepts the current epoch", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const spec = {
+      version: 1,
+      contracts: { Result: { value: "string" } },
+      flows: { entry: "main", main: {
+        input: { name: "string" },
+        output: { from: "${a.output}", contract: "Result" },
+        max_rounds: 1,
+        steps: [
+          { id: "a", do: "build ${input.name}", out: "Result" },
+          { id: "b", after: ["a"], gate: { on_approve: null, on_revise: "a", on_kill: null } },
+        ],
+      } },
+    };
+    const planned = await engine.plan(spec, { name: "Ada" });
+    expect(planned).toMatchObject({ status: "ready", ready: [{ id: "a", epoch: 0 }] });
+    expect(await engine.stepDone(planned.runId, "a", { output: { value: "first" } })).toMatchObject({ status: "running" });
+    const revised = await engine.gateResolve(planned.runId, "b", "revise");
+    expect(revised).toMatchObject({ status: "ready", ready: [{ id: "a", epoch: 1 }] });
+    expect((await engine.audit(planned.runId)).steps.a?.epoch).toBe(1);
+    await expect(engine.stepDone(planned.runId, "a", { output: { value: "stale" } }, 0)).rejects.toThrow(/stale/);
+    expect(await engine.stepDone(planned.runId, "a", { output: { value: "fresh" } }, 1)).toMatchObject({ status: "running" });
   });
 });
 

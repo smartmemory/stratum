@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### feat: STRAT-TS-FLOW-BG driver — fail-fast retries, parallel dispatch, epoch binding
+
+Three follow-ups on the TS detached driver:
+- **No-pointless-re-judge:** when a retry (ensure or `iterate`) produces output
+  byte-identical to the prior attempt, the engine fails fast instead of spinning
+  to the retry/iterate cap — re-judging unchanged evidence is wasted, and a
+  deterministic `iterate.until` can never flip on identical output.
+- **Parallel top-level dispatch:** the driver now fires all ready-step connectors
+  concurrently, then settles each under the run lock. A settlement error is
+  re-raised only when it is a genuine driver failure (step still ready at the
+  same epoch, resolved scope-aware for subflow children); true supersession is
+  reconciled by re-advance, so a malformed connector result terminalizes the run
+  instead of re-dispatching forever.
+- **STRAT-TS-FLOW-BG-OWNERSHIP slice 2 (epoch-bound dispatch):** ordinary steps
+  now carry an `epoch` bumped on every revise reset; the driver binds each
+  dispatch to its epoch, so a result dispatched before a revise is rejected as
+  stale rather than committed into the reset epoch. The session/MCP path is
+  unchanged (the epoch check is opt-in). OWNERSHIP is now COMPLETE.
+
 ### feat: STRAT-TS-FLOW-BG-OWNERSHIP (slice 1) — sole-mutator lockout
 
 Closes the reachable stale-result vector from the STRAT-TS-FLOW-BG review: the
