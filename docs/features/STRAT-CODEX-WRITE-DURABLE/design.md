@@ -1,6 +1,11 @@
 # STRAT-CODEX-WRITE-DURABLE — safe codex write + background (design)
 
-**Status:** DESIGN (2026-07-11) · **Scope decision:** NARROW v1 (kill-on-controller-loss)
+**Status:** IMPLEMENTED (2026-07-11) · **Scope decision:** NARROW v1 (kill-on-controller-loss)
+
+**IMPLEMENTED note:** Slices 3 and 4 add a persistence-before-exec launch gate,
+kill/classification of standalone writable runs on shutdown/restart, focused
+process-backed coverage, and the updated durable-write operational contract.
+The original gap analysis and slice history below are retained.
 
 ## Related Documents
 
@@ -103,6 +108,33 @@ write child across a restart. v1 kills instead.
 
 SIGTERM/SIGKILL cannot undo an FS write already entered by codex/kernel. Bound
 with: short termination grace, atomic-write expectations in the agent prompt,
-optional dedicated worktree per writer, terminal audit/diff after recovery. A
-child that calls `setsid()` escapes `killpg` — v1 must fail closed / prohibit
-that topology rather than assume group containment.
+optional dedicated worktree per writer, terminal audit/diff after recovery.
+
+### Kill-on-controller-loss is NOT unconditional (codex review, 2026-07-11)
+
+The "controller loss terminates the write child" guarantee is delivered by two
+sweeps: the **graceful-shutdown** sweep (`main()` finally, reason
+`controller_loss`) and the **startup** sweep (reason `server_restart`). Two
+windows remain OPEN in NARROW v1 and are accepted as bounded residual risk for a
+stopgap (per strategy doc D1: narrow, no expansion):
+
+1. **Hard-killed controller (SIGKILL/crash) that never restarts.** The graceful
+   sweep is bypassed and no startup sweep runs, so the writer continues until it
+   completes (the realistic outcome — codex builds are bounded tasks) or, if it
+   hangs, indefinitely. A next server start reaps it. Closing this window
+   requires a controller-liveness mechanism (a lifetime-held pipe the child
+   monitors for EOF, self-terminating on controller death) — filed as
+   **STRAT-CODEX-WRITE-DURABLE-LIVENESS**, deliberately out of NARROW v1.
+2. **`setsid()`-escaping payload.** The persisted identity is the wrapper
+   (`pgid==pid`, group leader); a payload that calls `setsid` starts a new
+   session and escapes `killpg`. The launch gate verifies the *wrapper* at
+   spawn, but nothing prevents the codex payload from later re-parenting a
+   writer out of the group. v1 relies on the workspace-write sandbox + the
+   atomic-write prompt convention; active detection/prohibition is deferred to
+   LIVENESS. A cancel/sweep that kills only the wrapper group will report the
+   run terminated while an escaped writer survives.
+
+The sweep itself only records a terminal `failed` fate once death is positively
+confirmed (`terminated`/`killed`/`already_gone`); an unconfirmed-alive writer is
+left for the next sweep to retry, and a run that completes in the scan race is
+re-scanned and wins over `failed` (codex findings 3 & 4, fixed 2026-07-11).

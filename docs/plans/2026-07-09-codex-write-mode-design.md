@@ -31,10 +31,12 @@ default so the existing review path is untouched.
   validation **rejects** it — it is not constructible until it has its own
   guardrails, tests, and approval model. The v1 public API exposes only
   read-only vs workspace-write.
-- **Write with the durable/reparentable stream.** The durable spawn path
-  (`codex.py:727-859`) intentionally survives connector teardown; a write-capable
-  child could keep editing after cancel/restart. v1 **rejects** `write=True`
-  combined with the durable stream; specifying safe cancellation is a follow-up.
+- **Reparentable writable execution remains deferred.** NARROW v1 now ships
+  `write=True, background=True` with durable output (`run_id`, polling, and
+  death-confirmed cancel), but writable children are explicitly
+  **non-reparentable**: controller shutdown/restart terminates them and startup
+  classifies interrupted writable runs as failed. Read-only durable children
+  retain their existing survival/reparent behavior.
 
 ## Current State (grounded)
 
@@ -166,7 +168,7 @@ Both lanes are asserted separately (see Testing).
 | `write=True`, non-codex base | raise clear error (fail-loud, not ignored) |
 | `write=True`, `cwd` missing | raise clear error (write target undefined) |
 | `write=True`, `STRATUM_CODEX_ALLOW_WRITE=0` | raise clear error, no codex spawn |
-| `write=True`, durable stream | raise clear error (deferred to follow-up) |
+| `write=True`, durable stream | allow only through the verified-identity launch gate; non-reparentable |
 | `sandbox_mode != "read-only"`, `read_jail` set | raise `ValueError` at connector (writable jail deferred) |
 | `sandbox_mode` not in `{read-only, workspace-write}` | reject at connector before spawning codex |
 | codex escalates beyond workspace | auto-denied by codex (not a stratum error) |
@@ -184,7 +186,7 @@ Per the golden-flow / real-backend testing standard:
 - **Kill-switch:** `write=True` + `STRATUM_CODEX_ALLOW_WRITE=0` → clear error,
   no spawn.
 - **Guard rejections:** `write=True` + non-codex base → error; `write=True`
-  without `cwd` → error; `write=True` + durable stream → error;
+  without `cwd` → error; writable durable identity unavailable → fail closed;
   `sandbox_mode="workspace-write"` + `read_jail` → `ValueError` at the connector;
   `danger-full-access` → rejected at the connector.
 - **Backward-compat, jailed lane:** assert the **final Docker argv** for the
@@ -204,8 +206,22 @@ Per the golden-flow / real-backend testing standard:
   defaults.
 - `STRAT-CODEX-WRITE-JAIL` — writable Docker jail (`:rw` mount) for OS-isolated
   codex writes; lifts the v1 `write` + `read_jail` restriction.
-- `STRAT-CODEX-WRITE-DURABLE` — safe write semantics for the durable/reparentable
-  stream (cancellation / interrupt on teardown); lifts the v1 `write` + durable
-  restriction.
+- `STRAT-CODEX-WRITE-DURABLE-REPARENT` — a future supervisor/pause protocol for
+  writable children that intentionally survive controller restart. NARROW v1
+  ships durable output with kill-on-controller-loss, not writable reparenting.
+- `STRAT-CODEX-WRITE-DURABLE-LIVENESS` — close the two NARROW-v1 kill-on-loss
+  windows (codex review 2026-07-11): a lifetime-held controller-liveness pipe the
+  writer monitors for EOF (self-terminate on hard-killed/never-restarted
+  controller), plus active detection/prohibition of a `setsid()`-escaping payload.
+  See STRAT-CODEX-WRITE-DURABLE design residual-risk.
 - `STRAT-CODEX-WRITE-ROOTS` — allowed-workspace-root policy for write mode, beyond
   just requiring an explicit resolved `cwd`.
+
+## Durable-write cancellation guarantee (NARROW v1)
+
+Cancellation reports `cancelled` only after the persisted exact process identity
+is gone, escalating from SIGTERM to SIGKILL after a bounded grace period. This
+cannot roll back an OS/filesystem write already in flight. A child that calls
+`setsid()` would escape the original process group, so NARROW v1 fails closed on
+identity/group verification and prohibits that topology rather than claiming it
+can be contained.
