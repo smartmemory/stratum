@@ -232,6 +232,12 @@ IR the engine already executes.
   non-destructive branching over destructive `commit`/`revert`
   (`idea_nondestructive_branching`), and a richer gate-decision taxonomy
   approve/edit/reject/respond vs binary (`idea_richer_gate_decisions`).
+- **STRAT-FLOW-DETACH** — detached stratum pipelines: the STRAT-WORKFLOW-BG
+  server-driven driver composed with background agent dispatch, so a whole
+  flow runs without the interactive session pumping it. Decided as the
+  strongest Phase-2 "keep + WIRE" move (it wires iteration/judge/gates into a
+  live flow instead of porting tools with no caller). Design + decisions:
+  `2026-07-11-agent-invocation-strategy.md` (D3).
 
 ## Sequencing
 

@@ -169,6 +169,12 @@ HOME pointed at tmp_path so the registry lands in the sandbox. MUST cover:
 
 ## Out of scope (filed as follow-ups)
 - STRAT-AGENT-BG-CLAUDE — claude-type background via server-side task + tee.
+  **RE-SCOPED (2026-07-11):** the server-side task + tee approach is dead —
+  Claude Code now ships a native local background runtime (`claude --bg` +
+  `claude agents --json` + `stop`, verified live). If stratum ever needs a
+  claude background run, it is a thin adapter over that runtime (+
+  `terminate_verified` for cancel), built only when a real consumer exists.
+  Decision D2 in `docs/plans/2026-07-11-agent-invocation-strategy.md`.
 - STRAT-AGENT-BG-BUDGET — budget debit for bg runs (idempotent
   debit-on-completion-observation).
 - STRAT-AGENT-BG-MONITOR — per-event streaming into the session via the
