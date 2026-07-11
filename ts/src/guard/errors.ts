@@ -41,6 +41,20 @@ export class GuardError extends Error {
   }
 }
 
+export class LedgerCorrupt extends GuardError {
+  constructor(message: string) {
+    super("ledger_corrupt", message);
+    this.name = "LedgerCorrupt";
+  }
+}
+
+export class ResourceIdMismatch extends GuardError {
+  constructor(message: string) {
+    super("resource_id_mismatch", message);
+    this.name = "ResourceIdMismatch";
+  }
+}
+
 export function guardErrorEnvelope(errorType: GuardErrorType, message: string): GuardErrorEnvelope {
   return { status: "error", error_type: errorType, message };
 }
