@@ -63,17 +63,22 @@ deleting the Python engine from the repo and deprecating it on PyPI.
   delete the Python tree.
 - **D5 — Node ≥ 26 packaging fix (stratum#6) is a Phase 2 entry gate.**
   Wide cutover cannot ride on a node-22-pinned wrapper.
-- **D6 — This epic retires the ENGINE (`stratum-mcp`), not the `stratum-py`
-  library.** `src/stratum/` is a separate PyPI product (`@pipeline`,
-  `@phase`, `stratum.run()` — Python-native authoring, "LLM calls that
-  behave like the rest of your code"). The TS port never ported that
-  surface, so deleting it here would silently end Python-native authoring —
-  a product decision, not a cleanup step. Its fate (keep as independent
-  product / freeze / deprecate — possibly later a thin Python SDK over the
-  TS engine) is decided separately with PyPI usage data, OUTSIDE this epic.
-  Entanglement to sever regardless: `stratum-mcp` imports
-  `stratum.judge.codex_models` + `stratum.judge.sandbox` from the library
-  (undeclared dependency) — the D4 relocation covers both.
+- **D6 (revised 2026-07-11) — `stratum-py` retires WITH the engine.**
+  Measured: of its 12,885 LOC, `judge/` (6,529) + `goal/` (2,352) are the
+  implementation backbone of the Python MCP tools — `stratum-mcp` imports
+  the judge kernel, postmortem, distill, inline_learn, goal
+  orchestrator/worker, sandbox, and codex_models (all UNDECLARED deps).
+  Their fate is already Phases 2–3: whatever tool ports to TS takes its
+  kernel along; whatever is killed dies with it. Only the ~3,850-LOC
+  decorator core (`@pipeline`/`@phase`/`stratum.run()`, pipeline_runner,
+  hitl, budget) is a standalone authoring surface — and PyPI stats show no
+  distinct audience (stratum-py and stratum-mcp downloads track each other
+  ~1:1 daily/weekly/monthly = mirror/CI noise, not organic users). So no
+  replacement authoring surface is built: YAML specs + MCP are the sole
+  surface post-retirement. Phase 5 deprecates BOTH PyPI packages and
+  deletes BOTH trees. A programmatic TS pipeline API (or a Python thin-SDK
+  over the TS engine) is an optional follow-on, filed only if real demand
+  appears — never a retirement blocker.
 
 ## Phases
 
@@ -145,13 +150,14 @@ Entry gate: Phases 0–3 complete.
 Entry gate: Phase 4 complete + 2 weeks of TS-only operation with no
 Python fallback used.
 
-- [ ] Final `stratum-mcp` PyPI release with deprecation notice (notes from
-      Phase 1); Trusted Publisher config retired after
+- [ ] Final `stratum-mcp` AND `stratum-py` PyPI releases with deprecation
+      notices (notes from Phase 1); Trusted Publisher / token configs
+      retired after
 - [ ] `stratum-mcp` suite (1517 passed / 2 skipped) frozen at the removal
       SHA — recorded here, then deleted with the tree
-- [ ] `stratum-mcp/` package removed from the repo (git history preserves
-      it; no archive branch needed). `src/stratum/` (`stratum-py`) is NOT
-      removed here — its fate is a separate decision per D6
+- [ ] `stratum-mcp/` package AND `src/stratum/` (`stratum-py`) removed from
+      the repo per D6 (git history preserves them; no archive branch
+      needed)
 - [ ] TS package claims the `stratum-mcp` bin name (D3)
 - [ ] CHANGELOG + README updated in the removal commit
 
@@ -163,12 +169,11 @@ Phase 3 can run any time before 4.
 
 ## Open questions
 
-- Does anything outside forge/compose consume the PyPI `stratum-mcp`
-  package? Check download stats / known installs before Phase 5 wording.
-- `stratum-py` disposition (D6): keep as independent Python-authoring
-  product, freeze, or deprecate — needs PyPI usage data. If kept alive
-  long-term, the natural shape is a thin Python SDK that authors specs and
-  drives the TS engine, so there is one engine and two authoring surfaces.
+- Does anything outside forge/compose consume the PyPI `stratum-mcp` or
+  `stratum-py` packages? Recent stats (2026-07-11: ~2.2k and ~2.0k/month,
+  moving ~1:1 = mirror noise) say no, but re-check before Phase 5 wording;
+  a GitHub code search for `from stratum import` / `stratum_mcp` outside
+  the org is cheap insurance.
 - Transcript tools (`read_centered` etc.) are session-ergonomics, not
   engine — they may belong in a separate small server rather than the TS
   engine (Phase 3 decides).
