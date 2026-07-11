@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
-import { StratumEngine, type AuditTrail, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
+import { StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
 import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
@@ -11,7 +11,7 @@ import type { GuardJudge } from "../guard/transition.js";
 import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface } from "./contracts.js";
 
 export interface McpDependencies {
-  engine?: Pick<StratumEngine, "plan" | "stepDone" | "resume" | "audit" | "gateResolve" | "flowPoll">;
+  engine?: Pick<StratumEngine, "plan" | "stepDone" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
   runAgent?: typeof runAgent;
   pollBackgroundRun?: typeof pollBackgroundRun;
   cancelBackgroundRun?: typeof cancelBackgroundRun;
@@ -21,7 +21,8 @@ export interface McpDependencies {
 
 export type ToolName =
   | "stratum_validate" | "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_audit"
-  | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
+  | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg"
+  | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
   | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_history";
 
 export interface ToolDispatcher { call(tool: ToolName, request: Record<string, unknown>): Promise<Record<string, unknown>> }
@@ -72,6 +73,9 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         case "stratum_audit": response = auditResponse(await engine.audit(string(request, "runId"))); break;
         case "stratum_gate_resolve": response = await engine.gateResolve(string(request, "runId"), string(request, "stepId"), string(request, "decision") as "approve" | "revise" | "kill"); break;
         case "stratum_flow_poll": response = flowPollResponse(await engine.flowPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
+        case "stratum_flow_run_bg": response = await engine.flowRunBg(request.spec, request.input, option(request, "workspaceRoot")); break;
+        case "stratum_flow_bg_poll": response = bgFlowPollResponse(await engine.flowBgPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
+        case "stratum_flow_cancel_bg": response = await engine.flowCancelBg(string(request, "runId")); break;
         case "stratum_agent_run": {
           const model = optionalString(request, "model");
           const sandboxMode = optionalString(request, "sandboxMode");
@@ -115,7 +119,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           break;
         }
       }
-        if ((tool === "stratum_audit" || tool === "stratum_flow_poll") && Array.isArray(response.events)) {
+        if ((tool === "stratum_audit" || tool === "stratum_flow_poll" || tool === "stratum_flow_bg_poll") && Array.isArray(response.events)) {
           for (const event of response.events) await assertEvent(event);
         }
         await assertToolResponse(tool, response);
@@ -154,6 +158,7 @@ function auditResponse(audit: AuditTrail): Record<string, unknown> {
 }
 
 function flowPollResponse(response: FlowPollResponse): Record<string, unknown> { return { ...response }; }
+function bgFlowPollResponse(response: BgFlowPollResponse): Record<string, unknown> { return { ...response }; }
 function option(request: Record<string, unknown>, key: string): { workspaceRoot?: string } { const value = optionalString(request, key); return value ? { workspaceRoot: value } : {}; }
 function string(request: Record<string, unknown>, key: string): string { const value = request[key]; if (typeof value !== "string") throw new Error(`${key} must be a string`); return value; }
 function optionalString(request: Record<string, unknown>, key: string): string | undefined { const value = request[key]; return typeof value === "string" ? value : undefined; }

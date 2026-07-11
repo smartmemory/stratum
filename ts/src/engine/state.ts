@@ -154,6 +154,9 @@ export interface PersistedRun {
   rounds?: number;
   steps: Record<string, StepState>;
   events: AuditEvent[];
+  /** Cooperative cancel: set by flowCancelBg, observed by the detached driver and
+   * in-flight fanout workers so neither dispatches further work after a cancel. */
+  cancelRequested?: boolean;
   /** Optional so persisted runs created before parallel dispatch remain loadable. */
   parallel?: ParallelRunState;
 }
