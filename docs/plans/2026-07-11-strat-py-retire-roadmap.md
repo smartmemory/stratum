@@ -76,9 +76,8 @@ deleting the Python engine from the repo and deprecating it on PyPI.
   ~1:1 daily/weekly/monthly = mirror/CI noise, not organic users). So no
   replacement authoring surface is built: YAML specs + MCP are the sole
   surface post-retirement. Phase 5 deprecates BOTH PyPI packages and
-  deletes BOTH trees. A programmatic TS pipeline API (or a Python thin-SDK
-  over the TS engine) is an optional follow-on, filed only if real demand
-  appears — never a retirement blocker.
+  deletes BOTH trees. In-code authoring returns later as filed follow-ups
+  (STRAT-TS-AUTHOR / STRAT-PY-SDK below) — never retirement blockers.
 
 ## Phases
 
@@ -160,6 +159,22 @@ Python fallback used.
       needed)
 - [ ] TS package claims the `stratum-mcp` bin name (D3)
 - [ ] CHANGELOG + README updated in the removal commit
+
+## Follow-ups (filed 2026-07-11, PLANNED — post-retirement, not blockers)
+
+Owner decision: retirement ships YAML-only; in-code authoring returns as
+thin layers over the ONE TS core engine, both compiling to the same spec
+IR the engine already executes.
+
+- **STRAT-TS-AUTHOR** — programmatic pipeline-authoring API in TS
+  (decorator-style definitions over `ts/src` core; MCP/CLI siblings, not
+  parents). Rough size: 1–2 weeks. Entry gate: Phase 4 complete (one
+  engine, stable IR).
+- **STRAT-PY-SDK** — thin Python authoring package: decorator API that
+  serializes to spec IR and drives the TS engine as a subprocess. Restores
+  `@pipeline`/`@phase` ergonomics for Python users without resurrecting a
+  Python engine. Rough size: 1–2 weeks. Entry gate: STRAT-TS-AUTHOR
+  (IR-authoring seam proven once, then mirrored).
 
 ## Sequencing
 
