@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### docs: STRAT-PY-RETIRE roadmap — full Python engine retirement
+
+`docs/plans/2026-07-11-strat-py-retire-roadmap.md`: 5-phase epic from the
+current COMP-STRATUM-TS soak (Phase 0) through Python deletion + PyPI
+deprecation (Phase 5). Grounded in a measured inventory: 38 Python MCP
+tools vs 10 TS, used-but-unported set (guard, parallel, iteration,
+flow-control, judge-tool), disposition list for the unused surface, and a
+consumer sweep (compose files, .mcp.json registrations, model-pricing
+cron). Decisions: drain-and-cutover (no state migration), usage-driven
+parity, bin-name claim at Phase 5, codex-allowlist relocation, stratum#6
+as Phase 2 entry gate.
+
 ### ts — feat(cli): `stratum query` + `stratum gate` — the compose monitor seam (P7 prerequisite)
 
 `ts/src/cli/query_gate.ts`: `stratum query flows|flow <id>|gates` and
