@@ -47,13 +47,15 @@ def test_write_plus_read_jail_rejected():
         )
 
 
-def test_write_plus_durable_rejected():
-    with pytest.raises(ValueError, match="durable"):
-        CodexConnector(
-            model_id="gpt-5.5",
-            sandbox_mode="workspace-write",
-            stream_path="/tmp/out.jsonl",
-        )
+def test_write_plus_durable_constructs_for_gated_server_path():
+    conn = CodexConnector(
+        model_id="gpt-5.5",
+        sandbox_mode="workspace-write",
+        stream_path="/tmp/out.jsonl",
+    )
+    assert conn.sandbox_mode == "workspace-write"
+    assert conn._durable is True
+    assert conn._launch_gate_released is False
 
 
 @pytest.mark.asyncio

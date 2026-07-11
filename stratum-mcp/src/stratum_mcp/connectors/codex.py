@@ -92,6 +92,15 @@ _T2F5_WRAPPER = (
     'exit "$rc"'
 )
 
+# Writable durable runs use the same output wrapper only after the controller
+# releases an inherited pipe gate. If the controller exits or closes the gate
+# before release, ``read`` sees EOF and the shell exits without invoking codex.
+_T2F5_WRITE_WRAPPER = (
+    'IFS= read -r gate <&"$T2F5_GATE_FD"; '
+    '[ "$gate" = "GO" ] || exit 125; '
+    + _T2F5_WRAPPER
+)
+
 
 def _read_text_file(path: str) -> str:
     """Best-effort read of a durable side-file ($T2F5_ERR). '' if absent."""
@@ -281,6 +290,8 @@ class CodexConnector(AgentConnector):
         self._stream_path = stream_path
         self._stderr_path = stderr_path
         self._durable = stream_path is not None
+        self._launch_gate_wfd: Optional[int] = None
+        self._launch_gate_released = False
         # STRAT-JUDGE-T3-READJAIL[-CODEXNEST]: when set, the codex subprocess
         # is confined by a non-nesting JailDriver (Docker) so it can read
         # only the staged turn tree. None = no jail (every existing caller
@@ -310,14 +321,40 @@ class CodexConnector(AgentConnector):
                     "(the Docker jail mounts :ro and would silently eat writes; "
                     "see STRAT-CODEX-WRITE-JAIL)"
                 )
-            if stream_path is not None:
-                raise ValueError(
-                    "CodexConnector: write (sandbox_mode="
-                    f"{sandbox_mode!r}) with the durable stream is not supported "
-                    "in v1 (a durable child survives teardown and could keep "
-                    "editing after cancel; see STRAT-CODEX-WRITE-DURABLE)"
-                )
         self.sandbox_mode = sandbox_mode
+
+    def release_durable_launch(self) -> None:
+        """Release a writable durable child after its identity is persisted."""
+        if not self._durable or self.sandbox_mode == "read-only":
+            return
+        if self._launch_gate_released:
+            return
+        fd = self._launch_gate_wfd
+        if fd is None:
+            raise RuntimeError("CodexConnector: durable write launch gate is unavailable")
+        try:
+            os.write(fd, b"GO\n")
+        except OSError as exc:
+            raise RuntimeError(
+                "CodexConnector: durable write child exited before launch release"
+            ) from exc
+        finally:
+            os.close(fd)
+            self._launch_gate_wfd = None
+        self._launch_gate_released = True
+
+    async def abort_durable_launch(self) -> None:
+        """Close an unreleased write gate and confirm the wrapper has exited."""
+        if self._launch_gate_released:
+            return
+        fd = self._launch_gate_wfd
+        if fd is not None:
+            os.close(fd)
+            self._launch_gate_wfd = None
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            await proc.wait()
+        self._proc = None
 
     def _build_codex_cmd(
         self, args: list[str], env: Optional[dict] = None
@@ -785,45 +822,67 @@ class CodexConnector(AgentConnector):
             "T2F5_ERR": err_path,
             "T2F5_IN": in_path,
         }
+        gate_rfd: Optional[int] = None
+        writable_durable = self.sandbox_mode != "read-only"
+        spawn_kwargs: dict[str, Any] = {}
+        wrapper = _T2F5_WRAPPER
+        if writable_durable:
+            gate_rfd, gate_wfd = os.pipe()
+            self._launch_gate_wfd = gate_wfd
+            self._launch_gate_released = False
+            wrapper_env["T2F5_GATE_FD"] = str(gate_rfd)
+            spawn_kwargs["pass_fds"] = (gate_rfd,)
+            wrapper = _T2F5_WRITE_WRAPPER
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                "sh", "-c", _T2F5_WRAPPER, "sh", *final_argv,
+                "sh", "-c", wrapper, "sh", *final_argv,
                 cwd=resolved_cwd,
                 env=wrapper_env,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
+                **spawn_kwargs,
             )
         except FileNotFoundError:
             raise RuntimeError(
                 f"{_AGENT_NAME}: shell not found — durable-stream mode requires sh"
             )
+        finally:
+            if gate_rfd is not None:
+                os.close(gate_rfd)
         proc = self._proc
+
+        # Start reaping before handle handoff so closing an unreleased write
+        # gate can be death-confirmed even when the generator is closed while
+        # suspended at the first yield.
+        wait_task = asyncio.ensure_future(proc.wait())
 
         # Handle handoff (review #2): emit BEFORE any codex output so the
         # executor can stamp + persist the reparent handle even if the child
         # crashes before its first JSONL line.
-        yield ConnectorEvent(
-            kind="durable_spawned",
-            metadata={
-                "child_pid": proc.pid,
-                "stream_path": out_path,
-                "stderr_path": err_path,
-                "proc_start_time": proc_start_time(proc.pid),
-            },
-        )
-
-        # Reap the wrapper concurrently so returncode updates promptly and the
-        # tailer's liveness backstop fires even if the wrapper is hard-killed
-        # without writing a sentinel. Cancelling this wait on teardown does NOT
-        # kill the child — it only abandons our await.
-        wait_task = asyncio.ensure_future(proc.wait())
         agent_started_yielded = False
         text_parts: list[str] = []
         error_message: Optional[str] = None
         sentinel_rc: Optional[int] = None
         try:
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, OSError):
+                pgid = None
+            spawn_metadata = {
+                "child_pid": proc.pid,
+                "stream_path": out_path,
+                "stderr_path": err_path,
+                "proc_start_time": proc_start_time(proc.pid),
+            }
+            if writable_durable:
+                spawn_metadata["pgid"] = pgid
+            yield ConnectorEvent(
+                kind="durable_spawned",
+                metadata=spawn_metadata,
+            )
+
             async for rec, _consumed in self._tail_stream(
                 out_path, 0, is_alive=lambda: not wait_task.done(),
             ):
@@ -872,6 +931,17 @@ class CodexConnector(AgentConnector):
                     metadata={"content": full_text},
                 )
         finally:
+            gate_fd = self._launch_gate_wfd
+            if gate_fd is not None:
+                os.close(gate_fd)
+                self._launch_gate_wfd = None
+            if writable_durable and not self._launch_gate_released:
+                # EOF on the unreleased gate makes the wrapper exit before
+                # codex exec. Confirm that fail-closed exit before returning.
+                try:
+                    await wait_task
+                except Exception:  # noqa: BLE001
+                    pass
             # Durable teardown contract: do NOT kill/reap the child — it is a
             # detached, durable-output process meant to outlive the connector
             # (so a fresh process can re-attach). Killing happens ONLY via an

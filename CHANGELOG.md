@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### feat: STRAT-CODEX-WRITE-DURABLE slices 3+4 — codex write + background
+
+`stratum_agent_run(type="codex", write=True, background=True)` is now allowed
+through a fail-closed launch gate (NARROW v1, kill-on-controller-loss). A
+writable durable child blocks on an inherited pipe until the controller writes
+`GO` — only after its verified `(pid, proc_start_time, pgid)` identity is
+persisted; EOF before release makes the wrapper exit before codex ever runs.
+Interrupted writable runs are terminated (never resumed) by a startup +
+shutdown sweep. Codex review (2026-07-11) fixed two sweep defects: terminal
+`failed` is now recorded only on confirmed death, and a run completing in the
+scan race is re-scanned and wins. Two bounded residual windows (hard-killed
+controller with no restart; `setsid()`-escaping payload) are documented and
+deferred to STRAT-CODEX-WRITE-DURABLE-LIVENESS. Suite 1538 passed / 2 skipped.
+
 ### docs: STRAT-PY-RETIRE roadmap — full Python engine retirement
 
 `docs/plans/2026-07-11-strat-py-retire-roadmap.md`: 5-phase epic from the

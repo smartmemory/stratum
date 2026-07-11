@@ -19,6 +19,7 @@ from stratum_mcp.server import (
     _agent_run_dir,
     _bg_pid_alive,
     _cmd_watch,
+    _sweep_writable_agent_runs,
     stratum_agent_poll,
     stratum_agent_run,
     stratum_cancel_agent_run,
@@ -137,6 +138,156 @@ async def test_background_golden_flow_running_then_complete_with_meta(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_write_background_persists_verified_identity_before_payload(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / "payload-started"
+    _install_fake_codex(
+        monkeypatch,
+        ["sh", "-c", f"touch {shlex.quote(str(marker))}; sleep 30"],
+    )
+    real_atomic_write = server_mod._atomic_write_json
+    persisted = False
+
+    def assert_gated_write(path, payload):
+        nonlocal persisted
+        assert payload["write"] is True
+        assert payload["child_pid"] > 0
+        assert payload["proc_start_time"]
+        assert payload["pgid"] == payload["child_pid"]
+        assert not marker.exists(), "write payload ran before identity persistence"
+        real_atomic_write(path, payload)
+        persisted = True
+
+    monkeypatch.setattr(server_mod, "_atomic_write_json", assert_gated_write)
+    started = await stratum_agent_run(
+        prompt="write",
+        ctx=None,
+        type="codex",
+        cwd=str(tmp_path),
+        write=True,
+        background=True,
+    )
+
+    assert persisted
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not marker.exists():
+        await asyncio.sleep(0.01)
+    assert marker.exists()
+    assert (await _wait_for_poll(started["run_id"], "running"))["status"] == "running"
+    cancelled = await stratum_cancel_agent_run(
+        correlation_id=started["run_id"], ctx=None
+    )
+    assert cancelled == {"status": "cancelled", "run_id": started["run_id"]}
+
+
+@pytest.mark.asyncio
+async def test_write_background_identity_unavailable_fails_closed(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / "payload-started"
+    captured = {}
+
+    def factory(agent_type, model_id, cwd, **kwargs):
+        conn = CodexConnector(
+            model_id=model_id or "gpt-5",
+            cwd=cwd,
+            stream_path=kwargs.get("stream_path"),
+            stderr_path=kwargs.get("stderr_path"),
+            sandbox_mode=kwargs.get("sandbox_mode", "read-only"),
+        )
+        _patch_codex_cmd(
+            conn,
+            ["sh", "-c", f"touch {shlex.quote(str(marker))}; sleep 30"],
+        )
+        captured["connector"] = conn
+        return conn
+
+    monkeypatch.setattr(server_mod, "_make_agent_connector", factory)
+    monkeypatch.setattr(codex_mod, "proc_start_time", lambda pid: None)
+
+    with pytest.raises(RuntimeError, match="verified durable-write identity"):
+        await stratum_agent_run(
+            prompt="write",
+            ctx=None,
+            type="codex",
+            cwd=str(tmp_path),
+            write=True,
+            background=True,
+        )
+
+    conn = captured["connector"]
+    assert conn._proc is None or conn._proc.returncode is not None
+    assert not marker.exists(), "unverified write payload must never exec"
+
+
+@pytest.mark.asyncio
+async def test_controller_loss_terminates_write_but_not_read_only_run(
+    monkeypatch, tmp_path
+):
+    _install_fake_codex(
+        monkeypatch,
+        _fake_codex_argv([THREAD_STARTED], rc=0, sleep_before_exit=30),
+    )
+    writable = await stratum_agent_run(
+        prompt="write",
+        ctx=None,
+        type="codex",
+        cwd=str(tmp_path),
+        write=True,
+        background=True,
+    )
+    readonly = await stratum_agent_run(
+        prompt="review",
+        ctx=None,
+        type="codex",
+        cwd=str(tmp_path),
+        background=True,
+    )
+    writable_meta_path = _agent_run_dir(writable["run_id"]) / "meta.json"
+    readonly_meta_path = _agent_run_dir(readonly["run_id"]) / "meta.json"
+
+    await _sweep_writable_agent_runs(reason="controller_loss")
+
+    writable_meta = json.loads(writable_meta_path.read_text(encoding="utf-8"))
+    readonly_meta = json.loads(readonly_meta_path.read_text(encoding="utf-8"))
+    assert writable_meta["status"] == "failed"
+    assert writable_meta["reason"] == "controller_loss"
+    assert not _bg_pid_alive(writable_meta)
+    assert _bg_pid_alive(readonly_meta), "read-only durable run must survive"
+    await real_terminate_verified(
+        int(readonly_meta["child_pid"]), readonly_meta["proc_start_time"], grace_s=0.1
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_reaps_orphaned_writable_run(monkeypatch, tmp_path):
+    _install_fake_codex(
+        monkeypatch,
+        _fake_codex_argv([THREAD_STARTED], rc=0, sleep_before_exit=30),
+    )
+    started = await stratum_agent_run(
+        prompt="write",
+        ctx=None,
+        type="codex",
+        cwd=str(tmp_path),
+        write=True,
+        background=True,
+    )
+    meta_path = _agent_run_dir(started["run_id"]) / "meta.json"
+
+    await _sweep_writable_agent_runs(reason="server_restart")
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["status"] == "failed"
+    assert meta["reason"] == "server_restart"
+    assert not _bg_pid_alive(meta)
+    polled = await stratum_agent_poll(run_id=started["run_id"], ctx=None)
+    assert polled["status"] == "error"
+    assert polled["reason"] == "server_restart"
+
+
+@pytest.mark.asyncio
 async def test_background_rc_nonzero_polls_error_with_stderr(monkeypatch, tmp_path):
     _install_fake_codex(
         monkeypatch,
@@ -251,6 +402,35 @@ async def test_background_cancel_escalates_term_ignoring_durable_child(monkeypat
     assert termination_results[0]["signaled"] == "KILL"
     meta = json.loads((_agent_run_dir(run_id) / "meta.json").read_text(encoding="utf-8"))
     assert not _bg_pid_alive(meta), "cancel must return only after the child is gone"
+
+
+@pytest.mark.asyncio
+async def test_background_cancel_never_reports_cancelled_when_death_unconfirmed(
+    monkeypatch, tmp_path
+):
+    _install_fake_codex(
+        monkeypatch,
+        _fake_codex_argv([THREAD_STARTED], rc=0, sleep_before_exit=30),
+    )
+    started = await stratum_agent_run(
+        prompt="solve", ctx=None, type="codex", cwd=str(tmp_path), background=True
+    )
+    run_id = started["run_id"]
+    meta = json.loads(
+        (_agent_run_dir(run_id) / "meta.json").read_text(encoding="utf-8")
+    )
+
+    async def unverifiable(pid, start_time):
+        return {"status": "unverifiable_alive", "signaled": "TERM", "waited_s": 0}
+
+    monkeypatch.setattr(server_mod, "terminate_verified", unverifiable)
+    result = await stratum_cancel_agent_run(correlation_id=run_id, ctx=None)
+
+    assert result == {"status": "already_error", "run_id": run_id}
+    assert _bg_pid_alive(meta)
+    await real_terminate_verified(
+        int(meta["child_pid"]), meta["proc_start_time"], grace_s=0.1
+    )
 
 
 def _write_registry_run(tmp_path: Path, run_id: str, records: list[dict], stderr: str = "") -> Path:

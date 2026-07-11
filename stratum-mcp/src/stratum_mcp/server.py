@@ -67,7 +67,7 @@ from .events import (
     TaskSeqCounter,
     now_iso,
 )
-from .proc_identity import terminate_verified
+from .proc_identity import proc_start_time, terminate_verified
 import asyncio
 import uuid as _uuid
 
@@ -279,7 +279,7 @@ def _cap_text(text: str, *, stream_path: str, cap: int = _AGENT_BG_TEXT_CAP) -> 
 
 
 def _bg_pid_alive(meta: dict[str, Any]) -> bool:
-    from .proc_identity import pid_alive, proc_start_time
+    from .proc_identity import pid_alive
 
     try:
         pid = int(meta.get("child_pid") or 0)
@@ -289,6 +289,97 @@ def _bg_pid_alive(meta: dict[str, Any]) -> bool:
     if not expected or not pid_alive(pid):
         return False
     return proc_start_time(pid) == expected
+
+
+def _verified_writable_handle(handle: dict[str, Any]) -> tuple[int, str, int]:
+    """Return a live, group-contained durable-write identity or fail closed."""
+    try:
+        pid = int(handle.get("child_pid") or 0)
+        pgid = int(handle.get("pgid") or 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "stratum_agent_run background: verified durable-write identity unavailable"
+        ) from exc
+    start_time = handle.get("proc_start_time")
+    if not start_time or pid <= 0 or pgid != pid:
+        raise RuntimeError(
+            "stratum_agent_run background: verified durable-write identity unavailable"
+        )
+    try:
+        live_pgid = os.getpgid(pid)
+    except (ProcessLookupError, OSError) as exc:
+        raise RuntimeError(
+            "stratum_agent_run background: verified durable-write identity unavailable"
+        ) from exc
+    if live_pgid != pid or proc_start_time(pid) != start_time:
+        raise RuntimeError(
+            "stratum_agent_run background: verified durable-write identity unavailable"
+        )
+    return pid, str(start_time), pgid
+
+
+async def _sweep_writable_agent_runs(*, reason: str) -> None:
+    """Terminate interrupted standalone writers and persist a failed fate."""
+    root = _agent_runs_dir()
+    if not root.is_dir():
+        return
+    for run_dir in root.iterdir():
+        if not run_dir.is_dir() or not _AGENT_RUN_ID_RE.fullmatch(run_dir.name):
+            continue
+        loaded_dir, meta = _load_agent_run_meta(run_dir.name)
+        if loaded_dir is None or meta is None or not meta.get("write"):
+            continue
+        stream_path = Path(
+            str(meta.get("stream_path") or (run_dir / "stream.jsonl"))
+        )
+        scan = _scan_agent_run_stream(
+            stream_path,
+            model_id=meta.get("model_id"),
+            prompt="x" * int(meta.get("prompt_chars") or 0),
+        )
+        if scan["sentinel_rc"] is not None:
+            continue
+        termination_status = "already_gone"
+        if _bg_pid_alive(meta):
+            try:
+                pid = int(meta.get("child_pid") or 0)
+            except (TypeError, ValueError):
+                pid = 0
+            termination = await terminate_verified(
+                pid, meta.get("proc_start_time")
+            )
+            termination_status = str(termination["status"])
+        # Completion race: the writer can append its success sentinel between the
+        # first scan and now. Re-scan and let a real completion win over a swept
+        # 'failed' (poll prioritizes meta['status'], so a stale failed would
+        # permanently mask a successful run).
+        rescan = _scan_agent_run_stream(
+            stream_path,
+            model_id=meta.get("model_id"),
+            prompt="x" * int(meta.get("prompt_chars") or 0),
+        )
+        if rescan["sentinel_rc"] is not None:
+            continue
+        # Do not overclaim a terminal fate. Only record 'failed' once death is
+        # positively confirmed ('already_gone' = verifiably dead / gone-or-recycled;
+        # 'terminated'/'killed' = we confirmed it). If termination returned
+        # still_alive / unverifiable_alive / not_group_leader, leave the run for
+        # the next sweep to retry rather than claiming a terminal fate while a
+        # writer may still be active.
+        if termination_status not in {"terminated", "killed", "already_gone"}:
+            logger.warning(
+                "writable agent-run sweep could not confirm death; leaving for "
+                "retry: run_id=%s termination_status=%s reason=%s",
+                run_dir.name,
+                termination_status,
+                reason,
+            )
+            continue
+        meta["status"] = "failed"
+        meta["reason"] = reason
+        meta["termination_status"] = termination_status
+        meta["terminated_at"] = now_iso()
+        _atomic_write_json(run_dir / "meta.json", meta)
 
 
 def _scan_agent_run_stream(
@@ -408,35 +499,50 @@ async def _start_agent_run_background(
             if ev.kind == "durable_spawned":
                 handle = dict(ev.metadata)
                 break
+        if handle is None:
+            raise RuntimeError(
+                "stratum_agent_run background: durable_spawned was not emitted"
+            )
+
+        if write:
+            _verified_writable_handle(handle)
+        meta = {
+            "run_id": run_id,
+            "type": type,
+            "model_id": model_id,
+            "cwd": cwd,
+            "sandbox_mode": sandbox_mode,
+            "write": bool(write),
+            "prompt_chars": len(full_prompt),
+            "correlation_id": correlation_id,
+            "created_at": now_iso(),
+            "child_pid": handle.get("child_pid"),
+            "proc_start_time": handle.get("proc_start_time"),
+            "stream_path": handle.get("stream_path") or str(stream_path),
+            "stderr_path": handle.get("stderr_path") or str(stderr_path),
+            "schema": schema,
+        }
+        if write:
+            meta["pgid"] = handle.get("pgid")
+        _atomic_write_json(run_dir / "meta.json", meta)
+        if write:
+            # Re-verify after the atomic persistence and immediately before
+            # releasing the payload. A dead/recycled wrapper never gets GO.
+            _verified_writable_handle(handle)
+            connector.release_durable_launch()
+        return {
+            "status": "bg_started",
+            "run_id": run_id,
+            "stream_path": str(stream_path),
+            "pid": handle.get("child_pid"),
+            "watch_cmd": f"stratum-mcp watch {run_id}",
+        }
+    except Exception:
+        if write:
+            await connector.abort_durable_launch()
+        raise
     finally:
         await agen.aclose()
-    if handle is None:
-        raise RuntimeError("stratum_agent_run background: durable_spawned was not emitted")
-
-    meta = {
-        "run_id": run_id,
-        "type": type,
-        "model_id": model_id,
-        "cwd": cwd,
-        "sandbox_mode": sandbox_mode,
-        "write": bool(write),
-        "prompt_chars": len(full_prompt),
-        "correlation_id": correlation_id,
-        "created_at": now_iso(),
-        "child_pid": handle.get("child_pid"),
-        "proc_start_time": handle.get("proc_start_time"),
-        "stream_path": handle.get("stream_path") or str(stream_path),
-        "stderr_path": handle.get("stderr_path") or str(stderr_path),
-        "schema": schema,
-    }
-    _atomic_write_json(run_dir / "meta.json", meta)
-    return {
-        "status": "bg_started",
-        "run_id": run_id,
-        "stream_path": str(stream_path),
-        "pid": handle.get("child_pid"),
-        "watch_cmd": f"stratum-mcp watch {run_id}",
-    }
 
 
 @mcp.tool(description=(
@@ -681,6 +787,12 @@ async def stratum_agent_poll(run_id: str, ctx: Context) -> dict[str, Any]:
     run_dir, meta = _load_agent_run_meta(run_id)
     if run_dir is None or meta is None:
         return {"status": "not_found", "run_id": run_id}
+    if meta.get("status") == "failed":
+        return {
+            "status": "error",
+            "run_id": run_id,
+            "reason": str(meta.get("reason") or "interrupted_write_run"),
+        }
     stream_path = Path(str(meta.get("stream_path") or (run_dir / "stream.jsonl")))
     stderr_path = Path(str(meta.get("stderr_path") or (str(stream_path) + ".err")))
     scan = _scan_agent_run_stream(
@@ -779,9 +891,6 @@ async def stratum_cancel_agent_run(
         if termination_status in {"identity_mismatch", "not_group_leader"}:
             return {"status": "already_error", "run_id": correlation_id}
         if termination_status == "unverifiable_alive":
-            # This can only occur in an OS-level identity/readability edge case:
-            # retain the stable cancellation vocabulary, but record that death
-            # was not positively confirmed.
             logger.warning(
                 "background cancellation could not confirm child death: run_id=%s "
                 "pid=%s termination_status=%s",
@@ -789,7 +898,7 @@ async def stratum_cancel_agent_run(
                 pid,
                 termination_status,
             )
-            return {"status": "cancelled", "run_id": correlation_id}
+            return {"status": "already_error", "run_id": correlation_id}
         if termination_status == "still_alive":
             logger.warning(
                 "background cancellation termination could not be confirmed: run_id=%s "
@@ -5832,6 +5941,13 @@ def main() -> None:
             f"failed: {exc}",
             file=sys.stderr,
         )
+    try:
+        asyncio.run(_sweep_writable_agent_runs(reason="server_restart"))
+    except Exception as exc:
+        print(
+            f"stratum-mcp: warning: writable agent-run startup sweep failed: {exc}",
+            file=sys.stderr,
+        )
 
     # T14 — shutdown: cancel every registered parallel-executor task so
     # pending work doesn't leak across server shutdown. Wrapped in
@@ -5877,6 +5993,13 @@ def main() -> None:
         except Exception as exc:
             print(
                 f"stratum-mcp: warning: shutdown_readers failed: {exc}",
+                file=sys.stderr,
+            )
+        try:
+            asyncio.run(_sweep_writable_agent_runs(reason="controller_loss"))
+        except Exception as exc:
+            print(
+                f"stratum-mcp: warning: writable agent-run shutdown failed: {exc}",
                 file=sys.stderr,
             )
 
