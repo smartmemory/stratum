@@ -1,0 +1,40 @@
+{
+  "checksum": "f44b6211ff75a35e0af5a0271feda93a64234b8150fb3459a1612d1643291981",
+  "current_state": "review",
+  "edge_predicates": {
+    "draft->review": [
+      {
+        "id": "ready",
+        "statement": "server_file_exists(\"ready.txt\")",
+        "type": "deterministic"
+      }
+    ],
+    "review->qa": [
+      {
+        "id": "missing",
+        "statement": "server_file_exists(\"missing.txt\")",
+        "type": "deterministic"
+      }
+    ]
+  },
+  "graph": {
+    "done": [],
+    "draft": [
+      "review"
+    ],
+    "qa": [],
+    "review": [
+      "qa",
+      "done"
+    ]
+  },
+  "graph_version": 1,
+  "initial": "draft",
+  "resource_id": "acceptance:py-golden",
+  "stakes": {},
+  "terminal": [
+    "qa",
+    "done"
+  ],
+  "workspace_root": "/private/tmp/strat-ts-guard-e2-fixture.z5VrRt/workspace"
+}
