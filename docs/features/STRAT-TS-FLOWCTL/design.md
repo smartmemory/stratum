@@ -63,6 +63,10 @@ unimplementable until those exist:
   unchanged).
 - **Query:** `stratum query gates` stops hard-coding `timeout: null`
   and projects the real value (compose already tolerates both).
+- **Migration coverage (round-3 finding):** `migrate/check.ts` currently
+  records only a gate function's mode and silently drops its Python
+  `timeout` — it gains an explicit gate-timeout mapping (reported as
+  supported → `gate.timeout`) with a fixture spec proving it.
 
 One further decision:
 
@@ -87,6 +91,7 @@ One further decision:
 | `ts/src/ir/schema.ts` + `ir/validate.ts` (existing) | modify | gate `timeout` field |
 | `ts/src/engine/state.ts` (existing) | modify | durable `dispatchedAt` |
 | `ts/src/cli/query_gate.ts` (existing) | modify | project real timeout |
+| `ts/src/migrate/check.ts` (existing) | modify | gate-timeout mapping + fixture |
 | `ts/src/engine/checkpoint.ts` (new) | add | CHECKPOINT_FIELDS manifest + commit/revert |
 | `ts/src/engine/engine.ts` (existing) | modify | skip_step, check_timeouts over existing gate-resolve |
 | `ts/src/mcp/server.ts` + `ts/contracts/mcp-surface.json` (existing) | modify | 4 tools |

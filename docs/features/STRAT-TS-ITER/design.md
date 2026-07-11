@@ -62,6 +62,20 @@ loop config this port needs cannot currently exist on a TS run.
   `exit_criterion`→`until`, rest name-identical). `ir/validate.ts`
   validates the new fields; `migrate/check.ts` flips score/accumulate
   from unsupported→mapped. This is part of THIS feature, not assumed.
+- **Exclusive ownership — auto vs manual (round-3 finding, CONFIRMED):**
+  the TS engine ALREADY auto-drives `step.iterate` inside `stepDone`
+  (increments the counter and redispatches, `engine.ts:281`). Two
+  drivers over one config would double-count or advance mid-loop. The
+  IR therefore gains `iterate.mode: "auto" (default) | "manual"`:
+  - `auto` — engine-owned progression exactly as today;
+    `stratum_iteration_start` on an auto step errors
+    (`iteration_auto_managed`, new error_type, TS-only).
+  - `manual` — the three MCP tools own progression; `stepDone` on a
+    manual-iterate step with an active loop refuses ("call
+    stratum_iteration_report", matching Python's pending-outcome
+    refusal) and performs NO iterate counting.
+  Mixed-use attempts are tested in both directions. v0→v1 migration
+  maps v0 tool-driven loops to `mode: "manual"`.
 
 Otherwise a straight port — self-contained state-machine logic with no
 subprocess/concurrency surface:
@@ -98,8 +112,12 @@ subprocess/concurrency surface:
 ## Acceptance criteria
 
 - [ ] v1 `iterate` extension validated + migration checker updated
-      (score/accumulate no longer flagged unsupported); v0→v1 field
-      mapping table recorded here
+      (score/accumulate no longer flagged unsupported; v0 tool-driven
+      loops map to mode:"manual"); v0→v1 field mapping table recorded
+      here
+- [ ] Auto/manual exclusivity: iteration_start on auto step →
+      `iteration_auto_managed`; stepDone on manual step with active
+      loop refuses without counting; both directions tested
 - [ ] 3 tools contract-identical (params, success envelopes incl.
       optional fields, all error_types)
 - [ ] Outcome precedence + stagnation (window 3, accumulate suppression)

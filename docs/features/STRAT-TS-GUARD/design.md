@@ -103,9 +103,20 @@ same names, same shapes — so agent-side flows keep working after the
 
 Node has no portable `flock` without native deps (TS engine is
 source-only by design). TS uses: in-process mutex map (as Python) +
-cross-process **O_EXCL lockfile with stale-PID takeover** on a NEW
-sidecar (`.lock.ts`), preserving eval-outside-lock + optimistic commit
-re-check.
+cross-process **O_EXCL lockfile** on a NEW sidecar (`.lock.ts`),
+preserving eval-outside-lock + optimistic commit re-check.
+
+Stale takeover is token-verified and serialized, never blind
+unlink-and-retry (round-3 review finding: two processes observing the
+same stale lock can race — one creates a fresh lock, the other unlinks
+that LIVE replacement, and concurrent appends corrupt the chain).
+Protocol: the lock body is `{token: <uuid>, pid, since}`. A claimant
+that judges `.lock.ts` stale must (1) O_EXCL-create `.lock.ts.takeover`
+(the takeover mutex — losers back off), (2) re-read `.lock.ts` and
+verify it still holds the SAME token observed as stale, (3) only then
+unlink and O_EXCL-create its own lock, (4) remove the takeover mutex
+(itself staleness-bounded). A lock whose token changed is live — back
+off. A two-process stale-takeover race test is part of acceptance.
 
 Cross-engine mutual exclusion cannot be policy-only (review finding
 2026-07-11, CONFIRMED): guard dirs are global per `resource_id`, Python
@@ -192,10 +203,13 @@ plumbing — this is the same seam `ensure` predicates already use.
       seam (run with the pin locally overridden; the actual unpin ships in
       STRAT-PY-SWEEP row 4)
 - [ ] `migrate` ported and tested even though compose doesn't call it
-- [ ] Ownership handoff: TS writes `engine.json` on first mutation;
-      Python refuses mutations on owned resources with
-      `guard_engine_owned` (tested both sides); a forced mixed-write
-      attempt fails LOUD, never appends
+- [ ] Ownership handoff: `guard handoff` writes `engine.json` under
+      Python's flock; Python refuses mutations on owned resources with
+      `guard_engine_owned`; TS refuses un-handed-over dirs (tested both
+      sides); a forced mixed-write attempt fails LOUD, never appends
+- [ ] Two-process stale-takeover race test: token-verified takeover
+      never unlinks a live lock; concurrent claimants serialize through
+      the takeover mutex
 
 ## Open questions
 
