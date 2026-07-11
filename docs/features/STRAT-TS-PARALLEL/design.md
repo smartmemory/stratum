@@ -1,6 +1,46 @@
 # STRAT-TS-PARALLEL — Port the parallel kernel to the TS engine (design)
 
-**Status:** DESIGN (2026-07-11) · **Epic:** STRAT-PY-RETIRE Phase 2
+**Status:** PAUSED (2026-07-11) after slices A+B · **Epic:** STRAT-PY-RETIRE Phase 2
+
+## PAUSE NOTE (2026-07-11) — Decision 1's interim-port premise is superseded
+
+Slices A (persisted parallel state + key-discriminated contract variants) and B
+(non-pipeline evaluation core + certificate validator) shipped as a reusable
+foundation. Slice C recon then surfaced a **decisive architectural blocker** that
+supersedes Decision 1's "port the v0 consumer surface as an interim" premise:
+
+- The TS engine has **no consumer-driven `parallel_dispatch` step type, by design.**
+  Its own Python→v1 compat matrix maps `parallel_dispatch` → native **`fanout`**
+  "by re-authoring" (`ts/src/migrate/check.ts:41`); certificates / pre_merge /
+  diff / deferred-advance are marked UNSUPPORTED (`check.ts:42`). `fanout` — not a
+  ported consumer surface — is v1's parallel primitive.
+- The TS engine only parses the **lean v1 IR** (`version: 1`, `do/set/gate/fanout/run`).
+  Compose's pipelines are authored in the Python-era format (`type: parallel_dispatch`,
+  `output_contract`, `source`, `inputs`, `depends_on`, namespaced agents). To run
+  **any** pipeline on the TS engine, compose must first re-author to v1 (the TS-2
+  agent-authoring cutover, not yet done) — and at that point parallel steps become
+  `fanout`.
+- Therefore a ported `parallel_dispatch` step type + the 4 consumer tools would be
+  **dead-on-arrival**: compose will never hand the TS engine a `parallel_dispatch`
+  step. The interim port also now costs MORE (new step type + engine-lifecycle
+  integration) than the eventual native-fanout path it was meant to bridge.
+
+**Real path (deferred, post TS-2):** compose re-authors its `parallel_dispatch`
+pipeline steps to native `fanout`, and STRAT-CERT-PAR certificates + the require/
+bounce semantics from slice B are folded into native fanout so a re-authored fanout
+is a full replacement. Slices A+B are the reusable foundation for that. Native
+fanout already carries `require` (`ts/src/engine/engine.ts:700`).
+
+Follow-ups filed: **STRAT-TS-PARALLEL-FANOUT** (fold cert/gate/bounce into native
+fanout; the real replacement) and **STRAT-TS-PARALLEL-PIPELINE** (pipeline-mode, if
+ever needed). Server-dispatch executor is subsumed by the native-fanout path.
+
+Everything below is the ORIGINAL design, retained for history; Decision 1's
+"contract-identical 4-tool port" is superseded by the pause note above.
+
+---
+
+**Original status:** DESIGN (2026-07-11) · **Epic:** STRAT-PY-RETIRE Phase 2
 
 ## Related Documents
 
