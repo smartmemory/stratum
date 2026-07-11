@@ -143,8 +143,11 @@ export interface PlanOptions {
 }
 
 export class SpecValidationError extends Error {
-  constructor(readonly errors: ValidationError[]) {
+  readonly errors: ValidationError[];
+
+  constructor(errors: ValidationError[]) {
     super("spec validation failed");
+    this.errors = errors;
   }
 }
 
