@@ -292,6 +292,26 @@ export function registryExists(resourceId: string): boolean {
   return existsSync(join(resourceDir(resourceId), "registry.json"));
 }
 
+export function readEngineOwner(resourceId: string): string | null {
+  const path = join(resourceDir(resourceId), "engine.json");
+  if (!existsSync(path)) return null;
+  try {
+    const marker = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (marker === null || typeof marker !== "object" || Array.isArray(marker)) return null;
+    const owner = (marker as Record<string, unknown>).owner;
+    return typeof owner === "string" ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeTsOwnerMarker(resourceId: string): void {
+  atomicWrite(
+    join(resourceDir(resourceId), "engine.json"),
+    `${canonicalJson({ owner: "ts", since: new Date().toISOString() })}\n`,
+  );
+}
+
 export function persistRegistry(registry: GuardRegistry): void {
   atomicWrite(join(resourceDir(registry.resource_id), "registry.json"), prettyCanonicalJson(registry.toDict()));
 }

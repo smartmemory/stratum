@@ -41,6 +41,29 @@ export class GuardError extends Error {
   }
 }
 
+function namedGuardError(name: string, errorType: GuardErrorType) {
+  return class extends GuardError {
+    constructor(message: string) {
+      super(errorType, message);
+      this.name = name;
+    }
+  };
+}
+
+export class GuardAlreadyRegistered extends namedGuardError("GuardAlreadyRegistered", "guard_already_registered") {}
+export class GuardNotFound extends namedGuardError("GuardNotFound", "guard_not_found") {}
+export class GuardTampered extends namedGuardError("GuardTampered", "guard_tampered") {}
+export class IllegalEdge extends namedGuardError("IllegalEdge", "illegal_edge") {}
+export class StaleFromState extends namedGuardError("StaleFromState", "stale_from_state") {}
+export class IdempotencyConflict extends namedGuardError("IdempotencyConflict", "idempotency_conflict") {}
+export class InvalidStateName extends namedGuardError("InvalidStateName", "invalid_state_name") {}
+export class InvalidWorkspaceRoot extends namedGuardError("InvalidWorkspaceRoot", "invalid_workspace_root") {}
+export class CommandExecutionDisabled extends namedGuardError("CommandExecutionDisabled", "command_execution_disabled") {}
+export class ParanoidEdgeNeedsTrustedEvidence extends namedGuardError("ParanoidEdgeNeedsTrustedEvidence", "paranoid_edge_needs_trusted_evidence") {}
+export class EvidenceParseError extends namedGuardError("EvidenceParseError", "evidence_parse_error") {}
+export class OverrideUnavailable extends namedGuardError("OverrideUnavailable", "override_unavailable") {}
+export class GuardEngineOwned extends namedGuardError("GuardEngineOwned", "guard_engine_owned") {}
+
 export class LedgerCorrupt extends GuardError {
   constructor(message: string) {
     super("ledger_corrupt", message);
