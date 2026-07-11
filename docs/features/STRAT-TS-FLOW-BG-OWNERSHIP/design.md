@@ -1,8 +1,21 @@
 # STRAT-TS-FLOW-BG-OWNERSHIP — attempt-bound dispatch for the detached driver
 
-**Status:** PARTIAL — sole-mutator lockout SHIPPED (2026-07-11); attempt/epoch-bound
-dispatch for multi-branch revise remains (gated on multi-branch bg scope).
+**Status:** COMPLETE — slice 1 sole-mutator lockout + slice 2 epoch-bound dispatch
+both SHIPPED (2026-07-11).
 **Surfaced by:** STRAT-TS-FLOW-BG (adversarial codex review, 2026-07-11)
+
+## Shipped (slice 2): epoch-bound dispatch
+
+`StepState.epoch` is bumped in `resetFrom` for every reset step (alongside the
+fanout epoch). `ReadyStep.epoch` carries the dispatched epoch; the driver passes
+it as an optional `expectedEpoch` through `stepDone`/`stepDoneOwned`, and
+`stepDoneLocked` rejects a result whose epoch was superseded by a revise. The
+session/MCP path omits `expectedEpoch`, so it is unaffected. This closes the
+revise vector: a result dispatched before a revise can no longer be committed
+into the reset epoch. Proven by a single-branch gate-revise test (stale epoch
+rejected, current epoch accepted). The multi-branch RACE timing that this guards
+is still not producible in v1 linear+fanout, but the guard now exists for when it
+is.
 
 ## Shipped (slice 1): sole-mutator lockout
 

@@ -120,6 +120,8 @@ export interface SubflowState {
 export interface StepState {
   status: StepStatus;
   attempts: AttemptRecord[];
+  /** Bumped whenever revise resets this step; absent in older runs means epoch 0. */
+  epoch?: number;
   output?: unknown;
   failure?: FailureContext;
   routed?: FailureContext;
