@@ -386,7 +386,6 @@ export function verifyChain(source: string | readonly string[]): boolean {
 }
 
 export function appendLedger(resourceId: string, entry: LedgerEntry): string {
-  // TODO(STRAT-TS-GUARD Slice C2): transition.ts (Slice D) must call this only while holding resourceLock.
   const entries = readLedger(resourceId);
   const prev = entries.at(-1)?.entry_digest ?? "";
   entry.prev_digest = prev;
@@ -429,3 +428,22 @@ export function loadRegistry(resourceId: string): GuardRegistry | null {
   registry.current_state = currentStateFromLedger(readLedger(resourceId), registry.initial);
   return registry;
 }
+
+// Slice D uses these through the guard store seam: resourceLock supplies the
+// token and assertStillHeld fences the append immediately before it is written.
+export {
+  LockFenceError,
+  LockTimeoutError,
+  ProcessIdentityUnverifiableError,
+  ResourceLockManager,
+  assertStillHeld,
+  processIdentity,
+  resourceLock,
+} from "./lock.js";
+export type {
+  ProcessIdentity,
+  ProcessIdentityProvider,
+  ResourceLockHandle,
+  ResourceLockManagerOptions,
+  ResourceLockOptions,
+} from "./lock.js";
