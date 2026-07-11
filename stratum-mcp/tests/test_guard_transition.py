@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -20,6 +21,7 @@ from stratum_mcp.guard.errors import (
     CommandExecutionDisabled,
     EvidenceParseError,
     GuardAlreadyRegistered,
+    GuardEngineOwned,
     GuardNotFound,
     GuardTampered,
     IdempotencyConflict,
@@ -309,12 +311,162 @@ def test_migrate_requires_token(guards_dir, tmp_path, monkeypatch):
         _run(tr.guard_migrate("r", {"draft": [], }, {}, "tok", "x"))
 
 
+# ---- engine handoff / ownership ------------------------------------------ #
+
+
+def test_handoff_refuses_all_python_mutations_but_allows_reads(
+    guards_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("STRATUM_GUARD_OVERRIDE_TOKEN", "secret")
+    ws = tmp_path / "ws"; ws.mkdir(); (ws / "design.md").write_text("x")
+    _register_simple("r", ws)
+
+    result = _run(tr.guard_handoff("r", "secret"))
+    assert result == {"status": "handed_off", "resource_id": "r", "owner": "ts"}
+    marker = json.loads((store.resource_dir("r") / "engine.json").read_text())
+    assert marker["owner"] == "ts"
+    assert marker["since"]
+
+    with pytest.raises(GuardEngineOwned):
+        _run(tr.guard_transition("r", "draft", "shipped"))
+    with pytest.raises(GuardEngineOwned):
+        _run(
+            tr.guard_override(
+                "r", "draft", "shipped", "secret", "manual", resolved_by="human"
+            )
+        )
+    with pytest.raises(GuardEngineOwned):
+        _run(
+            tr.guard_migrate(
+                "r",
+                {"draft": ["shipped"], "shipped": []},
+                {},
+                "secret",
+                "policy update",
+                new_terminal=["shipped"],
+            )
+        )
+    with pytest.raises(GuardEngineOwned):
+        _register_simple("r", ws)
+
+    assert store.load_registry("r").current_state == "draft"
+    assert tr.guard_history("r")["current_state"] == "draft"
+
+
+def test_non_handed_off_resource_still_mutates(guards_dir, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir(); (ws / "design.md").write_text("x")
+    _register_simple("r", ws)
+    assert not (store.resource_dir("r") / "engine.json").exists()
+    assert _run(tr.guard_transition("r", "draft", "shipped"))["status"] == "applied"
+
+
+def test_handoff_token_gate_not_found_and_idempotency(
+    guards_dir, tmp_path, monkeypatch
+):
+    ws = tmp_path / "ws"; ws.mkdir()
+    _register_simple("r", ws)
+
+    monkeypatch.delenv("STRATUM_GUARD_OVERRIDE_TOKEN", raising=False)
+    with pytest.raises(OverrideUnavailable):
+        _run(tr.guard_handoff("r", "secret"))
+
+    monkeypatch.setenv("STRATUM_GUARD_OVERRIDE_TOKEN", "secret")
+    with pytest.raises(OverrideUnavailable):
+        _run(tr.guard_handoff("r", "wrong"))
+    with pytest.raises(GuardNotFound):
+        _run(tr.guard_handoff("missing", "secret"))
+
+    first = _run(tr.guard_handoff("r", "secret"))
+    marker_path = store.resource_dir("r") / "engine.json"
+    marker_before = marker_path.read_text()
+    second = _run(tr.guard_handoff("r", "secret"))
+    assert first == second
+    assert marker_path.read_text() == marker_before
+
+
+def test_handoff_waits_for_inflight_transition_commit_lock(
+    guards_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("STRATUM_GUARD_OVERRIDE_TOKEN", "secret")
+    ws = tmp_path / "ws"; ws.mkdir(); (ws / "design.md").write_text("x")
+    _register_simple("r", ws)
+    real_resource_lock = store.resource_lock
+
+    async def main():
+        commit_locked = asyncio.Event()
+        release_commit = asyncio.Event()
+        transition_acquisitions = 0
+
+        @asynccontextmanager
+        async def observed_resource_lock(resource_id):
+            nonlocal transition_acquisitions
+            async with real_resource_lock(resource_id):
+                task = asyncio.current_task()
+                if task is not None and task.get_name() == "transition":
+                    transition_acquisitions += 1
+                    if transition_acquisitions == 2:
+                        commit_locked.set()
+                        await release_commit.wait()
+                yield
+
+        monkeypatch.setattr(store, "resource_lock", observed_resource_lock)
+        transition_task = asyncio.create_task(
+            tr.guard_transition("r", "draft", "shipped"), name="transition"
+        )
+        await commit_locked.wait()
+        handoff_task = asyncio.create_task(tr.guard_handoff("r", "secret"))
+        await asyncio.sleep(0)
+        assert not handoff_task.done()
+
+        release_commit.set()
+        assert (await transition_task)["status"] == "applied"
+        assert (await handoff_task)["status"] == "handed_off"
+        with pytest.raises(GuardEngineOwned):
+            await tr.guard_transition("r", "shipped", "shipped")
+
+    _run(main())
+
+
+def test_handoff_during_transition_evaluation_blocks_commit(
+    guards_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("STRATUM_GUARD_OVERRIDE_TOKEN", "secret")
+    ws = tmp_path / "ws"; ws.mkdir(); (ws / "design.md").write_text("x")
+    _register_simple("r", ws)
+    real_evaluate = tr.ev.evaluate_evidence
+
+    async def main():
+        evaluation_started = asyncio.Event()
+        release_evaluation = asyncio.Event()
+
+        async def paused_evaluate(*args, **kwargs):
+            evaluation_started.set()
+            await release_evaluation.wait()
+            return await real_evaluate(*args, **kwargs)
+
+        monkeypatch.setattr(tr.ev, "evaluate_evidence", paused_evaluate)
+        transition_task = asyncio.create_task(
+            tr.guard_transition("r", "draft", "shipped")
+        )
+        await evaluation_started.wait()
+        assert (await tr.guard_handoff("r", "secret"))["status"] == "handed_off"
+        release_evaluation.set()
+        with pytest.raises(GuardEngineOwned):
+            await transition_task
+        assert tr.guard_history("r")["ledger"] == []
+
+    _run(main())
+
+
 # ---- LLM-tier path (mocked verifier) -------------------------------------- #
 
 
 def test_llm_tier_edge_uses_run_judge(guards_dir, tmp_path, monkeypatch):
     """An edge with a non-trusted (judged) predicate routes to run_judge; we mock
     the agent so T2 returns met, and confirm combined met requires evidence too."""
+    from stratum.judge import staging
+
+    monkeypatch.setattr(staging, "JUDGE_ROOT", tmp_path / "judge")
     ws = tmp_path / "ws"; ws.mkdir(); (ws / "design.md").write_text("x")
     _run(tr.register_guard(
         resource_id="r",

@@ -4963,7 +4963,7 @@ def _cmd_gate(args: list[str]) -> None:
 # kwargs object and pipe it. Domain errors are canonicalised via _guard_error_dict
 # and exit non-zero so the adapter maps them to {error}. A refusal (verdict not
 # met) is a NORMAL outcome — exit 0 with {status: "refused"}.
-_GUARD_ACTIONS = {"register", "transition", "override", "migrate", "history"}
+_GUARD_ACTIONS = {"register", "transition", "override", "migrate", "handoff", "history"}
 
 
 def _cmd_guard(args: list[str]) -> None:
@@ -4971,6 +4971,7 @@ def _cmd_guard(args: list[str]) -> None:
 
     from stratum_mcp.guard import (
         guard_history,
+        guard_handoff,
         guard_migrate,
         guard_override,
         guard_transition,
@@ -5006,6 +5007,8 @@ def _cmd_guard(args: list[str]) -> None:
             result = asyncio.run(guard_override(**kwargs))
         elif action == "migrate":
             result = asyncio.run(guard_migrate(**kwargs))
+        elif action == "handoff":
+            result = asyncio.run(guard_handoff(**kwargs))
         else:  # history (sync)
             result = guard_history(**kwargs)
     except TypeError as exc:
@@ -5036,7 +5039,7 @@ def _cmd_help() -> None:
     print("  gate revise  <flow_id> <step_id>   Send back for revision")
     print("  guard <action>       Guarded-transition primitive (STRAT-GUARD); reads")
     print("                       a JSON kwargs object from stdin. Actions:")
-    print("                       register|transition|override|migrate|history")
+    print("                       register|transition|override|migrate|handoff|history")
     print("  validate <file>      Validate a .stratum.yaml spec file")
     print("  compile <dir>        Compile tasks/*.md files to .stratum.yaml")
     print("  migrate <file>       Upgrade a .stratum.yaml spec to the latest IR version")

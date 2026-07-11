@@ -11,6 +11,7 @@ See ``docs/features/STRAT-GUARD/`` for design + blueprint.
 from .errors import (
     GuardError,
     GuardAlreadyRegistered,
+    GuardEngineOwned,
     GuardNotFound,
     GuardTampered,
     IllegalEdge,
@@ -36,12 +37,14 @@ from .transition import (
     guard_transition,
     guard_override,
     guard_migrate,
+    guard_handoff,
     guard_history,
 )
 
 __all__ = [
     "GuardError",
     "GuardAlreadyRegistered",
+    "GuardEngineOwned",
     "GuardNotFound",
     "GuardTampered",
     "IllegalEdge",
@@ -63,5 +66,6 @@ __all__ = [
     "guard_transition",
     "guard_override",
     "guard_migrate",
+    "guard_handoff",
     "guard_history",
 ]

@@ -197,3 +197,40 @@ def test_guard_cli_history_not_found(guards_dir, monkeypatch, capsys):
     res, code = _run(monkeypatch, capsys, "history", {"resource_id": "compose:nope:NONE"})
     assert code != 0
     assert res["status"] == "error"
+
+
+def test_guard_cli_handoff_and_engine_owned_error_envelope(
+    guards_dir, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("STRATUM_GUARD_OVERRIDE_TOKEN", "secret-token")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _run(monkeypatch, capsys, "register", {
+        "resource_id": "compose:abc:FEAT-E1",
+        "graph": {"a": ["b"], "b": []},
+        "edge_predicates": {},
+        "initial": "a",
+        "terminal": ["b"],
+        "workspace_root": str(ws),
+    })
+
+    handed_off, code = _run(monkeypatch, capsys, "handoff", {
+        "resource_id": "compose:abc:FEAT-E1",
+        "override_token": "secret-token",
+        "resolved_by": "human",
+    })
+    assert code == 0
+    assert handed_off["status"] == "handed_off"
+    assert handed_off["owner"] == "ts"
+
+    refused, code = _run(monkeypatch, capsys, "transition", {
+        "resource_id": "compose:abc:FEAT-E1",
+        "from_state": "a",
+        "to_state": "b",
+    })
+    assert code == 1
+    assert refused == {
+        "status": "error",
+        "error_type": "guard_engine_owned",
+        "message": "guard 'compose:abc:FEAT-E1' is owned by the ts engine",
+    }

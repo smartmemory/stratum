@@ -74,6 +74,24 @@ def test_registry_roundtrip(guards_dir):
     assert loaded.initial == "a"
 
 
+def test_engine_owner_marker_roundtrip_and_unrecognized_values(guards_dir):
+    rid = "engine-owner"
+    assert store.read_engine_owner(rid) is None
+
+    store.persist_engine_owner(rid, "ts", "2026-07-11T00:00:00Z")
+    marker_path = store.resource_dir(rid) / "engine.json"
+    assert store.read_engine_owner(rid) == "ts"
+    assert json.loads(marker_path.read_text()) == {
+        "owner": "ts",
+        "since": "2026-07-11T00:00:00Z",
+    }
+
+    marker_path.write_text('{"owner": 123}')
+    assert store.read_engine_owner(rid) is None
+    marker_path.write_text("not json")
+    assert store.read_engine_owner(rid) is None
+
+
 def test_resource_id_with_colon_uses_hash_dir(guards_dir):
     reg = _reg("compose:FEAT-1")
     store.persist_registry(reg)
