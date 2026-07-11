@@ -78,13 +78,20 @@ should be treated as replaceable adapters.
   — glue, not a feature. Do not build until a real consumer exists; inside a
   Claude Code session the harness's own subagent/background tooling already
   covers the need.
-- **D3 — The real feature is STRAT-FLOW-DETACH: detached stratum pipelines.**
-  Compose the STRAT-WORKFLOW-BG server-driven flow driver with background agent
-  dispatch (codex via WRITE-DURABLE, claude per D2 if ever) so an entire stratum
-  pipeline runs detached while the interactive session polls or gets a wake.
-  This is what "run stratum in background/subagent mode" actually names, and it
-  is simultaneously the strongest Phase-2 "keep + WIRE" move (wires iteration/
-  judge/gates INTO a live flow instead of porting tools nobody calls).
+- **D3 — STRAT-FLOW-DETACH: detached stratum pipelines. REVISED after design +
+  codex review 2026-07-11 (see `docs/features/STRAT-FLOW-DETACH/design.md`).**
+  The premise was that this composition is unbuilt. It is mostly built:
+  STRAT-WORKFLOW-BG's `_background_flow_advance` already dispatches agents, runs
+  the ensure/retry loop, pauses at gates, and detaches linear function/inline
+  pipelines from the session. The real gap is only that the driver HANDS OFF at
+  judge/parallel/flow steps. Two further corrections from review: (a) the TS
+  engine already does async fanout dispatch (it is not "Python-only server-driven
+  execution"), and (b) building the missing autonomous logic on the Python driver
+  is throwaway debt against STRAT-PY-RETIRE. **Net: this is NOT the obvious next
+  build. It is gated on confirming a real consumer for FULL detachment; if none,
+  PARK (the retire roadmap lists `flow_bg_*` unused). If one exists, build it
+  TS-native (option B), not on the retiring Python driver.** The "strongest
+  keep+WIRE move" claim is withdrawn pending that consumer check.
 - **D4 — Posture: never hand-roll what a vendor runtime ships.** Before building
   any supervision/lifecycle machinery, check the current `claude`/`codex` CLI
   surface first (they change monthly), and prefer wrapping it.
