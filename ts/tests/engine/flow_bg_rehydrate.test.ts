@@ -1,0 +1,183 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseDocument } from "yaml";
+import { afterEach, describe, expect, it } from "vitest";
+import { StratumEngine, type BgStatus, type EngineConnector } from "../../src/engine/engine.js";
+import { StateStore, type PersistedRun } from "../../src/engine/state.js";
+import { createEvaluator } from "../../src/eval/expr.js";
+
+const roots: string[] = [];
+afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+
+async function stateRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "stratum-flow-bg-rehydrate-"));
+  roots.push(root);
+  return root;
+}
+
+function engine(root: string, connector: EngineConnector): StratumEngine {
+  return new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector });
+}
+
+async function fixture(name: string): Promise<unknown> {
+  const bytes = await readFile(new URL(`../../parity/${name}.v1.yaml`, import.meta.url));
+  return parseDocument(bytes.toString("utf8"), { prettyErrors: false }).toJS();
+}
+
+async function waitForBg(subject: StratumEngine, runId: string, status: BgStatus) {
+  for (let tick = 0; tick < 200; tick += 1) {
+    const polled = await subject.flowBgPoll(runId);
+    if (polled.bg.status === status) return polled;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`background flow did not reach ${status}`);
+}
+
+const linearFlow = {
+  version: 1,
+  contracts: { Result: { value: "string" } },
+  flows: { entry: "main", main: {
+    input: { name: "string" },
+    output: { from: "${second.output}", contract: "Result" },
+    steps: [
+      { id: "first", do: "first ${input.name}", out: "Result" },
+      { id: "second", after: ["first"], do: "second", out: "Result" },
+    ],
+  } },
+};
+
+describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
+  it("resumes a live detached flow after restart", async () => {
+    const root = await stateRoot();
+    let markDispatched!: () => void;
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
+    const blocked = new Promise<void>(() => undefined);
+    const first = engine(root, async () => { markDispatched(); await blocked; return { output: { value: "unreachable" } }; });
+    const started = await first.flowRunBg(linearFlow, { name: "Ada" });
+    await dispatched;
+
+    const prompts: string[] = [];
+    const restarted = engine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    await restarted.rehydrateBgFlows();
+
+    expect((await waitForBg(restarted, started.runId, "completed")).status).toBe("completed");
+    expect(prompts).toEqual(["first Ada", "second"]);
+  });
+
+  it("rehydrates a paused gate without driving past it", async () => {
+    const root = await stateRoot();
+    const first = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await first.flowRunBg(await fixture("linear-gate"), { name: "Ada" });
+    await waitForBg(first, started.runId, "paused_gate");
+
+    const prompts: string[] = [];
+    const restarted = engine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    await restarted.rehydrateBgFlows();
+    const paused = await waitForBg(restarted, started.runId, "paused_gate");
+
+    expect(paused).toMatchObject({ status: "running", bg: { status: "paused_gate", gateStepId: "review" } });
+    expect(prompts).toEqual([]);
+    await restarted.gateResolve(started.runId, "review", "approve");
+    expect((await waitForBg(restarted, started.runId, "completed")).status).toBe("completed");
+    expect(prompts).toEqual(["refine", "publish"]);
+  });
+
+  it("does not drive a session-driven run", async () => {
+    const root = await stateRoot();
+    const first = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+    const planned = await first.plan(linearFlow, { name: "Ada" });
+    const restarted = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+
+    await restarted.rehydrateBgFlows();
+
+    await expect(restarted.flowBgPoll(planned.runId)).rejects.toThrow(/background flow .* not found/);
+  });
+
+  it("re-registers a terminal bg run without re-dispatching it", async () => {
+    const root = await stateRoot();
+    const first = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await first.flowRunBg(linearFlow, { name: "Ada" });
+    await waitForBg(first, started.runId, "completed");
+    let dispatches = 0;
+    const restarted = engine(root, async ({ prompt }) => { dispatches += 1; return { output: { value: prompt } }; });
+
+    await restarted.rehydrateBgFlows();
+
+    expect((await restarted.flowBgPoll(started.runId)).bg).toMatchObject({ status: "completed", cancelRequested: false });
+    expect(dispatches).toBe(0);
+  });
+
+  it("does not re-drive a cancelled run", async () => {
+    const root = await stateRoot();
+    let markDispatched!: () => void;
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
+    const blocked = new Promise<void>(() => undefined);
+    const first = engine(root, async () => { markDispatched(); await blocked; return { output: { value: "unreachable" } }; });
+    const started = await first.flowRunBg(linearFlow, { name: "Ada" });
+    await dispatched;
+    await first.flowCancelBg(started.runId);
+    let dispatches = 0;
+    const restarted = engine(root, async ({ prompt }) => { dispatches += 1; return { output: { value: prompt } }; });
+
+    await restarted.rehydrateBgFlows();
+
+    expect((await restarted.flowBgPoll(started.runId)).bg).toEqual({ status: "cancelled", cancelRequested: true });
+    expect(dispatches).toBe(0);
+  });
+
+  it("is idempotent and does not double-drive", async () => {
+    const root = await stateRoot();
+    let markDispatched!: () => void;
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
+    const blocked = new Promise<void>(() => undefined);
+    const first = engine(root, async () => { markDispatched(); await blocked; return { output: { value: "unreachable" } }; });
+    const started = await first.flowRunBg(linearFlow, { name: "Ada" });
+    await dispatched;
+    let dispatches = 0;
+    const restarted = engine(root, async ({ prompt }) => { dispatches += 1; return { output: { value: prompt } }; });
+
+    await restarted.rehydrateBgFlows();
+    await restarted.rehydrateBgFlows();
+
+    await waitForBg(restarted, started.runId, "completed");
+    expect(dispatches).toBe(2);
+  });
+
+  it("does not let a malformed persisted run block rehydration of a valid one", async () => {
+    const root = await stateRoot();
+    // A valid-JSON but invalid-spec bg run: it must fail in its own background
+    // driver, never throw out of rehydrateBgFlows or abort the scan.
+    const corrupt: PersistedRun = {
+      id: "corruptrun", spec: { broken: true }, input: {}, flowName: "main",
+      status: "running", flowSpent: {}, steps: {}, events: [], bgDriven: true,
+    };
+    await new StateStore(root).save(corrupt);
+
+    let markDispatched!: () => void;
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
+    const blocked = new Promise<void>(() => undefined);
+    const first = engine(root, async () => { markDispatched(); await blocked; return { output: { value: "unreachable" } }; });
+    const started = await first.flowRunBg(linearFlow, { name: "Ada" });
+    await dispatched;
+
+    const prompts: string[] = [];
+    const restarted = engine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    await expect(restarted.rehydrateBgFlows()).resolves.toBeUndefined();
+
+    // The valid run still resumes to completion; the corrupt one fails in its own
+    // background driver (its state is invalid, so it is not separately pollable).
+    expect((await waitForBg(restarted, started.runId, "completed")).status).toBe("completed");
+    expect(prompts).toEqual(["first Ada", "second"]);
+  });
+
+  it("treats empty and missing state roots as no-ops", async () => {
+    const parent = await stateRoot();
+    const empty = engine(parent, async ({ prompt }) => ({ output: { value: prompt } }));
+    const missing = join(parent, "missing");
+    const restarted = engine(missing, async ({ prompt }) => ({ output: { value: prompt } }));
+
+    await expect(empty.rehydrateBgFlows()).resolves.toBeUndefined();
+    await expect(restarted.rehydrateBgFlows()).resolves.toBeUndefined();
+  });
+});

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### feat: STRAT-TS-FLOW-BG-REHYDRATE — detached flows survive a server restart
+
+Detached background flows now re-attach a driver on startup instead of stalling
+after a restart. Runs carry a durable `bgDriven` marker; `StateStore.list()`
+enumerates persisted runs; `engine.rehydrateBgFlows()` (called from `serveStdio`
+before serving) scans them and, for each non-terminal bg run, re-registers it and
+launches a driver — a paused-gate run re-pauses itself, a cancelled or terminal
+run re-registers its status without a driver. Rehydration is non-blocking and
+per-run isolated: it launches each driver without awaiting per-run advancement, so
+a slow or malformed persisted run fails in its own background driver rather than
+blocking or crashing server startup.
+
+Semantics (documented bounds): at-least-once across restart — a step whose
+connector was in flight at crash is re-dispatched (writes must be idempotent), and
+that re-dispatch is not re-ledgered. Single-process ownership is assumed (two live
+engines on one state root are unsupported in v1). Also fixed a driver test flake:
+the error path flips the registry to `failed` after the durable terminalization
+persists.
+
 ### feat: STRAT-TS-FLOW-BG driver — fail-fast retries, parallel dispatch, epoch binding
 
 Three follow-ups on the TS detached driver:
