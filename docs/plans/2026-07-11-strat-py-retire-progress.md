@@ -41,5 +41,47 @@ each phase. Absolute SHAs / versions only.
 - STRAT-TS-JUDGE-TOOL — ABSORB (judged: ensures over TS judge backend) + 2 deltas
   (budget-ledger wiring, evidence-bounding tests).
 
+## Phase 2/3 usage audit — DONE 2026-07-12 (codex terra/high + Opus verification)
+
+Evidence-backed dispositions (verified: KILL candidates have 0 non-doc/non-test refs;
+"adapter-only" = a method on compose `lib/stratum-mcp-client.js` with NO caller of that
+method anywhere — the wrapper existing ≠ the surface being live).
+
+| tool(s) | live consumer | disposition | evidence |
+|---|---|---|---|
+| flow_run_bg / flow_bg_poll / flow_cancel_bg | already on TS | **KEEP (done)** | server.ts:24,76-78; mcp-surface v3 |
+| compile_speckit | agent skill | **PORT or retire-with-skill** | stratum-speckit/SKILL.md:213,235 |
+| distill | agent skill | **PORT or retire-with-skill** | distill/SKILL.md:20-23 |
+| commit / revert | speckit skill (recovery) | **PORT or retire-with-skill** | stratum-speckit/SKILL.md:280 (adapter methods themselves uncalled) |
+| skip_step | adapter-only, no caller | **thin KEEP or PARK** | client.js:307 only |
+| iteration_start/report/abort | adapter-only, no caller | **NEEDS-WIRING / PARK** | client.js:330,344,359 only; engine auto-drives iterate |
+| check_timeouts | none | **PARK** | 0 refs; no field precedent (roadmap) |
+| goal / goal_decide / goal_status / goal_archive | none | **PARK** | 0 refs; dormant kernel |
+| decompose | none | **KILL** | 0 non-doc/non-test refs |
+| draft_pipeline | none | **KILL** | only a doc audit table |
+| list_workflows | none | **KILL** | 0 refs |
+| read_centered / read_transcript_centered / blame_session | none | **PARK (maybe separate small server)** | 0 refs; session-ergonomics, not engine |
+
+**Owner decision RESOLVED (2026-07-12): KEEP the distill + speckit skills → PORT the 4 tools
+to TS** (compile_speckit, distill, commit, revert). So Phase 2/3 disposition is final:
+- **PORT to TS:** compile_speckit, distill, commit, revert (each a design→brief→codex-build→
+  review-loop feature; commit/revert = STRAT-TS-FLOWCTL checkpoint slice, most foundational →
+  do first; compile_speckit + distill are whole compilers/kernels → larger).
+- **KILL (provenance in STRAT-PY-TRIAGE design.md):** decompose, draft_pipeline, list_workflows.
+- **PARK (filed, no action):** goal kernel (4), iteration_* (3), skip_step, check_timeouts,
+  transcript tools (3).
+- **KEEP (done):** flow_run_bg / flow_bg_poll / flow_cancel_bg (already on TS).
+
+### Remaining execution queue (ordered)
+1. [ ] PORT commit/revert → TS (STRAT-TS-FLOWCTL checkpoint slice) — foundational, smallest.
+2. [ ] PORT compile_speckit → TS.
+3. [ ] PORT distill → TS.
+4. [ ] Record KILL provenance (3 tools) + PARK filings in STRAT-PY-TRIAGE.
+5. [ ] Phase 0/1 (compose): collapse soak, flip monitor-seam, agent-authoring cutover.
+6. [ ] Phase 4 sweep: .mcp.json → TS stdio; forge+compose default → ts; drop python branch;
+       D4 codex_models relocation; CLAUDE.md/skills → TS tools; retire soak cron.
+7. [ ] Short TS-only real-usage window.
+8. [ ] Phase 5: final PyPI deprecations, delete both Python trees, TS claims stratum-mcp bin.
+
 ## Phase 0/1 (compose repo) — not started this session
-## Phase 3 (triage) / Phase 4 (sweep) / Phase 5 (remove) — not started
+## Phase 4 (sweep) / Phase 5 (remove) — not started
