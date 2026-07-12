@@ -69,6 +69,8 @@ deleting the Python engine from the repo and deprecating it on PyPI.
   delete the Python tree.
 - **D5 — Node ≥ 26 packaging fix (stratum#6) is a Phase 2 entry gate.**
   Wide cutover cannot ride on a node-22-pinned wrapper.
+  **CLEARED 2026-07-12:** fix @ 494fa60 verified on node 26.0.0 (both bins run).
+  See execution ledger. Residual DEP0205 (`module.register()`) filed as a follow-up.
 - **D6 (revised 2026-07-11) — `stratum-py` retires WITH the engine.**
   Measured: of its 12,885 LOC, `judge/` (6,529) + `goal/` (2,352) are the
   implementation backbone of the Python MCP tools — `stratum-mcp` imports
