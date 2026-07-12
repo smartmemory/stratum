@@ -145,6 +145,19 @@ export interface AuditEvent {
   detail?: unknown;
 }
 
+export type CheckpointSnapshot = Pick<PersistedRun,
+  | "status" | "output" | "failure" | "flowSpent" | "rounds"
+  | "steps" | "events" | "cancelRequested" | "parallel"
+>;
+
+/** One named checkpoint. An ORDERED ARRAY (not a keyed map) so label order is true
+ * insertion order: a plain object enumerates integer-string keys numerically, which
+ * would reorder numeric labels vs Python's insertion-ordered dict. */
+export interface CheckpointEntry {
+  label: string;
+  snapshot: CheckpointSnapshot;
+}
+
 export interface PersistedRun {
   id: string;
   spec: unknown;
@@ -165,6 +178,9 @@ export interface PersistedRun {
   bgDriven?: boolean;
   /** Optional so persisted runs created before parallel dispatch remain loadable. */
   parallel?: ParallelRunState;
+  /** Named state-only snapshots in insertion order; optional so runs created before
+   * checkpoints remain loadable. */
+  checkpoints?: CheckpointEntry[];
 }
 
 let temporarySequence = 0;

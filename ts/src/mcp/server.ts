@@ -2,7 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
-import { StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
+import { CheckpointOperationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
 import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
@@ -11,7 +11,7 @@ import type { GuardJudge } from "../guard/transition.js";
 import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface } from "./contracts.js";
 
 export interface McpDependencies {
-  engine?: Pick<StratumEngine, "plan" | "stepDone" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
+  engine?: Pick<StratumEngine, "plan" | "stepDone" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
   runAgent?: typeof runAgent;
   pollBackgroundRun?: typeof pollBackgroundRun;
   cancelBackgroundRun?: typeof cancelBackgroundRun;
@@ -21,6 +21,7 @@ export interface McpDependencies {
 
 export type ToolName =
   | "stratum_validate" | "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_audit"
+  | "stratum_commit" | "stratum_revert"
   | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg"
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
   | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_history";
@@ -69,6 +70,8 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         }
         case "stratum_plan": response = await engine.plan(request.spec, request.input, option(request, "workspaceRoot")); break;
         case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result")); break;
+        case "stratum_commit": response = { ...await engine.commit(string(request, "flow_id"), string(request, "label")) }; break;
+        case "stratum_revert": response = await engine.revert(string(request, "flow_id"), string(request, "label")); break;
         case "stratum_resume": response = await engine.resume(string(request, "runId")); break;
         case "stratum_audit": response = auditResponse(await engine.audit(string(request, "runId"))); break;
         case "stratum_gate_resolve": response = await engine.gateResolve(string(request, "runId"), string(request, "stepId"), string(request, "decision") as "approve" | "revise" | "kill"); break;
@@ -125,6 +128,11 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         await assertToolResponse(tool, response);
         return response;
       } catch (error) {
+        if ((tool === "stratum_commit" || tool === "stratum_revert") && error instanceof CheckpointOperationError) {
+          const response = checkpointErrorEnvelope(error);
+          await assertToolResponse(tool, response);
+          return response;
+        }
         if (!tool.startsWith("stratum_guard_")) throw error;
         const response = guardErrorEnvelope(error);
         await assertToolResponse(tool, response);
@@ -139,7 +147,11 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
   const surface = await mcpSurface();
   const server = new Server({ name: "stratum-mcp", version: "0.0.1" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: Object.entries(surface.tools).map(([name, definition]) => ({ name, description: `Stratum ${name.slice("stratum_".length)}`, inputSchema: jsonSchema(definition.request) })),
+    tools: Object.entries(surface.tools).map(([name, definition]) => ({
+      name,
+      description: (definition as typeof definition & { description?: string }).description ?? `Stratum ${name.slice("stratum_".length)}`,
+      inputSchema: jsonSchema(definition.request),
+    })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const payload = await dispatcher.call(request.params.name as ToolName, request.params.arguments ?? {});
@@ -177,6 +189,15 @@ function guardErrorEnvelope(error: unknown): { status: "error"; error_type: stri
   }
   if (error instanceof Error) return { status: "error", error_type: error.name || "unexpected_error", message: error.message };
   return { status: "error", error_type: "unexpected_error", message: String(error) };
+}
+
+function checkpointErrorEnvelope(error: CheckpointOperationError): { status: "error"; error_type: string; message: string; available?: string[] } {
+  return {
+    status: "error",
+    error_type: error.errorType,
+    message: error.message,
+    ...(error.available !== undefined ? { available: [...error.available] } : {}),
+  };
 }
 
 function jsonSchema(shape: Record<string, unknown>): Record<string, unknown> {

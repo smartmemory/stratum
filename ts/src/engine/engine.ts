@@ -10,6 +10,7 @@ import { extractReferences, type ExtractedReference, type PathSegment, type Refe
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
 import { BudgetLedger, type Budget, validUsage } from "./ledger.js";
+import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
 import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, StateStore, type StepState } from "./state.js";
 
 const execFileAsync = promisify(execFile);
@@ -154,6 +155,29 @@ export interface StratumEngineOptions {
 export interface PlanOptions {
   /** Root directory that file predicates (file_exists / file_contains) are jailed to. */
   workspaceRoot?: string;
+}
+
+export interface CommitResponse {
+  status: "committed";
+  flow_id: string;
+  label: string;
+  step_number: number;
+  current_step_id: string | null;
+  checkpoints: string[];
+}
+
+export type RevertResponse = EngineResponse & { reverted_to: string };
+
+export class CheckpointOperationError extends Error {
+  readonly errorType: "flow_not_found" | "invalid_label" | "checkpoint_not_found";
+  readonly available?: string[];
+
+  constructor(errorType: CheckpointOperationError["errorType"], message: string, available?: string[]) {
+    super(message);
+    this.name = "CheckpointOperationError";
+    this.errorType = errorType;
+    if (available !== undefined) this.available = available;
+  }
 }
 
 export class SpecValidationError extends Error {
@@ -317,10 +341,7 @@ export class StratumEngine {
     // `ready` step, so an external pump could mutate it). Only a genuinely
     // finished bg run (completed/failed/budget_exhausted) falls through, where
     // stepDone raises the normal "not awaiting" error anyway.
-    const bg = this.bgFlows.get(runId);
-    if (bg !== undefined && bg.status !== "completed" && bg.status !== "failed" && bg.status !== "budget_exhausted") {
-      throw new Error(`run ${runId} is background-driven; external stepDone is not permitted (poll via flow_bg_poll)`);
-    }
+    this.assertExternalMutationAllowed(runId, "stepDone");
     return this.stepDoneOwned(runId, stepId, result, expectedEpoch);
   }
 
@@ -425,6 +446,49 @@ export class StratumEngine {
     }
     await this.persist(run);
     return this.advance(run, validated.value, validated.contracts, scope);
+  }
+
+  async commit(runId: string, label: string): Promise<CommitResponse> {
+    this.assertExternalMutationAllowed(runId, "commit");
+    return await this.withRunLock(runId, async () => {
+      const run = await this.loadCheckpointRun(runId);
+      this.assertNoForegroundFanout(run, "commit");
+      const normalized = label.trim();
+      if (!normalized) throw new CheckpointOperationError("invalid_label", "label must be a non-empty string");
+      commitCheckpoint(run, normalized);
+      await this.persist(run);
+      const flow = this.flowFor(run, this.validationFor(run).value);
+      const index = flow.steps.findIndex((step) => !terminal(run.steps[step.id]!.status));
+      return {
+        status: "committed",
+        flow_id: run.id,
+        label: normalized,
+        step_number: (index < 0 ? flow.steps.length : index) + 1,
+        current_step_id: index < 0 ? null : flow.steps[index]!.id,
+        checkpoints: (run.checkpoints ?? []).map((entry) => entry.label),
+      };
+    });
+  }
+
+  async revert(runId: string, label: string): Promise<RevertResponse> {
+    this.assertExternalMutationAllowed(runId, "revert");
+    return await this.withRunLock(runId, async () => {
+      const run = await this.loadCheckpointRun(runId);
+      this.assertNoForegroundFanout(run, "revert");
+      const normalized = label.trim();
+      if (!revertCheckpoint(run, normalized)) {
+        // Insertion order, matching Python (list(state.checkpoints.keys())) and the commit
+        // envelope's `checkpoints` — not sorted, and robust to numeric labels (array, not object).
+        const available = (run.checkpoints ?? []).map((entry) => entry.label);
+        throw new CheckpointOperationError(
+          "checkpoint_not_found",
+          `No checkpoint '${normalized}' on flow '${runId}'`,
+          available,
+        );
+      }
+      await this.persist(run);
+      return { ...await this.reAdvanceLocked(runId), reverted_to: normalized };
+    });
   }
 
   resume(runId: string): Promise<EngineResponse> {
@@ -586,14 +650,16 @@ export class StratumEngine {
   /** Re-derive a run's response after async fanout/subflow progress without
    * emitting a `resumed` event on every detached-driver poll. */
   private reAdvance(runId: string): Promise<EngineResponse> {
-    return this.withRunLock(runId, async () => {
-      const current = await this.loadRun(runId);
-      if (current.status !== "running") return this.response(current);
-      const validated = this.validationFor(current);
-      const flow = this.flowFor(current, validated.value);
-      for (const step of flow.steps) if (step.fanout && current.steps[step.id]?.status === "running") this.scheduleFanout(current, step.id);
-      return this.advance(current, validated.value, validated.contracts);
-    });
+    return this.withRunLock(runId, () => this.reAdvanceLocked(runId));
+  }
+
+  private async reAdvanceLocked(runId: string): Promise<EngineResponse> {
+    const current = await this.loadRun(runId);
+    if (current.status !== "running") return this.response(current);
+    const validated = this.validationFor(current);
+    const flow = this.flowFor(current, validated.value);
+    for (const step of flow.steps) if (step.fanout && current.steps[step.id]?.status === "running") this.scheduleFanout(current, step.id);
+    return this.advance(current, validated.value, validated.contracts);
   }
 
   // SOLE-MUTATOR INVARIANT (v1): while a run is bg-driven, this driver owns its
@@ -1705,6 +1771,38 @@ export class StratumEngine {
     const result = validateSpec(run.spec);
     if (!result.ok) throw new Error("persisted run contains an invalid spec");
     return result;
+  }
+
+  private assertExternalMutationAllowed(runId: string, operation: "stepDone" | "commit" | "revert"): void {
+    const bg = this.bgFlows.get(runId);
+    if (bg !== undefined && bg.status !== "completed" && bg.status !== "failed" && bg.status !== "budget_exhausted") {
+      throw new Error(`run ${runId} is background-driven; external ${operation} is not permitted (poll via flow_bg_poll)`);
+    }
+  }
+
+  private async loadCheckpointRun(runId: string): Promise<PersistedRun> {
+    // Parity with Python (server.py:3970-4055): commit/revert operate on ANY retained
+    // run regardless of status — reverting a terminal (failed/completed) run to a good
+    // checkpoint is the whole point of the recovery use case. Only an unloadable run is
+    // flow_not_found.
+    try {
+      return await this.loadRun(runId);
+    } catch {
+      throw new CheckpointOperationError("flow_not_found", `No active flow with id '${runId}'`);
+    }
+  }
+
+  // A foreground fanout runs its connector work OUTSIDE the run lock, then settles under
+  // it — holding references to the pre-checkpoint step/fanout objects. A commit would
+  // snapshot mid-flight state; a revert reassigns run.steps to a clone, orphaning those
+  // objects so the worker's `state.fanout === fanoutRef` staleness check still passes and
+  // it settles onto the restored state. Refuse both while a fanout is in flight (a fanout
+  // step stays `running` from dispatch through settlement), the same quiescence the
+  // detached driver already requires. bg-driven runs are covered by the ownership guard.
+  private assertNoForegroundFanout(run: PersistedRun, operation: "commit" | "revert"): void {
+    if (this.anyFanoutRunning(run, this.validationFor(run).value)) {
+      throw new Error(`run ${run.id} has an in-flight fanout; ${operation} must wait for it to settle`);
+    }
   }
 
   private flowFor(run: PersistedRun, spec: Specification): Flow {
