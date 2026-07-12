@@ -1,7 +1,35 @@
 # STRAT-TS-FLOWCTL (checkpoint slice) — build brief
 
 **Epic:** STRAT-PY-RETIRE Phase 2 · **Design of record:** `./design.md`
-**Status:** DESIGNED — awaiting build
+**Status:** SHIPPED (commit/revert slice) — 2026-07-12
+
+## Review outcomes (codex sol/high, 2 passes; Opus fixed)
+
+Codex WROTE it, codex REVIEWED, Opus adjudicated every finding vs Python source + fixed:
+- **F1 (High, FIXED):** the build gated commit/revert on `status==="running"` and remapped
+  everything to `flow_not_found`, breaking the recovery use case. Python (server.py:3970-4055)
+  operates on ANY retained run and supports reverting terminal/post-completion checkpoints.
+  `loadCheckpointRun` now only maps an unloadable run to flow_not_found. Tests: terminal-run
+  recovery revert (→ ready), post-completion revert (→ completed).
+- **F2 (High, FIXED):** `revertCheckpoint` reassigns `run.steps` to a clone, orphaning the
+  objects an in-flight foreground fanout worker holds — its `state.fanout===fanoutRef` staleness
+  check still passes, so it settles onto the restored state. Added `assertNoForegroundFanout`
+  (reuses `anyFanoutRunning`); commit/revert refuse while a fanout step is `running` (bg covered
+  by the ownership guard). Test proves the refusal.
+- **F3 (partially rejected):** codex wanted the revert envelope to mimic Python's `execute_step`.
+  REJECTED — the whole TS surface is TS-native (plan/stepDone/gate_resolve all return
+  `{status:"ready",...}`; the compose adapter bridges). Valid kernel kept: revert can return
+  `completed` (post-completion checkpoint) — declared in mcp-surface v4, exercised in p5.
+- **F4 (Medium, FIXED):** `available` was sorted; Python + the commit envelope use insertion
+  order. R2 sharpened it: a plain object enumerates integer-string keys numerically, so numeric
+  labels reordered. Changed storage to an ORDERED ARRAY (`CheckpointEntry[]`), true insertion
+  order for all labels. Numeric-label regression test added.
+- R2 otherwise clean: removing the status gate is safe (invalid specs fail validation first,
+  absent runs still flow_not_found); the fanout guard covers dispatch→settlement; deep-copy,
+  manifest coverage, lock discipline (revert uses `reAdvanceLocked` under the lock) sound.
+
+Full suite: 523 pass / 1 skip (the only failure across runs was the pre-existing p6 ENOTEMPTY
+load flake, passes isolated). tsc + erasableSyntaxOnly clean.
 **Scope:** `stratum_commit` + `stratum_revert` ONLY. `skip_step` and `check_timeouts` are
 PARKED per the 2026-07-12 disposition (adapter-only / no consumer), which removes the entire
 IR-`timeout` + `dispatchedAt` + `query_gate` + `migrate/check` prerequisite from design.md.

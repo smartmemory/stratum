@@ -1,5 +1,5 @@
 {
-  "surface": 3,
+  "surface": 4,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "tools": {
     "stratum_validate": {
@@ -27,6 +27,24 @@
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" } },
         "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } },
         "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } }
+      }
+    },
+    "stratum_commit": {
+      "description": "Save a named checkpoint of the current flow state; state-only; no files are touched; the caller owns file-level undo.",
+      "request": { "flow_id": "string", "label": "string" },
+      "responses": {
+        "committed": { "flow_id": "string", "label": "string", "step_number": "number", "current_step_id": "string|null", "checkpoints": "array" },
+        "error": { "error_type": "string", "message": "string", "available?": "array" }
+      }
+    },
+    "stratum_revert": {
+      "description": "Roll back flow state to a named checkpoint; state-only; no files are touched; the caller owns file-level undo.",
+      "request": { "flow_id": "string", "label": "string" },
+      "responses": {
+        "ready": { "runId": "string", "ready": "array", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
+        "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
+        "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
+        "error": { "error_type": "string", "message": "string", "available?": "array" }
       }
     },
     "stratum_resume": {

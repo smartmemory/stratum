@@ -51,11 +51,15 @@ function response(result: unknown): Record<string, unknown> {
 }
 
 describe("P5 frozen MCP surface", () => {
-  it("exposes exactly eighteen tools", async () => {
+  it("exposes exactly twenty tools with state-only checkpoint descriptions", async () => {
     const pair = await connected({});
     try {
       const listed = await pair.client.listTools();
       expect(listed.tools.map((tool) => tool.name).sort()).toEqual(Object.keys((await mcpSurface()).tools).sort());
+      for (const name of ["stratum_commit", "stratum_revert"]) {
+        expect(listed.tools.find((tool) => tool.name === name)?.description)
+          .toContain("state-only; no files are touched; the caller owns file-level undo.");
+      }
     } finally { await pair.close(); }
   });
 
@@ -107,8 +111,25 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_plan", { spec: setFlow("1"), input: { name: "x" } });
       await call("stratum_plan", { spec: budgetFlow(), input: { name: "x" } });
 
+      // Checkpoints: commit exposes committed/error; revert exposes ready/running/completed/error.
+      const checkpointRun = ready.runId as string;
+      await call("stratum_commit", { flow_id: checkpointRun, label: "before_first" });
+      await call("stratum_commit", { flow_id: "no-such-flow", label: "cp" });
+      await call("stratum_step_done", { runId: checkpointRun, stepId: "first", result: { output: { value: "first" } } });
+      await call("stratum_revert", { flow_id: checkpointRun, label: "before_first" });
+      await call("stratum_revert", { flow_id: checkpointRun, label: "missing" });
+      const checkpointGate = await call("stratum_plan", { spec: initialGateFlow(), input: { name: "x" } });
+      await call("stratum_commit", { flow_id: checkpointGate.runId, label: "at_gate" });
+      await call("stratum_revert", { flow_id: checkpointGate.runId, label: "at_gate" });
+      // revert also exposes completed — reverting to a post-completion checkpoint on a
+      // retained terminal run (Python parity: terminal runs stay checkpoint-operable).
+      const checkpointDone = await call("stratum_plan", { spec: simpleFlow, input: { name: "x" } });
+      await call("stratum_step_done", { runId: checkpointDone.runId, stepId: "build", result: { output: { value: "done" } } });
+      await call("stratum_commit", { flow_id: checkpointDone.runId, label: "post" });
+      await call("stratum_revert", { flow_id: checkpointDone.runId, label: "post" });
+
       // step_done: ready, running at a gate, completed, failed, and budget exhaustion.
-      const chainRun = ready.runId as string;
+      const chainRun = (await call("stratum_plan", { spec: chainFlow(), input: { name: "x" } })).runId as string;
       await call("stratum_step_done", { runId: chainRun, stepId: "first", result: { output: { value: "first" } } });
       const gateRun = (await gateWaiting(call, gateFlow)) as string;
       const complete = await call("stratum_plan", { spec: simpleFlow, input: { name: "x" } });
@@ -199,8 +220,30 @@ describe("P5 frozen MCP surface", () => {
     try {
       const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: simpleFlow, input: { name: "x" } } }));
       expect(planned.status).toBe("ready");
+      const committed = response(await pair.client.callTool({ name: "stratum_commit", arguments: { flow_id: planned.runId, label: " initial " } }));
+      expect(committed).toEqual({
+        status: "committed", flow_id: planned.runId, label: "initial", step_number: 1,
+        current_step_id: "build", checkpoints: ["initial"],
+      });
       const done = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId: planned.runId, stepId: "build", result: { output: { value: "done" } } } }));
       expect(done).toMatchObject({ status: "completed", output: { value: "done" } });
+
+      const revertPlan = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: gateFlow, input: { name: "x" } } }));
+      await pair.client.callTool({ name: "stratum_commit", arguments: { flow_id: revertPlan.runId, label: "start" } });
+      await pair.client.callTool({
+        name: "stratum_step_done",
+        arguments: { runId: revertPlan.runId, stepId: "build", result: { output: { value: "changed" } } },
+      });
+      const reverted = response(await pair.client.callTool({ name: "stratum_revert", arguments: { flow_id: revertPlan.runId, label: "start" } }));
+      expect(reverted).toMatchObject({ status: "ready", runId: revertPlan.runId, ready: [{ id: "build" }], reverted_to: "start" });
+      await pair.client.callTool({ name: "stratum_commit", arguments: { flow_id: revertPlan.runId, label: "zeta" } });
+      await pair.client.callTool({ name: "stratum_commit", arguments: { flow_id: revertPlan.runId, label: "alpha" } });
+      const missing = response(await pair.client.callTool({ name: "stratum_revert", arguments: { flow_id: revertPlan.runId, label: "missing" } }));
+      expect(missing).toEqual({
+        status: "error", error_type: "checkpoint_not_found",
+        message: `No checkpoint 'missing' on flow '${revertPlan.runId as string}'`,
+        available: ["start", "zeta", "alpha"], // insertion order (Python parity), not sorted
+      });
 
       const gatePlan = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: gateFlow, input: { name: "x" } } }));
       await pair.client.callTool({ name: "stratum_step_done", arguments: { runId: gatePlan.runId, stepId: "build", result: { output: { value: "built" } } } });

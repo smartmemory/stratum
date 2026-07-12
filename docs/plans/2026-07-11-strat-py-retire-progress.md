@@ -73,7 +73,10 @@ to TS** (compile_speckit, distill, commit, revert). So Phase 2/3 disposition is 
 - **KEEP (done):** flow_run_bg / flow_bg_poll / flow_cancel_bg (already on TS).
 
 ### Remaining execution queue (ordered)
-1. [ ] PORT commit/revert → TS (STRAT-TS-FLOWCTL checkpoint slice) — foundational, smallest.
+1. [x] PORT commit/revert → TS (STRAT-TS-FLOWCTL checkpoint slice) — **SHIPPED 2026-07-12**.
+       Durable ordered `PersistedRun.checkpoints[]`, compile-time manifest coverage, bg + fanout
+       quiescence guards, terminal-run recovery + post-completion revert (Python parity), MCP v4.
+       2 codex review rounds, 5 findings fixed (see build-brief Review outcomes). See build commit.
 2. [ ] PORT compile_speckit → TS.
 3. [ ] PORT distill → TS.
 4. [ ] Record KILL provenance (3 tools) + PARK filings in STRAT-PY-TRIAGE.
