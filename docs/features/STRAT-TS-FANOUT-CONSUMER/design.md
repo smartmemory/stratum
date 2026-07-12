@@ -1,6 +1,6 @@
 # STRAT-TS-FANOUT-CONSUMER — consumer-dispatched native fanout
 
-**Status:** DRAFT (2026-07-12) · **Branch:** `ts-cutover` · **Epic:** STRAT-PY-RETIRE Phase 2
+**Status:** DRAFT — REVISED 2026-07-12 (metadata-boundary + fenced dispatch descriptor; supersedes the bare-`ReadyStep` / no-wire-change v1) · **Branch:** `ts-cutover` · **Epic:** STRAT-PY-RETIRE Phase 2
 
 ## Problem
 
@@ -13,6 +13,17 @@ The Python-era `parallel_dispatch` surface supplied that ownership model through
 
 Porting those tools would duplicate a lifecycle that TS already expresses as `plan -> ready[] -> step_done`. This feature instead makes dispatch ownership a property of native fanout. It must preserve current engine dispatch as the default, retain per-item retry/ensure/require semantics, keep state restart-safe, and let compose continue to own worktrees and merges without teaching the engine about compose diffs.
 
+## Metadata boundary (governs D2–D5; added 2026-07-12)
+
+The producer owns **authoring intent** (the source spec it wrote). The engine owns the **effective run revision** and **every effective dispatch descriptor**. The earlier cut — "producer derives statically-declared metadata from its own local spec; engine surfaces only runtime-resolved state" — is too coarse: metadata can be statically declared yet impossible for a restart-safe or stateless consumer to *locate* (consumer-fanout stage cursors are the proof case, D2). Corrected rules for this feature:
+
+1. `plan` returns an **immutable effective-run revision + digest** (engine applies defaults — e.g. `dispatch: "engine"` injection — so the persisted effective spec already differs from the submitted object; the digest is what the producer retains and, if it wishes, re-fetches). This makes the "compile boundary" real rather than assumed.
+2. Every consumer-fanout `ready` entry is a **self-contained, token-fenced effective dispatch descriptor** (D2) — the contract for one authorized execution, not a spec mirror.
+3. **Contract invariant:** every issued dispatch has a *fixed* effective output contract; it may originate at compile time or via a governed runtime plan revision, but **cannot change after issuance**. (This supersedes any "output contracts are always compile-time-fixed" phrasing, which needlessly blocks tool-discovery / planner-synthesised / heterogeneous-fanout workflows.)
+4. Topology-preserving runtime decisions (model choice, cache hit, budget-admission) surface as **events / policy provenance**, not hidden state (consistent with the STRAT-TS-PORT observability contract). Topology- or contract-changing decisions require a **new explicit plan revision + authored→effective origin map + audit event** — "optimization" does not make graph mutation internal.
+
+This section is the reason D2 changed; keep D3–D5 consistent with it.
+
 ## Decision record
 
 ### D1. `dispatch` selects execution ownership; `engine` remains the default
@@ -23,13 +34,23 @@ With `dispatch: "consumer"`, the fanout step still owns enumeration, concurrency
 
 This is an extension of the TS execution model, not a second parallel subsystem and not a revival of `parallel_dispatch`.
 
-### D2. A ready fanout item uses a scoped runtime id
+### D2. A ready consumer-fanout item is a self-contained, fenced dispatch descriptor
 
-The runtime id is `<fanout-step-id>/<zero-based-item-index>`, for example `review/2`. Like the existing subflow `<parent>/<child>` ids (`engine.ts:1621-1637,1708-1710`), it is an opaque dispatch id, not a legal authored `StepId`.
+**REVISED 2026-07-12 (codex architecture critique, code-verified).** The original D2 assumed a bare `ReadyStep` (`{id, do, agent, attempt, epoch, previousFailure}` — `engine.ts:79`) plus producer-side reconstruction of stage/contract from the local spec. That is not restart-safe. A multi-stage consumer item reuses one runtime id across stages that can each declare a different `out` contract and `when` (`schema.ts:33`); `attempt` is cumulative across stages (`engine.ts:1119`); and the engine alone owns the stage cursor. A stateless or restarted consumer seeing `review/2` cannot locate which stage — hence which contract — applies without re-implementing engine state recovery. **Statically-declared does not imply producer-locatable** (the general boundary — see "Metadata boundary" above).
 
-Each ready entry keeps the existing `ReadyStep` shape. Its `do`, `agent`, `attempt`, `previousFailure`, and `epoch` describe the current stage of that item. A multi-stage item therefore reappears under the same id as it advances; the engine persists the current stage cursor. `locateStep` first resolves the root parent and then discriminates by construct: `run` resolves a child step, while consumer `fanout` resolves a numeric item index. Authored constructs are mutually exclusive, so the spelling is unambiguous.
+The runtime id stays `<fanout-step-id>/<zero-based-item-index>` (opaque, like subflow `<parent>/<child>` — `engine.ts:1621-1637,1708-1710`), not a legal authored `StepId`. But a consumer-fanout `ready` entry is a **self-contained effective dispatch descriptor**, not a bare `ReadyStep`. It carries, in engine-native terms (never compose vocabulary):
 
-Each item has its own monotonic epoch. Moving to another stage or retry increments it. Epoch enforcement is engine-side: `step_done` carries no epoch on the wire (no request-shape change — see MCP surface below), and the engine matches the report against the item's current persisted epoch exactly as it already derives `expectedEpoch` for ordinary steps (the `stepDone` dispatcher, `engine.ts:333-367`). A late result for a prior stage/attempt — or one arriving after a revision bumped the item epoch — no longer matches the ready item at its current epoch and is rejected under the stable item id.
+- `dispatchToken` — opaque, unique per issuance (see fencing below);
+- authored origin: `flow`, `step`, and the fanout `stage` + `itemIndex`;
+- the rendered instruction (`do`);
+- effective `agent` and execution policy;
+- the **effective output-contract id + shape hash** for the current stage;
+- `attempt` and structured `previousFailure`;
+- the effective run-revision digest (see IR changes).
+
+This is not spec-mirroring — it is the contract for one authorized execution. The consumer executes exactly what the descriptor states and never re-derives stage/contract from a local cursor. Engine-dispatch fanout is unchanged; only the consumer-dispatch `ready` entry gains these fields. `locateStep` still resolves the root parent then discriminates by construct (`run` → child step; consumer `fanout` → numeric item index).
+
+**Fencing must be real on the wire — it currently is not.** `stepDone`'s stale check only fires when the caller supplies `expectedEpoch` (`engine.ts:365`), but the MCP server calls `engine.stepDone(runId, stepId, result)` with no epoch (`server.ts:94`) and the request schema has no epoch field (`mcp-surface.json:30`). So over MCP **no stale report is ever rejected**: after a revision or stage advance returns the same scoped id to `ready`, an old result silently satisfies the new readiness. The fix: `step_done` must echo the `dispatchToken`, and the engine rejects any report whose token is not the current issuance for that item. This is a REQUIRED `step_done` request-shape addition — the earlier "no request-shape change" claim was wrong.
 
 ### D3. Existing failure machinery owns retry and bounce
 
@@ -81,9 +102,15 @@ Semantic validation adds:
 
 ### MCP surface
 
-`stratum_step_done.request.stepId` is already `string`; scoped fanout item ids require no request-shape or tool-name change in `ts/contracts/mcp-surface.json`. `ready` is already an opaque array in every engine response. The implementation and tests must nevertheless pin that `step_done` accepts both ordinary/subflow ids and `<fanout>/<index>` ids.
+`stratum_step_done.request.stepId` is already `string`, so scoped `<fanout>/<index>` ids need no id-shape change. But consumer fanout requires two REAL surface additions (the earlier "no request-shape change" claim was wrong):
 
-Background consumer dispatch needs one minimal addition: the `running` response for `stratum_flow_bg_poll` gains optional `ready: array`. Its `bg.status` remains a contract `string` and may be `awaiting_consumer`. Because the frozen surface changes, increment `surface` and update both P4/P5 exact-version assertions. No fanout-specific MCP tool or response status is added.
+- `stratum_step_done.request` gains a **`dispatchToken: string`** that the consumer echoes from the descriptor it was handed. The engine rejects a report whose token is not the item's current issuance (D2 fencing). For ordinary/engine-owned ids the token is optional/ignored, preserving their behavior.
+- Each consumer-fanout entry in `ready` is a **dispatch descriptor object** (D2 fields: `dispatchToken`, authored origin incl. `stage`/`itemIndex`, rendered `do`, effective `agent`/policy, effective output-contract id + shape hash, `attempt`/`previousFailure`, run-revision digest), not a bare `ReadyStep`. `ready` stays an array; its consumer-fanout element shape is richer. Ordinary/subflow ready entries are unchanged.
+- `stratum_plan` (and `resume`) responses expose the **effective-run-revision digest** (Metadata boundary rule 1) so the producer can pin/verify what actually runs.
+
+Background consumer dispatch also adds: the `running` response for `stratum_flow_bg_poll` gains optional `ready: array` (of the same descriptor shape). Its `bg.status` remains a contract `string` and may be `awaiting_consumer`.
+
+Because the frozen surface changes, increment `surface` and update both P4/P5 exact-version assertions. No fanout-specific MCP *tool* or response *status* is added — the changes are additive request/response fields on existing tools.
 
 ### Events
 
@@ -149,7 +176,8 @@ Compose must re-author each v0 parallel step to native fanout and add the explic
 | Changed code | Test file | Required exercise |
 |---|---|---|
 | `ts/src/ir/schema.ts` | IR/schema tests | omitted dispatch defaults to engine; both values accepted; unknown value/field rejected; consumer-worktree filesystem ensure rejected |
-| `ts/src/engine/state.ts`, `engine.ts` | `ts/tests/engine/p4.test.ts` | concurrent ready cap; stable scoped ids; multi-stage cursor; item-local retry/ensure; stale epoch rejection; ordered output; all/any/N including empty input; no connector/diff/merge calls in consumer mode |
+| `ts/src/engine/state.ts`, `engine.ts` | `ts/tests/engine/p4.test.ts` | concurrent ready cap; stable scoped ids; multi-stage cursor; **each ready descriptor is self-contained (stage/itemIndex + effective contract id/hash + dispatchToken + run-revision) — reconstructable with NO local spec**; item-local retry/ensure; **token fencing over the wire: a report echoing a superseded `dispatchToken` (after a stage advance or a revision re-issues the same scoped id) is REJECTED, and the current-token report is accepted**; ordered output; all/any/N including empty input; no connector/diff/merge calls in consumer mode |
+| `stratum_step_done` / `stratum_plan` MCP boundary | `ts/tests/mcp/p5.test.ts` | `step_done` accepts+requires `dispatchToken` for consumer items and rejects a stale token; `plan`/`resume` expose the effective-run-revision digest; a bare-`stepId` report for an ordinary/subflow id still works (token optional) |
 | locking/persistence/bg paths | engine flow-bg/flowctl tests | restart returns the same ready epoch without re-debit; duplicate report rejected; revise invalidates reports; bg awaits consumer, poll exposes ready, cancellation promotes nothing, mixed ownership stays serialized |
 | `ts/contracts/mcp-surface.json` | `ts/tests/mcp/p5.test.ts` | real MCP plan -> scoped `ready[]` -> scoped `stratum_step_done` retry -> completion; `flow_bg_poll.ready`; frozen surface version and every response variant still covered |
 | events | P4 frozen-contract test | consumer run emits only declared kinds; full bidirectional event-vocabulary gate remains green |
