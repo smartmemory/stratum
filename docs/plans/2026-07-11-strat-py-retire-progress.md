@@ -243,9 +243,23 @@ shipped code: "current code doesn't already do X" for each proposed change). One
 ambiguity (#6 epoch-not-on-wire) → added one sentence clarifying engine-side epoch enforcement
 mirroring ordinary steps' `expectedEpoch`. No decision changed. Design is CLEAN.
 
-Next: the wire port — rewrite `compose/lib/stratum-mcp-client.js` request/response to TS-native
-(keep method names), port build.js simple path → green `test/ts-cutover-golden.test.js`. Then
-fanout consumer mode, then pipeline v0→v1, GSD, dogfood, atomic merge.
+## Wire port (client) — GREEN 2026-07-12 (compose ts-cutover @ e29e62b)
+
+`compose/lib/stratum-mcp-client.js` ported to TS-native vocab; `test/ts-cutover-golden.test.js`
+RED→GREEN (1 pass, real TS engine, full plan→step→gate→approve→finish→audit lifecycle). Built by
+codex sol/high (run `7c58705777fc`), verified locally under Node 22, adjudicated, committed.
+Narrow test-gated slice — only the 4 methods the test exercises:
+- plan `{spec,flow,inputs}`→`{spec,input}`; stepDone `{flow_id,step_id,result}`→`{runId,stepId,result}`;
+  gateResolve `{flow_id,step_id,outcome,rationale}`→`{runId,stepId,decision}`; audit `{flow_id}`→`{runId}`.
+- `#callTool` prefers TS `structuredContent` (status/runId/ready direct), JSON-text fallback kept.
+- Method signatures unchanged (compose API); undeclared keys dropped (TS rejects them). Vocab is
+  PER-TOOL: audit=runId, commit/revert (untouched)=flow_id — follow mcp-surface.json, no blanket rename.
+No codex review round (31-line rename proven by a real golden flow = verification theater to skip).
+Note: compose ts-cutover has UNRELATED uncommitted COMP-AUDIT-1..18 work (memory `project_comp_audit_2607`) — left untouched.
+
+Next: build.js response-field CONSUMPTION port (flow_id→runId, execute_step/await_gate→ready/running,
+outcome→decision) for the simple path; then fanout consumer mode (design @ 449c961), pipeline v0→v1,
+GSD, dogfood, atomic merge.
 
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
