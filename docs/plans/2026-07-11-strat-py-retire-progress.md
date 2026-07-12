@@ -73,41 +73,54 @@ KILL/PARK table above:
   equivalent is verified. Nothing breaks in the interim because Python remains the fallback.
 - So every tool is **PORT** (now or queued) or **KEEP (already on TS)**. Full surface → TS.
 
-Full port surface (nothing dropped):
-- **KEEP (done):** flow_run_bg / flow_bg_poll / flow_cancel_bg; commit / revert (shipped).
-- **PORT — decided/queued:** compile_speckit, distill (skills kept).
-- **PORT — STRAT-GOAL subsystem (5):** decompose, goal, goal_decide, goal_status, goal_archive —
-  the worker→judge self-correction loop; decompose feeds goal. Biggest single capability.
-- **PORT — iteration kernel (3):** iteration_start/report/abort (manual loop; TS auto-drives
-  `iterate` but the manual surface is preserved + wired).
-- **PORT — flow-control:** skip_step; check_timeouts (needs IR gate `timeout` + dispatchedAt per
-  STRAT-TS-FLOWCTL design.md — the part deferred from the checkpoint slice).
-- **PORT / relocate — transcript tools (3):** read_centered, read_transcript_centered,
-  blame_session (may land in a small sibling server rather than the engine — decide at build).
-- **PORT — UI-coupled:** draft_pipeline (writes .stratum/pipeline-draft.json for the PipelineEditor
-  UI). OPEN: confirm the PipelineEditor surface still exists before porting; if the UI is dead the
-  tool is preserved-in-git + design, not rebuilt against a nonexistent consumer.
-- **PORT / absorb:** compile_speckit; and STRAT-TS-JUDGE-TOOL (judged: ensures over TS backend).
+### PORT-NOW vs PARK split (owner: "figure out what to park; do it in phases; UIs are planned")
 
-### Remaining execution queue (ordered; nothing killed)
-1. [x] PORT commit/revert → TS (STRAT-TS-FLOWCTL checkpoint slice) — **SHIPPED 2026-07-12**.
-       Durable ordered `PersistedRun.checkpoints[]`, compile-time manifest coverage, bg + fanout
-       quiescence guards, terminal-run recovery + post-completion revert (Python parity), MCP v4.
-       2 codex review rounds, 5 findings fixed (see build-brief Review outcomes). See build commit.
-2. [ ] PORT compile_speckit → TS.
+Rule: **PORT-NOW** = has a live consumer today (blocks the active-surface cutover). **PARK** =
+no live consumer yet / gated on a not-yet-built UI → DEFER the port, keep the Python tool LIVE
+(never deleted until ported), port it in the phase where its consumer/UI lands. Nothing killed.
+
+**PORT-NOW (active surface — the near-term retirement):**
+- [x] commit / revert (shipped), flow_run_bg / flow_bg_poll / flow_cancel_bg (KEEP, done).
+- [ ] compile_speckit — live consumer: stratum-speckit skill.
+- [ ] distill — live consumer: distill skill.
+
+**PARK (defer; Python stays live; port when the trigger arrives):**
+- STRAT-GOAL subsystem (decompose, goal, goal_decide, goal_status, goal_archive) — big worker→
+  judge capability, 0 live consumers today. Trigger: a real goal-loop consumer, or a dedicated
+  GOAL-on-TS phase. Preserved + live meanwhile.
+- iteration kernel (start/report/abort) — no live caller; TS auto-drives `iterate`. Trigger: a
+  manual-loop consumer.
+- skip_step — no live caller. Trigger: a consumer appears (thin, quick port).
+- check_timeouts — no consumer + needs IR gate `timeout` + `dispatchedAt` (STRAT-TS-FLOWCTL
+  remainder). Trigger: a gate-timeout consumer.
+- transcript tools (read_centered, read_transcript_centered, blame_session) — session ergonomics,
+  no consumer. Trigger: decide engine-vs-small-sibling-server, then port.
+- **draft_pipeline — PARK until the PipelineEditor UI phase.** The UI is PLANNED (owner confirmed),
+  built in a later phase; port draft_pipeline alongside it. Python stays live till then.
+- STRAT-TS-JUDGE-TOOL (standalone judge tool) — the `judged:` backend ALREADY works on TS; the
+  standalone tool has no consumer. Trigger: a caller needs the tool form; close the 2 deltas then.
+
+**Consequence for Phase 5:** deletion is INCREMENTAL and phased — delete each Python tool only
+once its TS port is verified. Near-term Python shrinks to the PARKED set (a demoted, dormant-but-
+live legacy surface); full Python deletion is a long horizon tied to the UI/consumer phases.
+"TS-only for the active surface" is the near-term goal; "zero Python" is the eventual one.
+
+### Near-term execution queue (ordered)
+1. [x] PORT commit/revert → TS (STRAT-TS-FLOWCTL checkpoint slice) — **SHIPPED 2026-07-12** (v0.2.109).
+2. [ ] PORT compile_speckit → TS  ← NEXT.
 3. [ ] PORT distill → TS.
-4. [ ] PORT STRAT-GOAL subsystem (decompose + goal + goal_decide + goal_status + goal_archive).
-5. [ ] PORT iteration kernel (start/report/abort) + skip_step + check_timeouts (STRAT-TS-FLOWCTL
-       remainder: IR gate `timeout` + dispatchedAt).
-6. [ ] PORT / relocate transcript tools (3) — decide engine vs small sibling server.
-7. [ ] draft_pipeline: confirm PipelineEditor UI status → port or preserve-in-place.
-8. [ ] STRAT-TS-JUDGE-TOOL absorb + deltas.
-9. [ ] Phase 0/1 (compose): collapse soak, flip monitor-seam, agent-authoring cutover.
-10. [ ] Phase 4 sweep: .mcp.json → TS stdio; forge+compose default → ts; drop python branch;
-       D4 codex_models relocation; CLAUDE.md/skills → TS tools; retire soak cron.
-11. [ ] Short TS-only real-usage window.
-12. [ ] Phase 5: delete a Python tool ONLY once its TS port is verified (port-before-delete);
-        final PyPI deprecations, delete the ported-out trees, TS claims stratum-mcp bin.
+4. [ ] Phase 0/1 (compose): collapse soak, flip monitor-seam, agent-authoring cutover.
+5. [ ] Phase 4 sweep (active surface): .mcp.json → TS stdio; forge+compose default → ts; keep the
+       Python server registered ONLY for the parked tools; D4 codex_models relocation;
+       CLAUDE.md/skills → TS for ported tools; retire soak cron.
+6. [ ] Short TS-only-active-surface real-usage window.
+7. [ ] Phase 5 (incremental): delete the Python for each PORTED tool once verified; final PyPI
+       handling deferred until the PARKED set is also ported in its later phases.
+
+### Parked-ports backlog (later phases, nothing lost)
+P1. GOAL subsystem → TS.  P2. iteration kernel + skip_step + check_timeouts (IR timeout work).
+P3. transcript tools (engine vs sibling server).  P4. draft_pipeline (WITH PipelineEditor UI phase).
+P5. STRAT-TS-JUDGE-TOOL standalone + deltas.
 
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
