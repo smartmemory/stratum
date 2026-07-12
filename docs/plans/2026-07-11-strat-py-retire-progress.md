@@ -295,22 +295,30 @@ and continues the loop. Gated by `test/ts-cutover-build-gate-golden.test.js` (wo
 auto-approve → finish over the real TS engine); both goldens 5 passed. Self-implemented (codex crashed
 3× on the pre-fix sweep bug — see agent-run hotfix below); independent codex review = run `b850d005296a`.
 
-### FOLLOW-UP SLICE — human interactive gate over TS (findings from review `b850d005296a`)
-The committed slice covers ONLY the auto-approve (flag/skip) path — the one compose's autonomous build
-uses by default. Codex confirmed NO regression in ready/terminal/auto-approve paths, but the
-`policy.mode==='gate'` (human) path is not yet TS-correct. Build as its own slice WITH a golden that
-drives revise/kill/prompt:
-- [ ] **(High) revise round read** — `readFlowRound` (`build.js` human path) reads the Python store
-  (`~/.stratum/flows`, `state.round`); TS uses `~/.stratum/ts/flows` + `rounds` → round always 1 →
-  `revise` re-entry collides with the resolved gate. Overlaps the "de-hardcode Python-store reads" item.
-- [ ] **(High) kill → killed marker** — TS has NO `killed` status; `on_kill:null` returns `failed`
-  (`engine.ts:595`), so a deliberate gate abort records as a failed build. Add a compose-local killed
-  marker before the terminal failure branch.
-- [ ] **(Med) synthesized routing to the prompt** — the interactive path still passes the bare `running`
-  `response` (no step_id/on_approve/…) to `promptGate`/`makeAskAgent` → CLI shows `Gate: undefined` and
-  false routes. Pass the synthesized gate routing.
-- [ ] **(Low) predecessor artifact/summary** — synth uses last `stepHistory` entry, not the declared
-  predecessor (gate's `after`); wrong only with concurrent steps. Roll into this slice.
+### FOLLOW-UP SLICE — human interactive gate over TS — DONE 2026-07-12 (compose develop @ 8709038)
+The prior slice covered ONLY the auto-approve (flag/skip) path. This slice makes `policy.mode==='gate'`
+(human) TS-correct, with a golden driving revise/kill/prompt over the real TS engine. Codex-written
+(run `7fa30b4c720b`, gpt-5.6-sol/high), every change adjudicated vs code + verified locally (8 goldens +
+4 unit green).
+- [x] **(High) revise round read** — `readFlowRound` (`flow-state.js`) now reads the TS store first
+  (`STRATUM_STATE_ROOT`-aware; flows stored FLAT at the root, not under `ts/flows`; fresh run → round 0,
+  NOT 1), Python store as fallback. **Extra bug found beyond the checklist:** the old code hardcoded
+  `homedir()/.stratum/flows` and ignored `STRATUM_STATE_ROOT`, so it silently failed under any custom
+  state root (incl. the test harness). Closes the "de-hardcode Python-store reads" item for this reader.
+- [x] **(High) kill → killed marker** — human `kill` (on_kill:null → TS `terminalFailure`/`failed`) is
+  remapped to `killed` right after `gateResolve`, so the existing `killed` terminal branch (build.js
+  ~2542) records an aborted build (item killed, feature→PLANNED). Guarded on `outcome==='kill'` + terminal
+  status only, so an `on_kill`-routed kill (running/ready) is NOT remapped.
+- [x] **(Med) synthesized routing to the prompt** — `makeAskAgent`/`promptGate` now receive a
+  `gateDispatch` synthesized from the local spec node (`step_id`,`on_approve`,`on_revise`,`on_kill`);
+  no more `Gate: undefined`.
+- [x] **(Low) predecessor artifact/summary** — uses the gate's declared `after` predecessor from
+  `stepHistory`, falls back to last.
+- **Coverage boundary (honest):** the golden drives the CLI prompt path (dead `COMPOSE_PORT` → no server),
+  which re-prompts regardless of round — so it does NOT observe the round read (empirically: forcing
+  `readFlowRound`→const still passes the golden). The round-collision only manifests on the
+  server-delegated path (`pollGateResolution` replaying a stale resolved gate). Locked instead by a
+  direct unit test `test/flow-state-round.test.js` (TS-first, 0-based, env-aware, Python fallback).
 - **Documented v1 limitation (NOT a bug):** >1 concurrent root gate throws by design (single-gate seam).
   Revisit only if a real compose pipeline needs concurrent gates.
 
