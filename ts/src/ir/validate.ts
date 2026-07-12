@@ -491,12 +491,13 @@ export function validateSpec(input: unknown): ValidationResult {
     }
   }
 
-  // The v1 body restriction covers EVERY non-entry flow, reachable or not — an
-  // unused flow must not validate with constructs it could never legally run.
+  // One-level subflow gates are supported by the scoped gate state machine.
+  // Fanout and nested run remain forbidden in EVERY non-entry flow, reachable
+  // or not, so the v1 depth and fanout bounds stay intact.
   for (const [flowName, flow] of Object.entries(flows)) {
     if (flowName === spec.flows.entry) continue;
     for (const [index, step] of flow.steps.entries()) {
-      const kind = step.gate !== undefined ? "gate" : step.fanout !== undefined ? "fanout" : step.run !== undefined ? "run" : undefined;
+      const kind = step.fanout !== undefined ? "fanout" : step.run !== undefined ? "run" : undefined;
       if (kind !== undefined) {
         return { ok: false, errors: [{
           code: "SUBFLOW_BODY_RESTRICTED",

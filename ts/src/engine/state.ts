@@ -115,6 +115,8 @@ export interface ParallelRunState {
 export interface SubflowState {
   input: unknown;
   steps: Record<string, StepState>;
+  /** Successful gate revisions within this subflow, scoped independently of the root run. */
+  rounds?: number;
 }
 
 export interface StepState {

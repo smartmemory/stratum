@@ -76,11 +76,28 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
     await restarted.rehydrateBgFlows();
     const paused = await waitForBg(restarted, started.runId, "paused_gate");
 
-    expect(paused).toMatchObject({ status: "running", bg: { status: "paused_gate", gateStepId: "review" } });
+    expect(paused).toMatchObject({ status: "running", bg: { status: "paused_gate", pendingGates: ["review"] } });
     expect(prompts).toEqual([]);
     await restarted.gateResolve(started.runId, "review", "approve");
     expect((await waitForBg(restarted, started.runId, "completed")).status).toBe("completed");
     expect(prompts).toEqual(["refine", "publish"]);
+  });
+
+  it("rehydrates a subflow gate and recomputes its scoped pending id", async () => {
+    const root = await stateRoot();
+    const first = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await first.flowRunBg(subflowGateFlow, { name: "Ada" });
+    expect((await waitForBg(first, started.runId, "paused_gate")).bg.pendingGates).toEqual(["wrap/review"]);
+
+    const prompts: string[] = [];
+    const restarted = engine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    await restarted.rehydrateBgFlows();
+    const paused = await waitForBg(restarted, started.runId, "paused_gate");
+
+    expect(paused).toMatchObject({ status: "running", bg: { status: "paused_gate", pendingGates: ["wrap/review"] } });
+    expect(prompts).toEqual([]);
+    await restarted.gateResolve(started.runId, "wrap/review", "approve");
+    expect((await waitForBg(restarted, started.runId, "completed")).status).toBe("completed");
   });
 
   it("does not drive a session-driven run", async () => {
@@ -122,7 +139,7 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
 
     await restarted.rehydrateBgFlows();
 
-    expect((await restarted.flowBgPoll(started.runId)).bg).toEqual({ status: "cancelled", cancelRequested: true });
+    expect((await restarted.flowBgPoll(started.runId)).bg).toEqual({ status: "cancelled", cancelRequested: true, pendingGates: [] });
     expect(dispatches).toBe(0);
   });
 
@@ -181,3 +198,22 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
     await expect(restarted.rehydrateBgFlows()).resolves.toBeUndefined();
   });
 });
+
+const subflowGateFlow = {
+  version: 1,
+  contracts: { Result: { value: "string" } },
+  flows: {
+    entry: "main",
+    main: {
+      input: { name: "string" }, output: { from: "${wrap.output}", contract: "Result" },
+      steps: [{ id: "wrap", run: "child", with: { name: "${input.name}" } }],
+    },
+    child: {
+      input: { name: "string" }, output: { from: "${build.output}", contract: "Result" },
+      steps: [
+        { id: "build", do: "build ${input.name}", out: "Result" },
+        { id: "review", after: ["build"], gate: { on_approve: null, on_revise: null, on_kill: null } },
+      ],
+    },
+  },
+};

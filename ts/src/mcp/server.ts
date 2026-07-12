@@ -160,7 +160,10 @@ function auditResponse(audit: AuditTrail): Record<string, unknown> {
 }
 
 function flowPollResponse(response: FlowPollResponse): Record<string, unknown> { return { ...response }; }
-function bgFlowPollResponse(response: BgFlowPollResponse): Record<string, unknown> { return { ...response }; }
+function bgFlowPollResponse(response: BgFlowPollResponse): Record<string, unknown> {
+  const gateStepId = response.bg.pendingGates[0];
+  return { ...response, bg: { ...response.bg, ...(gateStepId !== undefined ? { gateStepId } : {}) } };
+}
 function option(request: Record<string, unknown>, key: string): { workspaceRoot?: string } { const value = optionalString(request, key); return value ? { workspaceRoot: value } : {}; }
 function string(request: Record<string, unknown>, key: string): string { const value = request[key]; if (typeof value !== "string") throw new Error(`${key} must be a string`); return value; }
 function optionalString(request: Record<string, unknown>, key: string): string | undefined { const value = request[key]; return typeof value === "string" ? value : undefined; }

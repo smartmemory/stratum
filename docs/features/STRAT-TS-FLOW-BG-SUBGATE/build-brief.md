@@ -2,8 +2,29 @@
 
 **Epic:** STRAT-TS-FLOW-BG (TS engine detached-flow primitive)
 **Siblings:** STRAT-TS-FLOW-BG (v0.2.102), -OWNERSHIP (v0.2.103–104), -REHYDRATE (v0.2.105)
-**Status:** DESIGNED — awaiting build
+**Status:** SHIPPED
 **Surfaced by:** the one deferred item from every flow-bg v1: gates only pause the driver at the TOP level.
+
+## Review outcomes (codex sol/high, 2 passes)
+
+- **Admission gap (found during build, fixed):** the brief assumed subflow gates already reach
+  `waiting_gate`, but `validate.ts` `SUBFLOW_BODY_RESTRICTED` rejected gates in EVERY non-entry
+  flow — no valid spec could reach the engine. Resolved by removing ONLY `gate` from the forbidden
+  set; `fanout` and nested `run` stay rejected, so the 1-level + no-fanout-of-subflow bounds hold.
+- **P1 — paused driver missed fanout settlement (FIXED):** `driveBg` paused on a gate while a root
+  fanout was still in flight and exited; `settleFanout` (`:962`) then advanced/terminalized the run
+  under its own lock with no driver watching — stale `pendingGates`, or a wedge where `bg` stays
+  `paused_gate` on a terminalized run. The mechanism pre-existed at root level; subflow gates widen
+  its reach. Fix: `driveBg` decides the pause under the run lock and refuses to pause while
+  `anyFanoutRunning` (a fanout step stays `running` from dispatch through locked settlement) — it
+  keeps spinning until quiescent, then publishes the complete gate set or the terminal status.
+  Regression test proves it (fails without the guard: `paused_gate` mid-fanout).
+- **P2 — test could pass vacuously (FIXED):** the regression test now asserts the gate actually
+  reached `waiting_gate` while the fanout was blocked, so the mid-flight assertion cannot pass on a
+  poll-timeout.
+- Second review pass: no engine-code finding — lock is not nested, root-only fanout is validator-
+  enforced, `running` covers dispatch-through-settlement/merge, the non-running path reaches a
+  terminal `bg.status`.
 
 ## Problem
 
