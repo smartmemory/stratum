@@ -148,7 +148,8 @@ describe("P5 frozen MCP surface", () => {
       // Whole-flow background tools: run_bg has one minimal start variant;
       // bg_poll mirrors every durable run status; cancel reports every current bg state.
       const bgGate = await call("stratum_flow_run_bg", { spec: initialGateFlow(), input: { name: "x" } });
-      await waitForFlowBg(call, bgGate.runId as string, "running", "paused_gate");
+      const pausedBgGate = await waitForFlowBg(call, bgGate.runId as string, "running", "paused_gate");
+      expect(pausedBgGate.bg).toMatchObject({ pendingGates: ["review"], gateStepId: "review" });
       await call("stratum_flow_cancel_bg", { runId: bgGate.runId });
       const bgComplete = await call("stratum_flow_run_bg", { spec: simpleFlow, input: { name: "x" } });
       await waitForFlowBg(call, bgComplete.runId as string, "completed", "completed");
@@ -410,10 +411,10 @@ async function waitForFlowBg(
   runId: string,
   runStatus: string,
   bgStatus: string,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   for (let tick = 0; tick < 100; tick += 1) {
     const polled = await call("stratum_flow_bg_poll", { runId, cursor: 0 });
-    if (polled.status === runStatus && (polled.bg as Record<string, unknown>).status === bgStatus) return;
+    if (polled.status === runStatus && (polled.bg as Record<string, unknown>).status === bgStatus) return polled;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`background flow ${runId} did not reach ${runStatus}/${bgStatus}`);

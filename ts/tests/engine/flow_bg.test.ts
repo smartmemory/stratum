@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine, type BgStatus, type EngineConnector, type JudgeRunner } from "../../src/engine/engine.js";
+import { StateStore } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 
 const roots: string[] = [];
@@ -148,10 +149,67 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     const engine = await subject(async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
     const started = await engine.flowRunBg(await fixture("linear-gate"), { name: "Ada" });
     const paused = await waitForBg(engine, started.runId, "paused_gate");
-    expect(paused).toMatchObject({ status: "running", bg: { status: "paused_gate", gateStepId: "review" } });
+    expect(paused).toMatchObject({ status: "running", bg: { status: "paused_gate", pendingGates: ["review"] } });
     await engine.gateResolve(started.runId, "review", "approve");
     expect((await waitForBg(engine, started.runId, "completed")).status).toBe("completed");
     expect(prompts).toEqual(["prepare Ada", "draft", "check", "refine", "publish"]);
+  });
+
+  it("exposes every sibling-subflow gate, then re-pauses on only the unresolved gate", async () => {
+    const prompts: string[] = [];
+    const engine = await subject(async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    const started = await engine.flowRunBg(siblingGateFlow(), { name: "Ada" });
+
+    const both = await waitForBg(engine, started.runId, "paused_gate");
+    expect(both.bg.pendingGates).toEqual(["left/review", "right/review"]);
+
+    await engine.gateResolve(started.runId, "left/review", "approve");
+    const one = await waitForBg(engine, started.runId, "paused_gate");
+    expect(one.bg.pendingGates).toEqual(["right/review"]);
+    expect((await engine.audit(started.runId)).steps.left?.status).toBe("succeeded");
+
+    await engine.gateResolve(started.runId, "right/review", "approve");
+    const completed = await waitForBg(engine, started.runId, "completed");
+    expect(completed).toMatchObject({ status: "completed", output: { value: "finish Ada" }, bg: { pendingGates: [] } });
+    expect(prompts).toEqual(["work Ada", "work Ada", "finish Ada", "finish Ada"]);
+  });
+
+  it("revises only the child scope and enforces child rounds without touching run.rounds", async () => {
+    const prompts: string[] = [];
+    const engine = await subject(async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    const started = await engine.flowRunBg(revisableSubflowGate(), { name: "Ada" });
+    expect((await waitForBg(engine, started.runId, "paused_gate")).bg.pendingGates).toEqual(["wrap/review"]);
+
+    await engine.gateResolve(started.runId, "wrap/review", "revise");
+    expect((await waitForBg(engine, started.runId, "paused_gate")).bg.pendingGates).toEqual(["wrap/review"]);
+    const revised = await engine.audit(started.runId);
+    expect(revised.steps.wrap?.sub?.rounds).toBe(1);
+    expect(revised.steps.wrap?.sub?.steps.review?.iterations).toBe(1);
+    expect(revised.steps.stable?.status).toBe("succeeded");
+    expect(prompts.filter((prompt) => prompt === "stable Ada")).toHaveLength(1);
+    expect(prompts.filter((prompt) => prompt === "revise Ada")).toHaveLength(2);
+
+    await engine.gateResolve(started.runId, "wrap/review", "revise");
+    const completed = await waitForBg(engine, started.runId, "completed");
+    expect(completed).toMatchObject({ status: "completed", output: { value: "recover" } });
+    const audit = await engine.audit(started.runId);
+    expect((await new StateStore(roots.at(-1)!).load(started.runId)).rounds).toBeUndefined();
+    expect(audit.steps.wrap?.status).toBe("failed");
+    expect(audit.steps.recovery?.status).toBe("succeeded");
+    expect(prompts.filter((prompt) => prompt === "stable Ada")).toHaveLength(1);
+  });
+
+  it("routes a child terminal kill through the parent run step on_fail", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await engine.flowRunBg(killedSubflowGate(), { name: "Ada" });
+    expect((await waitForBg(engine, started.runId, "paused_gate")).bg.pendingGates).toEqual(["wrap/review"]);
+
+    await engine.gateResolve(started.runId, "wrap/review", "kill");
+    const completed = await waitForBg(engine, started.runId, "completed");
+    expect(completed).toMatchObject({ status: "completed", output: { value: "recover" } });
+    const audit = await engine.audit(started.runId);
+    expect(audit.steps.wrap?.status).toBe("failed");
+    expect(audit.steps.recovery?.status).toBe("succeeded");
   });
 
   it("lets the existing async fanout machinery finish a detached flow", async () => {
@@ -160,6 +218,68 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     const started = await engine.flowRunBg(await fixture("fanout"), { items: ["a", "b"] });
     expect((await waitForBg(engine, started.runId, "completed")).status).toBe("completed");
     expect(connectorCalls).toBe(2);
+  });
+
+  it("does not pause on a subflow gate while a root fanout is still in flight, then surfaces it once settled", async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const dispatched = new Promise<void>((resolve) => { markStarted = resolve; });
+    const engine = await subject(async ({ prompt }) => {
+      if (prompt.startsWith("fan")) { markStarted(); await blocked; } // hold the fanout item in flight
+      return { output: { value: prompt } };
+    });
+    const spec = {
+      version: 1,
+      contracts: { Result: { value: "string" } },
+      flows: {
+        entry: "main",
+        main: {
+          input: { name: "string", items: "string[]" },
+          output: { from: "${wrap.output}", contract: "Result" },
+          steps: [
+            { id: "fan", fanout: { over: "${input.items}", concurrency: 1, isolation: "none", require: "all", merge: "sequential", steps: [{ do: "fan ${item}", out: "Result", ensure: [{ expr: "result.value != ''" }] }] } },
+            { id: "wrap", run: "child", with: { name: "${input.name}" } },
+          ],
+        },
+        child: {
+          input: { name: "string" }, output: { from: "${finish.output}", contract: "Result" },
+          steps: [
+            { id: "work", do: "work ${input.name}", out: "Result" },
+            { id: "review", after: ["work"], gate: { on_approve: "finish", on_revise: null, on_kill: null } },
+            { id: "finish", do: "finish ${input.name}", out: "Result" },
+          ],
+        },
+      },
+    };
+    const started = await engine.flowRunBg(spec, { name: "Ada", items: ["a"] });
+    await dispatched; // the fanout item is dispatched and blocked
+
+    // The subflow gate reaches waiting_gate while the fanout is still running...
+    let gateReached = false;
+    for (let tick = 0; tick < 200; tick += 1) {
+      const audit = await engine.audit(started.runId);
+      if (audit.steps.wrap?.sub?.steps.review?.status === "waiting_gate") { gateReached = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Guard against a vacuous pass: the mid-flight assertion is only meaningful if
+    // the gate genuinely reached waiting_gate WHILE the fanout was still blocked.
+    expect(gateReached).toBe(true);
+    // ...but the driver must NOT pause: a still-in-flight fanout could settle behind
+    // an exited driver (advancing the run or terminalizing it) with nothing left to
+    // refresh bg. The gate stays unpublished until the run is quiescent.
+    const midFlight = await engine.flowBgPoll(started.runId);
+    expect(midFlight.bg.status).toBe("running");
+    expect(midFlight.bg.pendingGates).toEqual([]);
+
+    release();
+    const paused = await waitForBg(engine, started.runId, "paused_gate");
+    expect(paused.bg.pendingGates).toEqual(["wrap/review"]);
+    expect((await engine.audit(started.runId)).steps.fan?.status).toBe("succeeded");
+
+    await engine.gateResolve(started.runId, "wrap/review", "approve");
+    const completed = await waitForBg(engine, started.runId, "completed");
+    expect(completed).toMatchObject({ status: "completed", output: { value: "finish Ada" } });
   });
 
   it("cancels cooperatively after an in-flight connector reaches a boundary", async () => {
@@ -305,4 +425,82 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
 
 function flow(steps: unknown[], from: string) {
   return { version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: { input: { name: "string" }, output: { from, contract: "Result" }, steps } } };
+}
+
+function siblingGateFlow() {
+  return {
+    version: 1,
+    contracts: { Result: { value: "string" } },
+    flows: {
+      entry: "main",
+      main: {
+        input: { name: "string" }, output: { from: "${right.output}", contract: "Result" },
+        steps: [
+          { id: "left", run: "child", with: { name: "${input.name}" } },
+          { id: "right", run: "child", with: { name: "${input.name}" } },
+        ],
+      },
+      child: {
+        input: { name: "string" }, output: { from: "${finish.output}", contract: "Result" },
+        steps: [
+          { id: "work", do: "work ${input.name}", out: "Result" },
+          { id: "review", after: ["work"], gate: { on_approve: "finish", on_revise: null, on_kill: null } },
+          { id: "finish", do: "finish ${input.name}", out: "Result" },
+        ],
+      },
+    },
+  };
+}
+
+function revisableSubflowGate() {
+  return {
+    version: 1,
+    contracts: { Result: { value: "string" } },
+    flows: {
+      entry: "main",
+      main: {
+        input: { name: "string" }, output: { from: "${recovery.output}", contract: "Result" },
+        steps: [
+          { id: "wrap", run: "revisable", with: { name: "${input.name}" }, on_fail: "recovery" },
+          { id: "stable", run: "stable_child", with: { name: "${input.name}" } },
+          { id: "recovery", do: "recover", out: "Result" },
+        ],
+      },
+      revisable: {
+        input: { name: "string" }, output: { from: "${build.output}", contract: "Result" }, max_rounds: 1,
+        steps: [
+          { id: "build", do: "revise ${input.name}", out: "Result" },
+          { id: "review", after: ["build"], gate: { on_approve: null, on_revise: "build", on_kill: null } },
+        ],
+      },
+      stable_child: {
+        input: { name: "string" }, output: { from: "${build.output}", contract: "Result" },
+        steps: [{ id: "build", do: "stable ${input.name}", out: "Result" }],
+      },
+    },
+  };
+}
+
+function killedSubflowGate() {
+  return {
+    version: 1,
+    contracts: { Result: { value: "string" } },
+    flows: {
+      entry: "main",
+      main: {
+        input: { name: "string" }, output: { from: "${recovery.output}", contract: "Result" },
+        steps: [
+          { id: "wrap", run: "child", with: { name: "${input.name}" }, on_fail: "recovery" },
+          { id: "recovery", do: "recover", out: "Result" },
+        ],
+      },
+      child: {
+        input: { name: "string" }, output: { from: "${build.output}", contract: "Result" },
+        steps: [
+          { id: "build", do: "build ${input.name}", out: "Result" },
+          { id: "review", after: ["build"], gate: { on_approve: null, on_revise: null, on_kill: null } },
+        ],
+      },
+    },
+  };
 }

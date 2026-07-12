@@ -126,11 +126,11 @@ interface BgFlowState {
   status: BgStatus;
   cancelRequested: boolean;
   loop?: Promise<void>;
-  gateStepId?: string;
+  pendingGates: string[];
 }
 
 export interface BgFlowPollResponse extends FlowPollResponse {
-  bg: { status: BgStatus; cancelRequested: boolean; gateStepId?: string };
+  bg: { status: BgStatus; cancelRequested: boolean; pendingGates: string[] };
 }
 
 export interface AuditTrail {
@@ -247,7 +247,7 @@ export class StratumEngine {
       await this.persist(current);
       return current;
     });
-    const bg: BgFlowState = { status: "running", cancelRequested: false };
+    const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
     this.bgFlows.set(first.runId, bg);
     // Pin before launch so the loop and any fanout always share one run object.
     this.retainRun(first.runId, run);
@@ -271,11 +271,11 @@ export class StratumEngine {
       }
       if (!run.bgDriven || this.bgFlows.has(run.id)) continue;
       if (run.status !== "running") {
-        this.bgFlows.set(run.id, { status: run.status, cancelRequested: false });
+        this.bgFlows.set(run.id, { status: run.status, cancelRequested: false, pendingGates: [] });
         continue;
       }
       if (run.cancelRequested === true) {
-        this.bgFlows.set(run.id, { status: "cancelled", cancelRequested: true });
+        this.bgFlows.set(run.id, { status: "cancelled", cancelRequested: true, pendingGates: [] });
         continue;
       }
 
@@ -294,7 +294,7 @@ export class StratumEngine {
       // fanout merge retains its pre-existing crash window (accepted residual). This
       // assumes SINGLE-PROCESS ownership — the prior engine is gone; two live engines
       // on one state root are unsupported in v1 (same single-owner model as runLocks).
-      const bg: BgFlowState = { status: "running", cancelRequested: false };
+      const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
       this.bgFlows.set(run.id, bg);
       this.retainRun(run.id, run);
       const loop = this.driveBg(run.id, { status: "running", runId: run.id, ledger: { spent: {} } });
@@ -471,7 +471,7 @@ export class StratumEngine {
       bg: {
         status: bg.status,
         cancelRequested: bg.cancelRequested,
-        ...(bg.gateStepId !== undefined ? { gateStepId: bg.gateStepId } : {}),
+        pendingGates: [...bg.pendingGates],
       },
     };
   }
@@ -489,7 +489,7 @@ export class StratumEngine {
     });
     // A gate-paused flow has no live loop to observe the flag, so cancel abandons
     // the hand-off here instead of wedging at paused_gate forever.
-    if (bg.status === "paused_gate") { bg.status = "cancelled"; delete bg.gateStepId; }
+    if (bg.status === "paused_gate") { bg.status = "cancelled"; bg.pendingGates = []; }
     return { status: bg.status };
   }
 
@@ -498,10 +498,10 @@ export class StratumEngine {
     const bg = this.bgFlows.get(runId);
     if (bg?.status === "paused_gate" && response.status !== "ready" && response.status !== "running") {
       bg.status = response.status;
-      delete bg.gateStepId;
+      bg.pendingGates = [];
     } else if (bg?.status === "paused_gate") {
       bg.status = "running";
-      delete bg.gateStepId;
+      bg.pendingGates = [];
       const run = await this.loadRun(runId);
       // Re-kick only after gateResolve releases the run lock; stepDone must interleave.
       this.retainRun(runId, run);
@@ -521,40 +521,55 @@ export class StratumEngine {
     if (decision !== "approve" && decision !== "revise" && decision !== "kill") throw new Error(`invalid gate decision ${JSON.stringify(decision)}`);
     const run = await this.loadRun(runId);
     const validated = this.validationFor(run);
-    const flow = this.flowFor(run, validated.value);
-    const step = flow.steps.find((candidate) => candidate.id === stepId);
-    const state = run.steps[stepId];
-    if (!step?.gate || !state || state.status !== "waiting_gate" || run.status !== "running") throw new Error("gate is not awaiting a decision");
+    const located = this.locateStep(run, validated.value, stepId);
+    const scope = located?.scope;
+    const step = located?.step;
+    const state = located?.state;
+    if (!scope || !step?.gate || !state || state.status !== "waiting_gate" || run.status !== "running") throw new Error("gate is not awaiting a decision");
     const target = decision === "approve" ? step.gate.on_approve : decision === "revise" ? step.gate.on_revise : step.gate.on_kill;
     this.event(run, "gate_resolved", stepId, { decision, target });
     if (decision === "kill") {
       state.status = "succeeded";
-      if (target === null) return this.terminalFailure(run, { attempt: 0, reason: `gate ${stepId} killed flow` });
+      if (target === null) {
+        const reason = `gate ${stepId} killed flow`;
+        return scope.parent
+          ? this.failScope(run, validated.value, validated.contracts, scope, reason)
+          : this.terminalFailure(run, { attempt: 0, reason });
+      }
     } else if (decision === "revise") {
-      const total = (run.rounds ?? 0) + 1;
+      const total = (scope.parent ? scope.parent.state.sub?.rounds ?? 0 : run.rounds ?? 0) + 1;
       const gateRounds = state.iterations ?? 0;
-      const flowLimit = flow.max_rounds;
+      const flowLimit = scope.flow.max_rounds;
       const gateLimit = step.gate.max_rounds;
       if (target === null || flowLimit === undefined || total > flowLimit || (gateLimit !== undefined && gateRounds + 1 > gateLimit)) {
-        return this.terminalFailure(run, { attempt: 0, reason: "gate revision rounds exhausted" });
+        return scope.parent
+          ? this.failScope(run, validated.value, validated.contracts, scope, "gate revision rounds exhausted")
+          : this.terminalFailure(run, { attempt: 0, reason: "gate revision rounds exhausted" });
       }
-      run.rounds = total;
-      this.resetFrom(flow, run, target);
+      if (scope.parent) scope.parent.state.sub!.rounds = total;
+      else run.rounds = total;
+      this.resetFrom(scope.flow, scope.steps, target);
       // The target's descendants include this gate; retain its local revision counter.
-      run.steps[stepId]!.iterations = gateRounds + 1;
+      scope.steps[step.id]!.iterations = gateRounds + 1;
       await this.persist(run);
-      return this.advance(run, validated.value, validated.contracts);
+      return this.advance(run, validated.value, validated.contracts, scope);
     } else {
       state.status = "succeeded";
     }
-    if (decision === "approve" && target === null) return this.completeTerminalGate(run, flow, validated.contracts);
+    if (decision === "approve" && target === null) {
+      if (!scope.parent) return this.completeTerminalGate(run, scope.flow, validated.contracts);
+      const output = this.resolveFlowOutput(scope);
+      const parsed = validated.contracts[scope.flow.output.contract]?.safeParse(output);
+      if (!parsed?.success) return this.failScope(run, validated.value, validated.contracts, scope, parsed?.error.message ?? "flow output contract missing");
+      return this.completeSubflow(run, validated.value, validated.contracts, scope, output);
+    }
     if (target !== null) {
-      const targetState = run.steps[target];
+      const targetState = scope.steps[target];
       if (!targetState) throw new Error("gate target missing after validation");
       targetState.routed = { attempt: 0, reason: `gate ${decision}` };
     }
     await this.persist(run);
-    return this.advance(run, validated.value, validated.contracts);
+    return this.advance(run, validated.value, validated.contracts, scope);
   }
 
   private async completeTerminalGate(run: PersistedRun, flow: Flow, contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>): Promise<EngineResponse> {
@@ -640,11 +655,22 @@ export class StratumEngine {
           bg.status = response.status;
           return;
         }
-        const run = await this.loadRun(runId);
-        const gate = Object.entries(run.steps).find(([, state]) => state.status === "waiting_gate");
-        if (gate) {
+        // Pause on gates only when the run is QUIESCENT: no in-flight fanout can
+        // still settle behind the exited driver. Decided under the run lock so it
+        // cannot interleave inside settleFanout's locked flip+advance — otherwise a
+        // driver could pause with a stale set (missing a gate the settlement is about
+        // to activate) or, worse, exit into paused_gate while a fanout terminalizes
+        // the run, leaving bg wedged at paused_gate with no driver left to observe it.
+        const gates = await this.withRunLock(runId, async () => {
+          const current = await this.loadRun(runId);
+          if (current.status !== "running") return [];
+          const spec = this.validationFor(current).value;
+          if (this.anyFanoutRunning(current, spec)) return null;
+          return this.collectWaitingGates(current, spec);
+        });
+        if (gates && gates.length > 0) {
           bg.status = "paused_gate";
-          bg.gateStepId = gate[0];
+          bg.pendingGates = gates;
           return;
         }
         await delay(25);
@@ -1361,7 +1387,7 @@ export class StratumEngine {
   }
 
   /** Reset a revise target and its ordinary descendants; static validation proved target ancestry. */
-  private resetFrom(flow: Flow, run: PersistedRun, target: string): void {
+  private resetFrom(flow: Flow, steps: Record<string, StepState>, target: string): void {
     const descendants = new Set<string>([target]);
     let changed = true;
     while (changed) {
@@ -1383,7 +1409,7 @@ export class StratumEngine {
     }
     const gateIds = new Set(flow.steps.flatMap((step) => step.gate !== undefined ? [step.id] : []));
     for (const id of descendants) {
-      const state = run.steps[id]!;
+      const state = steps[id]!;
       state.status = "pending";
       state.attempts = [];
       state.spent = {};
@@ -1561,6 +1587,29 @@ export class StratumEngine {
       }
     }
     return ready;
+  }
+
+  /** Root gates first, then child gates in parent/child declaration order. */
+  private collectWaitingGates(run: PersistedRun, spec: Specification): string[] {
+    const root = this.rootScope(run, spec);
+    const waiting = root.flow.steps.flatMap((step) => root.steps[step.id]!.status === "waiting_gate" ? [step.id] : []);
+    for (const parentStep of root.flow.steps) {
+      const parentState = root.steps[parentStep.id];
+      if (parentStep.run === undefined || parentState?.status !== "running" || !parentState.sub) continue;
+      const child = this.childScope(spec, parentStep, parentState);
+      for (const step of child.flow.steps) {
+        if (child.steps[step.id]!.status === "waiting_gate") waiting.push(this.scopedId(child, step.id));
+      }
+    }
+    return waiting;
+  }
+
+  /** Fanout lives only at root (subflow bodies forbid it). A fanout step stays
+   * `running` from dispatch until settleFanout flips it, so this is true exactly
+   * while a settlement is still pending and could advance the run behind the driver. */
+  private anyFanoutRunning(run: PersistedRun, spec: Specification): boolean {
+    const root = this.rootScope(run, spec);
+    return root.flow.steps.some((step) => step.fanout !== undefined && root.steps[step.id]!.status === "running");
   }
 
   private renderValue(value: unknown, scope: ExecutionScope): unknown {
