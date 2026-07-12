@@ -212,5 +212,18 @@ SmartMemory as invisible backend** (encapsulation; Temporal-Visibility model; en
 depends on it) — post-cutover surface bump w/ own design doc. SmartMemory MCP = direct memory
 customers only; its ~93-tool surface needs a diet (SmartMemory roadmap). One-product adoption.
 
+### Control-plane audit — CLOSED 2026-07-12 (nothing blocks cutover)
+
+Coverage strong: start/bg-start/cancel-bg/gates/retry-redrive(attempts+on_fail+revise+commit/
+revert)/pause-via-gates/resume all ✓; **budgets (usd/tokens/dispatches/ms) + guard policy ledger
+are DISTINCTIVE control surface most engines lack** (positioning point). Three gaps, all
+post-cutover follow-ups, none built now: (1) **terminate-any-run** — kill exists only at gates +
+bg; a dead-client foreground run can't be explicitly abandoned (matters more since TS persists
+runs); (2) **retention/GC** — TS keeps all runs forever, no cleanup policy (Python deleted
+completed); (3) **durable timers/signals** — no "wait 2h"/"wait for external event" IR construct;
+gates cover human decisions, client-executed steps cover foreground events by architecture; treat
+like goal = declared future primitive, add when a consumer arrives (gate-timeout auto-kill stays
+parked per field survey).
+
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
