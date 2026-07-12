@@ -1,5 +1,5 @@
 {
-  "surface": 4,
+  "surface": 5,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "tools": {
     "stratum_validate": {
@@ -7,6 +7,13 @@
       "responses": {
         "valid": {},
         "invalid": { "errors": "array" }
+      }
+    },
+    "stratum_compile_speckit": {
+      "request": { "tasks_dir": "string", "flow_name?": "string" },
+      "responses": {
+        "ok": { "yaml": "string", "flow_name": "string", "steps": "array" },
+        "error": { "error_type": "string", "message": "string" }
       }
     },
     "stratum_plan": {

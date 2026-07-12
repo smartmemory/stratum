@@ -107,7 +107,21 @@ live legacy surface); full Python deletion is a long horizon tied to the UI/cons
 
 ### Near-term execution queue (ordered)
 1. [x] PORT commit/revert → TS (STRAT-TS-FLOWCTL checkpoint slice) — **SHIPPED 2026-07-12** (v0.2.109).
-2. [ ] PORT compile_speckit → TS  ← NEXT.
+2. [x] PORT compile_speckit → TS — **SHIPPED 2026-07-12** (session 70422c49). Brief:
+   `docs/features/STRAT-TS-SPECKIT/build-brief.md`. RE-PORT to TS v1 IR (Python emits old IR the
+   TS engine can't run). `ts/src/speckit/compiler.ts` (pure: parser/dep-graph/criterion/step-id/
+   collision ported byte-for-byte from `task_compiler.py`; emits `do:` steps, structured ensures,
+   shared strict `TaskResult{done, tests_pass?, lint_clean?}`, flow output = last sorted task).
+   Tool `stratum_compile_speckit` (server.ts dispatch + surface 4→5, ok/error), 38 compiler tests
+   incl. validateSpec round-trip. Codex WROTE (sol/high), 2 review rounds → REVIEW CLEAN.
+   - **R1 findings (both CONFIRMED, Opus-fixed):** (High) `${...}` in task text → un-plannable IR
+     returned as ok (TS reads `${}` in `do` as a reference; NO literal escape). (Med) flow_name
+     "entry" overwrote the entry sentinel. FIX: `compileSpeckit` now `validateSpec`s the built
+     spec before returning (same gate `stratum_plan` uses → guarantees plannability) → throws
+     `compile_error`; `buildSpec` guards reserved `flow_name "entry"`. R2 CLEAN.
+   - **Follow-up filed — stratum#8:** engine-level escape for literal `${}` in interpolated fields
+     (restores Python pass-through of shell/template task text). Own feature, lower priority.
+   - Gates: tsc + erasableSyntaxOnly clean; full suite 561 pass / 1 skip / 0 fail.
 3. [ ] PORT distill → TS.
 4. [ ] Phase 0/1 (compose): collapse soak, flip monitor-seam, agent-authoring cutover.
 5. [ ] Phase 4 sweep (active surface): .mcp.json → TS stdio; forge+compose default → ts; keep the

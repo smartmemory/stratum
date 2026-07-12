@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
 import { CheckpointOperationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
@@ -8,6 +9,7 @@ import { validateSpec } from "../ir/validate.js";
 import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { evaluateJudged } from "../judge/judged.js";
 import type { GuardJudge } from "../guard/transition.js";
+import { compileSpeckit, SpeckitCompileError } from "../speckit/compiler.js";
 import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface } from "./contracts.js";
 
 export interface McpDependencies {
@@ -20,7 +22,7 @@ export interface McpDependencies {
 }
 
 export type ToolName =
-  | "stratum_validate" | "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_audit"
+  | "stratum_validate" | "stratum_compile_speckit" | "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_audit"
   | "stratum_commit" | "stratum_revert"
   | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg"
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
@@ -63,6 +65,26 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         await assertToolRequest(tool, request);
         let response: Record<string, unknown>;
         switch (tool) {
+        case "stratum_compile_speckit": {
+          const tasksDir = string(request, "tasks_dir");
+          const flowName = optionalString(request, "flow_name") ?? "tasks";
+          try {
+            if (!(await stat(tasksDir)).isDirectory()) {
+              response = { status: "error", error_type: "directory_not_found", message: `tasks_dir '${tasksDir}' is not a directory` };
+              break;
+            }
+          } catch {
+            response = { status: "error", error_type: "directory_not_found", message: `tasks_dir '${tasksDir}' is not a directory` };
+            break;
+          }
+          try {
+            const compiled = await compileSpeckit(tasksDir, flowName);
+            response = { status: "ok", yaml: compiled.yaml, flow_name: compiled.flowName, steps: compiled.steps };
+          } catch (error) {
+            response = speckitErrorEnvelope(error);
+          }
+          break;
+        }
         case "stratum_validate": {
           const validation = validateSpec(request.spec);
           response = validation.ok ? { status: "valid" } : { status: "invalid", errors: validation.errors };
@@ -183,6 +205,10 @@ function optionalNumber(request: Record<string, unknown>, key: string): number |
 function record(request: Record<string, unknown>, key: string): Record<string, unknown> { const value = request[key]; if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${key} must be an object`); return value as Record<string, unknown>; }
 function optionalArray(request: Record<string, unknown>, key: string): string[] { const value = request[key]; return Array.isArray(value) ? value as string[] : []; }
 function optionalRecord(request: Record<string, unknown>, key: string): Record<string, string> { const value = request[key]; return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, string> : {}; }
+function speckitErrorEnvelope(error: unknown): { status: "error"; error_type: string; message: string } {
+  if (error instanceof SpeckitCompileError) return { status: "error", error_type: error.kind, message: error.message };
+  return { status: "error", error_type: "compile_error", message: error instanceof Error ? error.message : String(error) };
+}
 function guardErrorEnvelope(error: unknown): { status: "error"; error_type: string; message: string } {
   if (typeof error === "object" && error !== null && "errorType" in error && typeof error.errorType === "string" && "message" in error && typeof error.message === "string") {
     return { status: "error", error_type: error.errorType, message: error.message };
