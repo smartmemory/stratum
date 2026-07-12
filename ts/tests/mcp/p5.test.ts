@@ -51,7 +51,7 @@ function response(result: unknown): Record<string, unknown> {
 }
 
 describe("P5 frozen MCP surface", () => {
-  it("exposes exactly twenty tools with state-only checkpoint descriptions", async () => {
+  it("exposes exactly twenty-one tools with state-only checkpoint descriptions", async () => {
     const pair = await connected({});
     try {
       const listed = await pair.client.listTools();
@@ -102,6 +102,13 @@ describe("P5 frozen MCP surface", () => {
       // validate: both frozen statuses over the actual parser/validator.
       await call("stratum_validate", { spec: simpleFlow });
       await call("stratum_validate", { spec: {} });
+
+      // compile_speckit: both frozen statuses over a real task directory.
+      const tasksDir = join(root, "tasks");
+      await mkdir(tasksDir);
+      await writeFile(join(tasksDir, "01-task.md"), "# Task: Build\n");
+      await call("stratum_compile_speckit", { tasks_dir: tasksDir });
+      await call("stratum_compile_speckit", { tasks_dir: join(root, "missing-tasks") });
 
       // plan: ready (client step), running (gate), completed (pure set), failed
       // (contract-invalid pure set), and budget_exhausted (pre-dispatch budget).
