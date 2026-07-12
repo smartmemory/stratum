@@ -282,5 +282,37 @@ consumer mode (design @ 449c961); GSD path (gsd.js); de-hardcode Python-store re
 Test hardening nits: assert exact `{}` payload, `flowId===runId`, budget_exhausted terminal case.
 Then: dogfood locally, atomic merge (both repos).
 
+## build.js GATE path (auto-approve) — GREEN 2026-07-12 (compose develop @ 6fc1e28)
+
+`runBuild`'s gate branch ports off the retired Python `status==='await_gate'` envelope onto the TS
+engine's foreground-gate shape: TS returns a bare `status:'running'` (no gate id) and marks the gate
+step `waiting_gate` in the audit. New branch discovers the single non-scoped `waiting_gate` step that
+the local spec declares a `gate` node (0 → break as non-dispatch running; >1 → throw, single-gate seam),
+producer-synthesizes gate metadata (gate_type=approval, from/to phase from local spec, artifact/summary
+from stepHistory), keys the policy by the GATE STEP ID (not the synth approval target — else
+`evaluatePolicy`'s `toPhase ?? stepId` defaults to human-gate and hangs), resolves via `gateResolve`,
+and continues the loop. Gated by `test/ts-cutover-build-gate-golden.test.js` (work → review flag
+auto-approve → finish over the real TS engine); both goldens 5 passed. Self-implemented (codex crashed
+3× on the pre-fix sweep bug — see agent-run hotfix below); independent codex review = run `b850d005296a`.
+
+### FOLLOW-UP SLICE — human interactive gate over TS (findings from review `b850d005296a`)
+The committed slice covers ONLY the auto-approve (flag/skip) path — the one compose's autonomous build
+uses by default. Codex confirmed NO regression in ready/terminal/auto-approve paths, but the
+`policy.mode==='gate'` (human) path is not yet TS-correct. Build as its own slice WITH a golden that
+drives revise/kill/prompt:
+- [ ] **(High) revise round read** — `readFlowRound` (`build.js` human path) reads the Python store
+  (`~/.stratum/flows`, `state.round`); TS uses `~/.stratum/ts/flows` + `rounds` → round always 1 →
+  `revise` re-entry collides with the resolved gate. Overlaps the "de-hardcode Python-store reads" item.
+- [ ] **(High) kill → killed marker** — TS has NO `killed` status; `on_kill:null` returns `failed`
+  (`engine.ts:595`), so a deliberate gate abort records as a failed build. Add a compose-local killed
+  marker before the terminal failure branch.
+- [ ] **(Med) synthesized routing to the prompt** — the interactive path still passes the bare `running`
+  `response` (no step_id/on_approve/…) to `promptGate`/`makeAskAgent` → CLI shows `Gate: undefined` and
+  false routes. Pass the synthesized gate routing.
+- [ ] **(Low) predecessor artifact/summary** — synth uses last `stepHistory` entry, not the declared
+  predecessor (gate's `after`); wrong only with concurrent steps. Roll into this slice.
+- **Documented v1 limitation (NOT a bug):** >1 concurrent root gate throws by design (single-gate seam).
+  Revisit only if a real compose pipeline needs concurrent gates.
+
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
