@@ -51,6 +51,10 @@ stratum-mcp compile <tasks-dir>   # compile tasks/*.md → .stratum.yaml
 ## Key Docs
 
 - `ROADMAP.md` — all tracks (T1 Python lib → T5 MCP → Evaluation)
+- **GitHub issues** (`gh issue list --repo smartmemory/stratum`) — filed follow-ups and deferred
+  features live HERE in addition to ROADMAP.md (e.g. #8 ${} escape, #9 terminate-any-run,
+  #10 retention/GC, #11 timers/signals, #12 provenance verbs). Check BOTH when looking for
+  pending/deferred work. File new follow-ups as issues (authored as smartmem-dev).
 - `stratum-mcp/src/stratum_mcp/skills/` — skill reference for stratum-build, stratum-speckit
 - `docs/app/` — full Compose design history: brainstorm, PRD, discovery, decisions, journal
 
