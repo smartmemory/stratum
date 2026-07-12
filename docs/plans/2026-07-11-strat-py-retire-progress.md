@@ -199,5 +199,18 @@ P3. **transcript-substrate unit** = transcript tools (read_centered/read_transcr
     sidecar writer; deterministic live path.  P4. draft_pipeline (WITH PipelineEditor UI phase).
 P5. STRAT-TS-JUDGE-TOOL standalone + deltas.
 
+## MCP-surface design review — CLOSED 2026-07-12 (owner-interactive; details in memory `project_ts_cutover_branch`)
+
+Decisions: engine surface stays lean/frozen. Parallel = **Option C**: consumer-dispatch as a
+first-class TS fanout mode (`dispatch: engine|consumer`) — key insight: TS is ALREADY client-
+executed per step (ready[]/stepDone), so fanout items surface in ready[], per-item stepDone,
+retries via attempts/ensure, consumer-merge = gate-after-fanout, capture_diff leaves the engine.
+iterate/judged stay engine-native (3 iteration_* + stratum_judge tools dropped). Goal = a SPEC
+authored from primitives, not a tool. Transcript/distill: 4 Python tools + distill skill retire
+at merge; successor = **stratum's OWN provenance verbs (3-5, capability-gated) delegating to
+SmartMemory as invisible backend** (encapsulation; Temporal-Visibility model; engine kernel never
+depends on it) — post-cutover surface bump w/ own design doc. SmartMemory MCP = direct memory
+customers only; its ~93-tool surface needs a diet (SmartMemory roadmap). One-product adoption.
+
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
