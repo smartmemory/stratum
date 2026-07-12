@@ -257,9 +257,30 @@ Narrow test-gated slice — only the 4 methods the test exercises:
 No codex review round (31-line rename proven by a real golden flow = verification theater to skip).
 Note: compose ts-cutover has UNRELATED uncommitted COMP-AUDIT-1..18 work (memory `project_comp_audit_2607`) — left untouched.
 
-Next: build.js response-field CONSUMPTION port (flow_id→runId, execute_step/await_gate→ready/running,
-outcome→decision) for the simple path; then fanout consumer mode (design @ 449c961), pipeline v0→v1,
-GSD, dogfood, atomic merge.
+## build.js SIMPLE path — GREEN 2026-07-12 (compose ts-cutover @ e193432)
+
+`runBuild`'s simple (non-parallel, non-gate) dispatch loop consumes TS-native responses end-to-end
+over the real TS engine. Gated by `test/ts-cutover-build-golden.test.js` (drives real runBuild, agent
+stubbed at the connector-factory seam, engine real). 4 cases: happy single-step, no-out step completes,
+failing flow terminalizes as failed, template≠entry-flow contract resolution. Both goldens: 5 passed.
+Built + reviewed via codex sol/high (map `65c878442e2d`, porters `e4eb935d26b0`/`f4f86ca566cc`,
+reviews `2d7c491f485b`/`2ca91c652a56`); 3 review-found simple-path defects fixed with regression
+coverage (failed-terminalization, no-out `{}` vs `{failure}`, flows.entry pointer resolution).
+Key architecture: PRODUCER owns contract metadata — `resolveStepOutputContract()` derives each step's
+out-contract from compose's OWN locally-parsed spec (TS response carries none; lean surface). stepDone
+result is TS-shaped (`{output}`/`{}`/`{failure}`, no legacy keys).
+
+### Remaining cutover work-list (exhaustive site map = codex run `65c878442e2d`)
+Simple-path deferred sub-cases (build.js): gate/await_gate → running + audit-based gate discovery;
+resume() `{flow_id}`→`{runId}` (+ build.js:1295 step_id); ship interception stepDone → TS-shaped;
+default client server flip `stratum-mcp`(Python)→TS bin (do LAST, once consumption ported — flipping
+early breaks still-Python paths); output-vs-contract robustness (coerce/validate agent output before
+`{output}`; `outputFieldsToJsonSchema` is loose). Bigger units: subflow/execute_flow + scoped-id
+(`parent/child`) contract resolution in resolveStepOutputContract; parallel/parallel_dispatch → fanout
+consumer mode (design @ 449c961); GSD path (gsd.js); de-hardcode Python-store reads
+(`flow-state.js:27`, `build.js:5230/5238`); v0→v1 spec authoring (compose pipelines are v0, TS runs v1).
+Test hardening nits: assert exact `{}` payload, `flowId===runId`, budget_exhausted terminal case.
+Then: dogfood locally, atomic merge (both repos).
 
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
