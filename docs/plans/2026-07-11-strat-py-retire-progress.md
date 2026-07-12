@@ -225,5 +225,27 @@ gates cover human decisions, client-executed steps cover foreground events by ar
 like goal = declared future primitive, add when a consumer arrives (gate-timeout auto-kill stays
 parked per field survey).
 
+## STRAT-TS-FANOUT-CONSUMER design — LANDED 2026-07-12
+
+`docs/features/STRAT-TS-FANOUT-CONSUMER/design.md` committed to ts-cutover. Codex-drafted
+(run `3ec04d14a05b`, sol/high), owner-adjudicated faithful to the locked Option-C skeleton.
+D1 `dispatch: engine|consumer` (engine=byte-for-byte default); D2 scoped item id
+`<fanout>/<index>` + per-item epoch (engine-side, no wire field); D3 existing attempts/ensure
+own retry; D4 `require` settles once all items terminal (no early-any); D5 merge = explicit
+downstream gate (`gate_resolve` approve/revise/kill), diffs never enter the engine. MCP surface
+delta = only `flow_bg_poll.ready` + `bg.status: awaiting_consumer` (surface bump → P4/P5 count
+fixes). Grounding verified locally: fanout root-only (`engine.ts:1673/1678`), subflow scoped-id
+precedent, `step_done.stepId`/`gate_resolve.decision` are `string`, compose parallel call sites.
+
+Review round: codex sol/high pool hit usage-limit (reset 15:53) → ran spark/xhigh instead
+(run `ae5f10e0851b`). All 7 findings were the design-gate category error (reviewed the design as
+shipped code: "current code doesn't already do X" for each proposed change). One exposed a real
+ambiguity (#6 epoch-not-on-wire) → added one sentence clarifying engine-side epoch enforcement
+mirroring ordinary steps' `expectedEpoch`. No decision changed. Design is CLEAN.
+
+Next: the wire port — rewrite `compose/lib/stratum-mcp-client.js` request/response to TS-native
+(keep method names), port build.js simple path → green `test/ts-cutover-golden.test.js`. Then
+fanout consumer mode, then pipeline v0→v1, GSD, dogfood, atomic merge.
+
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
