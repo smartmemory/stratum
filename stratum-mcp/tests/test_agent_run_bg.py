@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -14,6 +16,7 @@ from stratum_mcp import server as server_mod
 from stratum_mcp.connectors import codex as codex_mod
 from stratum_mcp.connectors.codex import CodexConnector, T2F5_DONE_SENTINEL
 from stratum_mcp.events import ConnectorEvent, INTERNAL_RESULT_KIND
+from stratum_mcp.proc_identity import proc_start_time
 from stratum_mcp.proc_identity import terminate_verified as real_terminate_verified
 from stratum_mcp.server import (
     _agent_run_dir,
@@ -276,6 +279,17 @@ async def test_startup_sweep_reaps_orphaned_writable_run(monkeypatch, tmp_path):
     )
     meta_path = _agent_run_dir(started["run_id"]) / "meta.json"
 
+    # Simulate the OWNING controller being gone (a real orphan): stamp a dead
+    # controller identity so the startup sweep attributes the writer to a
+    # departed server and reaps it. A run owned by a *live* controller is
+    # spared — see test_startup_sweep_spares_run_owned_by_live_controller.
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["controller_pid"] = dead.pid
+    meta["controller_start_time"] = "0"  # never matches a reused pid's real token
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
     await _sweep_writable_agent_runs(reason="server_restart")
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -285,6 +299,100 @@ async def test_startup_sweep_reaps_orphaned_writable_run(monkeypatch, tmp_path):
     polled = await stratum_agent_poll(run_id=started["run_id"], ctx=None)
     assert polled["status"] == "error"
     assert polled["reason"] == "server_restart"
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_spares_run_owned_by_live_controller(monkeypatch, tmp_path):
+    """A writable run owned by another *live* controller must survive a startup
+    sweep. The ~/.stratum/agent_runs registry is shared across every stratum
+    server on the host, so one server's boot must never friendly-fire another
+    live session's in-flight codex writer (the cross-session outage)."""
+    _install_fake_codex(
+        monkeypatch,
+        _fake_codex_argv([THREAD_STARTED], rc=0, sleep_before_exit=30),
+    )
+    started = await stratum_agent_run(
+        prompt="write",
+        ctx=None,
+        type="codex",
+        cwd=str(tmp_path),
+        write=True,
+        background=True,
+    )
+    meta_path = _agent_run_dir(started["run_id"]) / "meta.json"
+
+    # Owner = a live process with a real, matching identity token.
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["controller_pid"] = os.getpid()
+    meta["controller_start_time"] = proc_start_time(os.getpid())
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    await _sweep_writable_agent_runs(reason="server_restart")
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta.get("status") != "failed", "a live controller's run must not be reaped"
+    assert _bg_pid_alive(meta), "the writer child must still be alive"
+    # Clean up the surviving child ourselves.
+    await real_terminate_verified(
+        int(meta["child_pid"]), meta["proc_start_time"], grace_s=0.1
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_spares_run_with_unparseable_owner(monkeypatch, tmp_path):
+    """Corrupt / unparseable ownership metadata is ambiguous, NOT proof of
+    death: the startup sweep must not friendly-fire a live writer whose owner
+    stamp merely drifted."""
+    _install_fake_codex(
+        monkeypatch,
+        _fake_codex_argv([THREAD_STARTED], rc=0, sleep_before_exit=30),
+    )
+    started = await stratum_agent_run(
+        prompt="write",
+        ctx=None,
+        type="codex",
+        cwd=str(tmp_path),
+        write=True,
+        background=True,
+    )
+    meta_path = _agent_run_dir(started["run_id"]) / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["controller_pid"] = "unknown"  # schema drift / semantic corruption
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    await _sweep_writable_agent_runs(reason="server_restart")
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta.get("status") != "failed", "ambiguous ownership must not be reaped"
+    assert _bg_pid_alive(meta), "the writer child must still be alive"
+    await real_terminate_verified(
+        int(meta["child_pid"]), meta["proc_start_time"], grace_s=0.1
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_background_refused_when_controller_token_unreadable(
+    monkeypatch, tmp_path
+):
+    """A durable write run is refused fail-closed when this controller's own
+    start-time token is unreadable — otherwise a reused owner PID could render
+    the orphaned writer unreapable."""
+    _install_fake_codex(monkeypatch, _fake_codex_argv([THREAD_STARTED], rc=0))
+    monkeypatch.setattr(server_mod, "_CONTROLLER_IDENTITY", None)
+    monkeypatch.setattr(server_mod, "proc_start_time", lambda pid: None)
+    try:
+        with pytest.raises(RuntimeError, match="unreadable"):
+            await stratum_agent_run(
+                prompt="write",
+                ctx=None,
+                type="codex",
+                cwd=str(tmp_path),
+                write=True,
+                background=True,
+            )
+    finally:
+        # Reset the cached identity so later tests recompute the real token.
+        server_mod._CONTROLLER_IDENTITY = None
 
 
 @pytest.mark.asyncio

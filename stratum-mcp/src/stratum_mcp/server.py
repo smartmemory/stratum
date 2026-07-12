@@ -291,6 +291,54 @@ def _bg_pid_alive(meta: dict[str, Any]) -> bool:
     return proc_start_time(pid) == expected
 
 
+_CONTROLLER_IDENTITY: Optional[tuple[int, Optional[str]]] = None
+
+
+def _controller_identity() -> tuple[int, Optional[str]]:
+    """This server's own ``(pid, start_time)`` — stamped as the owner on every
+    background writer it launches.
+
+    The agent-run registry (``~/.stratum/agent_runs``) is shared by every
+    stratum server on the host, so a sweep MUST be able to tell its own orphaned
+    writers apart from another live controller's active runs. Cached so launch
+    and the shutdown sweep agree on the same identity.
+    """
+    global _CONTROLLER_IDENTITY
+    if _CONTROLLER_IDENTITY is None:
+        pid = os.getpid()
+        _CONTROLLER_IDENTITY = (pid, proc_start_time(pid))
+    return _CONTROLLER_IDENTITY
+
+
+def _controller_alive(owner_pid: Any, owner_start: Any) -> bool:
+    """True unless the owning controller is *provably* dead.
+
+    Conservative by design: an unreadable or ambiguous identity counts as alive,
+    so a live writer owned by another session is never friendly-fired by this
+    server's startup sweep. Killing is the dangerous direction; a genuine orphan
+    is caught once its identity is verifiably gone.
+    """
+    from .proc_identity import pid_alive
+
+    try:
+        pid = int(owner_pid)
+    except (TypeError, ValueError):
+        # Present-but-unparseable ownership is ambiguous, NOT proof of death;
+        # classifying it as dead would re-open startup friendly-fire on a live
+        # run whose meta merely drifted/corrupted.
+        return True
+    if pid <= 0:
+        return True
+    if not pid_alive(pid):
+        return False
+    if not owner_start:
+        return True
+    current = proc_start_time(pid)
+    if current is None:
+        return True
+    return current == owner_start
+
+
 def _verified_writable_handle(handle: dict[str, Any]) -> tuple[int, str, int]:
     """Return a live, group-contained durable-write identity or fail closed."""
     try:
@@ -329,6 +377,27 @@ async def _sweep_writable_agent_runs(*, reason: str) -> None:
         loaded_dir, meta = _load_agent_run_meta(run_dir.name)
         if loaded_dir is None or meta is None or not meta.get("write"):
             continue
+        # Ownership scoping (fixes cross-session friendly-fire on the shared
+        # ~/.stratum/agent_runs registry): a sweep must only finalize writers
+        # whose owning controller is this server (shutdown) or is provably dead
+        # (startup) — never another live session's active run.
+        owner_pid = meta.get("controller_pid")
+        owner_start = meta.get("controller_start_time")
+        my_pid, my_start = _controller_identity()
+        is_mine = owner_pid == my_pid and owner_start == my_start
+        if reason == "controller_loss":
+            # Graceful shutdown of THIS controller: kill only the writers it owns.
+            if not is_mine:
+                continue
+        else:
+            # Startup reconcile: finalize only writers whose owning controller is
+            # gone. Skip runs owned by another live controller; and for a legacy
+            # run with no ownership stamp, never kill it while its child is alive.
+            if owner_pid is None:
+                if _bg_pid_alive(meta):
+                    continue
+            elif _controller_alive(owner_pid, owner_start):
+                continue
         stream_path = Path(
             str(meta.get("stream_path") or (run_dir / "stream.jsonl"))
         )
@@ -471,6 +540,15 @@ async def _start_agent_run_background(
     write: bool,
     correlation_id: Optional[str],
 ) -> dict[str, Any]:
+    # Fail closed for durable writes if this controller's own identity token is
+    # unreadable: without it the writer cannot be reliably reclaimed on restart
+    # (a reused owner PID would render the orphan unreapable), symmetric with the
+    # readable-identity requirement already enforced on the child handle.
+    if write and not _controller_identity()[1]:
+        raise RuntimeError(
+            "durable write background run refused: controller start-time token "
+            "is unreadable, so the writer could not be safely reclaimed"
+        )
     run_id, run_dir = _new_agent_run_dir()
     stream_path = run_dir / "stream.jsonl"
     stderr_path = run_dir / "stream.jsonl.err"
@@ -506,6 +584,7 @@ async def _start_agent_run_background(
 
         if write:
             _verified_writable_handle(handle)
+        owner_pid, owner_start = _controller_identity()
         meta = {
             "run_id": run_id,
             "type": type,
@@ -513,6 +592,9 @@ async def _start_agent_run_background(
             "cwd": cwd,
             "sandbox_mode": sandbox_mode,
             "write": bool(write),
+            # Owning controller identity — see _sweep_writable_agent_runs.
+            "controller_pid": owner_pid,
+            "controller_start_time": owner_start,
             "prompt_chars": len(full_prompt),
             "correlation_id": correlation_id,
             "created_at": now_iso(),
