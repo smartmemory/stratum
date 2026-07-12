@@ -14,6 +14,21 @@ each phase. Absolute SHAs / versions only.
   held," not a calendar. Keep the Python fallback until then (we found engine races in the
   flow-bg work on 2026-07-12, so do not discard the fallback the same stretch we cut over).
 
+### REVISED cutover strategy (owner, 2026-07-12 later — SUPERSEDES the fallback/incremental model above)
+
+- **Python does NOT survive. No runtime fallback, no translation adapter, no dual-producer
+  scaffolding.** Port the PRODUCER (compose) to speak the TS interface NATIVELY — do not build
+  a Python↔TS translation shim (that would carry a dead dialect forever = pointless indirection).
+- **Migration-branch workflow, atomic merge:** FREEZE the current known-good state (compose +
+  stratum-python working together) on `main` in BOTH repos. Do the ENTIRE migration on a
+  coordinated migration branch (`ts-cutover`) in each repo: port compose execution to TS-native,
+  delete the Python execution path, v0→v1 specs, shared state root, de-hardcode Python-store
+  reads. Dogfood LOCALLY until thoroughly tested. Then **merge both branches at once** = one clean
+  replacement/upgrade. `main` staying on working-python IS the fallback until merge day.
+- So there is NO incremental flip on main and NO permanent fallback flag. The "short real-usage
+  window" happens as local dogfooding IN the branch, before the atomic merge. Baseline freeze:
+  compose main @ 869a55b, stratum main @ (this commit).
+
 ## Status snapshot (2026-07-12)
 
 - stratum @ origin/main; TS v0.2.106 (STRAT-TS-FLOW-BG epic COMPLETE this session).
@@ -122,8 +137,53 @@ live legacy surface); full Python deletion is a long horizon tied to the UI/cons
    - **Follow-up filed — stratum#8:** engine-level escape for literal `${}` in interpolated fields
      (restores Python pass-through of shell/template task text). Own feature, lower priority.
    - Gates: tsc + erasableSyntaxOnly clean; full suite 561 pass / 1 skip / 0 fail.
-3. [ ] PORT distill → TS.
-4. [ ] Phase 0/1 (compose): collapse soak, flip monitor-seam, agent-authoring cutover.
+3. [→PARKED] PORT distill → TS — **RE-CLASSIFIED to the deferred transcript-substrate unit
+   (owner decision, 2026-07-12, session 70422c49).** Scoping found distill is NOT engine/flow
+   code — it's transcript mining (~620 LOC distill core: detector/synthesize/runner/candidate)
+   that drags in `postmortem.loader` (CC-transcript reader iter_sessions/Session/Event) + a
+   sidecar writer, ~1000 LOC closure, none engine-related; the live path is deterministic (the
+   synthesize LLM override is unused). It sits on the SAME transcript substrate as the parked
+   transcript tools (read_centered/read_transcript_centered/blame_session) whose engine-module-vs-
+   small-sibling-server home is UNDECIDED. Owner: group distill + those transcript tools as ONE
+   deferred unit, decide their home together, port together in that phase. Python distill stays
+   LIVE (no loss, port-before-delete). Was queue item 3; now in the PARKED transcript-substrate
+   group below. NEXT = Phase 0/1 compose cutover (the higher-leverage retirement step).
+4. [ ] **Phase 0/1 (compose): compose→TS cutover ← NEXT.** GATED (owner, 2026-07-12): dogfood
+   internally before ANY flip; **compose must remain compatible** — that's the flip precondition.
+   **SEAM TOPOLOGY MAPPED (codex 9bdf47b186e5, sol/high, evidence-backed; Opus adjudicated —
+   split-brain CONFIRMED). The monitor-seam flip is NOT a coherent standalone step:**
+   - compose has TWO seams: (a) `server/stratum-client.js` = CLI query/gate/guard (monitor reads +
+     human gate), engine-selectable via `stratumEngine`; (b) `lib/stratum-mcp-client.js` = MCP-
+     stdio client for build EXECUTION (plan/step_done/gate_resolve/audit), directly spawns
+     `stratum-mcp` (Python), **NOT engine-aware** (build.js:1117 connect({cwd}) only).
+   - `stratumEngine="ts"` switches ONLY seam (a) + a startup bin probe. Execution stays Python.
+     Stores are SEPARATE (Python `~/.stratum/flows/`, TS `~/.stratum/ts/flows/`), so flipping the
+     monitor alone makes TS query an EMPTY store → **blinds the monitor.** The existing soak
+     (`scripts/stratum-ts-soak.mjs`) already knew this: it keeps the workspace on Python and seeds
+     a SYNTHETIC TS flow — so the soak NEVER tested compose-on-TS execution.
+   - Pointing the exec client at the TS MCP bin is necessary but **NOT sufficient — the TS MCP
+     contract is WIRE-INCOMPATIBLE** with what compose sends: compose sends {spec, flow, inputs},
+     flow_id/step_id/outcome, expects Python dispatch statuses (execute_step/await_gate); TS wants
+     {spec, input, workspaceRoot}, runId/stepId/decision, returns ready/running/completed. TS MCP
+     also LACKS tools compose uses (parallel/iteration).
+   - **Minimum coherent cutover (5 items):** (1) execution on TS MCP; (2) shared STRATUM_STATE_ROOT
+     for MCP+CLI; (3) an engine-aware **contract adapter** (request-field + response-status +
+     ready-step translation); (4) convert compose v0 pipeline specs → TS v1 (= the TS-2 agent-
+     authoring cutover); (5) remove hard-coded Python-store reads (`lib/flow-state.js:27` gate-round,
+     `lib/build.js:5219` abort cleanup). Guard stays Python-pinned = a runtime dep, NOT a flow-store
+     split (guard root `~/.stratum/guards/` is separate; nothing joins guard+flow state).
+   - **Two contract-decisions the harness must EXPOSE (not normalize):** (i) terminal divergence —
+     Python DELETES completed-flow persistence (server.py:948/2610), TS PERSISTS completed runs
+     (engine.ts:639); decide if the compat contract is "completed flow disappears" vs "stays
+     queryable". (ii) pre-existing Python coherence risk — MCP caches live flows in `_flows` while
+     the CLI gate command mutates a separate disk copy (server.py:942/2578/5020); test CLI-gate-
+     mutation → MCP-resume/advance, a shared dir is NOT proof of live-process coherence.
+   - **Harness (owner chose "I build it"):** per-engine ISOLATED state root, run the same golden
+     fixture (plan→gate→approve AND →revise→complete→audit) natively on each engine, diff the
+     projections compose consumes (query flows/flow/gates + gate approve/revise; through
+     stratum-client.js → StratumSync.readFlows → StratumPanel fields). CANNOT drive compose's exec
+     client against TS yet (contract gap = the adapter's job). So the harness proves MONITOR/
+     PROJECTION parity + quantifies the adapter's gap list; it is a diagnostic, not a flip green-light.
 5. [ ] Phase 4 sweep (active surface): .mcp.json → TS stdio; forge+compose default → ts; keep the
        Python server registered ONLY for the parked tools; D4 codex_models relocation;
        CLAUDE.md/skills → TS for ported tools; retire soak cron.
@@ -133,7 +193,10 @@ live legacy surface); full Python deletion is a long horizon tied to the UI/cons
 
 ### Parked-ports backlog (later phases, nothing lost)
 P1. GOAL subsystem → TS.  P2. iteration kernel + skip_step + check_timeouts (IR timeout work).
-P3. transcript tools (engine vs sibling server).  P4. draft_pipeline (WITH PipelineEditor UI phase).
+P3. **transcript-substrate unit** = transcript tools (read_centered/read_transcript_centered/
+    blame_session) + **distill** (grouped 2026-07-12): first decide the family's home (TS engine
+    module vs small sibling server), then port together. distill needs a CC-transcript loader +
+    sidecar writer; deterministic live path.  P4. draft_pipeline (WITH PipelineEditor UI phase).
 P5. STRAT-TS-JUDGE-TOOL standalone + deltas.
 
 ## Phase 0/1 (compose repo) — not started this session
