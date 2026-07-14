@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -484,6 +484,53 @@ describe("P4 fanout", () => {
     expect(await readFile(join(repo, "a.txt"), "utf8")).toContain("write a");
     expect(await readFile(join(repo, "b.txt"), "utf8")).toContain("write b");
     expect((await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"])).stdout.match(/^worktree /gm)).toHaveLength(1);
+  });
+
+  it("retains all four worktrees until four parallel connector turns settle", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "stratum-p4-four-live-"));
+    roots.push(repo);
+    await execFileAsync("git", ["init", "-q", repo]);
+    await execFileAsync("git", ["-C", repo, "config", "user.email", "test@example.com"]);
+    await execFileAsync("git", ["-C", repo, "config", "user.name", "Test"]);
+    await writeFile(join(repo, "README"), "base\n");
+    await execFileAsync("git", ["-C", repo, "add", "README"]);
+    await execFileAsync("git", ["-C", repo, "commit", "-qm", "base"]);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let allStarted!: () => void;
+    const started = new Promise<void>((resolve) => { allStarted = resolve; });
+    const liveWorktrees: string[] = [];
+    const connector: EngineConnector = async ({ prompt, cwd }) => {
+      liveWorktrees.push(cwd!);
+      await writeFile(join(cwd!, `${prompt.slice(-1)}.txt`), `${prompt}\n`);
+      if (liveWorktrees.length === 4) allStarted();
+      await blocked;
+      return { output: { value: prompt } };
+    };
+    const e = await engine(connector);
+    const spec = {
+      version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
+        input: { items: "string[]", name: "string" }, output: { from: "${finish.output}", contract: "Result" },
+        steps: [
+          { id: "fan", fanout: { over: "${input.items}", concurrency: 4, isolation: "worktree", require: "all", merge: "sequential", steps: [{ do: "write ${item}", out: "Result" }] } },
+          { id: "finish", after: ["fan"], set: { value: "input.name" }, out: "Result" },
+        ],
+      } },
+    };
+    const planned = await e.plan(spec, { items: ["a", "b", "c", "d"], name: "done" }, { workspaceRoot: repo });
+
+    await started;
+    try {
+      expect(new Set(liveWorktrees).size).toBe(4);
+      for (const worktree of liveWorktrees) expect(await stat(worktree)).toBeTruthy();
+      expect((await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"])).stdout.match(/^worktree /gm)).toHaveLength(5);
+    } finally {
+      release();
+    }
+
+    expect(await waitForTerminal(e, planned.runId)).toMatchObject({ status: "completed" });
+    expect((await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"])).stdout.match(/^worktree /gm)).toHaveLength(1);
+    for (const item of ["a", "b", "c", "d"]) expect(await readFile(join(repo, `${item}.txt`), "utf8")).toContain(`write ${item}`);
   });
 
   it("turns a sequential worktree merge conflict into a flow error", async () => {

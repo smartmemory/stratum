@@ -18,8 +18,8 @@ export interface CodexJudgeOptions {
 }
 
 /**
- * Judged-predicate runner backed by the codex connector (`codex exec`,
- * read-only). Mirrors the Python judge kernel, which routes judged
+ * Judged-predicate runner backed by the Codex SDK connector (read-only).
+ * Mirrors the Python judge kernel, which routes judged
  * predicates through stratum_agent_run — so judged ensures work on codex
  * OAuth alone, with no OpenAI platform API key in the environment. Same
  * stakes routing and fail-closed semantics as evaluateJudged.
@@ -44,7 +44,7 @@ export async function evaluateJudgedViaCodex(
   let usage = { tokens: 0, usd: 0 };
   try {
     if (predicate.statement.trim().length === 0) throw new Error("statement must not be empty");
-    // codex exec has no per-dispatch system channel (the Python judge kernel
+    // The Codex SDK has no per-dispatch system channel (the Python judge kernel
     // shares this single-prompt boundary), so the policy/data separation is
     // structural: rules first, the untrusted JSON fenced as data, rules
     // reasserted after. Accepted residual: this is hardening, not a true
@@ -87,7 +87,7 @@ export async function evaluateJudgedViaCodex(
 
 function ledgerUsageFromConnector(model: string, usage: { tokens?: number; usd?: number }): { tokens: number; usd: number } {
   const tokens = count(usage.tokens);
-  // codex exec reports a total without an input/output split — conservative
+  // The connector reports a token total without an input/output split — conservative
   // policy (matches ledgerUsage): price unattributed tokens at the OUTPUT rate.
   const usd = typeof usage.usd === "number" && Number.isFinite(usage.usd) && usage.usd >= 0
     ? usage.usd

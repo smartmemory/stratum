@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 
@@ -8,11 +9,27 @@ export type SpawnProcess = (
   options: SpawnOptionsWithoutStdio,
 ) => ChildProcessWithoutNullStreams;
 
+export type CodexTransport = "sdk" | "exec";
+
+export interface CodexSdkThread {
+  runStreamed(input: string): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
+}
+
+export interface CodexSdkClient {
+  startThread(options: ThreadOptions): CodexSdkThread;
+}
+
+export type CodexSdkFactory = (options: CodexOptions) => CodexSdkClient;
+
 export interface CodexConnectorOptions {
   model?: string;
   cwd?: string;
   sandboxMode?: CodexSandboxMode;
   env?: NodeJS.ProcessEnv;
+  /** SDK is the normal in-process path; exec is an explicit compatibility path. */
+  transport?: CodexTransport;
+  /** Codex SDK construction seam for tests and embedders. */
+  sdkFactory?: CodexSdkFactory;
   /** Process-boundary test seam. */
   spawn?: SpawnProcess;
 }
@@ -21,6 +38,12 @@ const CODEX_SCRUB_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"] a
 
 export function defaultCodexModel(): string {
   return process.env.CODEX_MODEL ?? "gpt-5.6-terra/high";
+}
+
+export function resolveCodexTransport(env: NodeJS.ProcessEnv = process.env): CodexTransport {
+  const raw = (env.STRATUM_CODEX_TRANSPORT ?? "sdk").trim().toLowerCase();
+  if (raw === "sdk" || raw === "exec") return raw;
+  throw new Error(`invalid STRATUM_CODEX_TRANSPORT ${JSON.stringify(raw)}; expected sdk or exec`);
 }
 
 /** Same knob and bounds as the Python connector (STRAT-MCP-CHUNK-SIZE):
@@ -65,6 +88,8 @@ export class CodexConnector {
   private readonly cwd: string;
   private readonly sandboxMode: CodexSandboxMode;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly transport: CodexTransport;
+  private readonly sdkFactory: CodexSdkFactory;
   private readonly spawn: SpawnProcess;
 
   constructor(options: CodexConnectorOptions = {}) {
@@ -73,10 +98,56 @@ export class CodexConnector {
     this.sandboxMode = options.sandboxMode ?? "read-only";
     this.env = { ...(options.env ?? process.env) };
     for (const key of CODEX_SCRUB_VARS) delete this.env[key];
+    // Passing an injected spawn is itself an explicit request for the legacy
+    // process seam. Production selects exec with STRATUM_CODEX_TRANSPORT=exec.
+    this.transport = options.transport ?? (options.spawn ? "exec" : resolveCodexTransport(this.env));
+    this.sdkFactory = options.sdkFactory ?? defaultSdkFactory;
     this.spawn = options.spawn ?? (nodeSpawn as SpawnProcess);
   }
 
   async run(prompt: string): Promise<ConnectorResult> {
+    return this.transport === "sdk" ? this.runSdk(prompt) : this.runExec(prompt);
+  }
+
+  private async runSdk(prompt: string): Promise<ConnectorResult> {
+    const startedAt = Date.now();
+    const identity = modelIdentity(this.model);
+    const options: ThreadOptions = {
+      approvalPolicy: "never",
+      model: identity.model,
+      sandboxMode: this.sandboxMode,
+      skipGitRepoCheck: true,
+      workingDirectory: this.cwd,
+      ...(identity.effort !== undefined ? { modelReasoningEffort: reasoningEffort(identity.effort) } : {}),
+    };
+    const client = this.sdkFactory({ env: stringEnvironment(this.env) });
+    const streamed = await client.startThread(options).runStreamed(prompt);
+    const text: string[] = [];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    // Consume SDK events directly rather than run(), which buffers every tool
+    // and file-change item for the whole turn. Stratum only retains the final
+    // agent text and accounting data, matching the direct JSONL transport.
+    for await (const event of streamed.events) {
+      if (event.type === "error") throw new Error(event.message);
+      if (event.type === "turn.failed") throw new Error(event.error.message);
+      if (event.type === "item.completed" && event.item.type === "agent_message" && event.item.text) {
+        text.push(event.item.text);
+      }
+      if (event.type === "turn.completed") {
+        inputTokens += finiteNonnegative(event.usage.input_tokens);
+        outputTokens += finiteNonnegative(event.usage.output_tokens);
+      }
+    }
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    return {
+      text: text.join(""),
+      usage: { tokens: inputTokens + outputTokens, ms: durationMs },
+      telemetry: { durationMs, ...identity },
+    };
+  }
+
+  private async runExec(prompt: string): Promise<ConnectorResult> {
     const startedAt = Date.now();
     const child = this.spawn("codex", codexExecArgs(this.model, this.cwd, this.sandboxMode), {
       cwd: this.cwd,
@@ -158,6 +229,22 @@ export class CodexConnector {
       telemetry: { durationMs, ...modelIdentity(this.model) },
     };
   }
+}
+
+const defaultSdkFactory: CodexSdkFactory = (options) => {
+  const codex = new Codex(options);
+  return { startThread: (threadOptions) => codex.startThread(threadOptions) };
+};
+
+function stringEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) if (typeof value === "string") result[key] = value;
+  return result;
+}
+
+function reasoningEffort(value: string): ModelReasoningEffort {
+  if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh") return value;
+  throw new Error(`unsupported Codex reasoning effort ${JSON.stringify(value)}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
