@@ -304,8 +304,10 @@ ts/src/
              ledger.ts (budget), fanout.ts, gates.ts
   judge/     judged.ts (AI SDK generateObject, stakes table), pricing.ts
   connectors/ claude.ts (@anthropic-ai/claude-agent-sdk query())
-             codex.ts (codex exec --json; sync + durable bg incl. T2F5
-             wrapper + sentinel + proc-identity — port semantics 1:1)
+             codex.ts (@openai/codex-sdk for synchronous turns; explicit
+             codex exec --json compatibility transport)
+             background.ts (direct codex exec durable bg incl. T2F5 wrapper
+             + sentinel + proc-identity — port lifecycle semantics 1:1)
   mcp/       server.ts (stdio; thin adapter over StratumEngine)
   cli/       main.ts (validate | migrate --check | watch | audit)
   migrate/   check.ts (v0.1–0.3 parser + construct-usage report; NO emission)
@@ -410,7 +412,10 @@ Files (new): `src/eval/*, src/judge/*`, tests
 
 ### P3 — connectors + background runs (sol/high)
 Files (new): `src/connectors/*`, tests
-- [ ] MUST: claude via agent-sdk query(); codex via `codex exec --json` argv identical to Python `_exec_args`
+- [ ] MUST: claude via agent-sdk query(); synchronous codex via
+  `@openai/codex-sdk` with model/effort/cwd/sandbox preserved; direct
+  `codex exec --json` remains explicit for compatibility and durable bg, with
+  argv identical to Python `_exec_args`; no `codex-rescue` dependency
 - [ ] MUST: durable bg mode — T2F5 shell wrapper, sentinel `{"__t2f5_done__":rc}`, 12-hex run registry under `~/.stratum/ts/agent_runs/`, proc-identity (pid + start-time) before any signal
 - [ ] MUST: cancel = killpg after identity check; poll = restart-proof registry read with 20k text caps
 - [ ] MUST: live e2e smoke with `gpt-5.3-codex-spark/low` (echo test), skipped when codex absent

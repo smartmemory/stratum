@@ -2,6 +2,12 @@
 
 **Status:** DECIDED (2026-07-11, session 6aebbe19 continuation) · **Owner decision, recorded verbatim below**
 
+**Transport update (2026-07-14):** Normal TypeScript Codex dispatch uses
+`@openai/codex-sdk` directly. The detached durable adapter remains a direct
+`codex exec --json` child because the TypeScript SDK is in-process and cannot
+outlive its owning Stratum process. `codex-rescue` is a Claude Code convenience
+only; it is not a Stratum client or connector dependency.
+
 ## Related Documents
 
 - Backward: [STRAT-CODEX-WRITE-DURABLE design](../features/STRAT-CODEX-WRITE-DURABLE/design.md) (slice 3+4 output sits UNCOMMITTED in the tree — see Instructions §1)
@@ -36,7 +42,7 @@ stratum flow holds the interactive session hostage.
 | CLI, synchronous one-shot | `claude -p` (`--output-format`, `--json-schema`, `--bare` all real) | `codex exec` (`--json`, `--output-schema`, `-o`, `--ephemeral` all real; `resume` accepts `--output-schema`) |
 | CLI/daemon, LOCAL background | **ergonomic**: `claude --bg` + `claude agents [--json]` + `attach/logs/stop/rm`, `daemon status`; sessions stay idle-attachable after completion | **raw**: `codex app-server` daemon (experimental JSON-RPC threads/turns). NO submit-and-poll CLI. `codex exec-server` is NOT this — it's a connection-scoped subprocess executor, dies with the client |
 | Hosted CLOUD background | Routines (`/schedule`, API fire endpoint, GitHub triggers; claude.ai sub) | `codex cloud` (`exec/status/list/diff/apply` exist today; `wait/logs/output` do NOT) + `codex apply` |
-| MCP facade (ours) | `stratum_agent_run(type=claude)` — sync only | `stratum_agent_run(type=codex)` — durable bg read-only shipped; write+bg = WRITE-DURABLE |
+| MCP facade (ours) | `stratum_agent_run(type=claude)` — sync only | `stratum_agent_run(type=codex)` — SDK-backed sync; direct-CLI durable bg read-only shipped; write+bg = WRITE-DURABLE |
 | Orchestrator-native (inside Claude Code only) | Task/Agent subagents, background Bash + wake notifications, Workflow, SendMessage | `codex:codex-rescue`, or background Bash `codex exec` |
 
 Key structural facts:
@@ -95,6 +101,14 @@ should be treated as replaceable adapters.
 - **D4 — Posture: never hand-roll what a vendor runtime ships.** Before building
   any supervision/lifecycle machinery, check the current `claude`/`codex` CLI
   surface first (they change monthly), and prefer wrapping it.
+- **D5 — Codex SDK is the synchronous connector boundary; CLI is explicit.**
+  TypeScript callers enter through Stratum and Stratum invokes
+  `@openai/codex-sdk`; no Stratum path invokes `codex-rescue`. Direct
+  `codex exec --json` remains only for the detached durable supervisor and an
+  explicit compatibility transport. There is no automatic SDK-to-CLI retry:
+  an SDK failure may occur after workspace writes, so replaying the prompt can
+  duplicate side effects. Worktree creation and cleanup remain engine-owned,
+  outside both transports.
 
 ## Instructions to Opus (next session — execute in this order)
 

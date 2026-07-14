@@ -2,7 +2,12 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { CodexConnector, codexExecArgs, type SpawnProcess } from "../../src/connectors/codex.js";
+import {
+  CodexConnector,
+  codexExecArgs,
+  resolveCodexTransport,
+  type SpawnProcess,
+} from "../../src/connectors/codex.js";
 import { runAgent } from "../../src/connectors/runner.js";
 
 function fakeSpawn(records: unknown[], exitCode = 0, stderr = "") {
@@ -39,13 +44,100 @@ describe("CodexConnector", () => {
     ]);
   });
 
-  it("runs codex exec --json and returns capped, engine-safe telemetry", async () => {
+  it("defaults to sdk and validates the explicit compatibility transport", () => {
+    expect(resolveCodexTransport({})).toBe("sdk");
+    expect(resolveCodexTransport({ STRATUM_CODEX_TRANSPORT: " EXEC " })).toBe("exec");
+    expect(() => resolveCodexTransport({ STRATUM_CODEX_TRANSPORT: "rescue" })).toThrow("expected sdk or exec");
+  });
+
+  it("uses the Codex SDK by default and awaits the turn before returning", async () => {
+    let finish: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => { finish = resolve; });
+    async function* events() {
+      await blocked;
+      yield { type: "item.completed" as const, item: { id: "m-1", type: "agent_message" as const, text: "echo ok" } };
+      yield { type: "turn.completed" as const, usage: { input_tokens: 3, cached_input_tokens: 0, output_tokens: 4, reasoning_output_tokens: 0 } };
+    }
+    const runStreamed = vi.fn(async () => ({ events: events() }));
+    const startThread = vi.fn(() => ({ runStreamed }));
+    const sdkFactory = vi.fn(() => ({ startThread }));
+    const connector = new CodexConnector({
+      model: "gpt-5.3-codex-spark/low",
+      cwd: "/work",
+      sandboxMode: "workspace-write",
+      env: { PATH: "/definitely-missing", ANTHROPIC_API_KEY: "must-not-leak" },
+      sdkFactory,
+    });
+
+    let settled = false;
+    const pending = connector.run("echo test").finally(() => { settled = true; });
+    await vi.waitFor(() => expect(runStreamed).toHaveBeenCalledWith("echo test"));
+    expect(settled).toBe(false);
+    finish?.();
+
+    await expect(pending).resolves.toMatchObject({
+      text: "echo ok",
+      usage: { tokens: 7 },
+      telemetry: { model: "gpt-5.3-codex-spark", effort: "low" },
+    });
+    expect(sdkFactory).toHaveBeenCalledWith({ env: { PATH: "/definitely-missing" } });
+    expect(startThread).toHaveBeenCalledWith({
+      approvalPolicy: "never",
+      model: "gpt-5.3-codex-spark",
+      modelReasoningEffort: "low",
+      sandboxMode: "workspace-write",
+      skipGitRepoCheck: true,
+      workingDirectory: "/work",
+    });
+  });
+
+  it("keeps four concurrent SDK turns owned until every turn settles", async () => {
+    const releases: Array<() => void> = [];
+    let active = 0;
+    const sdkFactory = vi.fn(() => ({
+      startThread: vi.fn((options: { workingDirectory?: string }) => ({
+        runStreamed: vi.fn(async () => ({
+          events: (async function* () {
+            active += 1;
+            await new Promise<void>((resolve) => { releases.push(resolve); });
+            active -= 1;
+            yield { type: "item.completed" as const, item: { id: "m-1", type: "agent_message" as const, text: options.workingDirectory ?? "missing cwd" } };
+            yield { type: "turn.completed" as const, usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } };
+          })(),
+        })),
+      })),
+    }));
+    const runs = Array.from({ length: 4 }, (_, index) => new CodexConnector({
+      cwd: `/work/${index}`,
+      env: { PATH: "/definitely-missing" },
+      sdkFactory,
+    }).run(`task ${index}`));
+
+    await vi.waitFor(() => expect(releases).toHaveLength(4));
+    expect(active).toBe(4);
+    for (const release of releases) release();
+
+    const results = await Promise.all(runs);
+    expect(results.map((result) => result.text)).toEqual(["/work/0", "/work/1", "/work/2", "/work/3"]);
+    expect(active).toBe(0);
+  });
+
+  it("surfaces Codex SDK error events loudly", async () => {
+    async function* events() { yield { type: "error" as const, message: "sdk unhappy" }; }
+    const sdkFactory = vi.fn(() => ({
+      startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })),
+    }));
+    const connector = new CodexConnector({ sdkFactory });
+    await expect(connector.run("test")).rejects.toThrow("sdk unhappy");
+  });
+
+  it("keeps injected codex exec as the capped compatibility transport", async () => {
     const spawn = fakeSpawn([
       { type: "thread.started", thread_id: "t-1" },
       { type: "item.completed", item: { type: "agent_message", text: "echo ok" } },
       { type: "turn.completed", usage: { input_tokens: 3, output_tokens: 4, cached_input_tokens: 1, dispatches: 99 } },
     ]);
-    const connector = new CodexConnector({ model: "gpt-5.3-codex-spark/low", cwd: "/work", spawn });
+    const connector = new CodexConnector({ model: "gpt-5.3-codex-spark/low", cwd: "/work", transport: "exec", spawn });
 
     const result = await connector.run("echo test");
 
@@ -59,7 +151,7 @@ describe("CodexConnector", () => {
     expect(result.usage).not.toHaveProperty("dispatches");
   });
 
-  it("surfaces codex error records loudly", async () => {
+  it("surfaces codex exec error records loudly", async () => {
     const connector = new CodexConnector({ spawn: fakeSpawn([{ type: "error", message: "codex unhappy" }]) });
     await expect(connector.run("test")).rejects.toThrow("codex unhappy");
   });
