@@ -36,6 +36,39 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **CONTROL-PLANE HARDENING (post-review) — ✅ DONE 2026-07-15 (this commit).** Whole-port
+  adversarial review (codex sol/high, 2 runs: main...develop diff + full ts/src vs Python)
+  surfaced 4 control-plane defects; the 3 independent of consumer-fanout are fixed here,
+  RED-first (5 new tests; full suite 571 pass / 1 skip; tsc clean):
+  1. `resume()` bypassed the bg sole-mutator guard (Python `bg_owned` parity, server.py:1057) —
+     now guarded like stepDone/commit/revert, and made `async` so the guard REJECTS instead of
+     throwing synchronously (the non-async method leaked the throw past `.rejects` semantics).
+  2. A cancelled run could still be advanced/completed through its waiting gate — gates are the
+     one ownership-guard exception, so `gateResolveLocked` now refuses on the durable
+     `cancelRequested` flag; restart-covered by a rehydrate golden.
+  3. Legal terminal reverts violated the frozen surface AFTER persisting (checkpoints snapshot
+     `status`, so reverting to a post-failure checkpoint returns failed/budget_exhausted; the
+     adapter then threw "undeclared status") — `stratum_revert` now declares both shapes,
+     surface 5→6 (p4 pin updated; p5 exhaustive-coverage exercises both).
+  Finding 4 — `step_done` unfenced on the wire (stale/duplicate reports accepted; epoch never
+  sent over MCP) — rides with STRAT-TS-FANOUT-CONSUMER's dispatchToken design; extend the
+  fencing to ORDINARY client-executed steps there, not just fanout descriptors.
+  **Review residuals (real, not fixed here; file/track):** SDK transport ignores
+  `STRATUM_CODEX_STREAM_LIMIT_BYTES` (memory bound only guards runExec); restart of an
+  in-flight worktree fanout leaks the superseded worktree (engine.ts ~1094 overwrites
+  `item.worktree` without pruning); bg agent `meta.json` persisted after spawn+unref (a persist
+  failure orphans a live detached process); TS requires explicit `workspaceRoot` where Python
+  captured cwd at plan time (migration footgun); single-owner state root documented-unsupported
+  but unenforced (two live MCP servers can double-drive bg runs). Also: all three transports
+  (Python, exec, SDK) CONCATENATE agent messages (deliberate parity; SDK's own run() takes
+  last-message-as-final — revisit post-cutover); codex.live test gates on global `codex` in
+  PATH though the SDK bundles its own binary.
+  **Env sidebar (don't relearn):** two mid-work suite failures were NOT code — CodeIsland wrote
+  orphaned `[mcp_servers.stratum.tools.*]` blocks (no parent server table) into
+  `~/.codex/config.toml` @ 22:44, making the codex binary reject the whole config ("invalid
+  transport in mcp_servers.stratum") = every SDK/exec dispatch fails. Removed the 3 orphaned
+  blocks (backup: `~/.codex/config.toml.bak-20260715-2252`).
+
 - **stratum#6 (node ≥26 bin fix) — ✅ DONE + VERIFIED (2026-07-12).** Code fix already
   landed @ 494fa60 (`extraNodeFlags()` in `ts/src/cli/node-flags.mjs` gates
   `--experimental-transform-types` via `process.allowedNodeEnvironmentFlags`; erasable-only
