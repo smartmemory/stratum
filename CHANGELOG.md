@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### feat: Phase-1 step_done epoch fencing over the wire (surface 7)
+
+First half of universal dispatch fencing (STRAT-TS-FANOUT-CONSUMER design,
+fencing scope amendment 2026-07-15): `stratum_step_done.request` declares an
+optional `epoch`, and the server forwards it to the engine's existing
+`expectedEpoch` staleness check — a report echoing a superseded epoch is now
+rejected over MCP instead of silently satisfying post-revision readiness.
+Compose echoes every engine-issued ready-entry epoch (compose develop). A
+missing echo is still accepted (migration compat); per-issuance
+`dispatchToken` fencing for ALL client-executed steps lands with the
+consumer-fanout feature and then becomes required. The design amendment also
+reverses the original "token optional/ignored for ordinary ids" cut, which
+would have cemented the unfenced-step_done defect the 2026-07-15 whole-port
+review confirmed.
+
 ### fix: TS engine control-plane hardening — resume ownership, cancelled gates, terminal revert shapes
 
 Three control-plane defects surfaced by a whole-port adversarial review (codex
