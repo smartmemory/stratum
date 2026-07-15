@@ -91,7 +91,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           break;
         }
         case "stratum_plan": response = await engine.plan(request.spec, request.input, option(request, "workspaceRoot")); break;
-        case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result")); break;
+        case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result"), optionalNumber(request, "epoch")); break;
         case "stratum_commit": response = { ...await engine.commit(string(request, "flow_id"), string(request, "label")) }; break;
         case "stratum_revert": response = await engine.revert(string(request, "flow_id"), string(request, "label")); break;
         case "stratum_resume": response = await engine.resume(string(request, "runId")); break;

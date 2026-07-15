@@ -36,6 +36,37 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **FENCING PHASE 1 (step_done epoch echo) — ✅ DONE 2026-07-15 (stratum + compose develop).**
+  Closes review finding 4's live exposure ahead of the fanout feature. Design AMENDED first:
+  STRAT-TS-FANOUT-CONSUMER's original "dispatchToken optional/ignored for ordinary ids" cut
+  would have CEMENTED the unfenced-step_done defect — fencing is now UNIVERSAL, two phases
+  (P1 epoch echo now; P2 per-issuance dispatchToken required-for-all at the fanout flag-day,
+  which also closes same-epoch late-retry duplicates that per-revision epochs cannot).
+  - stratum: `step_done.request` declares optional `epoch` (surface 6→7, p4 pin), server
+    forwards to the engine's existing `expectedEpoch` check; p5 golden: stale echo rejected
+    ("superseded epoch"), current echo accepted. Suite 572 pass / 1 skip.
+  - compose (develop): `StratumMcpClient.stepDone` transmits an integer 4th-arg `epoch`;
+    build.js echoes `readyStep?.epoch` at BOTH live TS-path call sites (generic ~1787 +
+    ship-interception ~1590). New golden `test/ts-cutover-epoch-echo-golden.test.js`:
+    (a) full runBuild revise round records echoes work@0, work@1, finish@1; (b) compose's
+    own client against the real TS bin — stale epoch rejected, current accepted.
+  - **Engine semantics learned (don't re-guess):** revise bumps the epoch of EVERY
+    descendant of the revision target (engine.ts ~1497), not just the re-issued step —
+    post-revise `finish` is legitimately issued at epoch 1.
+  - Unported paths (subflow/parallel/gsd/new.js stepDone call sites) intentionally NOT
+    threaded — they are Python-era paths; they get tokens when ported (P2).
+  - Codex review (sol/high): CLEAN; one Low residual — the epoch golden covers only the
+    generic dispatch site, not ship-interception (same 1-line expression). Accepted: the
+    "ship interception stepDone → TS-shaped" work-list item owns that site and its golden.
+  - **Known-broken on compose develop (PRE-EXISTING, verified via lib-reverted baseline —
+    identical failures with and without this change):** the full suite shows ~17 fails, all
+    Python-envelope-era tests broken by the TS-native port of build.js's loop, pending
+    port-or-delete with their paths: `test/stratum-mcp-client.test.js` (5 + timeout),
+    `test/build-integration.test.js` (4: integration/sub-flow/resume + policy),
+    JSONL integration (2), parallel_dispatch branch tests (2 — die with the fanout port),
+    proof-run (2 — known full-suite flake on main too). Cutover slices gate on the
+    ts-cutover goldens (all 12+2 green), not this legacy set.
+
 - **CONTROL-PLANE HARDENING (post-review) — ✅ DONE 2026-07-15 (this commit).** Whole-port
   adversarial review (codex sol/high, 2 runs: main...develop diff + full ts/src vs Python)
   surfaced 4 control-plane defects; the 3 independent of consumer-fanout are fixed here,

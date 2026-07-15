@@ -1,5 +1,5 @@
 {
-  "surface": 6,
+  "surface": 7,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "tools": {
     "stratum_validate": {
@@ -27,7 +27,7 @@
       }
     },
     "stratum_step_done": {
-      "request": { "runId": "string", "stepId": "string", "result": { "output?": "any", "failure?": "string", "usage?": "object", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } } },
+      "request": { "runId": "string", "stepId": "string", "result": { "output?": "any", "failure?": "string", "usage?": "object", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } }, "epoch?": "number" },
       "responses": {
         "ready": { "runId": "string", "ready": "array", "ledger": { "spent": "object", "budget?": "object" } },
         "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" } },

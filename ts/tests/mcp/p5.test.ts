@@ -231,6 +231,32 @@ describe("P5 frozen MCP surface", () => {
     } finally { await pair.close(); }
   });
 
+  it("fences step_done with the ready entry's epoch when the client echoes it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-epoch-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    try {
+      // Revise bumps the step epoch: a wire report echoing the superseded epoch
+      // must be rejected, and one echoing the current epoch accepted (Phase-1
+      // fencing — see STRAT-TS-FANOUT-CONSUMER design, fencing scope amendment).
+      const reviseFlow = { version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { name: "string" }, output: { from: "${build.output}", contract: "Result" }, max_rounds: 1,
+        steps: [
+          { id: "build", do: "build ${input.name}", out: "Result" },
+          { id: "review", after: ["build"], gate: { on_approve: null, on_revise: "build", on_kill: null } },
+        ],
+      } } };
+      const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: reviseFlow, input: { name: "Ada" } } }));
+      const runId = planned.runId as string;
+      expect((planned.ready as Array<{ id: string; epoch: number }>)[0]).toMatchObject({ id: "build", epoch: 0 });
+      response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "v1" } }, epoch: 0 } }));
+      response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: { runId, stepId: "review", decision: "revise" } }));
+      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "stale" } }, epoch: 0 } }))
+        .rejects.toThrow(/superseded epoch/);
+      const current = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "v2" } }, epoch: 1 } }));
+      expect(current.status).toBe("running");
+    } finally { await pair.close(); }
+  });
+
   it("runs plan, stepDone, completed, and gate flows through an SDK client", async () => {
     const root = await mkdtemp(join(tmpdir(), "stratum-p5-mcp-")); roots.push(root);
     const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
