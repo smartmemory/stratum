@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### fix: TS engine control-plane hardening — resume ownership, cancelled gates, terminal revert shapes
+
+Three control-plane defects surfaced by a whole-port adversarial review (codex
+sol/high, TS engine vs Python reference), each fixed with a RED-first
+regression test:
+
+- **`resume` now honors bg-run ownership.** `engine.resume()` goes through the
+  same sole-mutator guard as `stepDone`/`commit`/`revert`: an external resume on
+  a bg-driven run would hand the driver's in-flight `ready` step to a second
+  executor (Python parity: `bg_owned`). Cancelled runs stay durably abandoned;
+  terminal bg runs still resume normally.
+- **A cancelled run's gate can no longer advance it.** Gates are the one
+  exception to the ownership guard, so `gateResolve` now honors the durable
+  `cancelRequested` flag: after `flow_cancel_bg`, a decision on the
+  still-waiting gate is refused instead of completing the run or issuing new
+  ready work behind the cancellation — including after a server restart
+  (rehydrate golden).
+- **Terminal revert responses are declared, not adapter errors.** Reverting to a
+  checkpoint of a retained terminal run legitimately returns `failed` or
+  `budget_exhausted` (checkpoints snapshot `status`), but the frozen MCP surface
+  declared neither — a legal revert persisted its state change and then threw at
+  the adapter boundary. `stratum_revert` now declares both shapes
+  (surface 5 → 6); the P5 exhaustive-coverage test exercises them.
+
 ### feat: STRAT-TS-FLOW-BG-REHYDRATE — detached flows survive a server restart
 
 Detached background flows now re-attach a driver on startup instead of stalling

@@ -143,6 +143,23 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
     expect(dispatches).toBe(0);
   });
 
+  it("keeps refusing gate decisions and resume on a cancelled run after restart", async () => {
+    const root = await stateRoot();
+    const first = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await first.flowRunBg(await fixture("linear-gate"), { name: "Ada" });
+    await waitForBg(first, started.runId, "paused_gate");
+    await first.flowCancelBg(started.runId);
+    const restarted = engine(root, async ({ prompt }) => ({ output: { value: prompt } }));
+
+    await restarted.rehydrateBgFlows();
+
+    // Cancellation is durable: the restarted engine must not let the still-waiting
+    // gate advance the abandoned run, nor hand its work out through resume.
+    expect((await restarted.flowBgPoll(started.runId)).bg).toMatchObject({ status: "cancelled", cancelRequested: true });
+    await expect(restarted.gateResolve(started.runId, "review", "approve")).rejects.toThrow(/cancelled/);
+    await expect(restarted.resume(started.runId)).rejects.toThrow(/background-driven/);
+  });
+
   it("is idempotent and does not double-drive", async () => {
     const root = await stateRoot();
     let markDispatched!: () => void;

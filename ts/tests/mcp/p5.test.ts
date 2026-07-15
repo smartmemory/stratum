@@ -146,6 +146,16 @@ describe("P5 frozen MCP surface", () => {
       const budget = await call("stratum_plan", { spec: postDispatchBudgetFlow(), input: { name: "x" } });
       await call("stratum_step_done", { runId: budget.runId, stepId: "first", result: { output: { value: "one" } } });
 
+      // Checkpoints on retained terminal runs: committing after failure snapshots the
+      // terminal status, so reverting restores it — failed and budget_exhausted are
+      // legal revert outcomes, not adapter errors.
+      await call("stratum_commit", { flow_id: failing.runId, label: "postmortem" });
+      expect(await call("stratum_revert", { flow_id: failing.runId, label: "postmortem" }))
+        .toMatchObject({ status: "failed", reverted_to: "postmortem" });
+      await call("stratum_commit", { flow_id: budget.runId, label: "postmortem" });
+      expect(await call("stratum_revert", { flow_id: budget.runId, label: "postmortem" }))
+        .toMatchObject({ status: "budget_exhausted", reverted_to: "postmortem" });
+
       // resume exposes the same persisted state surface without fabricating it.
       const resumeReady = await call("stratum_plan", { spec: simpleFlow, input: { name: "x" } });
       await call("stratum_resume", { runId: resumeReady.runId });

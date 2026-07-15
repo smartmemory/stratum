@@ -312,6 +312,19 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     expect((await engine.flowBgPoll(started.runId)).bg).toMatchObject({ status: "cancelled" });
   });
 
+  it("refuses a gate decision on a cancelled bg run instead of advancing it", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await engine.flowRunBg(await fixture("linear-gate"), { name: "Ada" });
+    const paused = await waitForBg(engine, started.runId, "paused_gate");
+    expect(paused.bg.pendingGates).toEqual(["review"]);
+    expect(await engine.flowCancelBg(started.runId)).toEqual({ status: "cancelled" });
+    // A cancelled run is durably abandoned: an approval must not complete it or
+    // issue new ready work behind the cancellation.
+    await expect(engine.gateResolve(started.runId, "review", "approve")).rejects.toThrow(/cancelled/);
+    expect((await engine.flowBgPoll(started.runId)).bg).toMatchObject({ status: "cancelled" });
+    expect((await engine.audit(started.runId)).steps.refine?.status).toBe("pending");
+  });
+
   it("stops dispatching further fanout items after a cooperative cancel", async () => {
     let release!: () => void;
     let markStarted!: () => void;
@@ -395,6 +408,40 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     // Post-terminal, the guard no longer refuses — the natural "not awaiting" error surfaces instead.
     await expect(engine.stepDone(started.runId, "first", { output: { value: "x" } }))
       .rejects.toThrow(/not awaiting a client result/);
+  });
+
+  it("locks out an external resume on a bg-driven run and completes under the driver alone", async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const dispatched = new Promise<void>((resolve) => { markStarted = resolve; });
+    const engine = await subject(async ({ prompt }) => {
+      if (prompt.startsWith("first")) { markStarted(); await blocked; }
+      return { output: { value: prompt } };
+    });
+    const started = await engine.flowRunBg(linearFlow, { name: "Ada" });
+    await dispatched;
+    // The in-flight step is durably `ready`; an external resume would hand that
+    // same work to a second executor while the driver's dispatch is still running.
+    await expect(engine.resume(started.runId)).rejects.toThrow(/background-driven/);
+    release();
+    expect((await waitForBg(engine, started.runId, "completed")).status).toBe("completed");
+  });
+
+  it("refuses an external resume on a cancelled (abandoned-but-running) bg run", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await engine.flowRunBg(await fixture("linear-gate"), { name: "Ada" });
+    await waitForBg(engine, started.runId, "paused_gate");
+    await engine.flowCancelBg(started.runId);
+    // The cancelled run still holds a waiting gate; resume must not hand out its work.
+    await expect(engine.resume(started.runId)).rejects.toThrow(/background-driven/);
+  });
+
+  it("permits resume again once the bg run reaches a terminal state", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const started = await engine.flowRunBg(linearFlow, { name: "Ada" });
+    await waitForBg(engine, started.runId, "completed");
+    expect((await engine.resume(started.runId)).status).toBe("completed");
   });
 
   it("rejects a superseded epoch after gate revise and accepts the current epoch", async () => {

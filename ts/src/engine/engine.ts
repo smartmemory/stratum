@@ -491,7 +491,12 @@ export class StratumEngine {
     });
   }
 
-  resume(runId: string): Promise<EngineResponse> {
+  async resume(runId: string): Promise<EngineResponse> {
+    // Sole-mutator enforcement, same as stepDone/commit/revert: a bg-driven run's
+    // in-flight step is durably `ready`, so an external resume would hand that same
+    // work to a second executor while the driver's dispatch is still running.
+    // Python returns bg_owned here (server.py:1057); cancelled runs stay abandoned.
+    this.assertExternalMutationAllowed(runId, "resume");
     return this.withRunLock(runId, () => this.resumeLocked(runId));
   }
 
@@ -584,6 +589,10 @@ export class StratumEngine {
     // fall through the ternary chain onto the kill route.
     if (decision !== "approve" && decision !== "revise" && decision !== "kill") throw new Error(`invalid gate decision ${JSON.stringify(decision)}`);
     const run = await this.loadRun(runId);
+    // Gates are the one exception to the bg sole-mutator guard, so they must honor
+    // the durable cancel flag themselves: a cancelled run is abandoned, and a
+    // decision on its still-waiting gate must not complete it or issue new work.
+    if (run.cancelRequested === true) throw new Error(`run ${runId} is cancelled; gate ${stepId} cannot be resolved`);
     const validated = this.validationFor(run);
     const located = this.locateStep(run, validated.value, stepId);
     const scope = located?.scope;
@@ -1773,7 +1782,7 @@ export class StratumEngine {
     return result;
   }
 
-  private assertExternalMutationAllowed(runId: string, operation: "stepDone" | "commit" | "revert"): void {
+  private assertExternalMutationAllowed(runId: string, operation: "stepDone" | "commit" | "revert" | "resume"): void {
     const bg = this.bgFlows.get(runId);
     if (bg !== undefined && bg.status !== "completed" && bg.status !== "failed" && bg.status !== "budget_exhausted") {
       throw new Error(`run ${runId} is background-driven; external ${operation} is not permitted (poll via flow_bg_poll)`);
