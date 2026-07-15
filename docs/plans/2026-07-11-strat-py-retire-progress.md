@@ -36,6 +36,125 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER design gate round 2 — 🔄 IN FLIGHT 2026-07-15 (late session).**
+  Grounded codex sol/high re-review of the revised+amended design (per owner practice)
+  returned NOT implementation-ready: 4 High + 2 Medium, ALL adjudicated ACCEPT (zero
+  category errors; premises code-verified — `gate_resolve` request is bare
+  `{runId,stepId,decision}`, `gateResolveLocked` checks no issuance identity):
+  1. gate_resolve unfenced (delayed prior-round approve can resolve a later round's
+     `waiting_gate`) → design now fences gates: per-round **`gateToken`**, echoed on
+     `gate_resolve`, same lifecycle + flag-day as dispatchToken; surfaces via response
+     step state, NOT events (events.json stays frozen).
+  2. descriptor carried only contract id+hash (stateless consumer can't produce the
+     shape; no fetch-by-digest API exists) → descriptor now carries the canonical
+     contract shape INLINE (+ `contractDigest`); explicitly NO fetch-by-digest in v1.
+  3. dispatchToken lifecycle unspecified; checkpoint revert would resurrect old tokens
+     (checkpoints snapshot `steps`, state.ts:148; revert restores, engine.ts:473) →
+     explicit lifecycle contract added: mint-per-issuance, persist-before-expose,
+     stable-within-issuance, rotate-on-any-reissue, **revert re-mints restored
+     non-terminal tokens**, cancel invalidates.
+  4. compose merge artifacts not restart-safe; scoped-id keying unsafe (reused across
+     runs/stages/retries/revisions) → durable `.compose/` artifact journal keyed
+     `(runId, scopedId, dispatchToken)`, journal-before-report, recovery on restart,
+     crash tests (post-capture / post-step_done / mid-merge).
+  5. bg support simultaneously required and optional → RESOLVED foreground-only v1;
+     `flow_run_bg` rejects consumer-dispatch specs at submission w/ typed diagnostic +
+     frozen contract test; bg semantics bind the follow-up feature.
+  6. doc contradictions (stale "currently is not", ordinary-entries-unchanged vs
+     gains-token, item-epoch-rejects-duplicates, byte-for-byte, ts-cutover header) →
+     all corrected 2026-07-15b.
+  **Round 2 (2026-07-16):** 3 High + 3 Medium, all within round-1 amendment blast
+  radius (disposition: everything partially/mostly closed — converging), ALL ACCEPT:
+  (1) no-`out` stages → descriptor `contract: null`, report unvalidated (source compat
+  holds); (2) filesystem-dependent stage `when` rejected like filesystem ensures
+  (engine evaluates `when` against the item worktree, engine.ts:1116); (3) artifact
+  identity split — worktree keyed by ITEM (stable across stages/retries, engine
+  parity), diffs keyed by issuance token; merge = journaled transaction w/ per-diff
+  applied witness (mid-merge crash replay), `revise` RETAINS artifacts; (4) gateToken
+  discovery MANDATED as audit-fetch (compose's real path, build.js:1929 running→audit→
+  scan waiting_gate); ordinary StepState also gains persisted dispatchToken; (5) bg
+  rejection = existing validation-failure channel (MCP protocol error, stable message;
+  no new response variant), stale `flow_bg_poll.ready` dropped from v1 test row;
+  (6) revision DEFINED = persisted effective spec; `revisionDigest` on every
+  plan/resume variant + descriptor echoes; origin map marked future scope.
+  **Round 3 (2026-07-16):** 3 High + 2 Medium; gateToken-discovery + null-contract
+  CLOSED; remaining findings all precision gaps in the r2 amendments, ALL ACCEPT:
+  (1) per-token diffs wrong — engine captures ONE cumulative patch per item after all
+  stages (engine.ts:1210) → one cumulative diff per item @ final issuance token; item
+  identity gains GENERATION (revise re-enumerates the fanout, engine.ts:1464 — same
+  index ≠ same item) → key `(runId, scopedId, item epoch)`, old generations
+  `superseded`; journal states `prepared→accepted→merged/superseded` w/ engine-audit
+  reconciliation for the prepared→accepted crash window; (2) `git apply --check` is
+  NOT a recovery primitive (already-applied vs conflict indistinguishable) and commit
+  SHAs aren't witnesses in a no-commit merge path (build.js:4354) → tree-id witnesses
+  (git write-tree) + journaled base tree + rollback-to-base on revise/kill
+  (build.js:4389/5042 parity); (3) descriptor must carry the contract CLOSURE (named
+  refs resolve recursively, validate.ts:62/145; root-only shape not self-contained);
+  (4) typed rejection = stable error CODE `consumer_dispatch_bg_unsupported` in the
+  MCP error data envelope + frozen code registry (message regex ≠ type);
+  (5) `ready: "array"` validates nothing → frozen shape language gains element
+  variants (contracts.ts:36/89). Convergence check: closures accumulating, Highs now
+  concentrated in the compose artifact journal — if round 4 opens a NEW front,
+  split the compose consumption design into its own gated doc per
+  review-convergence rule.
+  **Round 4 (2026-07-16):** 3 High + 1 Medium — NO new front (all in the r3
+  journal/merge amendments + one revert interaction), tripwire not hit, ALL ACCEPT:
+  (1) `accepted` conflated acknowledgment with success (engine evaluates
+  contracts/ensures AFTER receipt, engine.ts:1174 — an acked report can retry) →
+  `accepted` = "issuance terminalized the item as succeeded"; engine persists
+  **`acceptedDispatchToken`** on terminal items, audit exposes it; prepared entries
+  store the exact result envelope for idempotent re-report; (2) apply-before-witness
+  window remained → full expected witness chain precomputed in a TEMPORARY INDEX
+  (build.js:4562 pattern; plain write-tree hashes the index and compose applies
+  --index-less over dirty state) and journaled BEFORE first mutation; rollback
+  restores the full baseline; (3) epoch-keyed generations collide after checkpoint
+  revert (revert restores steps incl. epochs) → run-level monotonic **generation
+  counter persisted OUTSIDE checkpoint snapshots**, advanced on every
+  (re-)enumeration, exposed in descriptors, keys compose artifacts; (4) shape
+  grammar specified: `arrayOf` + `oneOf` w/ strict variant matching, checker +
+  JSON-schema translator share it.
+  **Round 5 (2026-07-16):** 4 must-fix + 2 should-fix, ALL ACCEPT — depth iterations,
+  no new front: (1) checkpoint revert can restore an already-TERMINAL fanout + its
+  waiting merge gate whose artifacts were superseded/deleted (generation counter
+  can't help — nothing re-enumerates; checkpoints at waiting gates + terminal-run
+  reverts are legal, engine.ts:451/1804, p5:128/149) → v1 PROHIBITS commit/revert
+  from first consumer issuance until the merge gate resolves (ship-narrow: kill the
+  class, bg follow-up may design retention); (2) intermediate stages crash-unsafe →
+  `prepared` entry (token + exact envelope) journaled per EVERY issuance, diff only
+  at final stage; (3) in-tree journal invalidates its own witnesses (`.compose/` not
+  guaranteed ignored, build.js:4509; snapshot = git add -A @4562, apply --cached
+  @4544 — citation fixed) → journal OUTSIDE the target tree + witness-chain ids must
+  be unique or abort pre-mutation; (4) grammar got a concrete tagged encoding —
+  `{"$array":…}`/`{"$oneOf":[…]}`, $-keys reserved, matching = exactly one COMPLETE
+  strict shape (undeclared fields rejected — else descriptor ⊃ ReadyStep matches
+  both); (5) frozen `errors` registry: top-level mcp-surface section
+  `{code:{data:<shape>}}`, p5 asserts the actual JSON-RPC error data (bypasses
+  assertToolResponse, server.ts:152); (6) stale test row still said item-epoch key →
+  fixed to generation. Round-6 re-review dispatched; gate until CLEAN. If round 6 is
+  not clean-or-trivial, STOP and restructure per review-convergence rule (engine side
+  is converged; the compose journal protocol is the recurring well).
+  **Round 6 (2026-07-16): 2 High + 3 Medium → TRIPWIRE FIRED, GATE CLOSED WITH
+  RESTRUCTURE.** Bounded findings fixed at design altitude (all ACCEPT): pre-stage
+  worktree witness + restore-before-reexecute (crash after agent mutation, before
+  `prepared` write); mid-diff kill leaves a tree matching NO witness (git apply of a
+  multi-file diff isn't atomic) → normative unmatched-tree rule: restore journaled
+  baseline, replay-from-zero or revise/kill, NEVER complete a partial diff in place;
+  lifecycle-guard release anchored to a VALIDATED direct-successor gate required for
+  consumer+worktree fanouts (D5 authoring invariant promoted to validation via the
+  worktree proxy; no-gate behavior specified); ordinary variant gains
+  `previousFailure?` w/ defined `?` optionality (else every ordinary retry fails the
+  frozen contract). Finding 5 (exact descriptor wire encoding) resolved STRUCTURALLY:
+  new "Specification boundary (r6)" section — 4 consecutive rounds of High findings
+  in the prose crash-protocol = spec-too-broad signal; encodings move to frozen
+  contract FILES authored as implementation step 1 (per planning-standards: shapes
+  live in contracts, not prose), and the kill-based crash-test suite — not prose
+  iteration — arbitrates the recovery protocol. DESIGN GATE COMPLETE: 6 rounds,
+  ~25 findings, all adjudicated ACCEPT + amended or structurally resolved; zero
+  category errors across the run. Next: implement (step 1 = author frozen
+  contracts).
+  `.claude/rules/` (both branches: develop 1bf928d, main 78634e4 — breadcrumbs/
+  compose-loop/incremental-builds retired, journaling demoted to milestones).
+
 - **FENCING PHASE 1 (step_done epoch echo) — ✅ DONE 2026-07-15 (stratum + compose develop).**
   Closes review finding 4's live exposure ahead of the fanout feature. Design AMENDED first:
   STRAT-TS-FANOUT-CONSUMER's original "dispatchToken optional/ignored for ordinary ids" cut
