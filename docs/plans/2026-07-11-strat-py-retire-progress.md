@@ -271,8 +271,9 @@ out-contract from compose's OWN locally-parsed spec (TS response carries none; l
 result is TS-shaped (`{output}`/`{}`/`{failure}`, no legacy keys).
 
 ### Remaining cutover work-list (exhaustive site map = codex run `65c878442e2d`)
-Simple-path deferred sub-cases (build.js): gate/await_gate → running + audit-based gate discovery;
-resume() `{flow_id}`→`{runId}` (+ build.js:1295 step_id); ship interception stepDone → TS-shaped;
+Simple-path deferred sub-cases (build.js): gate/await_gate → running + audit-based gate discovery
+[DONE, gate slices]; ~~resume() `{flow_id}`→`{runId}` (+ build.js:1295 step_id)~~ [DONE 2026-07-15,
+compose develop @ 2fa4840 — see slice below]; ship interception stepDone → TS-shaped;
 default client server flip `stratum-mcp`(Python)→TS bin (do LAST, once consumption ported — flipping
 early breaks still-Python paths); output-vs-contract robustness (coerce/validate agent output before
 `{output}`; `outputFieldsToJsonSchema` is loose). Bigger units: subflow/execute_flow + scoped-id
@@ -321,6 +322,29 @@ The prior slice covered ONLY the auto-approve (flag/skip) path. This slice makes
   direct unit test `test/flow-state-round.test.js` (TS-first, 0-based, env-aware, Python fallback).
 - **Documented v1 limitation (NOT a bug):** >1 concurrent root gate throws by design (single-gate seam).
   Revisit only if a real compose pipeline needs concurrent gates.
+
+### SIMPLE-PATH SLICE — resume() over TS — DONE 2026-07-15 (compose develop @ 2fa4840)
+Ports the build.js resume path off the retired Python envelope. Codex-written (run `f3c5cc2d32c8`,
+gpt-5.6-sol/high, write=true), every change adjudicated vs code + verified locally (13/13 goldens).
+- [x] **(High, load-bearing) client `runId` rename** — `StratumMcpClient.resume(flowId)` sent
+  `{ flow_id }`, but the TS MCP `stratum_resume` tool (`ts/src/mcp/server.ts:97`) reads
+  `string(request,"runId")`, which THROWS `"runId must be a string"` when absent → `stratum.resume()`
+  threw before the engine ran. Now sends `{ runId }`, matching the stepDone/audit/gateResolve siblings.
+  Resume was fully DEAD over the TS engine until this; the client was the real defect.
+- [x] **(Med) build.js resume-branch field normalization** — the branch (~1289–1332) read
+  `response.step_id`/`response.flow_id` (Python names, `undefined` on TS). Now reads TS-first
+  (`response.ready?.[0]?.id ?? response.step_id`, `response.runId ?? response.flow_id ?? resumeFlowId`),
+  fixing the "Resuming from step: undefined" log + the active-build `currentStepId`/`flowId` write.
+  (The `flow_id` reads worked only by the `flowId` fallback and were immediately re-derived by the
+  main loop's `updateActiveBuildStep` — so this field is cosmetic; the client rename is the fix.)
+- **Golden** `test/ts-cutover-build-resume-golden.test.js`: drives a real interrupt (throwing agent
+  leaves the TS run non-terminal), audits over a 2nd client that the run is still `running` with its
+  step `ready`, wraps `resume` to assert the real TS resume path fires once, resumes over the real TS
+  bin, asserts the resumed step re-executes and the build completes retaining the runId. RED until the
+  `{ flow_id }`→`{ runId }` rename (resume throws otherwise). No rubber-stamp.
+- **Sandbox note:** codex's workspace-write jail EPERM'd `flow-state-round.test.js`
+  (`~/.stratum/flows/` write); outside the sandbox all 13 pass. A codex "# fail 1" on that file is a
+  jail artifact, not a real failure.
 
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
