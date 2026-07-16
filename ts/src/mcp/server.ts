@@ -10,7 +10,7 @@ import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { evaluateJudged } from "../judge/judged.js";
 import type { GuardJudge } from "../guard/transition.js";
 import { compileSpeckit, SpeckitCompileError } from "../speckit/compiler.js";
-import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface } from "./contracts.js";
+import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface, validateShape, type OneOfShape, type Shape } from "./contracts.js";
 
 export interface McpDependencies {
   engine?: Pick<StratumEngine, "plan" | "stepDone" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
@@ -227,22 +227,34 @@ function checkpointErrorEnvelope(error: CheckpointOperationError): { status: "er
 }
 
 function jsonSchema(shape: Record<string, unknown>): Record<string, unknown> {
+  validateShape(shape, "schema");
+  return schemaForValidated(shape);
+}
+export function schemaFor(shape: unknown): Record<string, unknown> {
+  validateShape(shape, "schema");
+  return schemaForValidated(shape);
+}
+function schemaForValidated(shape: Shape): Record<string, unknown> {
+  if (typeof shape === "string") {
+    if (shape === "any") return {};
+    if (shape === "array") return { type: "array" };
+    if (shape === "object") return { type: "object" };
+    if (shape === "null") return { type: "null" };
+    if (shape.includes("|")) return { anyOf: shape.split("|").map((alternative) => schemaForValidated(alternative)) };
+    return { type: shape };
+  }
+  if ("$array" in shape) return { type: "array", items: schemaForValidated(shape.$array) };
+  if ("$oneOf" in shape) {
+    return { oneOf: (shape as OneOfShape).$oneOf.map((variant) => schemaForValidated(variant)) };
+  }
+
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
   for (const [rawKey, child] of Object.entries(shape)) {
     const optional = rawKey.endsWith("?");
     const key = optional ? rawKey.slice(0, -1) : rawKey;
-    properties[key] = schemaFor(child);
+    properties[key] = schemaForValidated(child);
     if (!optional) required.push(key);
   }
   return { type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: false };
-}
-function schemaFor(shape: unknown): Record<string, unknown> {
-  if (typeof shape !== "string") return jsonSchema(shape as Record<string, unknown>);
-  if (shape === "any") return {};
-  if (shape === "array") return { type: "array" };
-  if (shape === "object") return { type: "object" };
-  if (shape === "null") return { type: "null" };
-  if (shape.includes("|")) return { anyOf: shape.split("|").map((alternative) => schemaFor(alternative)) };
-  return { type: shape };
 }

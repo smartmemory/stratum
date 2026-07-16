@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### feat: tagged shape grammar for frozen contracts — `$array` / `$oneOf` (STRAT-TS-FANOUT-CONSUMER Slice A)
+
+The frozen-contract shape language gains exactly two tagged constructs
+(design r4/r5): `{"$array": <shape>}` (every element must match) and
+`{"$oneOf": [<shape>, ...]}` with complete-strict exactly-one matching —
+zero matches fail, ambiguous (≥2) matches fail, and variant matching is
+whole-object strict (required present AND undeclared rejected; `field?`
+stays optional). `$`-prefixed keys are reserved grammar tags, illegal as
+record field names anywhere in the surface. Shape declarations are now
+validated independently of value matching (`validateShape`): malformed
+shapes — unknown `$` tags, a tag plus extra keys, empty or non-array
+`$oneOf` payloads, leaf types outside the frozen vocabulary
+(`any|array|boolean|null|number|object|string`), and a field declared in
+both required and optional form — throw declaration errors distinct from
+value mismatches. The JSON-schema translator implements the SAME grammar
+(`$array` → `{type:"array", items}`, `$oneOf` → `{oneOf:[...]}`) and
+rejects the same malformed shapes. Grammar machinery only: no
+`mcp-surface.json` declaration changes, no surface bump — the `ready`
+redeclaration rides the Phase-2 flag-day.
+
 ### feat: Phase-1 step_done epoch fencing over the wire (surface 7)
 
 First half of universal dispatch fencing (STRAT-TS-FANOUT-CONSUMER design,

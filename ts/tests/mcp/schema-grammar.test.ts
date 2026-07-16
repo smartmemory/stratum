@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vitest";
+import { schemaFor } from "../../src/mcp/server.js";
+import type { Shape } from "../../src/mcp/contracts.js";
+
+describe("tagged frozen-contract JSON-schema translation", () => {
+  it("translates $array with its element schema", () => {
+    expect(schemaFor({ $array: { id: "string" } })).toEqual({
+      type: "array",
+      items: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    });
+  });
+
+  it("translates $oneOf variants", () => {
+    expect(schemaFor({ $oneOf: ["string", "null"] })).toEqual({
+      oneOf: [{ type: "string" }, { type: "null" }],
+    });
+  });
+
+  it("translates nested tagged constructs and record optionality", () => {
+    expect(schemaFor({
+      batches: { $array: { $oneOf: [{ id: "string", "note?": "string" }, "null"] } },
+    })).toEqual({
+      type: "object",
+      properties: {
+        batches: {
+          type: "array",
+          items: {
+            oneOf: [
+              {
+                type: "object",
+                properties: { id: { type: "string" }, note: { type: "string" } },
+                required: ["id"],
+                additionalProperties: false,
+              },
+              { type: "null" },
+            ],
+          },
+        },
+      },
+      required: ["batches"],
+      additionalProperties: false,
+    });
+  });
+
+  it.each([
+    ["an unknown reserved tag", { $wat: "string" }],
+    ["a recognized tag with an extra key", { $array: "string", extra: "number" }],
+    ["a non-array $oneOf payload", { $oneOf: "string" }],
+    ["an empty $oneOf payload", { $oneOf: [] }],
+    ["a reserved record field", { name: "string", $foo: "string" }],
+    ["an unknown leaf type", { $array: "bogus" }],
+    ["an unknown leaf union member", { value: "string|bogus" }],
+    ["required and optional forms of the same field", { x: "string", "x?": "number" }],
+  ])("rejects malformed shapes containing %s", (_case, malformed) => {
+    expect(() => schemaFor(malformed as unknown as Shape))
+      .toThrow(/malformed shape at schema/i);
+  });
+});
