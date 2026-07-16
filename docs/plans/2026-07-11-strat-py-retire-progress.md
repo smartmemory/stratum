@@ -36,6 +36,25 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice B (IR + validation) — ✅ DONE 2026-07-16 (stratum develop @ 06d8fcf).**
+  `fanout.dispatch` enum w/ default injected into the VALIDATED value (persisted-spec
+  proof via StateStore — plan already stores the Zod-parsed spec); consumer+worktree
+  filesystem `ensure`/`when` rejected via real expression-AST inspection
+  (`expressionUsesFilePredicate`, eval/expr.ts); direct-successor gate REQUIRED;
+  subflow fanout pinned to existing root-only diagnostic; `flow_run_bg` rejects
+  consumer specs w/ frozen code `consumer_dispatch_bg_unsupported`, same spec legal
+  foreground. Loop: codex sol/high build (17 RED-first tests) → codex sol/high review →
+  2 P1 findings: (1) **ACCEPT, fixed RED-first** — gate-bypass: a `when`-guarded gate the
+  engine can skip (engine.ts:866) or a routing-target gate that only activates when
+  routed (engine.isActivated:1471) satisfied the rule without ever entering
+  `waiting_gate`; rule now requires an UNCONDITIONAL, NORMALLY-ACTIVATED direct-successor
+  gate (+3 tests, mirrors engine semantics — also protects the Slice C commit/revert
+  guard anchor); (2) **REJECT as Slice D scope** — MCP protocol-error mapping +
+  `errors` registry absent: deliberately excluded from B (brief + slice plan put the
+  registry/server mapping in D); probe (-32603, data undefined) usefully confirms the
+  gap D closes — carry it into the D brief. Full suite 621 pass / 1 skip; tsc clean.
+  Next: Slice C (token/generation lifecycle + universal fencing).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice A (grammar machinery) — ✅ DONE 2026-07-16 (stratum develop @ e43e799).**
   Tagged shape grammar `{"$array": <shape>}` + `{"$oneOf": [...]}` per design r4/r5/r6:
   complete-strict exactly-one `$oneOf` matching (zero AND ambiguous rejected), `$`-prefix
