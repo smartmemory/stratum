@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { expressionUsesFilePredicate } from "../eval/expr.js";
 import { extractReferences, referenceEdges, type PathSegment } from "./refs.js";
 import { SpecificationSchema, type Flow, type Specification, type Step } from "./schema.js";
 
@@ -241,6 +242,17 @@ function referencesInStep(step: Step, base: readonly (string | number)[]): Array
   return result;
 }
 
+/** Mirrors engine.dependencies(): direct `after` plus direct step-output references. */
+function dependencyIds(step: Step): Set<string> {
+  const dependencies = new Set(step.after ?? []);
+  for (const leaf of referencesInStep(step, [])) {
+    for (const extracted of extractReferences(leaf.value) ?? []) {
+      if (extracted.reference.kind === "step") dependencies.add(extracted.reference.stepId);
+    }
+  }
+  return dependencies;
+}
+
 function addEdge(adjacency: Map<string, Edge[]>, edge: Edge): ValidationError | undefined {
   if (edge.from === edge.to) return { code: "ROUTING_SELF_TARGET", path: edge.path, message: "routing edge targets itself" };
   const queue = [edge.to];
@@ -410,6 +422,56 @@ export function validateSpec(input: unknown): ValidationResult {
             if (error) return { ok: false, errors: [error] };
           }
         }
+      }
+    }
+
+    for (const [index, step] of flow.steps.entries()) {
+      // Fanout in non-entry flows is rejected later by the existing root-only
+      // rule; preserve that stable diagnostic ahead of consumer-specific rules.
+      if (flowName !== spec.flows.entry
+        || step.fanout?.dispatch !== "consumer"
+        || step.fanout.isolation !== "worktree") continue;
+      for (const [stageIndex, stage] of step.fanout.steps.entries()) {
+        const ensureIndex = stage.ensure?.findIndex((predicate) =>
+          "file_exists" in predicate
+          || "file_contains" in predicate
+          || ("expr" in predicate && expressionUsesFilePredicate(predicate.expr))) ?? -1;
+        if (ensureIndex >= 0) {
+          return { ok: false, errors: [{
+            code: "CONSUMER_WORKTREE_FILESYSTEM_UNSUPPORTED",
+            path: `flows.${flowName}.steps[${index}].fanout.steps[${stageIndex}].ensure[${ensureIndex}]`,
+            message: "consumer worktree stages cannot use engine filesystem predicates",
+          }] };
+        }
+        if (stage.when !== undefined && expressionUsesFilePredicate(stage.when)) {
+          return { ok: false, errors: [{
+            code: "CONSUMER_WORKTREE_FILESYSTEM_UNSUPPORTED",
+            path: `flows.${flowName}.steps[${index}].fanout.steps[${stageIndex}].when`,
+            message: "consumer worktree stages cannot use engine filesystem predicates",
+          }] };
+        }
+      }
+      // The gate must be guaranteed to enter waiting_gate: a `when` can skip it
+      // (engine advance), and a routing target (on_fail/on_approve/on_kill)
+      // only activates when routed (engine.isActivated) — either would bypass
+      // the mandatory merge handshake.
+      const routedTargets = new Set<string>();
+      for (const candidate of flow.steps) {
+        if (candidate.on_fail !== undefined) routedTargets.add(candidate.on_fail);
+        if (candidate.gate?.on_approve) routedTargets.add(candidate.gate.on_approve);
+        if (candidate.gate?.on_kill) routedTargets.add(candidate.gate.on_kill);
+      }
+      const hasDirectGateSuccessor = flow.steps.some((candidate) =>
+        candidate.gate !== undefined
+        && candidate.when === undefined
+        && !routedTargets.has(candidate.id)
+        && dependencyIds(candidate).has(step.id));
+      if (!hasDirectGateSuccessor) {
+        return { ok: false, errors: [{
+          code: "CONSUMER_WORKTREE_GATE_REQUIRED",
+          path: `flows.${flowName}.steps[${index}].fanout.isolation`,
+          message: "consumer worktree fanout requires an unconditional, normally-activated direct-successor gate",
+        }] };
       }
     }
 

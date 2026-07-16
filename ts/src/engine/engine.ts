@@ -264,7 +264,20 @@ export class StratumEngine {
   }
 
   async flowRunBg(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<{ runId: string; status: "running" }> {
-    const first = await this.plan(specInput, input, options);
+    const validation = validateSpec(specInput);
+    if (!validation.ok) throw new SpecValidationError(validation.errors);
+    for (const [flowName, flow] of Object.entries(validation.value.flows)) {
+      if (flowName === "entry" || typeof flow === "string") continue;
+      for (const [index, step] of flow.steps.entries()) {
+        if (step.fanout?.dispatch !== "consumer") continue;
+        throw new SpecValidationError([{
+          code: "consumer_dispatch_bg_unsupported",
+          path: `flows.${flowName}.steps[${index}].fanout.dispatch`,
+          message: "consumer fanout dispatch is not supported for background flows",
+        }]);
+      }
+    }
+    const first = await this.plan(validation.value, input, options);
     const run = await this.withRunLock(first.runId, async () => {
       const current = await this.loadRun(first.runId);
       current.bgDriven = true;

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
-import { StratumEngine, type BgStatus, type EngineConnector, type JudgeRunner } from "../../src/engine/engine.js";
+import { SpecValidationError, StratumEngine, type BgStatus, type EngineConnector, type JudgeRunner } from "../../src/engine/engine.js";
 import { StateStore } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 
@@ -36,6 +36,25 @@ const linearFlow = flow([
 ], "${second.output}");
 
 describe("STRAT-TS-FLOW-BG engine driver", () => {
+  it("persists the Zod-parsed fanout dispatch default from foreground plan", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const spec = consumerFanoutSpec();
+    delete (spec.flows.main.steps[0]!.fanout as { dispatch?: string }).dispatch;
+    const planned = await engine.plan(spec, { items: [] });
+    const persisted = await new StateStore(roots.at(-1)!).load(planned.runId);
+    expect((persisted.spec as typeof spec).flows.main.steps[0]?.fanout.dispatch).toBe("engine");
+  });
+
+  it("rejects consumer dispatch for bg submission while foreground plan accepts the same spec", async () => {
+    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+    const spec = consumerFanoutSpec();
+    await expect(engine.plan(spec, { items: [] })).resolves.toHaveProperty("runId");
+    await expect(engine.flowRunBg(spec, { items: [] })).rejects.toBeInstanceOf(SpecValidationError);
+    await expect(engine.flowRunBg(spec, { items: [] })).rejects.toMatchObject({
+      errors: [expect.objectContaining({ code: "consumer_dispatch_bg_unsupported" })],
+    });
+  });
+
   it("completes a detached linear flow without test-side stepDone calls", async () => {
     const prompts: string[] = [];
     const engine = await subject(async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
@@ -472,6 +491,21 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
 
 function flow(steps: unknown[], from: string) {
   return { version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: { input: { name: "string" }, output: { from, contract: "Result" }, steps } } };
+}
+
+function consumerFanoutSpec() {
+  return {
+    version: 1,
+    contracts: { Result: { value: "string" } },
+    flows: { entry: "main", main: {
+      input: { items: "string[]" },
+      output: { from: "${fan.output[0].value}", contract: "Result" },
+      steps: [{ id: "fan", when: "false", fanout: {
+        over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: "all", merge: "sequential",
+        steps: [{ do: "fan ${item}", out: "Result" }],
+      } }],
+    } },
+  };
 }
 
 function siblingGateFlow() {

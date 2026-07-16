@@ -273,6 +273,28 @@ export function evaluatePredicate(expression: string, bindings: ExpressionBindin
   return { holds: result.value, reason: `predicate evaluated to ${result.value}` };
 }
 
+/** Static policy helper: parse once, then inspect every nested AST node. */
+export function expressionUsesFilePredicate(expression: string): boolean {
+  let ast: Node;
+  try {
+    ast = new Parser(new Lexer(expression)).parse();
+  } catch {
+    return false;
+  }
+  const visit = (node: Node): boolean => {
+    switch (node.kind) {
+      case "literal":
+      case "identifier": return false;
+      case "member": return visit(node.target);
+      case "index": return visit(node.target);
+      case "call": return node.name === "file_exists" || node.name === "file_contains" || node.args.some(visit);
+      case "unary": return visit(node.operand);
+      case "binary": return visit(node.left) || visit(node.right);
+    }
+  };
+  return visit(ast);
+}
+
 /**
  * Engine adapter. During ensure evaluation (context.result present) `result` is the
  * step output under test; for when/set it falls back to the own-property map of
