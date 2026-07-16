@@ -36,6 +36,29 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice E2b (bounded concurrent consumer execution) — ✅ DONE 2026-07-16 (compose develop @ 287ae75).**
+  Resolves the E2-deferred serialization P3 (task #8, owner go-ahead on controller recommendation:
+  concurrency BEFORE E3 ships real traffic). dispatchToken-keyed working-set pump (all ready
+  consumer descriptors launch concurrently, cap default 3 / `COMPOSE_FANOUT_CONCURRENCY`,
+  ready[] of each response merged, seen/superseded tokens never re-dispatch; ordinary entries
+  stay serial). Loop: codex sol/high build → 4 RED-first fix rounds (standing Opus fixer,
+  codex sol/high reviewer) → 5th pass REVIEW CLEAN; **6 findings accepted**: (C1) stale per-item
+  audit snapshots globally superseded newer issuances → reconciliation SCOPED per item, global
+  reconcile only at ordered points with fresh audit; (C2) ordinary-path fatal bypassed the drain
+  → pump-level fatal boundary (drain in-flight before propagate); (C3) journal one-writer not
+  enforced → (C4) round-1's reconciling fold was last-writer-wins toward the STALE side (no
+  monotonic fold exists — rollback legitimately goes merged→accepted) → **adjudicated
+  architecture: mutate-against-fresh primitive** — every journal mutation applies to the freshly
+  loaded on-disk journal under a module-level path-keyed guard, in-memory model = read cache,
+  never a write base (12 sites converted, fold deleted); (C5) applyMerge's four saves still wrote
+  the stale cache → converted, + DECIDED-round stop (gateOutcome/rolled_back ⇒ typed
+  ConsumerMergeDecisionError, gate flow downgrades approve→repair); (C6) DECIDED check moved to
+  immediately before each `git apply` (throw before touching the tree). **Documented residual:**
+  cross-process TOCTOU window at pre-apply check (no journal lockfile; single-owner-per-run
+  assumption) — in-process fully sealed. Gate: ts-cutover goldens 52/52 (10 new concurrency
+  scenarios). Intermittent single 90s cancellation under parallel load persists (~1 in 5 full-gate
+  runs; individual tests ≤3.7s) — environmental, watch not chase. Next: E3.
+
 - **STRAT-TS-FANOUT-CONSUMER Slice E2 (compose consumer loop + journal + witness-chain merge) — ✅ DONE 2026-07-16 (compose develop @ c325db7).**
   Native consumer-dispatch execution in compose: descriptor routing off the TS ready[] pump
   (structural detection), generation-keyed worktrees OUTSIDE the merge target (tmpdir root,
