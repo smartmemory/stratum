@@ -36,6 +36,21 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice A (grammar machinery) — ✅ DONE 2026-07-16 (stratum develop @ e43e799).**
+  Tagged shape grammar `{"$array": <shape>}` + `{"$oneOf": [...]}` per design r4/r5/r6:
+  complete-strict exactly-one `$oneOf` matching (zero AND ambiguous rejected), `$`-prefix
+  reserved as grammar tags (illegal as record field names), new `validateShape` separates
+  declaration errors from value mismatches, JSON-schema translator (`schemaFor`) shares the
+  validator and implements the identical grammar. Loop: codex sol/high build (21 RED-first
+  tests) → codex sol/high review → **3 P2 findings, ALL adjudicated ACCEPT** (empty `$oneOf`
+  → invalid JSON Schema; leaf vocabulary unvalidated — `{"$array":"bogus"}` translated to
+  invalid `{type:"bogus"}`; dual `x`+`x?` declaration made runtime and schema disagree) →
+  controller fixed all three RED-first (+8 tests; leaf set `any|array|boolean|null|number|
+  object|string` verified empirically against BOTH frozen contracts before tightening).
+  NO mcp-surface.json changes, NO surface bump (rides Phase-2 flag-day). Full suite
+  601 pass / 1 skip; tsc clean. Next: Slice B (IR `dispatch` field + consumer-mode
+  semantic validation).
+
 - **STRAT-TS-FANOUT-CONSUMER design gate round 2 — 🔄 IN FLIGHT 2026-07-15 (late session).**
   Grounded codex sol/high re-review of the revised+amended design (per owner practice)
   returned NOT implementation-ready: 4 High + 2 Medium, ALL adjudicated ACCEPT (zero
