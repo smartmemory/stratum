@@ -86,6 +86,24 @@ export interface ReadyStep {
   previousFailure?: FailureContext;
 }
 
+export interface ConsumerDispatchDescriptor extends ReadyStep {
+  flow: string;
+  step: string;
+  stage: number;
+  itemIndex: number;
+  generation: number;
+  contract: { root: string; contracts: Record<string, Record<string, string>> } | null;
+  contractDigest: string | null;
+  policy: {
+    isolation: "worktree" | "none";
+    merge: "sequential";
+    pre_merge: string[];
+  };
+  revisionDigest: string;
+}
+
+export type ReadyEntry = ReadyStep | ConsumerDispatchDescriptor;
+
 /** The only P4 process/SDK boundary. Tests fake this rather than mocking git or SDK internals. */
 export type EngineConnector = (request: {
   agent: "claude" | "codex";
@@ -106,11 +124,13 @@ export interface LedgerInfo {
 }
 
 export type EngineResponse =
-  | { status: "ready"; runId: string; ready: ReadyStep[]; ledger: LedgerInfo }
+  | { status: "ready"; runId: string; ready: ReadyEntry[]; ledger: LedgerInfo }
   | { status: "completed"; runId: string; output: unknown; ledger: LedgerInfo }
   | { status: "failed"; runId: string; failure: FailureContext; ledger: LedgerInfo }
   | { status: "budget_exhausted"; runId: string; failure: FailureContext; ledger: LedgerInfo }
   | { status: "running"; runId: string; ledger: LedgerInfo };
+
+export type RevisionedEngineResponse = EngineResponse & { revisionDigest: string };
 
 export interface FlowPollResponse {
   runId: string;
@@ -245,7 +265,7 @@ export class StratumEngine {
     return result;
   }
 
-  async plan(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<EngineResponse> {
+  async plan(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<RevisionedEngineResponse> {
     const validation = validateSpec(specInput);
     if (!validation.ok) throw new SpecValidationError(validation.errors);
     const flowName = validation.value.flows.entry;
@@ -262,7 +282,7 @@ export class StratumEngine {
       ...(options.workspaceRoot !== undefined ? { workspaceRoot: resolve(options.workspaceRoot) } : {}),
     };
     await this.persist(run);
-    return this.advance(run, validation.value, validation.contracts);
+    return this.withRevisionDigest(await this.advance(run, validation.value, validation.contracts), run);
   }
 
   async flowRunBg(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<{ runId: string; status: "running" }> {
@@ -374,6 +394,10 @@ export class StratumEngine {
     const scope = located?.scope;
     const step = located?.step;
     const state = located?.state;
+    if (located?.item !== undefined) {
+      if (!scope || !step || !state || run.status !== "running") throw new Error("step is not awaiting a client result");
+      return this.consumerFanoutStepDone(run, validated.value, validated.contracts, scope.flow, step, state, located.item, result, expectedEpoch, dispatchToken);
+    }
     if (!step || !state || step.do === undefined || state.status !== "ready" || run.status !== "running") {
       throw new Error("step is not awaiting a client result");
     }
@@ -516,13 +540,17 @@ export class StratumEngine {
     });
   }
 
-  async resume(runId: string): Promise<EngineResponse> {
+  async resume(runId: string): Promise<RevisionedEngineResponse> {
     // Sole-mutator enforcement, same as stepDone/commit/revert: a bg-driven run's
     // in-flight step is durably `ready`, so an external resume would hand that same
     // work to a second executor while the driver's dispatch is still running.
     // Python returns bg_owned here (server.py:1057); cancelled runs stay abandoned.
     this.assertExternalMutationAllowed(runId, "resume");
-    return this.withRunLock(runId, () => this.resumeLocked(runId));
+    return this.withRunLock(runId, async () => {
+      const response = await this.resumeLocked(runId);
+      const run = await this.loadRun(runId);
+      return this.withRevisionDigest(response, run);
+    });
   }
 
   private async resumeLocked(runId: string): Promise<EngineResponse> {
@@ -956,9 +984,16 @@ export class StratumEngine {
               index, status: "pending", attempts: [], generation: this.nextGeneration(run), epoch: state.epoch ?? 0,
             })),
           };
-          for (const item of state.fanout.items) this.event(run, "fanout_item_ready", step.id, { itemIndex: item.index });
           await this.persist(run);
-          this.scheduleFanout(run, step.id);
+          if (step.fanout.dispatch === "consumer") {
+            await this.promoteConsumerItems(run, spec, contracts, flow, step, state);
+            if (state.fanout.items.every((item) => terminalFanoutItem(item.status))) {
+              await this.settleFanout(run, spec, contracts, flow, step, state, state.fanout);
+            }
+          } else {
+            for (const item of state.fanout.items) this.event(run, "fanout_item_ready", step.id, { itemIndex: item.index });
+            this.scheduleFanout(run, step.id);
+          }
           // The fanout runs off the microtask queue — later independent steps
           // still activate in this same pass.
           changed = true;
@@ -1025,6 +1060,9 @@ export class StratumEngine {
   }
 
   private scheduleFanout(run: PersistedRun, stepId: string): void {
+    const validated = this.validationFor(run);
+    const scheduledStep = this.flowFor(run, validated.value).steps.find((step) => step.id === stepId);
+    if (scheduledStep?.fanout?.dispatch === "consumer") return;
     // Epoch-keyed: a revise that invalidated a live fanout must not be blocked
     // from scheduling the fresh one by the stale execution still draining.
     const key = `${run.id}:${stepId}:${run.steps[stepId]?.fanoutEpoch ?? 0}`;
@@ -1054,6 +1092,165 @@ export class StratumEngine {
         this.scheduledFanouts.delete(key);
       });
     });
+  }
+
+  private async promoteConsumerItems(
+    run: PersistedRun,
+    spec: Specification,
+    contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
+    flow: Flow,
+    step: Step,
+    state: StepState,
+  ): Promise<void> {
+    if (!step.fanout || step.fanout.dispatch !== "consumer" || !state.fanout || run.status !== "running") return;
+    let assigned = state.fanout.items.filter((item) => item.status === "ready" || item.status === "running").length;
+    for (const item of state.fanout.items) {
+      if (assigned >= step.fanout.concurrency || run.status !== "running") break;
+      if (item.status !== "pending") continue;
+      await this.prepareConsumerItem(run, spec, contracts, flow, step, state, item);
+      const prepared = item as FanoutItemState;
+      if (prepared.status === "ready" || prepared.status === "running") assigned += 1;
+    }
+  }
+
+  private async prepareConsumerItem(
+    run: PersistedRun,
+    spec: Specification,
+    contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
+    _flow: Flow,
+    step: Step,
+    state: StepState,
+    item: FanoutItemState,
+  ): Promise<void> {
+    if (!step.fanout || step.fanout.dispatch !== "consumer") throw new Error("consumer fanout missing after validation");
+    const values = this.resolveFanoutOver(step.fanout.over, run);
+    if (!Array.isArray(values)) throw new Error("fanout over must resolve to an array");
+    while (run.status === "running") {
+      const stageIndex = item.stage ?? 0;
+      const stage = step.fanout.steps[stageIndex];
+      if (!stage) throw new Error("consumer fanout stage is out of range");
+      item.stage = stageIndex;
+      item.epoch = state.epoch ?? 0;
+      if (stage.when !== undefined) {
+        const enabled = this.evaluateFanout(stage.when, run, values[item.index], item.output);
+        if (enabled !== true) {
+          this.event(run, "fanout_item_skipped", step.id, { itemIndex: item.index, stage: stageIndex });
+          delete item.dispatchToken;
+          if (stageIndex === step.fanout.steps.length - 1) {
+            item.status = "skipped";
+            await this.persist(run);
+            return;
+          }
+          item.stage = stageIndex + 1;
+          continue;
+        }
+      }
+
+      const attempt = item.attempts.length + 1;
+      try {
+        this.renderFanout(stage.do, run, values[item.index], item.output);
+      } catch (error) {
+        const failure = { attempt, reason: message(error) };
+        this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", failure);
+        item.failure = failure;
+        const used = item.attempts.filter((record) => record.stage === stageIndex).length;
+        if (used >= (stage.attempts ?? step.attempts ?? 2)) {
+          item.status = "failed";
+          await this.persist(run);
+          return;
+        }
+        continue;
+      }
+      const reserve = this.debit(run, step, state, { dispatches: 1 }, "reserve");
+      if (reserve !== undefined) {
+        const failure = { attempt, reason: `${reserve} budget exhausted` };
+        this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "budget", failure);
+        item.failure = failure;
+        if (reserve === "flow") {
+          item.status = "failed";
+          await this.terminalBudget(run, failure);
+          return;
+        }
+        const used = item.attempts.filter((record) => record.stage === stageIndex).length;
+        if (used >= (stage.attempts ?? step.attempts ?? 2)) {
+          item.status = "failed";
+          await this.persist(run);
+          return;
+        }
+        continue;
+      }
+      item.status = "ready";
+      item.dispatchToken = randomUUID();
+      delete item.acceptedDispatchToken;
+      this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: { dispatches: 1 } });
+      this.event(run, "fanout_item_ready", step.id, { itemIndex: item.index });
+      await this.persist(run);
+      return;
+    }
+  }
+
+  private async consumerFanoutStepDone(
+    run: PersistedRun,
+    spec: Specification,
+    contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
+    flow: Flow,
+    step: Step,
+    state: StepState,
+    item: FanoutItemState,
+    result: StepResult,
+    expectedEpoch?: number,
+    dispatchToken?: string,
+  ): Promise<EngineResponse> {
+    if (!step.fanout || step.fanout.dispatch !== "consumer" || !state.fanout || item.status !== "ready") {
+      throw new Error("step is not awaiting a client result");
+    }
+    if (dispatchToken === undefined) throw new Error("dispatchToken is required for a consumer fanout item");
+    if (item.dispatchToken !== dispatchToken) throw new Error("step result is stale: dispatched for a superseded issuance");
+    if (expectedEpoch !== undefined && (item.epoch ?? state.epoch ?? 0) !== expectedEpoch) {
+      throw new Error("step result is stale: dispatched for a superseded epoch");
+    }
+    const stageIndex = item.stage;
+    const stage = stageIndex === undefined ? undefined : step.fanout.steps[stageIndex];
+    if (stageIndex === undefined || !stage) throw new Error("consumer fanout stage is out of range");
+    const values = this.resolveFanoutOver(step.fanout.over, run);
+    if (!Array.isArray(values)) throw new Error("fanout over must resolve to an array");
+    const attempt = item.attempts.length + 1;
+    const outcome = await this.settleFanoutAttempt(
+      run, spec, contracts, step, state, item, values[item.index], item.output, stageIndex, attempt, result,
+    );
+    if (!outcome.success) {
+      item.failure = outcome.failure;
+      if (run.status !== "running") return this.response(run);
+      const stageAttempts = item.attempts.filter((record) => record.stage === stageIndex).length;
+      if (stageAttempts < (stage.attempts ?? step.attempts ?? 2)) {
+        item.status = "pending";
+        await this.prepareConsumerItem(run, spec, contracts, flow, step, state, item);
+      } else {
+        item.status = "failed";
+        delete item.dispatchToken;
+      }
+    } else {
+      item.output = result.output;
+      delete item.failure;
+      if (stageIndex === step.fanout.steps.length - 1) {
+        item.status = "succeeded";
+        item.acceptedDispatchToken = dispatchToken;
+        delete item.dispatchToken;
+      } else {
+        item.stage = stageIndex + 1;
+        item.status = "pending";
+        delete item.dispatchToken;
+        delete item.acceptedDispatchToken;
+        await this.prepareConsumerItem(run, spec, contracts, flow, step, state, item);
+      }
+    }
+
+    if (terminalFanoutItem(item.status)) await this.promoteConsumerItems(run, spec, contracts, flow, step, state);
+    await this.persist(run);
+    if (state.fanout.items.every((candidate) => terminalFanoutItem(candidate.status))) {
+      return (await this.settleFanout(run, spec, contracts, flow, step, state, state.fanout)) ?? this.advance(run, spec, contracts);
+    }
+    return this.advance(run, spec, contracts);
   }
 
   private async executeFanout(run: PersistedRun, stepId: string): Promise<void> {
@@ -1099,7 +1296,7 @@ export class StratumEngine {
     step: Step,
     state: StepState,
     fanoutRef: FanoutState,
-  ): Promise<void> {
+  ): Promise<EngineResponse | undefined> {
     if (run.status !== "running" || !step.fanout || state.fanout !== fanoutRef) return;
     const values = this.resolveFanoutOver(step.fanout.over, run);
     if (!Array.isArray(values)) throw new Error("fanout over must resolve to an array");
@@ -1111,15 +1308,13 @@ export class StratumEngine {
       // `attempts` on a fanout step bounds PER-ITEM stage retries (already
       // consumed above) — an unmet `require` never re-dispatches the whole
       // batch; it takes the on_fail/terminal path directly.
-      await this.failAttempt(run, spec, contracts, this.rootScope(run, spec), step, state, state.attempts.length + 1, `fanout require ${String(step.fanout.require)} not met (${succeeded}/${values.length} succeeded)`, {}, undefined, undefined, true);
-      return;
+      return this.failAttempt(run, spec, contracts, this.rootScope(run, spec), step, state, state.attempts.length + 1, `fanout require ${String(step.fanout.require)} not met (${succeeded}/${values.length} succeeded)`, {}, undefined, undefined, true);
     }
-    if (step.fanout.isolation === "worktree") {
+    if (step.fanout.dispatch === "engine" && step.fanout.isolation === "worktree") {
       try {
         await this.mergeFanoutPatches(run, step, state);
       } catch (error) {
-        await this.terminalFailure(run, { attempt: state.attempts.length + 1, reason: `fanout merge failed: ${message(error)}` });
-        return;
+        return this.terminalFailure(run, { attempt: state.attempts.length + 1, reason: `fanout merge failed: ${message(error)}` });
       }
     }
     state.output = fanoutRef.items.map((item) => item.status === "succeeded" ? item.output ?? null : null);
@@ -1127,7 +1322,7 @@ export class StratumEngine {
     state.attempts.push({ attempt: state.attempts.length + 1, at: now(), result: state.output });
     this.event(run, "result", step.id, { attempt: state.attempts.length, result: state.output });
     await this.persist(run);
-    await this.advance(run, spec, contracts);
+    return this.advance(run, spec, contracts);
   }
 
   private async executeFanoutItem(
@@ -1212,34 +1407,14 @@ export class StratumEngine {
             lastFailure = { attempt, reason: message(error) }; this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", lastFailure); continue;
           }
           if (stale()) return;
-          if (!validConnectorTelemetry(result.telemetry) || !validUsage(result.usage ?? {})) {
-            lastFailure = { attempt, reason: "invalid connector telemetry or usage" };
-            this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "usage", lastFailure, result);
-            continue;
-          }
-          const usage = { ...(result.usage ?? {}) };
-          const reportedDispatches = usage.dispatches !== undefined;
-          delete usage.dispatches;
-          const settled = this.debit(run, step, state, usage, "settle");
-          if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
-          const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
-          const contractFailure = this.contractError(stageStep, result.output, contracts);
-          const failureReason = settled === "flow" ? "flow budget exhausted" : settled === "task" ? "task budget exhausted"
-            : reportedDispatches ? "dispatches are engine-accounted; do not report them in usage"
-              : result.failure ?? contractFailure;
-          const ensure = failureReason === undefined ? await this.runEnsures(run, stageStep, state, result.output, this.rootScope(run, spec), { itemIndex: item.index, stage: stageIndex, item: value, prev: previous, ...(cwd !== undefined ? { workspaceRoot: cwd } : {}) }) : undefined;
+          const outcome = await this.settleFanoutAttempt(
+            run, spec, contracts, step, state, item, value, previous, stageIndex, attempt, result, cwd,
+          );
           if (stale()) return;
-          const reason = failureReason ?? (ensure?.kind === "fail" ? ensure.reason : ensure?.kind === "flow_budget" ? "flow budget exhausted" : undefined);
-          if (reason !== undefined) {
-            const kind = contractFailure !== undefined ? "contract"
-              : reason.startsWith("ensure") ? "ensure" : settled ? "budget" : "connector";
-            lastFailure = { attempt, reason };
-            this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, kind, lastFailure, result, usage);
-            if (ensure?.kind === "flow_budget" || settled === "flow") await this.terminalBudget(run, lastFailure);
+          if (!outcome.success) {
+            lastFailure = outcome.failure;
             continue;
           }
-          item.attempts.push({ attempt, at: now(), stage: stageIndex, result: result.output, ...telemetryFields(result.telemetry), ...(hasBudget(usage) ? { usage } : {}) });
-          this.event(run, "fanout_attempt_result", step.id, { itemIndex: item.index, stage: stageIndex, attempt, success: true });
           previous = result.output;
           success = true;
           break;
@@ -1284,6 +1459,74 @@ export class StratumEngine {
       }
       await this.persist(run);
     }
+  }
+
+  /** Shared settlement kernel for connector-owned and consumer-owned fanout
+   * attempts. Dispatch ownership ends at the result envelope; usage, contract,
+   * ensure, audit, and terminal budget semantics stay identical here. */
+  private async settleFanoutAttempt(
+    run: PersistedRun,
+    spec: Specification,
+    contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
+    step: Step,
+    state: StepState,
+    item: FanoutItemState,
+    value: unknown,
+    previous: unknown,
+    stageIndex: number,
+    attempt: number,
+    result: StepResult,
+    workspaceRoot?: string,
+  ): Promise<{ success: true } | { success: false; failure: FailureContext }> {
+    if (!step.fanout) throw new Error("fanout missing after validation");
+    const stage = step.fanout.steps[stageIndex];
+    if (!stage) throw new Error("fanout stage is out of range");
+    if (!validConnectorTelemetry(result.telemetry) || !validUsage(result.usage ?? {})) {
+      const failure = { attempt, reason: "invalid connector telemetry or usage" };
+      this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "usage", failure, result);
+      return { success: false, failure };
+    }
+    const usage = { ...(result.usage ?? {}) };
+    const reportedDispatches = usage.dispatches !== undefined;
+    delete usage.dispatches;
+    const settled = this.debit(run, step, state, usage, "settle");
+    if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
+    const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
+    const contractFailure = this.contractError(stageStep, result.output, contracts);
+    const failureReason = settled === "flow" ? "flow budget exhausted" : settled === "task" ? "task budget exhausted"
+      : reportedDispatches ? "dispatches are engine-accounted; do not report them in usage"
+        : result.failure ?? contractFailure;
+    const ensure = failureReason === undefined
+      ? await this.runEnsures(run, stageStep, state, result.output, this.rootScope(run, spec), {
+        itemIndex: item.index,
+        stage: stageIndex,
+        item: value,
+        prev: previous,
+        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+      })
+      : undefined;
+    const reason = failureReason
+      ?? (ensure?.kind === "fail" || ensure?.kind === "subflow_budget" ? ensure.reason : ensure?.kind === "flow_budget" ? "flow budget exhausted" : undefined);
+    if (reason !== undefined) {
+      const kind = contractFailure !== undefined ? "contract"
+        : ensure?.kind === "fail" ? "ensure"
+          : settled !== undefined || ensure?.kind === "flow_budget" || ensure?.kind === "subflow_budget" ? "budget"
+            : !validConnectorTelemetry(result.telemetry) || !validUsage(result.usage ?? {}) ? "usage" : "connector";
+      const failure = { attempt, reason };
+      this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, kind, failure, result, usage);
+      if (ensure?.kind === "flow_budget" || settled === "flow") await this.terminalBudget(run, failure);
+      return { success: false, failure };
+    }
+    item.attempts.push({
+      attempt,
+      at: now(),
+      stage: stageIndex,
+      result: result.output,
+      ...telemetryFields(result.telemetry),
+      ...(hasBudget(usage) ? { usage } : {}),
+    });
+    this.event(run, "fanout_attempt_result", step.id, { itemIndex: item.index, stage: stageIndex, attempt, success: true });
+    return { success: true };
   }
 
   private recordFanoutAttempt(run: PersistedRun, step: Step, item: FanoutItemState, stage: number, attempt: number, success: boolean, failureKind: "connector" | "usage" | "contract" | "ensure" | "iterate" | "budget", failure: FailureContext, result?: StepResult, usage?: Budget): void {
@@ -1598,6 +1841,61 @@ export class StratumEngine {
     };
   }
 
+  private consumerDescriptor(run: PersistedRun, spec: Specification, step: Step, state: StepState, item: FanoutItemState): ConsumerDispatchDescriptor {
+    if (!step.fanout || step.fanout.dispatch !== "consumer") throw new Error("not a consumer fanout");
+    if (item.status !== "ready" || item.dispatchToken === undefined || item.stage === undefined) {
+      throw new Error("consumer fanout item is missing persisted readiness");
+    }
+    if (run.revisionDigest === undefined) throw new Error("consumer descriptor requires a persisted revision digest");
+    const values = this.resolveFanoutOver(step.fanout.over, run);
+    if (!Array.isArray(values)) throw new Error("fanout over must resolve to an array");
+    const stage = step.fanout.steps[item.stage];
+    if (!stage) throw new Error("consumer fanout stage is out of range");
+    const closure = stage.out === undefined ? null : this.contractClosure(spec, stage.out);
+    return {
+      id: `${step.id}/${item.index}`,
+      do: this.renderFanout(stage.do, run, values[item.index], item.output),
+      agent: stage.agent ?? "claude",
+      attempt: item.attempts.length + 1,
+      epoch: item.epoch ?? state.epoch ?? 0,
+      dispatchToken: item.dispatchToken,
+      ...(item.failure ? { previousFailure: item.failure } : {}),
+      flow: run.flowName,
+      step: step.id,
+      stage: item.stage,
+      itemIndex: item.index,
+      generation: item.generation,
+      contract: closure,
+      contractDigest: closure === null ? null : digest(closure),
+      policy: {
+        isolation: step.fanout.isolation,
+        merge: step.fanout.merge,
+        pre_merge: [...(step.fanout.pre_merge ?? [])],
+      },
+      revisionDigest: run.revisionDigest,
+    };
+  }
+
+  private contractClosure(spec: Specification, root: string): { root: string; contracts: Record<string, Record<string, string>> } {
+    const raw = spec.contracts as Record<string, Record<string, string>>;
+    const reachable = new Set<string>();
+    const visit = (name: string): void => {
+      if (reachable.has(name)) return;
+      const fields = raw[name];
+      if (!fields) throw new Error(`output contract ${name} is missing`);
+      reachable.add(name);
+      for (const type of Object.values(fields)) {
+        const referenced = contractReference(type, raw);
+        if (referenced !== undefined) visit(referenced);
+      }
+    };
+    visit(root);
+    return {
+      root,
+      contracts: Object.fromEntries([...reachable].sort().map((name) => [name, structuredClone(raw[name]!) ])),
+    };
+  }
+
   private render(value: string, scope: ExecutionScope): string {
     const references = extractReferences(value);
     if (!references) throw new Error("invalid reference after validation");
@@ -1693,7 +1991,7 @@ export class StratumEngine {
     };
   }
 
-  private locateStep(run: PersistedRun, spec: Specification, id: string): { scope: ExecutionScope; step: Step; state: StepState } | undefined {
+  private locateStep(run: PersistedRun, spec: Specification, id: string): { scope: ExecutionScope; step: Step; state: StepState; item?: FanoutItemState } | undefined {
     const root = this.rootScope(run, spec);
     if (!id.includes("/")) {
       const step = root.flow.steps.find((candidate) => candidate.id === id);
@@ -1705,6 +2003,11 @@ export class StratumEngine {
     const [parentId, childId] = parts;
     const parentStep = root.flow.steps.find((candidate) => candidate.id === parentId);
     const parentState = root.steps[parentId];
+    if (parentStep?.fanout?.dispatch === "consumer" && parentState?.status === "running" && parentState.fanout) {
+      if (!/^(0|[1-9][0-9]*)$/.test(childId)) return undefined;
+      const item = parentState.fanout.items[Number(childId)];
+      return item && item.index === Number(childId) ? { scope: root, step: parentStep, state: parentState, item } : undefined;
+    }
     if (!parentStep || parentStep.run === undefined || !parentState?.sub || parentState.status !== "running") return undefined;
     const scope = this.childScope(spec, parentStep, parentState);
     const step = scope.flow.steps.find((candidate) => candidate.id === childId);
@@ -1712,9 +2015,9 @@ export class StratumEngine {
     return step && state ? { scope, step, state } : undefined;
   }
 
-  private collectReady(run: PersistedRun, spec: Specification): ReadyStep[] {
+  private collectReady(run: PersistedRun, spec: Specification): ReadyEntry[] {
     const root = this.rootScope(run, spec);
-    const ready = root.flow.steps.flatMap((step) => {
+    const ready: ReadyEntry[] = root.flow.steps.flatMap((step) => {
       const state = root.steps[step.id]!;
       return step.do !== undefined && state.status === "ready" ? [this.readyStep(run, step, state, root)] : [];
     });
@@ -1725,6 +2028,13 @@ export class StratumEngine {
       for (const step of child.flow.steps) {
         const state = child.steps[step.id]!;
         if (step.do !== undefined && state.status === "ready") ready.push(this.readyStep(run, step, state, child));
+      }
+    }
+    for (const step of root.flow.steps) {
+      const state = root.steps[step.id];
+      if (step.fanout?.dispatch !== "consumer" || state?.status !== "running" || !state.fanout) continue;
+      for (const item of state.fanout.items) {
+        if (item.status === "ready") ready.push(this.consumerDescriptor(run, spec, step, state, item));
       }
     }
     return ready;
@@ -1984,6 +2294,11 @@ export class StratumEngine {
     return { status: "failed", runId: run.id, failure: requiredFailure(run), ledger };
   }
 
+  private withRevisionDigest(response: EngineResponse, run: PersistedRun): RevisionedEngineResponse {
+    if (run.revisionDigest === undefined) throw new Error("run is missing its persisted revision digest");
+    return { ...response, revisionDigest: run.revisionDigest };
+  }
+
   private ledgerInfo(run: PersistedRun): LedgerInfo {
     const budget = this.flowFor(run, this.validationFor(run).value).budget;
     return { spent: structuredClone(run.flowSpent), ...(budget ? { budget: structuredClone(budget) } : {}) };
@@ -2076,6 +2391,12 @@ function canonicalJson(value: unknown): string {
 }
 
 function terminal(status: StepState["status"]): boolean { return status === "succeeded" || status === "failed" || status === "skipped"; }
+function terminalFanoutItem(status: FanoutItemState["status"]): boolean { return status === "succeeded" || status === "failed" || status === "skipped"; }
+function contractReference(type: string, contracts: Record<string, Record<string, string>>): string | undefined {
+  let raw = type.endsWith("?") ? type.slice(0, -1) : type;
+  while (raw.endsWith("[]")) raw = raw.slice(0, -2);
+  return Object.hasOwn(contracts, raw) ? raw : undefined;
+}
 function now(): string { return new Date().toISOString(); }
 function delay(ms: number): Promise<void> { return new Promise((resolveDelay) => setTimeout(resolveDelay, ms)); }
 // Total for arbitrary thrown values: Object.create(null) and hostile getters must

@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
+import { SpecValidationError, StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import type { AuditEvent } from "../../src/engine/state.js";
+import { assertEvent, assertShape, type Shape } from "../../src/mcp/contracts.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -679,29 +680,211 @@ describe("P4 fanout require semantics", () => {
   });
 });
 
-describe("P4 frozen contracts", () => {
-  type Shape = string | { [key: string]: Shape };
+describe("P4 consumer-dispatched fanout", () => {
+  it("caps scoped readiness and advances a self-contained multi-stage descriptor with fenced tokens", async () => {
+    let connectorCalls = 0;
+    const e = await engine(async () => { connectorCalls += 1; return { failure: "must not run" }; });
+    const spec = {
+      version: 1,
+      contracts: {
+        Meta: { labels: "string[]", matrix: "integer[][]" },
+        StageOne: { seed: "string", meta: "Meta", history: "Meta[]" },
+        Result: { value: "string" },
+      },
+      flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", fanout: {
+          over: "${input.items}", dispatch: "consumer", concurrency: 2, isolation: "none",
+          require: "all", merge: "sequential", pre_merge: ["consumer-check"],
+          steps: [
+            { do: "seed ${item}", agent: "codex", out: "StageOne" },
+            { do: "finish ${item} from ${prev}", out: "Result" },
+          ],
+        } }],
+      } },
+    };
+    const planned = await e.plan(spec, { items: ["a", "b", "c"] }).catch((error: unknown) => {
+      if (error instanceof SpecValidationError) throw new Error(JSON.stringify(error.errors));
+      throw error;
+    });
+    if (planned.status !== "ready") throw new Error("expected consumer descriptors");
+    expect(planned.ready.map((entry) => entry.id)).toEqual(["fan/0", "fan/1"]);
+    const revisionDigest = (planned as unknown as { revisionDigest: string }).revisionDigest;
+    const first = planned.ready[0] as unknown as Record<string, unknown>;
+    expect(first).toMatchObject({
+      id: "fan/0", do: "seed a", agent: "codex", attempt: 1, epoch: 0,
+      flow: "main", step: "fan", stage: 0, itemIndex: 0, generation: 1,
+      contract: { root: "StageOne", contracts: {
+        StageOne: { seed: "string", meta: "Meta", history: "Meta[]" },
+        Meta: { labels: "string[]", matrix: "integer[][]" },
+      } },
+      contractDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      policy: { isolation: "none", merge: "sequential", pre_merge: ["consumer-check"] },
+      revisionDigest,
+    });
+    const firstToken = first.dispatchToken as string;
+    const resumed = await e.resume(planned.runId);
+    if (resumed.status !== "ready") throw new Error("expected persisted consumer descriptors");
+    expect(resumed.ready).toMatchObject([
+      { id: "fan/0", dispatchToken: firstToken }, { id: "fan/1" },
+    ]);
+    await expect(e.stepDone(planned.runId, "fan/0", { output: { seed: "a", meta: { labels: [], matrix: [] }, history: [] } }))
+      .rejects.toThrow(/dispatchToken.*required/i);
+    const next = await e.stepDone(
+      planned.runId, "fan/0",
+      { output: { seed: "a", meta: { labels: ["x"], matrix: [[1]] }, history: [] } },
+      undefined, firstToken,
+    );
+    if (next.status !== "ready") throw new Error("expected next stage");
+    const second = next.ready.find((entry) => entry.id === "fan/0") as unknown as Record<string, unknown>;
+    expect(second).toMatchObject({ stage: 1, do: "finish a from {\"seed\":\"a\",\"meta\":{\"labels\":[\"x\"],\"matrix\":[[1]]},\"history\":[]}", itemIndex: 0, generation: 1 });
+    expect(second.dispatchToken).not.toBe(firstToken);
+    await expect(e.stepDone(planned.runId, "fan/0", { output: { value: "stale" } }, undefined, firstToken)).rejects.toThrow(/stale/);
+    const afterFirst = await e.stepDone(planned.runId, "fan/0", { output: { value: "A" } }, undefined, second.dispatchToken as string);
+    expect(afterFirst.status).toBe("ready");
+    if (afterFirst.status !== "ready") throw new Error("expected promoted consumer item");
+    expect(afterFirst.ready).toEqual(expect.arrayContaining([expect.objectContaining({ id: "fan/2", itemIndex: 2 })]));
+    expect((await e.audit(planned.runId)).steps.fan?.fanout?.items[0]).toMatchObject({
+      status: "succeeded", acceptedDispatchToken: second.dispatchToken,
+    });
+    expect(connectorCalls).toBe(0);
+  });
 
+  it("retries contract and ensure failures item-locally through the shared settlement path", async () => {
+    const e = await engine();
+    const spec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", attempts: 3, fanout: {
+          over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: "all", merge: "sequential",
+          steps: [{ do: "fan ${item}", out: "Result", ensure: [{ expr: "result.value == 'ok'" }] }],
+        } }],
+      } },
+    };
+    const planned = await e.plan(spec, { items: ["a"] });
+    if (planned.status !== "ready") throw new Error("expected consumer item");
+    const first = planned.ready[0]!;
+    const schemaRetry = await e.stepDone(planned.runId, "fan/0", { output: { nope: true } }, undefined, first.dispatchToken);
+    if (schemaRetry.status !== "ready") throw new Error("expected contract retry");
+    expect(schemaRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 2, previousFailure: { reason: expect.stringContaining("Unrecognized key") } });
+    const ensureRetry = await e.stepDone(planned.runId, "fan/0", { output: { value: "bad" } }, undefined, schemaRetry.ready[0]!.dispatchToken);
+    if (ensureRetry.status !== "ready") throw new Error("expected ensure retry");
+    expect(ensureRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 3, previousFailure: { reason: expect.stringContaining("ensure") } });
+    const completed = await e.stepDone(planned.runId, "fan/0", { output: { value: "ok" } }, undefined, ensureRetry.ready[0]!.dispatchToken);
+    expect(completed).toMatchObject({ status: "completed", output: { value: "ok" } });
+  });
+
+  it("carries null contracts, preserves skipped positions, and handles empty all/any/N requirements", async () => {
+    const noOut = await engine();
+    const noOutSpec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${finish.output}", contract: "Result" },
+        steps: [
+          { id: "fan", fanout: { over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: "all", merge: "sequential", steps: [{ do: "free ${item}" }] } },
+          { id: "finish", after: ["fan"], set: { value: "'done'" }, out: "Result" },
+        ],
+      } },
+    };
+    const noOutPlan = await noOut.plan(noOutSpec, { items: ["a"] });
+    if (noOutPlan.status !== "ready") throw new Error("expected contract-less descriptor");
+    expect(noOutPlan.ready[0]).toMatchObject({ contract: null, contractDigest: null });
+    const noOutDone = await noOut.stepDone(noOutPlan.runId, "fan/0", { output: { arbitrary: true } }, undefined, noOutPlan.ready[0]!.dispatchToken);
+    expect(noOutDone).toMatchObject({ status: "completed", output: { value: "done" } });
+    expect((await noOut.audit(noOutPlan.runId)).steps.fan?.output).toEqual([{ arbitrary: true }]);
+
+    const ordered = await engine();
+    const orderedSpec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", fanout: {
+          over: "${input.items}", dispatch: "consumer", concurrency: 3, isolation: "none", require: 2, merge: "sequential",
+          steps: [{ do: "fan ${item}", out: "Result", when: "item != 'skip'" }],
+        } }],
+      } },
+    };
+    const orderedPlan = await ordered.plan(orderedSpec, { items: ["a", "skip", "b"] });
+    if (orderedPlan.status !== "ready") throw new Error("expected non-skipped items");
+    expect(orderedPlan.ready.map((entry) => entry.id)).toEqual(["fan/0", "fan/2"]);
+    const afterA = await ordered.stepDone(orderedPlan.runId, "fan/0", { output: { value: "A" } }, undefined, orderedPlan.ready[0]!.dispatchToken);
+    if (afterA.status !== "ready") throw new Error("expected remaining item");
+    const b = afterA.ready.find((entry) => entry.id === "fan/2")!;
+    expect(await ordered.stepDone(orderedPlan.runId, "fan/2", { output: { value: "B" } }, undefined, b.dispatchToken)).toMatchObject({ status: "completed" });
+    expect((await ordered.audit(orderedPlan.runId)).steps.fan?.output).toEqual([{ value: "A" }, null, { value: "B" }]);
+
+    for (const [requirement, status] of [["all", "completed"], ["any", "failed"], [1, "failed"]] as const) {
+      const empty = await engine();
+      const emptySpec = {
+        version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+          input: { items: "string[]" }, output: { from: "${finish.output}", contract: "Result" },
+          steps: [
+            { id: "fan", fanout: { over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: requirement, merge: "sequential", steps: [{ do: "fan ${item}", out: "Result" }] } },
+            { id: "finish", after: ["fan"], set: { value: "'empty'" }, out: "Result" },
+          ],
+        } },
+      };
+      expect((await empty.plan(emptySpec, { items: [] })).status).toBe(status);
+    }
+  });
+
+  it("keeps checkpoint generations monotonic and guards a real consumer worktree lifecycle through its merge gate", async () => {
+    const generation = await engine();
+    const generationSpec = {
+      version: 1, contracts: { Batch: { items: "string[]" }, Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { name: "string" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [
+          { id: "prep", do: "prep", out: "Batch" },
+          { id: "fan", fanout: { over: "${prep.output.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: "all", merge: "sequential", steps: [{ do: "fan ${item}", out: "Result" }] } },
+        ],
+      } },
+    };
+    const prep = await generation.plan(generationSpec, { name: "x" });
+    if (prep.status !== "ready") throw new Error("expected prep");
+    await generation.commit(prep.runId, "before-fanout");
+    const issued = await generation.stepDone(prep.runId, "prep", { output: { items: ["a"] } }, undefined, prep.ready[0]!.dispatchToken);
+    if (issued.status !== "ready") throw new Error("expected first generation");
+    const old = issued.ready[0] as unknown as { dispatchToken: string; generation: number };
+    expect(old.generation).toBe(1);
+    await generation.stepDone(prep.runId, "fan/0", { output: { value: "one" } }, undefined, old.dispatchToken);
+    const reverted = await generation.revert(prep.runId, "before-fanout");
+    if (reverted.status !== "ready") throw new Error("expected restored prep");
+    const reissued = await generation.stepDone(prep.runId, "prep", { output: { items: ["b"] } }, undefined, reverted.ready[0]!.dispatchToken);
+    if (reissued.status !== "ready") throw new Error("expected second generation");
+    expect(reissued.ready[0]).toMatchObject({ id: "fan/0", generation: 2 });
+    await expect(generation.stepDone(prep.runId, "fan/0", { output: { value: "stale" } }, undefined, old.dispatchToken)).rejects.toThrow(/stale/);
+
+    const guarded = await engine();
+    const guardedSpec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [
+          { id: "fan", fanout: { over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "worktree", require: "all", merge: "sequential", pre_merge: ["consumer-only"], steps: [{ do: "write ${item}", out: "Result" }] } },
+          { id: "merge", after: ["fan"], gate: { on_approve: null, on_revise: null, on_kill: null } },
+        ],
+      } },
+    };
+    const guardedPlan = await guarded.plan(guardedSpec, { items: ["a"] }, { workspaceRoot: "/path/engine-must-not-touch" });
+    if (guardedPlan.status !== "ready") throw new Error("expected consumer worktree descriptor");
+    await expect(guarded.commit(guardedPlan.runId, "blocked")).rejects.toThrow(/in-flight fanout/);
+    await expect(guarded.revert(guardedPlan.runId, "missing")).rejects.toThrow(/in-flight fanout/);
+    const waiting = await guarded.stepDone(guardedPlan.runId, "fan/0", { output: { value: "done" } }, undefined, guardedPlan.ready[0]!.dispatchToken);
+    expect(waiting.status).toBe("running");
+    await expect(guarded.commit(guardedPlan.runId, "blocked")).rejects.toThrow(/successor gate/);
+    await expect(guarded.revert(guardedPlan.runId, "missing")).rejects.toThrow(/successor gate/);
+    const audit = await guarded.audit(guardedPlan.runId);
+    const gateToken = audit.steps.merge?.gateToken;
+    expect(gateToken).toEqual(expect.any(String));
+    expect(audit.events.map((event) => event.type)).not.toContain("fanout_item_dispatched");
+    expect(audit.events.map((event) => event.type)).not.toContain("fanout_merge");
+    for (const event of audit.events) await expect(assertEvent(event)).resolves.toBeUndefined();
+    expect(await guarded.gateResolve(guardedPlan.runId, "merge", "approve", gateToken)).toMatchObject({ status: "completed" });
+    expect(await guarded.commit(guardedPlan.runId, "released")).toMatchObject({ status: "committed" });
+  });
+});
+
+describe("P4 frozen contracts", () => {
   function checkShape(value: unknown, shape: Shape, path: string): string[] {
-    if (typeof shape === "string") {
-      const ok = shape.split("|").some((option) =>
-        option === "any" ? true
-          : option === "null" ? value === null
-            : option === "array" ? Array.isArray(value)
-              : option === "object" ? typeof value === "object" && value !== null && !Array.isArray(value)
-                : typeof value === option);
-      return ok ? [] : [`${path}: expected ${shape}, got ${JSON.stringify(value)}`];
-    }
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return [`${path}: expected object, got ${JSON.stringify(value)}`];
-    const record = value as Record<string, unknown>;
-    const errors: string[] = [];
-    const declared = new Map(Object.entries(shape).map(([rawKey, child]) => [rawKey.endsWith("?") ? rawKey.slice(0, -1) : rawKey, { child, optional: rawKey.endsWith("?") }]));
-    for (const [key, { child, optional }] of declared) {
-      if (record[key] === undefined) { if (!optional) errors.push(`${path}.${key}: missing`); continue; }
-      errors.push(...checkShape(record[key], child, `${path}.${key}`));
-    }
-    for (const key of Object.keys(record)) if (!declared.has(key) && record[key] !== undefined) errors.push(`${path}.${key}: undeclared field`);
-    return errors;
+    try { assertShape(value, shape, path); return []; }
+    catch (error) { return [error instanceof Error ? error.message : String(error)]; }
   }
 
   async function initRepo(prefix: string): Promise<string> {
@@ -720,7 +903,7 @@ describe("P4 frozen contracts", () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
     expect(eventsContract.events).toBe(1);
-    expect(surface.surface).toBe(7);
+    expect(surface.surface).toBe(8);
     expect(Object.keys(surface.tools)).toHaveLength(21);
 
     const allEvents: AuditEvent[] = [];

@@ -1,16 +1,16 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
-import { CheckpointOperationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
+import { CheckpointOperationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
 import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { evaluateJudged } from "../judge/judged.js";
 import type { GuardJudge } from "../guard/transition.js";
 import { compileSpeckit, SpeckitCompileError } from "../speckit/compiler.js";
-import { assertEvent, assertToolRequest, assertToolResponse, mcpSurface, validateShape, type OneOfShape, type Shape } from "./contracts.js";
+import { assertEvent, assertShape, assertToolRequest, assertToolResponse, mcpSurface, validateShape, type OneOfShape, type Shape } from "./contracts.js";
 
 export interface McpDependencies {
   engine?: Pick<StratumEngine, "plan" | "stepDone" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
@@ -91,12 +91,12 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           break;
         }
         case "stratum_plan": response = await engine.plan(request.spec, request.input, option(request, "workspaceRoot")); break;
-        case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result"), optionalNumber(request, "epoch")); break;
+        case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result"), optionalNumber(request, "epoch"), optionalString(request, "dispatchToken")); break;
         case "stratum_commit": response = { ...await engine.commit(string(request, "flow_id"), string(request, "label")) }; break;
         case "stratum_revert": response = await engine.revert(string(request, "flow_id"), string(request, "label")); break;
         case "stratum_resume": response = await engine.resume(string(request, "runId")); break;
         case "stratum_audit": response = auditResponse(await engine.audit(string(request, "runId"))); break;
-        case "stratum_gate_resolve": response = await engine.gateResolve(string(request, "runId"), string(request, "stepId"), string(request, "decision") as "approve" | "revise" | "kill"); break;
+        case "stratum_gate_resolve": response = await engine.gateResolve(string(request, "runId"), string(request, "stepId"), string(request, "decision") as "approve" | "revise" | "kill", optionalString(request, "gateToken")); break;
         case "stratum_flow_poll": response = flowPollResponse(await engine.flowPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
         case "stratum_flow_run_bg": response = await engine.flowRunBg(request.spec, request.input, option(request, "workspaceRoot")); break;
         case "stratum_flow_bg_poll": response = bgFlowPollResponse(await engine.flowBgPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
@@ -150,6 +150,15 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         await assertToolResponse(tool, response);
         return response;
       } catch (error) {
+        if (tool === "stratum_flow_run_bg" && error instanceof SpecValidationError
+          && error.errors.some((entry) => entry.code === "consumer_dispatch_bg_unsupported")) {
+          const code = "consumer_dispatch_bg_unsupported";
+          const data = { code, errors: error.errors };
+          const declaration = (await mcpSurface()).errors[code];
+          if (!declaration) throw new Error(`MCP error registry is missing ${code}`);
+          assertShape(data, declaration.data, `errors.${code}.data`);
+          throw new McpError(ErrorCode.InvalidParams, error.message, data);
+        }
         if ((tool === "stratum_commit" || tool === "stratum_revert") && error instanceof CheckpointOperationError) {
           const response = checkpointErrorEnvelope(error);
           await assertToolResponse(tool, response);
