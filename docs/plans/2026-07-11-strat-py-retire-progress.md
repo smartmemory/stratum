@@ -36,6 +36,29 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice C (tokens/generations/fencing) — ✅ DONE 2026-07-16 (stratum develop @ dca1235).**
+  Engine-level universal fencing: persisted `dispatchToken`/`gateToken`/`acceptedDispatchToken`,
+  run-level generation counter OUTSIDE checkpoint snapshots (CHECKPOINT_EXCLUDED + classification
+  test), full mint/persist/rotate lifecycle (revert re-mint, monotonic generations, durable
+  cancellation fence — p5 cancelled-run expectation updated to design semantics), engine
+  stepDone/gateResolve optional token echoes (missing accepted / mismatch rejected),
+  revisionDigest (SHA-256 canonical JSON) persisted+verified, commit/revert guard through the
+  consumer-worktree successor gate. Surface STAYS 7 (server.ts/mcp-surface.json/events.json
+  byte-identical — C/D boundary held; wire exposure = Slice D). Loop: codex sol/high build
+  (10 RED-first tests) → codex sol/high review → **3 findings, ALL ACCEPT, all fixed RED-first
+  by controller (+3 tests)**: (1) High — audit read the fanout-PINNED in-memory run without the
+  lock; a minted token was observable before its save landed (probe-reproduced) → audit now
+  reads DURABLE state (store.load, not loadRun); (2) High — guard resolved the successor gate
+  by ARRAY adjacency (flow.steps[index+1]) not the validated dependency notion — reproduced
+  both permanent-commit-refusal and false-release → guard now mirrors validation's
+  qualifying-gate selection (unconditional, non-routed, dependencies ∋ fanout; release = all
+  qualifying gates succeeded); TWO independent reviewers (controller read + codex probe)
+  converged on this one; (3) Medium — pre-Slice-C persisted ready runs threw on resume
+  (readyStep missing-token invariant) → resumeLocked backfills tokens for ready/waiting_gate
+  before its persist. Full suite 634 pass / 1 skip (one live-codex network flake observed,
+  clean on re-run); tsc clean. Next: Slice D (consumer scheduling + descriptors + surface 8;
+  carry Slice B's deferred MCP error-mapping finding into the D brief).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice B (IR + validation) — ✅ DONE 2026-07-16 (stratum develop @ 06d8fcf).**
   `fanout.dispatch` enum w/ default injected into the VALIDATED value (persisted-spec
   proof via StateStore — plan already stores the Zod-parsed spec); consumer+worktree
