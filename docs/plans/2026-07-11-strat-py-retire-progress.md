@@ -36,6 +36,28 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice D (consumer fanout + descriptors + SURFACE 8) — ✅ DONE 2026-07-16 (stratum develop @ 5efc30a).**
+  Consumer scheduling (slot-per-item across stages, debit once per stage first-ready),
+  self-contained descriptors in `ready[]` (contract CLOSURE+digest incl. `?`/`[]` ref
+  resolution, policy, generation, revisionDigest, token — descriptor REQUIRES its token, no
+  compat), shared settlement kernel `settleFanoutAttempt` (owners can't drift), merge guarded
+  `dispatch==="engine"`, locateStep numeric discrimination (engine items externally
+  unreachable). Surface 7→8: `ready` = `{"$array":{"$oneOf":[ordinary, descriptor]}}` both
+  shapes frozen; optional `dispatchToken`/`gateToken` request echoes forwarded; plan/resume
+  expose `revisionDigest` (every variant, no other tool — `RevisionedEngineResponse` wrapper);
+  `errors` registry + typed MCP protocol error for `consumer_dispatch_bg_unsupported`
+  (closes Slice B's deferred finding — probe-confirmed -32603/data-undefined gap now mapped
+  with shape-validated `data`). events.json byte-identical. Loop: codex sol/high build
+  (6 dense tests, contract-first RED) → codex sol/high review → **1 P1 finding REJECTED as
+  flag-day scope** (missing-token acceptance for ordinary/gate ids is the DESIGNED migration
+  window: design gates missing-echo rejection on compose echoing tokens first).
+  **FLAG-DAY CHECKLIST (from the finding, task #6):** make `dispatchToken`+`gateToken`
+  REQUIRED in requests; engine rejects MISSING tokens for ordinary/subflow/gate ids; REVERSE
+  the three compat assertions (fencing.test.ts ~64 + ~126 missing-token acceptance,
+  p5.test.ts ~350 ordinary-id acceptance); retire Phase-1 `epoch` request field; surface bump.
+  Full suite 640 pass / 1 skip (live-codex flake recurs intermittently on full runs — network,
+  not deterministic); tsc clean. Next: Slice E (compose consumer loop, compose-develop repo).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice C (tokens/generations/fencing) — ✅ DONE 2026-07-16 (stratum develop @ dca1235).**
   Engine-level universal fencing: persisted `dispatchToken`/`gateToken`/`acceptedDispatchToken`,
   run-level generation counter OUTSIDE checkpoint snapshots (CHECKPOINT_EXCLUDED + classification
