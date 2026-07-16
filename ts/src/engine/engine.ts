@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -82,6 +82,7 @@ export interface ReadyStep {
   agent: "claude" | "codex";
   attempt: number;
   epoch: number;
+  dispatchToken: string;
   previousFailure?: FailureContext;
 }
 
@@ -253,7 +254,8 @@ export class StratumEngine {
     const steps: Record<string, StepState> = Object.create(null);
     for (const step of flow.steps) steps[step.id] = { status: "pending", attempts: [], spent: {} };
     const run: PersistedRun = {
-      id: randomUUID(), spec: validation.value, input, flowName, status: "running", flowSpent: {}, steps,
+      id: randomUUID(), spec: validation.value, revisionDigest: digest(validation.value), generationCounter: 0,
+      input, flowName, status: "running", flowSpent: {}, steps,
       events: [{ at: now(), type: "planned" }],
       // Canonicalize at plan time: a relative root must never re-resolve against a
       // different process cwd after restart.
@@ -343,7 +345,7 @@ export class StratumEngine {
     }
   }
 
-  async stepDone(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
+  async stepDone(runId: string, stepId: string, result: StepResult, expectedEpoch?: number, dispatchToken?: string): Promise<EngineResponse> {
     // Sole-mutator enforcement (STRAT-TS-FLOW-BG-OWNERSHIP): while a run is
     // actively bg-driven, the driver owns its mutation surface — an external
     // stepDone would race an in-flight connector dispatch and could commit a
@@ -355,17 +357,18 @@ export class StratumEngine {
     // finished bg run (completed/failed/budget_exhausted) falls through, where
     // stepDone raises the normal "not awaiting" error anyway.
     this.assertExternalMutationAllowed(runId, "stepDone");
-    return this.stepDoneOwned(runId, stepId, result, expectedEpoch);
+    return this.stepDoneOwned(runId, stepId, result, expectedEpoch, dispatchToken);
   }
 
   /** Lock-wrapped stepDone used by the bg driver itself, bypassing the
    * sole-mutator guard on the public entry point. */
-  private stepDoneOwned(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
-    return this.withRunLock(runId, () => this.stepDoneLocked(runId, stepId, result, expectedEpoch));
+  private stepDoneOwned(runId: string, stepId: string, result: StepResult, expectedEpoch?: number, dispatchToken?: string): Promise<EngineResponse> {
+    return this.withRunLock(runId, () => this.stepDoneLocked(runId, stepId, result, expectedEpoch, dispatchToken));
   }
 
-  private async stepDoneLocked(runId: string, stepId: string, result: StepResult, expectedEpoch?: number): Promise<EngineResponse> {
+  private async stepDoneLocked(runId: string, stepId: string, result: StepResult, expectedEpoch?: number, dispatchToken?: string): Promise<EngineResponse> {
     const run = await this.loadRun(runId);
+    if (run.cancelRequested === true) throw new Error(`run ${runId} is cancelled; outstanding step issuances cannot be resolved`);
     const validated = this.validationFor(run);
     const located = this.locateStep(run, validated.value, stepId);
     const scope = located?.scope;
@@ -377,6 +380,9 @@ export class StratumEngine {
     if (!scope) throw new Error("step scope missing after lookup");
     if (expectedEpoch !== undefined && (state.epoch ?? 0) !== expectedEpoch) {
       throw new Error("step result is stale: dispatched for a superseded epoch");
+    }
+    if (dispatchToken !== undefined && state.dispatchToken !== dispatchToken) {
+      throw new Error("step result is stale: dispatched for a superseded issuance");
     }
 
     const attempt = state.attempts.length + 1;
@@ -399,6 +405,7 @@ export class StratumEngine {
       state.attempts.push({ attempt, at: now(), failure, ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
       state.status = "failed";
       state.failure = failure;
+      delete state.dispatchToken;
       this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
       return this.terminalBudget(run, failure);
     }
@@ -416,6 +423,7 @@ export class StratumEngine {
       state.attempts.push({ attempt, at: now(), failure, ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
       state.status = "failed";
       state.failure = failure;
+      delete state.dispatchToken;
       this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
       return this.terminalBudget(run, failure);
     }
@@ -440,6 +448,7 @@ export class StratumEngine {
         state.attempts.push({ attempt, at: now(), failure, ...(result.output !== undefined ? { result: result.output } : {}), ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
         state.failure = failure;
         state.status = "pending";
+        delete state.dispatchToken;
         this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure, iterate: { iteration: completedIterations, max: step.iterate.max } });
         await this.persist(run);
         return this.advance(run, validated.value, validated.contracts, scope);
@@ -457,6 +466,8 @@ export class StratumEngine {
       state.attempts.pop();
       return this.failAttempt(run, validated.value, validated.contracts, scope, step, state, attempt, flowError, usage, result.output, telemetry);
     }
+    if (state.dispatchToken !== undefined) state.acceptedDispatchToken = state.dispatchToken;
+    delete state.dispatchToken;
     await this.persist(run);
     return this.advance(run, validated.value, validated.contracts, scope);
   }
@@ -499,6 +510,7 @@ export class StratumEngine {
           available,
         );
       }
+      this.rotateRestoredIssuances(run);
       await this.persist(run);
       return { ...await this.reAdvanceLocked(runId), reverted_to: normalized };
     });
@@ -515,6 +527,13 @@ export class StratumEngine {
 
   private async resumeLocked(runId: string): Promise<EngineResponse> {
     const run = await this.loadRun(runId);
+    const computedDigest = digest(run.spec);
+    if (run.revisionDigest !== undefined && run.revisionDigest !== computedDigest) {
+      throw new Error("persisted revision digest does not match the effective specification");
+    }
+    run.revisionDigest = computedDigest;
+    run.generationCounter ??= 0;
+    this.backfillIssuanceTokens(run);
     const validated = this.validationFor(run);
     this.event(run, "resumed");
     await this.persist(run);
@@ -525,7 +544,10 @@ export class StratumEngine {
   }
 
   async audit(runId: string): Promise<AuditTrail> {
-    const run = await this.loadRun(runId);
+    // Durable read, deliberately bypassing the in-memory pin an active fanout
+    // holds: audit is the consumer's discovery surface (D5) and a token minted
+    // on the live object must stay invisible until its save lands.
+    const run = await this.store.load(runId);
     return { runId, status: run.status, events: structuredClone(run.events), steps: structuredClone(run.steps), flowSpent: structuredClone(run.flowSpent), ...(run.output !== undefined ? { output: structuredClone(run.output) } : {}) };
   }
 
@@ -575,8 +597,8 @@ export class StratumEngine {
     return { status: bg.status };
   }
 
-  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill"): Promise<EngineResponse> {
-    const response = await this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision));
+  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken?: string): Promise<EngineResponse> {
+    const response = await this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision, gateToken));
     const bg = this.bgFlows.get(runId);
     if (bg?.status === "paused_gate" && response.status !== "ready" && response.status !== "running") {
       bg.status = response.status;
@@ -597,7 +619,7 @@ export class StratumEngine {
     return response;
   }
 
-  private async gateResolveLocked(runId: string, stepId: string, decision: "approve" | "revise" | "kill"): Promise<EngineResponse> {
+  private async gateResolveLocked(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken?: string): Promise<EngineResponse> {
     // Runtime guard for JS callers: an unknown decision must be rejected, not
     // fall through the ternary chain onto the kill route.
     if (decision !== "approve" && decision !== "revise" && decision !== "kill") throw new Error(`invalid gate decision ${JSON.stringify(decision)}`);
@@ -612,6 +634,10 @@ export class StratumEngine {
     const step = located?.step;
     const state = located?.state;
     if (!scope || !step?.gate || !state || state.status !== "waiting_gate" || run.status !== "running") throw new Error("gate is not awaiting a decision");
+    if (gateToken !== undefined && state.gateToken !== gateToken) {
+      throw new Error("gate decision is stale: issued for a superseded gate round");
+    }
+    delete state.gateToken;
     const target = decision === "approve" ? step.gate.on_approve : decision === "revise" ? step.gate.on_revise : step.gate.on_kill;
     this.event(run, "gate_resolved", stepId, { decision, target });
     if (decision === "kill") {
@@ -720,7 +746,7 @@ export class StratumEngine {
           }));
           for (const { step, result } of results) {
             try {
-              await this.stepDoneOwned(runId, step.id, result, step.epoch);
+              await this.stepDoneOwned(runId, step.id, result, step.epoch, step.dispatchToken);
             } catch (error) {
               // Swallow ONLY genuine supersession — the run ended, the step already
               // advanced, or a revise bumped its epoch (a stale-epoch rejection);
@@ -731,8 +757,8 @@ export class StratumEngine {
               // and live in parentState.sub.steps, not the root steps map.
               const current = await this.loadRun(runId);
               const state = this.locateStep(current, this.validationFor(current).value, step.id)?.state;
-              const superseded = current.status !== "running" || state === undefined
-                || state.status !== "ready" || (state.epoch ?? 0) !== step.epoch;
+              const superseded = current.status !== "running" || current.cancelRequested === true || state === undefined
+                || state.status !== "ready" || (state.epoch ?? 0) !== step.epoch || state.dispatchToken !== step.dispatchToken;
               if (!superseded) throw error;
             }
           }
@@ -786,6 +812,7 @@ export class StratumEngine {
   ): Promise<EngineResponse> {
     await this.advanceScopeLoop(run, spec, contracts, scope);
     if (run.status !== "running") return this.response(run);
+    if (run.cancelRequested === true) return { status: "running", runId: run.id, ledger: this.ledgerInfo(run) };
     if (scope.parent) {
       const finished = await this.settleSubflow(run, spec, contracts, scope);
       if (finished) return finished;
@@ -848,7 +875,7 @@ export class StratumEngine {
   ): Promise<void> {
     const flow = scope.flow;
     let changed = true;
-    while (changed && run.status === "running") {
+    while (changed && run.status === "running" && run.cancelRequested !== true) {
       changed = false;
       for (const step of flow.steps) {
         const state = scope.steps[step.id]!;
@@ -904,6 +931,7 @@ export class StratumEngine {
         }
         if (step.gate !== undefined) {
           state.status = "waiting_gate";
+          state.gateToken = randomUUID();
           this.event(run, "gate_waiting", this.scopedId(scope, step.id));
           await this.persist(run);
           changed = true;
@@ -924,7 +952,9 @@ export class StratumEngine {
           }
           state.status = "running";
           state.fanout = {
-            items: items.map((_, index) => ({ index, status: "pending", attempts: [] })),
+            items: items.map((_, index) => ({
+              index, status: "pending", attempts: [], generation: this.nextGeneration(run), epoch: state.epoch ?? 0,
+            })),
           };
           for (const item of state.fanout.items) this.event(run, "fanout_item_ready", step.id, { itemIndex: item.index });
           await this.persist(run);
@@ -962,9 +992,10 @@ export class StratumEngine {
         }
         // Render BEFORE reserving: a render failure dispatches nothing, so it must not
         // debit a dispatch — and its attempt record carries no usage.
-        let ready: ReadyStep;
+        let attempt: number;
         try {
-          ready = this.readyStep(run, step, state, scope);
+          this.render(step.do, scope);
+          attempt = state.attempts.length + 1;
         } catch (error) {
           await this.failAttempt(run, spec, contracts, scope, step, state, state.attempts.length + 1, message(error), {});
           changed = true;
@@ -983,8 +1014,10 @@ export class StratumEngine {
           changed = true;
           break;
         }
+        state.dispatchToken = randomUUID();
+        delete state.acceptedDispatchToken;
         state.status = "ready";
-        this.event(run, "ready", this.scopedId(scope, step.id), { attempt: ready.attempt });
+        this.event(run, "ready", this.scopedId(scope, step.id), { attempt });
         await this.persist(run);
         changed = true;
       }
@@ -1112,7 +1145,7 @@ export class StratumEngine {
     // A revise can invalidate this fanout at any await point; once stale, the
     // item belongs to a dead epoch — stop recording into it (already-reserved
     // dispatch costs stay in the flow ledger: they were really spent).
-    const stale = (): boolean => state.fanout !== fanoutRef;
+    const stale = (): boolean => run.cancelRequested === true || state.fanout !== fanoutRef;
     item.status = "running";
     let cwd = run.workspaceRoot;
     try {
@@ -1128,6 +1161,10 @@ export class StratumEngine {
       let finalStageSkipped = false;
       for (const [stageIndex, stage] of step.fanout.steps.entries()) {
         if (stale()) return;
+        item.stage = stageIndex;
+        item.epoch = state.epoch ?? 0;
+        delete item.dispatchToken;
+        delete item.acceptedDispatchToken;
         if (stage.when !== undefined) {
           const enabled = this.evaluateFanout(stage.when, run, value, previous, cwd);
           if (enabled !== true) {
@@ -1153,6 +1190,7 @@ export class StratumEngine {
             if (reserve === "flow") await this.terminalBudget(run, lastFailure);
             break;
           }
+          item.dispatchToken = randomUUID();
           this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: { dispatches: 1 } });
           this.event(run, "fanout_item_dispatched", step.id, { itemIndex: item.index, stage: stageIndex, attempt });
           // Durable BEFORE the (possibly long) connector await: a restart or a
@@ -1209,6 +1247,7 @@ export class StratumEngine {
         if (!success) {
           item.status = "failed";
           item.failure = lastFailure ?? { attempt: item.attempts.length + 1, reason: "fanout stage failed" };
+          delete item.dispatchToken;
           return undefined;
         }
       }
@@ -1218,6 +1257,7 @@ export class StratumEngine {
         // skipped item (null in the output array), never a success `require`
         // can count, and its partial worktree work is never merged.
         item.status = "skipped";
+        delete item.dispatchToken;
         return;
       }
       if (item.worktree) {
@@ -1234,7 +1274,10 @@ export class StratumEngine {
       }
       item.output = previous;
       item.status = "succeeded";
+      if (item.dispatchToken !== undefined) item.acceptedDispatchToken = item.dispatchToken;
+      delete item.dispatchToken;
     } finally {
+      if (run.cancelRequested === true) delete item.dispatchToken;
       if (item.worktree && run.workspaceRoot) {
         await execFileAsync("git", ["-C", run.workspaceRoot, "worktree", "remove", "--force", item.worktree]).catch(() => undefined);
         delete item.worktree;
@@ -1245,6 +1288,7 @@ export class StratumEngine {
 
   private recordFanoutAttempt(run: PersistedRun, step: Step, item: FanoutItemState, stage: number, attempt: number, success: boolean, failureKind: "connector" | "usage" | "contract" | "ensure" | "iterate" | "budget", failure: FailureContext, result?: StepResult, usage?: Budget): void {
     item.attempts.push({ attempt, at: now(), stage, failure, failureKind, ...(result?.output !== undefined ? { result: result.output } : {}), ...telemetryFields(result?.telemetry), ...(usage && hasBudget(usage) ? { usage } : {}) });
+    delete item.dispatchToken;
     this.event(run, "fanout_attempt_result", step.id, { itemIndex: item.index, stage, attempt, success, failure: { kind: failureKind, reason: failure.reason } });
   }
 
@@ -1284,6 +1328,8 @@ export class StratumEngine {
     const failure = { attempt, reason: identicalEvidence ? `${reason} (no retry: identical evidence)` : reason };
     state.attempts.push({ attempt, at: now(), failure, ...(result !== undefined ? { result } : {}), ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
     state.failure = failure;
+    delete state.dispatchToken;
+    delete state.acceptedDispatchToken;
     this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
     const maximum = step.attempts ?? 2;
     if (!forceExhausted && !identicalEvidence && attempt < maximum) {
@@ -1322,6 +1368,8 @@ export class StratumEngine {
     state.attempts.push({ attempt, at: now(), failure, ...(result !== undefined ? { result } : {}), ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
     state.failure = failure;
     state.status = "failed";
+    delete state.dispatchToken;
+    delete state.acceptedDispatchToken;
     this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
     return this.failParentRunStep(run, spec, contracts, scope, failure);
   }
@@ -1504,6 +1552,9 @@ export class StratumEngine {
       delete state.output;
       delete state.failure;
       delete state.routed;
+      delete state.dispatchToken;
+      delete state.gateToken;
+      delete state.acceptedDispatchToken;
       // A live fanout for this step must be invalidated, not just cleared:
       // the epoch bump makes in-flight workers/settlement stale (they check
       // object identity) and lets the re-activated step schedule freshly.
@@ -1538,9 +1589,11 @@ export class StratumEngine {
 
   private readyStep(run: PersistedRun, step: Step, state: StepState, scope: ExecutionScope = this.rootScope(run, this.validationFor(run).value)): ReadyStep {
     if (step.do === undefined) throw new Error("not a do step");
+    if (state.dispatchToken === undefined) throw new Error("ready step is missing its persisted dispatch token");
     const attempt = state.attempts.length + 1;
     return {
-      id: this.scopedId(scope, step.id), do: this.render(step.do, scope), agent: step.agent ?? "claude", attempt, epoch: state.epoch ?? 0,
+      id: this.scopedId(scope, step.id), do: this.render(step.do, scope), agent: step.agent ?? "claude", attempt,
+      epoch: state.epoch ?? 0, dispatchToken: state.dispatchToken,
       ...(state.failure ? { previousFailure: state.failure } : state.routed ? { previousFailure: state.routed } : {}),
     };
   }
@@ -1814,6 +1867,54 @@ export class StratumEngine {
     }
   }
 
+  private nextGeneration(run: PersistedRun): number {
+    const next = (run.generationCounter ?? 0) + 1;
+    run.generationCounter = next;
+    return next;
+  }
+
+  /** Runs persisted before token fencing carry ready/waiting issuances without
+   * tokens; mint them on resume (before the resume persist) so their readiness
+   * can be re-exposed instead of throwing — the state-side half of the
+   * missing-echo migration compat. */
+  private backfillIssuanceTokens(run: PersistedRun): void {
+    const walk = (steps: Record<string, StepState>): void => {
+      for (const state of Object.values(steps)) {
+        if (state.status === "ready" && state.dispatchToken === undefined) state.dispatchToken = randomUUID();
+        if (state.status === "waiting_gate" && state.gateToken === undefined) state.gateToken = randomUUID();
+        if (state.sub) walk(state.sub.steps);
+      }
+    };
+    walk(run.steps);
+  }
+
+  /** Checkpoints intentionally restore `steps` but not the run-global counter.
+   * Rotate every restored live issuance and give every restored non-terminal
+   * fanout item a fresh generation before the state can be exposed again. */
+  private rotateRestoredIssuances(run: PersistedRun): void {
+    const rotateSteps = (steps: Record<string, StepState>): void => {
+      for (const state of Object.values(steps)) {
+        if (state.status === "ready") {
+          state.dispatchToken = randomUUID();
+          delete state.acceptedDispatchToken;
+        } else if (state.status === "waiting_gate") {
+          state.gateToken = randomUUID();
+        }
+        for (const item of state.fanout?.items ?? []) {
+          if (item.status === "succeeded" || item.status === "failed" || item.status === "skipped") continue;
+          item.generation = this.nextGeneration(run);
+          item.epoch = state.epoch ?? item.epoch ?? 0;
+          if (item.dispatchToken !== undefined || item.status === "ready" || item.status === "running") {
+            item.dispatchToken = randomUUID();
+          }
+          delete item.acceptedDispatchToken;
+        }
+        if (state.sub) rotateSteps(state.sub.steps);
+      }
+    };
+    rotateSteps(run.steps);
+  }
+
   // A foreground fanout runs its connector work OUTSIDE the run lock, then settles under
   // it — holding references to the pre-checkpoint step/fanout objects. A commit would
   // snapshot mid-flight state; a revert reassigns run.steps to a clone, orphaning those
@@ -1822,8 +1923,35 @@ export class StratumEngine {
   // step stays `running` from dispatch through settlement), the same quiescence the
   // detached driver already requires. bg-driven runs are covered by the ownership guard.
   private assertNoForegroundFanout(run: PersistedRun, operation: "commit" | "revert"): void {
-    if (this.anyFanoutRunning(run, this.validationFor(run).value)) {
-      throw new Error(`run ${run.id} has an in-flight fanout; ${operation} must wait for it to settle`);
+    if (run.status !== "running") return;
+    const spec = this.validationFor(run).value;
+    const flow = this.flowFor(run, spec);
+    for (const step of flow.steps) {
+      if (!step.fanout) continue;
+      const state = run.steps[step.id]!;
+      if (state.status === "running") {
+        throw new Error(`run ${run.id} has an in-flight fanout; ${operation} must wait for it to settle`);
+      }
+      if (step.fanout.dispatch !== "consumer" || step.fanout.isolation !== "worktree" || state.fanout === undefined) continue;
+      // Release through the SAME successor notion validation enforces — an
+      // unconditional, normally-activated gate whose dependencies include the
+      // fanout. Array adjacency is not that notion: the validated gate may sit
+      // anywhere in the steps array.
+      const routedTargets = new Set<string>();
+      for (const candidate of flow.steps) {
+        if (candidate.on_fail !== undefined) routedTargets.add(candidate.on_fail);
+        if (candidate.gate?.on_approve) routedTargets.add(candidate.gate.on_approve);
+        if (candidate.gate?.on_kill) routedTargets.add(candidate.gate.on_kill);
+      }
+      const qualifying = flow.steps.filter((candidate) =>
+        candidate.gate !== undefined
+        && candidate.when === undefined
+        && !routedTargets.has(candidate.id)
+        && this.dependencies(candidate).includes(step.id));
+      const released = qualifying.length > 0 && qualifying.every((gate) => run.steps[gate.id]?.status === "succeeded");
+      if (!released) {
+        throw new Error(`run ${run.id} has an active consumer fanout lifecycle; ${operation} must wait for its successor gate to resolve`);
+      }
     }
   }
 
@@ -1927,6 +2055,24 @@ function deepEqual(left: unknown, right: unknown): boolean {
   const rightKeys = Object.keys(rightRecord);
   return leftKeys.length === rightKeys.length
     && leftKeys.every((key) => Object.hasOwn(rightRecord, key) && deepEqual(leftRecord[key], rightRecord[key]));
+}
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) throw new Error("effective specification contains a non-JSON value");
+    return serialized;
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  throw new Error("effective specification contains a non-JSON value");
 }
 
 function terminal(status: StepState["status"]): boolean { return status === "succeeded" || status === "failed" || status === "skipped"; }

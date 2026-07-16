@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### feat: per-issuance token/generation lifecycle + engine-level fencing (STRAT-TS-FANOUT-CONSUMER Slice C)
+
+Every client-executed issuance is now fenced at the engine level. `StepState`
+persists `dispatchToken` (minted per issuance: first dispatch, retry, stage
+advance, post-revise re-issue), gate-bearing steps persist a per-round
+`gateToken`, and terminal-succeeded state persists `acceptedDispatchToken` —
+the consumer's reconciliation target. Fanout items persist `stage`, `epoch`,
+`dispatchToken`, and a `generation` stamped from a run-level monotonic counter
+that lives OUTSIDE checkpoint snapshots (revert provably cannot roll it back;
+post-revert/post-revise re-enumeration advances it). Token lifecycle per the
+design: persist-before-expose, stable within an issuance (plan/resume/restart
+return the same token, no budget re-debit), rotate on any reissue, checkpoint
+revert re-mints restored non-terminal issuances, cancellation permanently
+fences outstanding issuances (a cancelled bg run no longer completes from a
+late connector result). `engine.stepDone` accepts an optional `dispatchToken`
+and `engine.gateResolve` an optional `gateToken` — missing accepted (migration
+compat), mismatched or prior-round rejected. Runs persisted before this change
+backfill tokens on resume. `plan` computes and persists `revisionDigest`
+(SHA-256 over canonical JSON: sorted keys, no whitespace, UTF-8), verified on
+resume. `audit` now reads DURABLE state (bypassing the in-memory pin an active
+fanout holds) and exposes all three token fields. The commit/revert guard
+extends through a consumer-worktree fanout's validated successor gate —
+resolved by the same dependency notion validation uses, not array adjacency.
+Wire exposure (MCP request echo fields, `revisionDigest` on responses) rides
+the surface-8 slice; `mcp-surface.json`, `events.json`, and the MCP server are
+untouched at surface 7.
+
 ### feat: IR `fanout.dispatch` + consumer-mode semantic validation (STRAT-TS-FANOUT-CONSUMER Slice B)
 
 `fanout.dispatch: "engine" | "consumer"` lands in the IR with the default

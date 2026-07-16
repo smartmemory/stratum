@@ -32,7 +32,16 @@ export interface FanoutAttemptRecord extends AttemptRecord {
 
 export interface FanoutItemState {
   index: number;
-  status: "pending" | "running" | "succeeded" | "failed" | "skipped";
+  status: "pending" | "ready" | "running" | "succeeded" | "failed" | "skipped";
+  /** Monotonic run-global identity for this enumeration; checkpoints never restore the counter. */
+  generation: number;
+  /** Current stage and plan epoch, persisted for restart-safe consumer descriptors. */
+  stage?: number;
+  epoch?: number;
+  /** Current client/worker issuance; rotated for every attempt and stage. */
+  dispatchToken?: string;
+  /** Issuance whose accepted report terminalized this item successfully. */
+  acceptedDispatchToken?: string;
   attempts: FanoutAttemptRecord[];
   output?: unknown;
   failure?: FailureContext;
@@ -124,6 +133,12 @@ export interface StepState {
   attempts: AttemptRecord[];
   /** Bumped whenever revise resets this step; absent in older runs means epoch 0. */
   epoch?: number;
+  /** Current client-executed issuance. */
+  dispatchToken?: string;
+  /** Current waiting-gate round issuance. */
+  gateToken?: string;
+  /** Issuance whose accepted report terminalized this step successfully. */
+  acceptedDispatchToken?: string;
   output?: unknown;
   failure?: FailureContext;
   routed?: FailureContext;
@@ -161,6 +176,10 @@ export interface CheckpointEntry {
 export interface PersistedRun {
   id: string;
   spec: unknown;
+  /** SHA-256 of the canonical JSON serialization of the persisted effective spec. */
+  revisionDigest?: string;
+  /** Monotonic fanout enumeration counter. Deliberately excluded from checkpoints. */
+  generationCounter?: number;
   input: unknown;
   flowName: string;
   workspaceRoot?: string;

@@ -200,7 +200,9 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_flow_cancel_bg", { runId: bgBudget.runId });
       const bgCancel = await call("stratum_flow_run_bg", { spec: flow([{ id: "build", do: "bg slow", out: "Result" }], "${build.output}"), input: { name: "x" } });
       await call("stratum_flow_cancel_bg", { runId: bgCancel.runId });
-      await waitForFlowBg(call, bgCancel.runId as string, "completed", "cancelled");
+      // Cancellation fences the already-issued task result, so the durable run
+      // remains abandoned/running while its background ownership is cancelled.
+      await waitForFlowBg(call, bgCancel.runId as string, "running", "cancelled");
       await call("stratum_flow_cancel_bg", { runId: bgCancel.runId });
 
       // Sync complete uses the Codex connector spawn seam; the remainder uses
