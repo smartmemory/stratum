@@ -36,6 +36,39 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice E2 (compose consumer loop + journal + witness-chain merge) — ✅ DONE 2026-07-16 (compose develop @ c325db7).**
+  Native consumer-dispatch execution in compose: descriptor routing off the TS ready[] pump
+  (structural detection), generation-keyed worktrees OUTSIDE the merge target (tmpdir root,
+  canonical-path + symlink rejection), durable fsync+rename journal (pre-stage witnesses,
+  `prepared` envelope before EVERY step_done, `accepted` only via `acceptedDispatchToken`
+  reconciliation, run-revision pins written in the journal's FIRST durable write and verified
+  fail-closed at resume), ONE cumulative diff per item at final stage, merge gate = journaled
+  transaction with precomputed UNIQUE tree-witness chain (temporary-index snapshot pattern;
+  unmatched tree → baseline restore + replay-from-zero; partial applies never completed in
+  place), `isolation:none` = python-parity in-cwd (no worktree/diff/merge; isolation-aware
+  artifacts-complete check), full contract closures to agent schemas + normalizer,
+  `previousFailure` in retry prompts, item-local connector-error envelopes, NODE_ENV-gated
+  crash hooks. **Loop: codex sol/high build → FOUR RED-first fix rounds (Opus subagent fixer,
+  codex sol/high reviewer) → 5th pass REVIEW CLEAN. 16 findings accepted total**, highlights:
+  blanket revise-supersession (P1), revisionDigest never checked at resume (P1), crash window
+  between journal creation and pin bind (P1), historical rollback erasing a later APPROVED
+  merge (Critical — recovery now acts ONLY on the unresolved transaction, resolved rounds are
+  durable history), rollback resurrecting engine-superseded evidence (audit reconciliation on
+  restore), isolation:none silently losing writes (P1). **Unifying principle (rounds 3–4):
+  recovery/rollback scoped to the CURRENT transaction round, engine audit as ground truth —
+  never replay history from journal state alone.** REJECTED as E2 scope: production pipeline
+  re-authoring (→ Slice E3, harness task #7); DEFERRED: serialized ready[] item execution
+  (task #8 — owner decision before E3 ships real traffic). Engine facts confirmed read-only:
+  descriptor `policy.isolation` = `z.enum(["worktree","none"])`, `merge:"sequential"` required
+  on every fanout, step ids `/^[a-z][a-z0-9_-]*$/` (E3 brief inputs). Descriptor final-stage
+  marker gap (compose derives finality from local spec, safe via revisionDigest pinning) →
+  stratum follow-up issue (task #10). Gate: ts-cutover goldens 42/42 (17 pre-E2 + 25 new
+  consumer scenarios: crash windows A–D, multi-round revise/merge recovery, re-enumeration
+  supersession, empty-input/empty-contract edges, isolation:none + mixed fanouts). One
+  timeout flake observed once under parallel load (individual tests ≤3.4s vs 90s ceiling;
+  two clean reruns). Next: E3 (pipelines re-author) after the task-#8 concurrency decision;
+  then flag-day (task #6).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice E1 (compose token echoes) — ✅ DONE 2026-07-16 (compose develop @ bda27ef).**
   Compose half of Phase-2 universal fencing: every TS-path `stepDone` echoes its ready
   entry's `dispatchToken` (live seams build.js 1590 + 1789; 7 other stepDone sites audited
