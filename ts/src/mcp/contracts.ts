@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 
-export type Shape = string | { readonly [key: string]: Shape };
+export type Shape = string | ShapeRecord | ArrayShape | OneOfShape;
+
+export interface ShapeRecord { readonly [key: string]: Shape }
+export interface ArrayShape { readonly $array: Shape }
+export interface OneOfShape { readonly $oneOf: readonly Shape[] }
 
 export interface McpSurface {
   surface: number;
@@ -34,6 +38,54 @@ export function eventContract(): Promise<EventContract> {
 }
 
 export function assertShape(value: unknown, shape: Shape, path = "response"): void {
+  validateShape(shape, path);
+  matchShape(value, shape, path);
+}
+
+const LEAF_TYPES = new Set(["any", "array", "boolean", "null", "number", "object", "string"]);
+
+/** Validates a shape declaration independently from any value matched against it. */
+export function validateShape(shape: unknown, path = "shape"): asserts shape is Shape {
+  if (typeof shape === "string") {
+    const unknown = shape.split("|").find((alternative) => !LEAF_TYPES.has(alternative));
+    if (unknown !== undefined) throw malformedShape(path, `unknown leaf type ${JSON.stringify(unknown)}`);
+    return;
+  }
+  if (!isRecord(shape)) throw malformedShape(path, "must be a string leaf or an object");
+
+  const keys = Object.keys(shape);
+  const reserved = keys.filter((key) => key.startsWith("$"));
+  if (reserved.length > 0) {
+    const tag = reserved[0];
+    if (reserved.length !== 1 || (tag !== "$array" && tag !== "$oneOf")) {
+      throw malformedShape(path, `unknown reserved grammar tag ${JSON.stringify(tag)}`);
+    }
+    if (keys.length !== 1) throw malformedShape(path, `grammar tag ${tag} must be the only key`);
+    if (tag === "$array") {
+      validateShape(shape.$array, `${path}.$array`);
+      return;
+    }
+    if (!Array.isArray(shape.$oneOf) || shape.$oneOf.length === 0) {
+      throw malformedShape(path, "$oneOf must contain a non-empty array of shapes");
+    }
+    for (const [index, variant] of shape.$oneOf.entries()) {
+      validateShape(variant, `${path}.$oneOf[${index}]`);
+    }
+    return;
+  }
+
+  const declared = new Set<string>();
+  for (const [rawKey, child] of Object.entries(shape)) {
+    const key = rawKey.endsWith("?") ? rawKey.slice(0, -1) : rawKey;
+    if (declared.has(key)) {
+      throw malformedShape(path, `field ${JSON.stringify(key)} declared in both required and optional form`);
+    }
+    declared.add(key);
+    validateShape(child, `${path}.${rawKey}`);
+  }
+}
+
+function matchShape(value: unknown, shape: Shape, path: string): void {
   if (typeof shape === "string") {
     const alternatives = shape.split("|");
     if (!alternatives.some((alternative) => matchesLeaf(value, alternative))) {
@@ -41,6 +93,30 @@ export function assertShape(value: unknown, shape: Shape, path = "response"): vo
     }
     return;
   }
+
+  if ("$array" in shape) {
+    if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+    for (const [index, element] of value.entries()) {
+      matchShape(element, shape.$array, `${path}[${index}]`);
+    }
+    return;
+  }
+
+  if ("$oneOf" in shape) {
+    let matches = 0;
+    for (const variant of (shape as OneOfShape).$oneOf) {
+      try {
+        matchShape(value, variant, path);
+        matches += 1;
+      } catch {
+        // A variant mismatch is expected; exact-one is decided after all variants run.
+      }
+    }
+    if (matches === 0) throw new Error(`${path}: zero $oneOf variants matched`);
+    if (matches > 1) throw new Error(`${path}: multiple $oneOf variants matched (${matches})`);
+    return;
+  }
+
   if (!isRecord(value)) throw new Error(`${path} must be an object`);
   const allowed = new Set(Object.keys(shape).map((key) => key.endsWith("?") ? key.slice(0, -1) : key));
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`${path}.${key} is undeclared`);
@@ -51,8 +127,12 @@ export function assertShape(value: unknown, shape: Shape, path = "response"): vo
       if (optional) continue;
       throw new Error(`${path}.${key} is required`);
     }
-    assertShape(value[key], child, `${path}.${key}`);
+    matchShape(value[key], child, `${path}.${key}`);
   }
+}
+
+function malformedShape(path: string, detail: string): Error {
+  return new Error(`malformed shape at ${path}: ${detail}`);
 }
 
 export async function assertToolRequest(tool: string, request: unknown): Promise<void> {
