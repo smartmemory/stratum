@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### feat: IR `fanout.dispatch` + consumer-mode semantic validation (STRAT-TS-FANOUT-CONSUMER Slice B)
+
+`fanout.dispatch: "engine" | "consumer"` lands in the IR with the default
+injected into the VALIDATED value: the persisted effective spec always
+observes `dispatch: "engine"` when the field is omitted (verified against
+`StateStore` — `plan` already persists the Zod-parsed spec). Semantic
+validation gains the consumer-mode rules (design r6): consumer + worktree
+stages reject engine filesystem predicates in `ensure` AND in stage `when`
+(detection walks the parsed expression AST, catching predicates nested in
+boolean expressions and `{expr}` forms); consumer + worktree REQUIRES an
+unconditional, normally-activated gate as the fanout's direct successor —
+a `when`-guarded gate the engine could skip, or a gate reachable only via
+`on_fail`/`on_approve`/`on_kill` routing (never normally activated), is
+rejected, since either would bypass the mandatory merge handshake;
+consumer fanout in subflows stays pinned to the existing root-only
+diagnostic. `stratum_flow_run_bg` rejects consumer-dispatch specs at
+submission with the frozen error code `consumer_dispatch_bg_unsupported`
+(v1 is foreground-only) while foreground `plan` accepts the same spec.
+Engine scheduling, MCP surface, and server error mapping are untouched —
+consumer execution and the `errors` registry land in later slices.
+
 ### feat: tagged shape grammar for frozen contracts — `$array` / `$oneOf` (STRAT-TS-FANOUT-CONSUMER Slice A)
 
 The frozen-contract shape language gains exactly two tagged constructs

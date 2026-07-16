@@ -47,6 +47,7 @@ export const FanoutSchema = z.object({
   require: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]),
   merge: z.literal("sequential"),
   pre_merge: z.array(z.string()).optional(),
+  dispatch: z.enum(["engine", "consumer"]).default("engine"),
 }).strict();
 
 const StepShape = z.object({
