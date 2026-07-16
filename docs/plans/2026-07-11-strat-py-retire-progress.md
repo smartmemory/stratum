@@ -36,6 +36,27 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice E1 (compose token echoes) — ✅ DONE 2026-07-16 (compose develop @ bda27ef).**
+  Compose half of Phase-2 universal fencing: every TS-path `stepDone` echoes its ready
+  entry's `dispatchToken` (live seams build.js 1590 + 1789; 7 other stepDone sites audited
+  not-echoable = python-only/legacy-child paths, reasoning in the E1 run log), every TS-path
+  `gateResolve` echoes the round's audit-discovered `gateToken` (skip/flag/human paths; the
+  bare-`running` gate seam now carries `{id, gateToken}`). Python-era parallel lifecycle
+  (`parallelStart/Poll/Advance/Done`) fails explicitly on the TS surface via advertised-tool
+  discovery at connect; python servers advertising the tools are untouched. New golden
+  `test/ts-cutover-token-echo-golden.test.js` (real TS bin): full gated build echo audit,
+  stale-vs-current dispatchToken, stale-vs-current gate round, 4 parallel guards, discovery
+  fail-closed. Loop: codex sol/high build (RED 0/4 → wired) → codex sol/high review → 2 P2s:
+  (1) token-less direct TS callers in existing goldens will break at flag-day — **REJECTED
+  as flag-day scope by design** (same adjudication as Slice D P1; the migration window is
+  designed) — **ADDED to flag-day checklist: update direct `stepDone`/`gateResolve` calls in
+  `ts-cutover-golden.test.js` + epoch golden to echo tokens when rejection flips**; (2) parallel
+  guard failed OPEN when `tools/list` errors at connect (opaque unknown-tool error returns) —
+  **ACCEPTED, controller fixed RED-first**: guard now fails closed with an explicit
+  discovery-failure error (+1 golden case, prototype-patched `listTools`). Gate: ts-cutover
+  goldens 17/17 (was 12 pre-E1). Next: Slice E2 (consumer loop + artifact journal + witness-chain
+  merge transaction, brief drafted).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice D (consumer fanout + descriptors + SURFACE 8) — ✅ DONE 2026-07-16 (stratum develop @ 5efc30a).**
   Consumer scheduling (slot-per-item across stages, debit once per stage first-ready),
   self-contained descriptors in `ready[]` (contract CLOSURE+digest incl. `?`/`[]` ref
