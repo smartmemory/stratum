@@ -49,8 +49,8 @@ describe("checkpoint state", () => {
   it("classifies every PersistedRun field as snapshotted or excluded with a reason", () => {
     const classified = [...CHECKPOINT_FIELDS, ...Object.keys(CHECKPOINT_EXCLUDED)].sort();
     expect(classified).toEqual([
-      "bgDriven", "cancelRequested", "checkpoints", "events", "failure", "flowName", "flowSpent", "id", "input",
-      "output", "parallel", "rounds", "spec", "status", "steps", "workspaceRoot",
+      "bgDriven", "cancelRequested", "checkpoints", "events", "failure", "flowName", "flowSpent", "generationCounter", "id", "input",
+      "output", "parallel", "revisionDigest", "rounds", "spec", "status", "steps", "workspaceRoot",
     ]);
     expect(Object.values(CHECKPOINT_EXCLUDED).every((reason) => reason.length > 0)).toBe(true);
   });

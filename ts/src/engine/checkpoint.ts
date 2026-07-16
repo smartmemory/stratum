@@ -19,6 +19,8 @@ export type CheckpointField = (typeof CHECKPOINT_FIELDS)[number];
 export const CHECKPOINT_EXCLUDED = {
   id: "immutable run identity",
   spec: "immutable validated specification",
+  revisionDigest: "immutable digest of the validated effective specification",
+  generationCounter: "monotonic issuance identity that must never roll back",
   input: "immutable flow input",
   flowName: "immutable flow selection",
   workspaceRoot: "immutable execution configuration",
