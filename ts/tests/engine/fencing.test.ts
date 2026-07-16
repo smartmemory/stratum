@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
+import { StratumEngine, type EngineConnector, type EngineResponse } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { StateStore, type PersistedRun, type StepState } from "../../src/engine/state.js";
 
@@ -31,7 +31,7 @@ const taskFlow = (attempts = 2) => ({
   } },
 });
 
-function tokenOf(response: Awaited<ReturnType<StratumEngine["plan"]>>): string {
+function tokenOf(response: EngineResponse): string {
   if (response.status !== "ready") throw new Error(`expected ready, got ${response.status}`);
   const token = response.ready[0]?.dispatchToken;
   if (typeof token !== "string") throw new Error("expected dispatch token");

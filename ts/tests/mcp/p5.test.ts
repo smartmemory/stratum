@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { T2F5_DONE_SENTINEL, cancelBackgroundRun, pollBackgroundRun, runAgent } from "../../src/connectors/index.js";
 import { StratumEngine } from "../../src/engine/engine.js";
@@ -256,6 +257,110 @@ describe("P5 frozen MCP surface", () => {
         .rejects.toThrow(/superseded epoch/);
       const current = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "v2" } }, epoch: 1 } }));
       expect(current.status).toBe("running");
+    } finally { await pair.close(); }
+  });
+
+  it("pumps consumer fanout over MCP with descriptor tokens, metadata boundaries, and a typed bg rejection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-consumer-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    const spec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", attempts: 2, fanout: {
+          over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none",
+          require: "all", merge: "sequential", steps: [{ do: "fan ${item}", out: "Result" }],
+        } }],
+      } },
+    };
+    try {
+      const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec, input: { items: ["a"] } } }));
+      expect(planned).toMatchObject({ status: "ready", revisionDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      const first = (planned.ready as Array<Record<string, unknown>>)[0]!;
+      expect(first).toMatchObject({ id: "fan/0", stage: 0, itemIndex: 0, revisionDigest: planned.revisionDigest });
+      await expect(assertToolResponse("stratum_plan", {
+        status: "ready", runId: planned.runId, ready: [{ id: "bare" }], ledger: { spent: {} }, revisionDigest: planned.revisionDigest,
+      })).rejects.toThrow(/oneOf variants matched/);
+      expect((await mcpSurface()).errors.consumer_dispatch_bg_unsupported).toEqual({
+        data: { code: "string", errors: { $array: { code: "string", path: "string", message: "string" } } },
+      });
+      const resumed = response(await pair.client.callTool({ name: "stratum_resume", arguments: { runId: planned.runId } }));
+      expect(resumed).toMatchObject({ revisionDigest: planned.revisionDigest, ready: [{ dispatchToken: first.dispatchToken }] });
+
+      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "fan/0", result: { output: { value: "missing token" } },
+      } })).rejects.toThrow(/dispatchToken.*required/i);
+      const retry = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "fan/0", dispatchToken: first.dispatchToken, result: { failure: "retry me" },
+      } }));
+      expect(retry.revisionDigest).toBeUndefined();
+      const second = (retry.ready as Array<Record<string, unknown>>)[0]!;
+      expect(second).toMatchObject({ id: "fan/0", previousFailure: { reason: "retry me" } });
+      expect(second.dispatchToken).not.toBe(first.dispatchToken);
+      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "fan/0", dispatchToken: first.dispatchToken, result: { output: { value: "stale" } },
+      } })).rejects.toThrow(/stale/);
+      const completed = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "fan/0", dispatchToken: second.dispatchToken, result: { output: { value: "done" } },
+      } }));
+      expect(completed).toMatchObject({ status: "completed", output: { value: "done" } });
+      expect(completed.revisionDigest).toBeUndefined();
+
+      let protocolError: unknown;
+      try {
+        await pair.client.callTool({ name: "stratum_flow_run_bg", arguments: { spec, input: { items: ["a"] } } });
+      } catch (error) { protocolError = error; }
+      expect(protocolError).toBeInstanceOf(McpError);
+      expect((protocolError as McpError).data).toEqual({
+        code: "consumer_dispatch_bg_unsupported",
+        errors: [expect.objectContaining({ code: "consumer_dispatch_bg_unsupported" })],
+      });
+    } finally { await pair.close(); }
+  });
+
+  it("forwards ordinary dispatch and gate tokens over MCP without leaking revision metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-token-wire-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    const spec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { name: "string" }, output: { from: "${finish.output}", contract: "Result" }, max_rounds: 2,
+        steps: [
+          { id: "build", do: "build", out: "Result" },
+          { id: "review", after: ["build"], gate: { on_approve: "finish", on_revise: "build", on_kill: null } },
+          { id: "finish", do: "finish", out: "Result" },
+        ],
+      } },
+    };
+    try {
+      const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec, input: { name: "x" } } }));
+      const first = (planned.ready as Array<Record<string, unknown>>)[0]!;
+      response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "build", dispatchToken: first.dispatchToken, result: { output: { value: "one" } },
+      } }));
+      const audit1 = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
+      const gate1 = ((audit1.steps as Record<string, Record<string, unknown>>).review!).gateToken;
+      const revised = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: {
+        runId: planned.runId, stepId: "review", decision: "revise", gateToken: gate1,
+      } }));
+      expect(revised.revisionDigest).toBeUndefined();
+      const current = (revised.ready as Array<Record<string, unknown>>)[0]!;
+      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "build", dispatchToken: first.dispatchToken, result: { output: { value: "stale" } },
+      } })).rejects.toThrow(/stale/);
+      response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "build", result: { output: { value: "missing echo remains compatible" } },
+      } }));
+      expect(current.dispatchToken).not.toBe(first.dispatchToken);
+      const audit2 = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
+      const gate2 = ((audit2.steps as Record<string, Record<string, unknown>>).review!).gateToken;
+      expect(gate2).not.toBe(gate1);
+      await expect(pair.client.callTool({ name: "stratum_gate_resolve", arguments: {
+        runId: planned.runId, stepId: "review", decision: "approve", gateToken: gate1,
+      } })).rejects.toThrow(/stale/);
+      const ready = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: {
+        runId: planned.runId, stepId: "review", decision: "approve", gateToken: gate2,
+      } }));
+      expect(ready).toMatchObject({ status: "ready", ready: [{ id: "finish" }] });
+      expect(ready.revisionDigest).toBeUndefined();
     } finally { await pair.close(); }
   });
 

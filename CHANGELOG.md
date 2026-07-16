@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### feat: consumer-dispatched native fanout + dispatch descriptors (STRAT-TS-FANOUT-CONSUMER Slice D, surface 8)
+
+`fanout.dispatch: "consumer"` now executes end to end on the stratum side.
+The engine keeps enumeration, concurrency, attempts, budgets, ensures,
+persistence, `require`, output ordering, and advancement; only execution
+ownership moves to the client. Consumer-ready items surface in `ready[]` as
+self-contained fenced dispatch descriptors: scoped id (`<fanout>/<index>`),
+rendered `do`, effective agent, `attempt`/`previousFailure`, `dispatchToken`,
+authored origin (`flow`/`step`/`stage`/`itemIndex`), `generation`, the output
+contract carried as its CLOSURE (root id + every reachable named contract;
+`contract: null`/`contractDigest: null` for no-`out` stages), effective policy
+(`isolation`/`merge`/`pre_merge` as consumer instructions), and the run
+`revisionDigest`. Consumer reports REQUIRE the descriptor's token; settlement
+is factored into one kernel shared with engine dispatch (usage, contract,
+ensure, audit, budget semantics cannot drift) and the merge branch is guarded
+`dispatch === "engine"`. Surface 7 → 8: `ready` is redeclared as
+`{"$array": {"$oneOf": [ordinary, descriptor]}}` with both element shapes
+frozen in full (ordinary entries gain `dispatchToken`), `step_done`/
+`gate_resolve` requests gain optional token echoes (required at the flag-day),
+`plan`/`resume` expose `revisionDigest` on every variant (no other tool), and
+a new top-level `errors` registry freezes `consumer_dispatch_bg_unsupported`
+— the server now maps that `SpecValidationError` to a typed MCP protocol
+error whose `data` carries the structured validation errors and stable code.
+`events.json` unchanged. v1 stays foreground-only.
+
 ### feat: per-issuance token/generation lifecycle + engine-level fencing (STRAT-TS-FANOUT-CONSUMER Slice C)
 
 Every client-executed issuance is now fenced at the engine level. `StepState`
