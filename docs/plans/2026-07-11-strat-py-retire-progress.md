@@ -36,6 +36,42 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FANOUT-CONSUMER Slice E3 (full v0.3→v1 production pipeline conversion + consumer parity) — ✅ DONE 2026-07-17 (compose develop @ 9221548).**
+  Both production pipelines re-authored as TS v1 (subflows for cross-model review/coverage,
+  consumer fanouts for implement + lens review, gate revise loops; profile sidecar
+  `pipelines/build.profiles.json` carries the stripped tool/model profiles + reducer markers).
+  NEW `lib/local-claude-connector.js` (isolation:none reviewers: SDK `tools` allowlist binds,
+  tool-event streaming for stuck detection, timeout/stuck abort) + NEW
+  `lib/vocabulary-compliance.js` (deterministic python `vocabulary_compliance` port).
+  **Loop: codex sol/high build → FIVE fix rounds (rounds 1–2 pre-clear: D1–D7+1b, V1–V6;
+  rounds 3–5 this session: F1–F8, G1–G5, H1–H2) against codex sol/high review passes 3–6;
+  pass 6 REVIEW CLEAN. 16 findings accepted this session's rounds**, highlights: scoped
+  subflow ready ids (`<parentStepId>/<childId>`) resolved contracts/review-identity through
+  the local spec (BLOCKER — builds died at codex_review/coverage); SDK `allowedTools` is
+  no-prompt-only, availability restriction needs `tools` (BLOCKER — reviewer read-only
+  boundary didn't bind); usage billed exactly once on success/failure/timeout-reject/
+  timeout-late-resolve/abort (engine debits from step_done envelopes; GSD terminal fold
+  made DELTA-only against incremental recording — double-debit killed); review scaffold
+  parity on both ordinary + fanout paths, reducers normalize-but-never-scaffold
+  (`_reduceSteps` sidecar key = python's stripped reduce_mode, restored compose-side);
+  unevaluable v1 judged vocabulary guard (judge sees only {result,input}, fails closed
+  forever) → deterministic consumer-side check failing steps through the engine lifecycle;
+  GSD ownership conflicts → typed failure envelopes (attempts govern). **2 findings
+  REJECTED with reasoning:** YAML 1.2-vs-1.1 vocabulary scalar divergence (python's
+  yes/no→bool is a 1.1 wart; python dies at endgame — documented, not preserved);
+  python-path gsd decompose throw (dies at endgame). **Triage delta:**
+  `test/gsd-pipeline.test.js` ×11 joined class B (v1 conversion invalidated its
+  python-validator contract test; re-express on TS validation at flag-day) — triage doc
+  E3 section. Gates independently verified every round: ts-cutover goldens 105/105
+  (78 pre-round-3 + 27 new), client parallel 18/18. Adjudications pinned pre-clear
+  (rounds 1–2, do NOT re-litigate): E3 scope = FULL conversion; backward `on_fail` =
+  ROUTING_CYCLE (empirical); merge-gate revise reruns full generation (design-permitted);
+  local claude connector SCOPED to isolation:none reviewers — write-item mid-flight
+  interrupt = stratum follow-up issue (ts: workspace-write bg agent mode + claude
+  allowlists on the agent surface; bg mode is codex-only+read-only-only per
+  ts/src/mcp/background.ts:65/:68, sync agent_run returns no runId, server.ts:104 —
+  FILING BLOCKED on gh keyring reauth as of this entry). Next: flag-day (task #6).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice E2b (bounded concurrent consumer execution) — ✅ DONE 2026-07-16 (compose develop @ 287ae75).**
   Resolves the E2-deferred serialization P3 (task #8, owner go-ahead on controller recommendation:
   concurrency BEFORE E3 ships real traffic). dispatchToken-keyed working-set pump (all ready
