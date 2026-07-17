@@ -36,6 +36,35 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-TS-FLAG-DAY (both repos) — ✅ DONE 2026-07-17 (stratum develop @ 9c78b73 SURFACE 9; compose develop @ cc390a7). Epic status: only endgame (#11) remains.**
+  Stratum: stepDone REQUIRES dispatchToken (ordinary+subflow), gateResolve REQUIRES gateToken,
+  epoch retired (strict-schema rejected), enforcement at three boundaries (runtime guards for
+  raw JS callers, required public TS types, MCP schema); human gate CLI moved to
+  observation-time echo (`query gates` exposes tokens, `gate resolve --token` required — the
+  resolve-time audit fetch silently rebinding stale human decisions is gone); three Slice-C/D
+  compat assertions reversed; legacy suites migrated via a token-echoing test adapter
+  (documented never-for-fencing; runtime-guard negatives through one documented untyped-caller
+  helper). Two review passes, 5 findings fixed. Gates: vitest 644/1 skip, tsc clean.
+  Compose: epoch removed end-to-end (epoch golden → rejection proof), goldens echo tokens,
+  TEN python-coupled test files re-expressed on the live TS bin as v1 fixtures
+  (build-integration/build-policy/JSONL+leaves/proof-run/gsd-pipeline + three stale-v1 the
+  default flip surfaced), engine default flipped to TS via shared lib/stratum-engine.js
+  (env → capability → TS; python pinnable until endgame). **Ship's judged ensure KILLED as
+  E3 over-authoring** — unevaluable from {result,input}, judge fails closed even on evidenced
+  results (F5-class); ship stays gated by ship_gate; stratum follow-up = deterministic
+  test-judge backend. Whole-slice review + 5 scoped fix rounds (18 accepted, 1 partial):
+  server adapter TS default now spawns the live checkout CLI behind a contract-verifying
+  probe (sentinel NOT_FOUND, exact projection, timeout=failure) — bare `stratum` resolved to
+  miniconda's CLI and half-enabled; abortBuild engine resolved from its project root;
+  pipeline editor made v1-correct (version-derived intent→do at every serialization site,
+  renameStep rewrites v1 refs incl. _extra/templates); pipeline saves simplified to an
+  ALWAYS-require-baseHash contract (400/409, force===true only bypass) after a spoofable
+  spec-wide classification survived two hardening rounds — controller ruling: remove the
+  optionality rather than harden the classifier. **Editor-endpoint hardening beyond this is
+  follow-up material, not migration scope (owner pushback on loop length — justified).**
+  Gates verified: ts-cutover 105/105, parallel 18/18, full suite 4770/4778 (remaining = 7
+  A-class python-era + known load flakes, all endgame-scoped; triage doc E3-delta section).
+
 - **STRAT-TS-FANOUT-CONSUMER Slice E3 (full v0.3→v1 production pipeline conversion + consumer parity) — ✅ DONE 2026-07-17 (compose develop @ 9221548).**
   Both production pipelines re-authored as TS v1 (subflows for cross-model review/coverage,
   consumer fanouts for implement + lens review, gate revise loops; profile sidecar
