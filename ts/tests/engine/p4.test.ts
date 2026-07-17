@@ -8,6 +8,8 @@ import { SpecValidationError, StratumEngine, type EngineConnector } from "../../
 import { createEvaluator } from "../../src/eval/expr.js";
 import type { AuditEvent } from "../../src/engine/state.js";
 import { assertEvent, assertShape, type Shape } from "../../src/mcp/contracts.js";
+import { tokenEchoingEngine, type TokenEchoingEngine } from "../helpers/token_echoing_engine.js";
+import { asUntypedCaller } from "../helpers/untyped_caller.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -15,10 +17,13 @@ const roots: string[] = [];
 // when the test ends; rm must tolerate that trailing write.
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))); });
 
-async function engine(connector?: EngineConnector) {
+async function engine(connector?: EngineConnector): Promise<TokenEchoingEngine>;
+async function engine(connector: EngineConnector | undefined, echoTokens: false): Promise<StratumEngine>;
+async function engine(connector?: EngineConnector, echoTokens = true): Promise<TokenEchoingEngine | StratumEngine> {
   const root = await mkdtemp(join(tmpdir(), "stratum-p4-"));
   roots.push(root);
-  return new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), ...(connector ? { connector } : {}) });
+  const subject = new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), ...(connector ? { connector } : {}) });
+  return echoTokens ? tokenEchoingEngine(subject) : subject;
 }
 
 const resultContract = { value: "string" };
@@ -683,7 +688,7 @@ describe("P4 fanout require semantics", () => {
 describe("P4 consumer-dispatched fanout", () => {
   it("caps scoped readiness and advances a self-contained multi-stage descriptor with fenced tokens", async () => {
     let connectorCalls = 0;
-    const e = await engine(async () => { connectorCalls += 1; return { failure: "must not run" }; });
+    const e = await engine(async () => { connectorCalls += 1; return { failure: "must not run" }; }, false);
     const spec = {
       version: 1,
       contracts: {
@@ -728,19 +733,19 @@ describe("P4 consumer-dispatched fanout", () => {
     expect(resumed.ready).toMatchObject([
       { id: "fan/0", dispatchToken: firstToken }, { id: "fan/1" },
     ]);
-    await expect(e.stepDone(planned.runId, "fan/0", { output: { seed: "a", meta: { labels: [], matrix: [] }, history: [] } }))
+    await expect(asUntypedCaller(e).stepDone(planned.runId, "fan/0", { output: { seed: "a", meta: { labels: [], matrix: [] }, history: [] } }))
       .rejects.toThrow(/dispatchToken.*required/i);
     const next = await e.stepDone(
       planned.runId, "fan/0",
       { output: { seed: "a", meta: { labels: ["x"], matrix: [[1]] }, history: [] } },
-      undefined, firstToken,
+      firstToken,
     );
     if (next.status !== "ready") throw new Error("expected next stage");
     const second = next.ready.find((entry) => entry.id === "fan/0") as unknown as Record<string, unknown>;
     expect(second).toMatchObject({ stage: 1, do: "finish a from {\"seed\":\"a\",\"meta\":{\"labels\":[\"x\"],\"matrix\":[[1]]},\"history\":[]}", itemIndex: 0, generation: 1 });
     expect(second.dispatchToken).not.toBe(firstToken);
-    await expect(e.stepDone(planned.runId, "fan/0", { output: { value: "stale" } }, undefined, firstToken)).rejects.toThrow(/stale/);
-    const afterFirst = await e.stepDone(planned.runId, "fan/0", { output: { value: "A" } }, undefined, second.dispatchToken as string);
+    await expect(e.stepDone(planned.runId, "fan/0", { output: { value: "stale" } }, firstToken)).rejects.toThrow(/stale/);
+    const afterFirst = await e.stepDone(planned.runId, "fan/0", { output: { value: "A" } }, second.dispatchToken as string);
     expect(afterFirst.status).toBe("ready");
     if (afterFirst.status !== "ready") throw new Error("expected promoted consumer item");
     expect(afterFirst.ready).toEqual(expect.arrayContaining([expect.objectContaining({ id: "fan/2", itemIndex: 2 })]));
@@ -764,13 +769,13 @@ describe("P4 consumer-dispatched fanout", () => {
     const planned = await e.plan(spec, { items: ["a"] });
     if (planned.status !== "ready") throw new Error("expected consumer item");
     const first = planned.ready[0]!;
-    const schemaRetry = await e.stepDone(planned.runId, "fan/0", { output: { nope: true } }, undefined, first.dispatchToken);
+    const schemaRetry = await e.stepDone(planned.runId, "fan/0", { output: { nope: true } }, first.dispatchToken);
     if (schemaRetry.status !== "ready") throw new Error("expected contract retry");
     expect(schemaRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 2, previousFailure: { reason: expect.stringContaining("Unrecognized key") } });
-    const ensureRetry = await e.stepDone(planned.runId, "fan/0", { output: { value: "bad" } }, undefined, schemaRetry.ready[0]!.dispatchToken);
+    const ensureRetry = await e.stepDone(planned.runId, "fan/0", { output: { value: "bad" } }, schemaRetry.ready[0]!.dispatchToken);
     if (ensureRetry.status !== "ready") throw new Error("expected ensure retry");
     expect(ensureRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 3, previousFailure: { reason: expect.stringContaining("ensure") } });
-    const completed = await e.stepDone(planned.runId, "fan/0", { output: { value: "ok" } }, undefined, ensureRetry.ready[0]!.dispatchToken);
+    const completed = await e.stepDone(planned.runId, "fan/0", { output: { value: "ok" } }, ensureRetry.ready[0]!.dispatchToken);
     expect(completed).toMatchObject({ status: "completed", output: { value: "ok" } });
   });
 
@@ -788,7 +793,7 @@ describe("P4 consumer-dispatched fanout", () => {
     const noOutPlan = await noOut.plan(noOutSpec, { items: ["a"] });
     if (noOutPlan.status !== "ready") throw new Error("expected contract-less descriptor");
     expect(noOutPlan.ready[0]).toMatchObject({ contract: null, contractDigest: null });
-    const noOutDone = await noOut.stepDone(noOutPlan.runId, "fan/0", { output: { arbitrary: true } }, undefined, noOutPlan.ready[0]!.dispatchToken);
+    const noOutDone = await noOut.stepDone(noOutPlan.runId, "fan/0", { output: { arbitrary: true } }, noOutPlan.ready[0]!.dispatchToken);
     expect(noOutDone).toMatchObject({ status: "completed", output: { value: "done" } });
     expect((await noOut.audit(noOutPlan.runId)).steps.fan?.output).toEqual([{ arbitrary: true }]);
 
@@ -805,10 +810,10 @@ describe("P4 consumer-dispatched fanout", () => {
     const orderedPlan = await ordered.plan(orderedSpec, { items: ["a", "skip", "b"] });
     if (orderedPlan.status !== "ready") throw new Error("expected non-skipped items");
     expect(orderedPlan.ready.map((entry) => entry.id)).toEqual(["fan/0", "fan/2"]);
-    const afterA = await ordered.stepDone(orderedPlan.runId, "fan/0", { output: { value: "A" } }, undefined, orderedPlan.ready[0]!.dispatchToken);
+    const afterA = await ordered.stepDone(orderedPlan.runId, "fan/0", { output: { value: "A" } }, orderedPlan.ready[0]!.dispatchToken);
     if (afterA.status !== "ready") throw new Error("expected remaining item");
     const b = afterA.ready.find((entry) => entry.id === "fan/2")!;
-    expect(await ordered.stepDone(orderedPlan.runId, "fan/2", { output: { value: "B" } }, undefined, b.dispatchToken)).toMatchObject({ status: "completed" });
+    expect(await ordered.stepDone(orderedPlan.runId, "fan/2", { output: { value: "B" } }, b.dispatchToken)).toMatchObject({ status: "completed" });
     expect((await ordered.audit(orderedPlan.runId)).steps.fan?.output).toEqual([{ value: "A" }, null, { value: "B" }]);
 
     for (const [requirement, status] of [["all", "completed"], ["any", "failed"], [1, "failed"]] as const) {
@@ -827,7 +832,9 @@ describe("P4 consumer-dispatched fanout", () => {
   });
 
   it("keeps checkpoint generations monotonic and guards a real consumer worktree lifecycle through its merge gate", async () => {
-    const generation = await engine();
+    // S3: RAW engine (echoTokens=false) — the stale-token assertion below is a
+    // fencing check and must not run through the auto-echo adapter.
+    const generation = await engine(undefined, false);
     const generationSpec = {
       version: 1, contracts: { Batch: { items: "string[]" }, Result: { value: "string" } }, flows: { entry: "main", main: {
         input: { name: "string" }, output: { from: "${fan.output[0]}", contract: "Result" },
@@ -840,17 +847,17 @@ describe("P4 consumer-dispatched fanout", () => {
     const prep = await generation.plan(generationSpec, { name: "x" });
     if (prep.status !== "ready") throw new Error("expected prep");
     await generation.commit(prep.runId, "before-fanout");
-    const issued = await generation.stepDone(prep.runId, "prep", { output: { items: ["a"] } }, undefined, prep.ready[0]!.dispatchToken);
+    const issued = await generation.stepDone(prep.runId, "prep", { output: { items: ["a"] } }, prep.ready[0]!.dispatchToken);
     if (issued.status !== "ready") throw new Error("expected first generation");
     const old = issued.ready[0] as unknown as { dispatchToken: string; generation: number };
     expect(old.generation).toBe(1);
-    await generation.stepDone(prep.runId, "fan/0", { output: { value: "one" } }, undefined, old.dispatchToken);
+    await generation.stepDone(prep.runId, "fan/0", { output: { value: "one" } }, old.dispatchToken);
     const reverted = await generation.revert(prep.runId, "before-fanout");
     if (reverted.status !== "ready") throw new Error("expected restored prep");
-    const reissued = await generation.stepDone(prep.runId, "prep", { output: { items: ["b"] } }, undefined, reverted.ready[0]!.dispatchToken);
+    const reissued = await generation.stepDone(prep.runId, "prep", { output: { items: ["b"] } }, reverted.ready[0]!.dispatchToken);
     if (reissued.status !== "ready") throw new Error("expected second generation");
     expect(reissued.ready[0]).toMatchObject({ id: "fan/0", generation: 2 });
-    await expect(generation.stepDone(prep.runId, "fan/0", { output: { value: "stale" } }, undefined, old.dispatchToken)).rejects.toThrow(/stale/);
+    await expect(generation.stepDone(prep.runId, "fan/0", { output: { value: "stale" } }, old.dispatchToken)).rejects.toThrow(/stale/);
 
     const guarded = await engine();
     const guardedSpec = {
@@ -866,7 +873,7 @@ describe("P4 consumer-dispatched fanout", () => {
     if (guardedPlan.status !== "ready") throw new Error("expected consumer worktree descriptor");
     await expect(guarded.commit(guardedPlan.runId, "blocked")).rejects.toThrow(/in-flight fanout/);
     await expect(guarded.revert(guardedPlan.runId, "missing")).rejects.toThrow(/in-flight fanout/);
-    const waiting = await guarded.stepDone(guardedPlan.runId, "fan/0", { output: { value: "done" } }, undefined, guardedPlan.ready[0]!.dispatchToken);
+    const waiting = await guarded.stepDone(guardedPlan.runId, "fan/0", { output: { value: "done" } }, guardedPlan.ready[0]!.dispatchToken);
     expect(waiting.status).toBe("running");
     await expect(guarded.commit(guardedPlan.runId, "blocked")).rejects.toThrow(/successor gate/);
     await expect(guarded.revert(guardedPlan.runId, "missing")).rejects.toThrow(/successor gate/);
@@ -903,7 +910,7 @@ describe("P4 frozen contracts", () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
     expect(eventsContract.events).toBe(1);
-    expect(surface.surface).toBe(8);
+    expect(surface.surface).toBe(9);
     expect(Object.keys(surface.tools)).toHaveLength(21);
 
     const allEvents: AuditEvent[] = [];
@@ -966,10 +973,10 @@ describe("P4 frozen contracts", () => {
     // Run D — judged ensure + a when-skipped step: judged/skipped.
     const dRoot = await mkdtemp(join(tmpdir(), "stratum-p4-judged-"));
     roots.push(dRoot);
-    const d = new StratumEngine({
+    const d = tokenEchoingEngine(new StratumEngine({
       stateRoot: dRoot, evaluator: createEvaluator(),
       judge: async () => ({ holds: true, reason: "looks right", stakes: "cheap", model: "fake-judge", usage: { tokens: 5, usd: 0.01 } }),
-    });
+    }));
     const dSpec = {
       version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
         input: { name: "string" }, output: { from: "${main.output}", contract: "Result" },

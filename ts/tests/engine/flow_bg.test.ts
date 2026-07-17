@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SpecValidationError, StratumEngine, type BgStatus, type EngineConnector, type JudgeRunner } from "../../src/engine/engine.js";
 import { StateStore } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
+import { tokenEchoingEngine, type TokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -15,10 +16,18 @@ async function fixture(name: string): Promise<unknown> {
   return parseDocument(bytes.toString("utf8"), { prettyErrors: false }).toJS();
 }
 
-async function subject(connector: EngineConnector, judge?: JudgeRunner): Promise<StratumEngine> {
+async function subject(connector: EngineConnector, judge?: JudgeRunner): Promise<TokenEchoingEngine> {
   const root = await mkdtemp(join(tmpdir(), "stratum-flow-bg-"));
   roots.push(root);
-  return new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector, ...(judge ? { judge } : {}) });
+  return tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector, ...(judge ? { judge } : {}) }));
+}
+
+// S3: token-fencing assertions must run against the RAW engine — never through the
+// auto-echo adapter, which would forward an omitted token and mask a regression.
+async function rawSubject(connector: EngineConnector): Promise<StratumEngine> {
+  const root = await mkdtemp(join(tmpdir(), "stratum-flow-bg-"));
+  roots.push(root);
+  return new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector });
 }
 
 async function waitForBg(engine: StratumEngine, runId: string, status: BgStatus) {
@@ -463,8 +472,9 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
     expect((await engine.resume(started.runId)).status).toBe("completed");
   });
 
-  it("rejects a superseded epoch after gate revise and accepts the current epoch", async () => {
-    const engine = await subject(async ({ prompt }) => ({ output: { value: prompt } }));
+  it("rejects a superseded dispatch token after gate revise and accepts the current token", async () => {
+    // S3: RAW engine (unwrapped) — this is a token-fencing assertion.
+    const engine = await rawSubject(async ({ prompt }) => ({ output: { value: prompt } }));
     const spec = {
       version: 1,
       contracts: { Result: { value: "string" } },
@@ -479,13 +489,18 @@ describe("STRAT-TS-FLOW-BG engine driver", () => {
       } },
     };
     const planned = await engine.plan(spec, { name: "Ada" });
-    expect(planned).toMatchObject({ status: "ready", ready: [{ id: "a", epoch: 0 }] });
-    expect(await engine.stepDone(planned.runId, "a", { output: { value: "first" } })).toMatchObject({ status: "running" });
-    const revised = await engine.gateResolve(planned.runId, "b", "revise");
-    expect(revised).toMatchObject({ status: "ready", ready: [{ id: "a", epoch: 1 }] });
-    expect((await engine.audit(planned.runId)).steps.a?.epoch).toBe(1);
-    await expect(engine.stepDone(planned.runId, "a", { output: { value: "stale" } }, 0)).rejects.toThrow(/stale/);
-    expect(await engine.stepDone(planned.runId, "a", { output: { value: "fresh" } }, 1)).toMatchObject({ status: "running" });
+    expect(planned).toMatchObject({ status: "ready", ready: [{ id: "a" }] });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    const firstToken = planned.ready[0]!.dispatchToken;
+    expect(await engine.stepDone(planned.runId, "a", { output: { value: "first" } }, firstToken)).toMatchObject({ status: "running" });
+    const gateToken = (await engine.audit(planned.runId)).steps.b?.gateToken;
+    const revised = await engine.gateResolve(planned.runId, "b", "revise", gateToken!);
+    expect(revised).toMatchObject({ status: "ready", ready: [{ id: "a" }] });
+    if (revised.status !== "ready") throw new Error("expected revised ready");
+    const currentToken = revised.ready[0]!.dispatchToken;
+    expect(currentToken).not.toBe(firstToken);
+    await expect(engine.stepDone(planned.runId, "a", { output: { value: "stale" } }, firstToken)).rejects.toThrow(/stale/);
+    expect(await engine.stepDone(planned.runId, "a", { output: { value: "fresh" } }, currentToken)).toMatchObject({ status: "running" });
   });
 });
 

@@ -176,6 +176,11 @@ export async function queryCommand(args: string[]): Promise<number> {
             on_revise: step.gate.on_revise,
             on_kill: step.gate.on_kill,
             timeout: null,
+            // S1: expose the observation-time gate token. The human captures this
+            // when they SEE the gate and echoes it back at resolve time; the engine
+            // fences a stale round on it instead of the CLI silently rebinding the
+            // current token.
+            gate_token: run.steps[step.id]?.gateToken ?? null,
           }];
         });
       });
@@ -204,13 +209,22 @@ interface GateOptions {
   action: "approve" | "reject" | "revise";
   flowId: string;
   stepId: string;
+  token: string;
 }
 
 function parseGate(args: string[]): GateOptions | undefined {
   const [action, flowId, stepId, ...flags] = args;
   if ((action !== "approve" && action !== "reject" && action !== "revise") || !flowId || !stepId) return undefined;
+  let token: string | undefined;
   for (let index = 0; index < flags.length; index += 1) {
     const flag = flags[index];
+    if (flag === "--token") {
+      const value = flags[index + 1];
+      if (value === undefined) return undefined;
+      token = value;
+      index += 1;
+      continue;
+    }
     if (flag === "--note") {
       if (flags[index + 1] === undefined) return undefined;
       index += 1;
@@ -224,13 +238,16 @@ function parseGate(args: string[]): GateOptions | undefined {
     }
     return undefined;
   }
-  return { action, flowId, stepId };
+  // S1: observation-time echo — the token the human saw at `query gates` is
+  // REQUIRED and carried verbatim into the decision. No resolve-time audit fetch.
+  if (token === undefined) return undefined;
+  return { action, flowId, stepId, token };
 }
 
 export async function gateCommand(args: string[]): Promise<number> {
   const parsed = parseGate(args);
   if (!parsed) {
-    process.stderr.write("Usage: stratum gate <approve|reject|revise> <flow_id> <step_id> [--note <s>] [--resolved-by human|agent|system]\n");
+    process.stderr.write("Usage: stratum gate <approve|reject|revise> <flow_id> <step_id> --token <t> [--note <s>] [--resolved-by human|agent|system]\n");
     return 2;
   }
   const root = stateRoot();
@@ -283,7 +300,12 @@ export async function gateCommand(args: string[]): Promise<number> {
     }
     // v1 engine gateResolve carries no note/resolver fields, so validated flags
     // are intentionally accepted and dropped at this CLI compatibility boundary.
-    const result = await new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }).gateResolve(parsed.flowId, parsed.stepId, decision);
+    // S1: pass the caller-supplied observation-time token VERBATIM — no
+    // resolve-time audit fetch. A stale token (the gate advanced to a new round
+    // since the human observed it) is rejected by the engine's gate fencing,
+    // surfaced below as an INVALID error, instead of being silently rebound.
+    const result = await new StratumEngine({ stateRoot: root, evaluator: createEvaluator() })
+      .gateResolve(parsed.flowId, parsed.stepId, decision, parsed.token);
     // Python result vocabulary, decided from the GATE'S OWN ROUTE, never from
     // downstream advancement (a routed target may complete synchronously):
     // any named route → "execute_step"; terminal kill → "killed"; revise past

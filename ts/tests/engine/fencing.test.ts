@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine, type EngineConnector, type EngineResponse } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { StateStore, type PersistedRun, type StepState } from "../../src/engine/state.js";
+import { asUntypedCaller } from "../helpers/untyped_caller.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -61,16 +62,16 @@ describe("engine issuance fencing", () => {
     expect((await restarted.store.load(planned.runId)).steps.work?.dispatchToken).toBe(token);
   });
 
-  it("rejects mismatched and superseded step tokens, accepts current and missing tokens, and persists acceptedDispatchToken", async () => {
+  it("rejects missing, mismatched, and superseded step tokens, accepts the current token, and persists acceptedDispatchToken", async () => {
     const current = await subject();
     const planned = await current.engine.plan(taskFlow(), { name: "Ada" });
     const firstToken = tokenOf(planned);
-    await expect(current.engine.stepDone(planned.runId, "work", { failure: "retry" }, undefined, "wrong-token")).rejects.toThrow(/stale/);
-    const retry = await current.engine.stepDone(planned.runId, "work", { failure: "retry" }, undefined, firstToken);
+    await expect(current.engine.stepDone(planned.runId, "work", { failure: "retry" }, "wrong-token")).rejects.toThrow(/stale/);
+    const retry = await current.engine.stepDone(planned.runId, "work", { failure: "retry" }, firstToken);
     const retryToken = tokenOf(retry);
     expect(retryToken).not.toBe(firstToken);
-    await expect(current.engine.stepDone(planned.runId, "work", { output: { value: "stale" } }, undefined, firstToken)).rejects.toThrow(/stale/);
-    expect(await current.engine.stepDone(planned.runId, "work", { output: { value: "fresh" } }, undefined, retryToken)).toMatchObject({ status: "completed" });
+    await expect(current.engine.stepDone(planned.runId, "work", { output: { value: "stale" } }, firstToken)).rejects.toThrow(/stale/);
+    expect(await current.engine.stepDone(planned.runId, "work", { output: { value: "fresh" } }, retryToken)).toMatchObject({ status: "completed" });
     expect((await current.engine.audit(planned.runId)).steps.work).toMatchObject({
       status: "succeeded", acceptedDispatchToken: retryToken,
     });
@@ -78,8 +79,30 @@ describe("engine issuance fencing", () => {
 
     const compat = await subject();
     const compatible = await compat.engine.plan(taskFlow(), { name: "Grace" });
-    expect(await compat.engine.stepDone(compatible.runId, "work", { output: { value: "accepted without echo" } })).toMatchObject({ status: "completed" });
-    expect((await compat.engine.audit(compatible.runId)).steps.work?.acceptedDispatchToken).toBe(tokenOf(compatible));
+    await expect(asUntypedCaller(compat.engine).stepDone(compatible.runId, "work", { output: { value: "missing echo" } }))
+      .rejects.toThrow(/missing dispatch token/i);
+    expect((await compat.engine.audit(compatible.runId)).steps.work?.acceptedDispatchToken).toBeUndefined();
+  });
+
+  it("rejects a missing dispatch token for a scoped subflow step id", async () => {
+    const { engine } = await subject();
+    const spec = {
+      version: 1, contracts: { Result: resultContract }, flows: {
+        entry: "main",
+        main: {
+          input: { name: "string" }, output: { from: "${wrap.output}", contract: "Result" },
+          steps: [{ id: "wrap", run: "child", with: { name: "${input.name}" } }],
+        },
+        child: {
+          input: { name: "string" }, output: { from: "${work.output}", contract: "Result" },
+          steps: [{ id: "work", do: "work ${input.name}", out: "Result" }],
+        },
+      },
+    };
+    const planned = await engine.plan(spec, { name: "Ada" });
+    expect(planned).toMatchObject({ status: "ready", ready: [{ id: "wrap/work", dispatchToken: expect.any(String) }] });
+    await expect(asUntypedCaller(engine).stepDone(planned.runId, "wrap/work", { output: { value: "missing echo" } }))
+      .rejects.toThrow(/missing dispatch token/i);
   });
 
   it("rotates an engine fanout item's token on stage advance and retains the accepted final-stage token", async () => {
@@ -123,7 +146,7 @@ describe("engine issuance fencing", () => {
     expect(terminal.steps.fan?.fanout?.items[0]?.dispatchToken).toBeUndefined();
   });
 
-  it("mints a fresh gate token each waiting round and rejects a prior-round decision while accepting current and missing echoes", async () => {
+  it("mints a fresh gate token each waiting round and rejects prior-round and missing decisions while accepting the current echo", async () => {
     const { engine } = await subject();
     const spec = {
       version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
@@ -137,24 +160,25 @@ describe("engine issuance fencing", () => {
     };
     const planned = await engine.plan(spec, { name: "Ada" });
     const dispatch1 = tokenOf(planned);
-    await engine.stepDone(planned.runId, "work", { output: { value: "one" } }, undefined, dispatch1);
+    await engine.stepDone(planned.runId, "work", { output: { value: "one" } }, dispatch1);
     const gate1 = (await engine.audit(planned.runId)).steps.review?.gateToken;
     expect(gate1).toEqual(expect.any(String));
-    const revised = await engine.gateResolve(planned.runId, "review", "revise", gate1);
+    const revised = await engine.gateResolve(planned.runId, "review", "revise", gate1!);
     const dispatch2 = tokenOf(revised);
     expect(dispatch2).not.toBe(dispatch1);
-    await engine.stepDone(planned.runId, "work", { output: { value: "two" } }, undefined, dispatch2);
+    await engine.stepDone(planned.runId, "work", { output: { value: "two" } }, dispatch2);
     const gate2 = (await engine.audit(planned.runId)).steps.review?.gateToken;
     expect(gate2).toEqual(expect.any(String));
     expect(gate2).not.toBe(gate1);
-    await expect(engine.gateResolve(planned.runId, "review", "approve", gate1)).rejects.toThrow(/stale/);
-    expect(await engine.gateResolve(planned.runId, "review", "approve")).toMatchObject({ status: "ready", ready: [{ id: "finish" }] });
+    await expect(engine.gateResolve(planned.runId, "review", "approve", gate1!)).rejects.toThrow(/stale/);
+    await expect(asUntypedCaller(engine).gateResolve(planned.runId, "review", "approve")).rejects.toThrow(/missing gate token/i);
+    expect(await engine.gateResolve(planned.runId, "review", "approve", gate2!)).toMatchObject({ status: "ready", ready: [{ id: "finish" }] });
 
     const current = await subject();
     const currentPlan = await current.engine.plan(spec, { name: "Ada" });
-    await current.engine.stepDone(currentPlan.runId, "work", { output: { value: "one" } }, undefined, tokenOf(currentPlan));
+    await current.engine.stepDone(currentPlan.runId, "work", { output: { value: "one" } }, tokenOf(currentPlan));
     const gate = (await current.engine.audit(currentPlan.runId)).steps.review?.gateToken;
-    expect(await current.engine.gateResolve(currentPlan.runId, "review", "approve", gate)).toMatchObject({ status: "ready" });
+    expect(await current.engine.gateResolve(currentPlan.runId, "review", "approve", gate!)).toMatchObject({ status: "ready" });
   });
 
   it("re-mints restored ready and gate issuances after checkpoint revert", async () => {
@@ -172,21 +196,21 @@ describe("engine issuance fencing", () => {
     const planned = await engine.plan(spec, { name: "Ada" });
     const dispatchBefore = tokenOf(planned);
     await engine.commit(planned.runId, "ready");
-    await engine.stepDone(planned.runId, "work", { output: { value: "done" } }, undefined, dispatchBefore);
+    await engine.stepDone(planned.runId, "work", { output: { value: "done" } }, dispatchBefore);
     const gateBefore = (await engine.audit(planned.runId)).steps.review?.gateToken;
     await engine.commit(planned.runId, "gate");
-    await engine.gateResolve(planned.runId, "review", "approve", gateBefore);
+    await engine.gateResolve(planned.runId, "review", "approve", gateBefore!);
 
     const revertedGate = await engine.revert(planned.runId, "gate");
     expect(revertedGate.status).toBe("running");
     const gateAfter = (await engine.audit(planned.runId)).steps.review?.gateToken;
     expect(gateAfter).not.toBe(gateBefore);
-    await expect(engine.gateResolve(planned.runId, "review", "approve", gateBefore)).rejects.toThrow(/stale/);
+    await expect(engine.gateResolve(planned.runId, "review", "approve", gateBefore!)).rejects.toThrow(/stale/);
 
     const revertedReady = await engine.revert(planned.runId, "ready");
     const dispatchAfter = tokenOf(revertedReady);
     expect(dispatchAfter).not.toBe(dispatchBefore);
-    await expect(engine.stepDone(planned.runId, "work", { output: { value: "stale" } }, undefined, dispatchBefore)).rejects.toThrow(/stale/);
+    await expect(engine.stepDone(planned.runId, "work", { output: { value: "stale" } }, dispatchBefore)).rejects.toThrow(/stale/);
   });
 
   it("keeps generations monotonic across checkpoint revert and re-enumeration", async () => {
@@ -202,7 +226,7 @@ describe("engine issuance fencing", () => {
     };
     const planned = await engine.plan(spec, { name: "Ada" });
     await engine.commit(planned.runId, "before-fanout");
-    await engine.stepDone(planned.runId, "prep", { output: { items: ["a", "b"] } }, undefined, tokenOf(planned));
+    await engine.stepDone(planned.runId, "prep", { output: { items: ["a", "b"] } }, tokenOf(planned));
     await waitFor(engine, planned.runId, (audit) => audit.status === "completed");
     const before = await store.load(planned.runId);
     expect(before.steps.fan?.fanout?.items.map((item) => item.generation)).toEqual([1, 2]);
@@ -210,7 +234,7 @@ describe("engine issuance fencing", () => {
 
     const reverted = await engine.revert(planned.runId, "before-fanout");
     expect((await store.load(planned.runId)).generationCounter).toBe(2);
-    await engine.stepDone(planned.runId, "prep", { output: { items: ["a", "b"] } }, undefined, tokenOf(reverted));
+    await engine.stepDone(planned.runId, "prep", { output: { items: ["a", "b"] } }, tokenOf(reverted));
     await waitFor(engine, planned.runId, (audit) => audit.status === "completed");
     const after = await store.load(planned.runId);
     expect(after.steps.fan?.fanout?.items.map((item) => item.generation)).toEqual([3, 4]);
@@ -230,13 +254,13 @@ describe("engine issuance fencing", () => {
       } },
     };
     const planned = await engine.plan(spec, { name: "Ada" });
-    await engine.stepDone(planned.runId, "prep", { output: { items: ["a"] } }, undefined, tokenOf(planned));
+    await engine.stepDone(planned.runId, "prep", { output: { items: ["a"] } }, tokenOf(planned));
     await waitFor(engine, planned.runId, (audit) => audit.steps.review?.status === "waiting_gate");
     const before = await store.load(planned.runId);
     const gate = before.steps.review?.gateToken;
     expect(before.steps.fan?.fanout?.items[0]?.generation).toBe(1);
-    const revised = await engine.gateResolve(planned.runId, "review", "revise", gate);
-    await engine.stepDone(planned.runId, "prep", { output: { items: ["b"] } }, undefined, tokenOf(revised));
+    const revised = await engine.gateResolve(planned.runId, "review", "revise", gate!);
+    await engine.stepDone(planned.runId, "prep", { output: { items: ["b"] } }, tokenOf(revised));
     await waitFor(engine, planned.runId, (audit) => audit.steps.review?.status === "waiting_gate");
     const after = await store.load(planned.runId);
     expect(after.steps.fan?.fanout?.items[0]?.generation).toBe(2);
@@ -251,7 +275,7 @@ describe("engine issuance fencing", () => {
     state.cancelRequested = true;
     await first.store.save(state);
     const restarted = await subject(undefined, first.root);
-    await expect(restarted.engine.stepDone(planned.runId, "work", { output: { value: "late" } }, undefined, token)).rejects.toThrow(/cancelled/);
+    await expect(restarted.engine.stepDone(planned.runId, "work", { output: { value: "late" } }, token)).rejects.toThrow(/cancelled/);
     expect(await restarted.engine.resume(planned.runId)).toMatchObject({ status: "running" });
     expect((await restarted.engine.audit(planned.runId)).steps.work?.acceptedDispatchToken).toBeUndefined();
   });
@@ -307,7 +331,7 @@ describe("engine issuance fencing", () => {
       } },
     };
     const gatePlanned = await gateful.engine.plan(spec, { name: "Ada" });
-    await gateful.engine.stepDone(gatePlanned.runId, "work", { output: { value: "one" } }, undefined, tokenOf(gatePlanned));
+    await gateful.engine.stepDone(gatePlanned.runId, "work", { output: { value: "one" } }, tokenOf(gatePlanned));
     const persisted = await gateful.store.load(gatePlanned.runId);
     delete persisted.steps.review!.gateToken;
     await gateful.store.save(persisted);
@@ -315,7 +339,7 @@ describe("engine issuance fencing", () => {
     await gateRestarted.engine.resume(gatePlanned.runId);
     const minted = (await gateRestarted.store.load(gatePlanned.runId)).steps.review?.gateToken;
     expect(minted).toEqual(expect.any(String));
-    expect(await gateRestarted.engine.gateResolve(gatePlanned.runId, "review", "approve", minted)).toMatchObject({ status: "ready" });
+    expect(await gateRestarted.engine.gateResolve(gatePlanned.runId, "review", "approve", minted!)).toMatchObject({ status: "ready" });
   });
 
   it("releases the lifecycle guard via the validated dependency successor, not array adjacency", async () => {

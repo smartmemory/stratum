@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine, type Evaluator } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
+import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const evaluator: Evaluator = {
   evaluate(expression, context) {
@@ -21,7 +22,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 async function createEngine(extra: Partial<ConstructorParameters<typeof StratumEngine>[0]> = {}) {
   const root = await mkdtemp(join(tmpdir(), "stratum-p1-"));
   roots.push(root);
-  return { root, engine: new StratumEngine({ stateRoot: root, evaluator, ...extra }) };
+  return { root, engine: tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator, ...extra })) };
 }
 
 const flow = (steps: unknown[], options: { budget?: Record<string, number>; output?: string; contract?: Record<string, string> } = {}) => ({
@@ -57,7 +58,7 @@ describe("P1 golden flow", () => {
     if (afterCollect.status !== "ready") return;
     expect(afterCollect.ready[0]).toMatchObject({ id: "finish", do: "finish ADA", attempt: 1 });
 
-    const second = new StratumEngine({ stateRoot: root, evaluator });
+    const second = tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator }));
     const resumed = await second.resume(planned.runId);
     expect(resumed).toMatchObject({ status: "ready", runId: planned.runId, ready: [{ id: "finish" }] });
 

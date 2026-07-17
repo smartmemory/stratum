@@ -365,7 +365,7 @@ export class StratumEngine {
     }
   }
 
-  async stepDone(runId: string, stepId: string, result: StepResult, expectedEpoch?: number, dispatchToken?: string): Promise<EngineResponse> {
+  async stepDone(runId: string, stepId: string, result: StepResult, dispatchToken: string): Promise<EngineResponse> {
     // Sole-mutator enforcement (STRAT-TS-FLOW-BG-OWNERSHIP): while a run is
     // actively bg-driven, the driver owns its mutation surface — an external
     // stepDone would race an in-flight connector dispatch and could commit a
@@ -377,7 +377,7 @@ export class StratumEngine {
     // finished bg run (completed/failed/budget_exhausted) falls through, where
     // stepDone raises the normal "not awaiting" error anyway.
     this.assertExternalMutationAllowed(runId, "stepDone");
-    return this.stepDoneOwned(runId, stepId, result, expectedEpoch, dispatchToken);
+    return this.stepDoneOwned(runId, stepId, result, undefined, dispatchToken);
   }
 
   /** Lock-wrapped stepDone used by the bg driver itself, bypassing the
@@ -405,7 +405,10 @@ export class StratumEngine {
     if (expectedEpoch !== undefined && (state.epoch ?? 0) !== expectedEpoch) {
       throw new Error("step result is stale: dispatched for a superseded epoch");
     }
-    if (dispatchToken !== undefined && state.dispatchToken !== dispatchToken) {
+    if (dispatchToken === undefined) {
+      throw new Error("step result is stale: missing dispatch token");
+    }
+    if (state.dispatchToken !== dispatchToken) {
       throw new Error("step result is stale: dispatched for a superseded issuance");
     }
 
@@ -625,7 +628,7 @@ export class StratumEngine {
     return { status: bg.status };
   }
 
-  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken?: string): Promise<EngineResponse> {
+  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken: string): Promise<EngineResponse> {
     const response = await this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision, gateToken));
     const bg = this.bgFlows.get(runId);
     if (bg?.status === "paused_gate" && response.status !== "ready" && response.status !== "running") {
@@ -662,7 +665,10 @@ export class StratumEngine {
     const step = located?.step;
     const state = located?.state;
     if (!scope || !step?.gate || !state || state.status !== "waiting_gate" || run.status !== "running") throw new Error("gate is not awaiting a decision");
-    if (gateToken !== undefined && state.gateToken !== gateToken) {
+    if (gateToken === undefined) {
+      throw new Error("gate decision is stale: missing gate token");
+    }
+    if (state.gateToken !== gateToken) {
       throw new Error("gate decision is stale: issued for a superseded gate round");
     }
     delete state.gateToken;

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { validateSpec } from "../../src/ir/validate.js";
+import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -21,7 +22,7 @@ async function v1(name: string): Promise<unknown> {
 async function engine() {
   const root = await mkdtemp(join(tmpdir(), "stratum-p6-parity-")); roots.push(root);
   const connector: EngineConnector = async ({ prompt }) => ({ output: { value: prompt } });
-  return new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector });
+  return tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector }));
 }
 
 async function waitForTerminal(subject: StratumEngine, runId: string) {

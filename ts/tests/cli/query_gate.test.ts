@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { main } from "../../src/cli/stratum.js";
 import { StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
+import { tokenEchoingEngine, type TokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -19,11 +20,11 @@ function captureMain(argv: string[]) {
   return main(argv).then((code) => ({ code, stdout, stderr })).finally(() => { process.stdout.write = out; process.stderr.write = err; });
 }
 
-async function engine(root?: string): Promise<{ root: string; engine: StratumEngine }> {
+async function engine(root?: string): Promise<{ root: string; engine: TokenEchoingEngine }> {
   const stateRoot = root ?? await mkdtemp(join(tmpdir(), "stratum-query-gate-"));
   if (!root) roots.push(stateRoot);
   const connector: EngineConnector = async ({ prompt }) => ({ output: { value: prompt } });
-  return { root: stateRoot, engine: new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector }) };
+  return { root: stateRoot, engine: tokenEchoingEngine(new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector })) };
 }
 
 async function withStateRoot<T>(root: string, action: () => Promise<T>): Promise<T> {
@@ -87,12 +88,34 @@ const tinyBudgetFlow = {
   } },
 };
 
-async function pendingGate(subject: StratumEngine): Promise<string> {
+async function pendingGate(subject: TokenEchoingEngine): Promise<string> {
   const planned = await subject.plan(gateFlow, {});
   if (planned.status !== "ready") throw new Error("expected work ready");
   await subject.stepDone(planned.runId, "work", { output: { value: "done" } });
   return planned.runId;
 }
+
+// S1: the human sees the gate's token via `query gates` and carries it into the
+// decision (observation-time echo). Fetch it the way a human operator would.
+async function gateTokenFor(root: string, runId: string, stepId = "review"): Promise<string> {
+  const gates = await withStateRoot(root, () => captureMain(["query", "gates"]));
+  const entry = (JSON.parse(gates.stdout) as Array<{ flow_id: string; step_id: string; gate_token?: string }>)
+    .find((candidate) => candidate.flow_id === runId && candidate.step_id === stepId);
+  if (!entry?.gate_token) throw new Error(`no gate_token exposed for ${runId}/${stepId}`);
+  return entry.gate_token;
+}
+
+const gateReviseFlow = {
+  version: 1,
+  contracts: { Result: { value: "string" } },
+  flows: { entry: "review_flow", review_flow: {
+    input: {}, output: { from: "${work.output}", contract: "Result" }, max_rounds: 5,
+    steps: [
+      { id: "work", do: "write report", out: "Result" },
+      { id: "review", after: ["work"], gate: { on_approve: null, on_revise: "work", on_kill: null } },
+    ],
+  } },
+};
 
 describe("CLI query and gate compatibility", () => {
   it("lists running and completed persisted flows using compose status vocabulary", async () => {
@@ -136,31 +159,33 @@ describe("CLI query and gate compatibility", () => {
     const runId = await pendingGate(subject);
     const gates = await withStateRoot(root, () => captureMain(["query", "gates"]));
     expect(gates).toMatchObject({ code: 0, stderr: "" });
+    // S1: the listing exposes the observation-time gate_token.
     expect(JSON.parse(gates.stdout)).toEqual([{
       _schema_version: "1", flow_id: runId, flow_name: "review_flow", step_id: "review", function: "review",
-      on_approve: null, on_revise: null, on_kill: null, timeout: null,
+      on_approve: null, on_revise: null, on_kill: null, timeout: null, gate_token: expect.any(String),
     }]);
+    const token = await gateTokenFor(root, runId);
 
     // While the gate awaits, targeting a non-current (already succeeded) step
     // is a wrong_step CONFLICT — Python parity, exit 2 not not_a_gate_step.
-    const wrongStep = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "work"]));
+    const wrongStep = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "work", "--token", token]));
     expect(wrongStep.code).toBe(2);
     expect(JSON.parse(wrongStep.stdout)).toMatchObject({ conflict: true, flow_id: runId, step_id: "work" });
 
-    const approved = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "review", "--note", "looks good", "--resolved-by", "human"]));
+    const approved = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "review", "--token", token, "--note", "looks good", "--resolved-by", "human"]));
     expect(approved).toMatchObject({ code: 0, stderr: "" });
     expect(JSON.parse(approved.stdout)).toEqual({ _schema_version: "1", ok: true, flow_id: runId, step_id: "review", outcome: "approve", result: "complete" });
 
-    const conflict = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "review"]));
+    const conflict = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "review", "--token", token]));
     expect(conflict.code).toBe(2);
     expect(JSON.parse(conflict.stdout)).toMatchObject({ conflict: true, flow_id: runId, step_id: "review" });
 
     // Any step on a finished flow is a flow_already_complete CONFLICT.
-    const completedFlow = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "work"]));
+    const completedFlow = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "work", "--token", token]));
     expect(completedFlow.code).toBe(2);
     expect(JSON.parse(completedFlow.stdout)).toMatchObject({ conflict: true, detail: "Flow is already complete" });
 
-    const missing = await withStateRoot(root, () => captureMain(["gate", "approve", "missing", "review"]));
+    const missing = await withStateRoot(root, () => captureMain(["gate", "approve", "missing", "review", "--token", token]));
     expect(missing.code).toBe(1);
     expect(JSON.parse(missing.stdout)).toEqual({ error: { code: "NOT_FOUND", message: "Flow 'missing' not found" } });
   });
@@ -171,7 +196,8 @@ describe("CLI query and gate compatibility", () => {
     if (planned.status !== "ready") throw new Error("expected work ready");
     await subject.stepDone(planned.runId, "work", { output: { value: "done" } });
 
-    const approved = await withStateRoot(root, () => captureMain(["gate", "approve", planned.runId, "review"]));
+    const token = await gateTokenFor(root, planned.runId);
+    const approved = await withStateRoot(root, () => captureMain(["gate", "approve", planned.runId, "review", "--token", token]));
     expect(approved.code).toBe(0);
     expect(JSON.parse(approved.stdout)).toMatchObject({ ok: true, outcome: "approve", result: "execute_step" });
   });
@@ -179,7 +205,8 @@ describe("CLI query and gate compatibility", () => {
   it("rejects revise on a gate without an on_revise route as missing_on_revise", async () => {
     const { root, engine: subject } = await engine();
     const runId = await pendingGate(subject); // gateFlow: on_revise null, no max_rounds pressure
-    const revised = await withStateRoot(root, () => captureMain(["gate", "revise", runId, "review"]));
+    const token = await gateTokenFor(root, runId);
+    const revised = await withStateRoot(root, () => captureMain(["gate", "revise", runId, "review", "--token", token]));
     expect(revised.code).toBe(1);
     expect(JSON.parse(revised.stdout)).toMatchObject({ error: { code: "missing_on_revise" } });
 
@@ -193,7 +220,9 @@ describe("CLI query and gate compatibility", () => {
     const planned = await subject.plan(gateFlow, {});
     if (planned.status !== "ready") throw new Error("expected work ready");
     // "work" is the CURRENT (ready) step and is not a gate → Python parity error exit 1.
-    const notGate = await withStateRoot(root, () => captureMain(["gate", "approve", planned.runId, "work"]));
+    // No gate is waiting, so no observation-time token exists; a placeholder token
+    // satisfies the CLI arg contract and the not_a_gate_step check fires first.
+    const notGate = await withStateRoot(root, () => captureMain(["gate", "approve", planned.runId, "work", "--token", "placeholder"]));
     expect(notGate.code).toBe(1);
     expect(JSON.parse(notGate.stdout)).toMatchObject({ error: { code: "not_a_gate_step" } });
   });
@@ -201,7 +230,8 @@ describe("CLI query and gate compatibility", () => {
   it("maps reject to kill and projects the terminal run as killed", async () => {
     const { root, engine: subject } = await engine();
     const runId = await pendingGate(subject);
-    const rejected = await withStateRoot(root, () => captureMain(["gate", "reject", runId, "review"]));
+    const token = await gateTokenFor(root, runId);
+    const rejected = await withStateRoot(root, () => captureMain(["gate", "reject", runId, "review", "--token", token]));
     expect(rejected).toMatchObject({ code: 0, stderr: "" });
     expect(JSON.parse(rejected.stdout)).toEqual({ _schema_version: "1", ok: true, flow_id: runId, step_id: "review", outcome: "kill", result: "killed" });
 
@@ -245,7 +275,8 @@ describe("CLI query and gate compatibility", () => {
   it("reports no current step for terminal runs", async () => {
     const { root, engine: subject } = await engine();
     const runId = await pendingGate(subject);
-    await withStateRoot(root, () => captureMain(["gate", "reject", runId, "review"]));
+    const token = await gateTokenFor(root, runId);
+    await withStateRoot(root, () => captureMain(["gate", "reject", runId, "review", "--token", token]));
 
     const detail = await withStateRoot(root, () => captureMain(["query", "flow", runId]));
     expect(JSON.parse(detail.stdout)).toMatchObject({ status: "killed", current_step_id: null });
@@ -281,5 +312,46 @@ describe("CLI query and gate compatibility", () => {
 
     const detail = await withStateRoot(root, () => captureMain(["query", "flow", "forged-run-0001"]));
     expect(JSON.parse(detail.stdout)).toMatchObject({ status: "failed" });
+  });
+
+  it("requires a --token argument to resolve a gate (missing token is a usage error)", async () => {
+    const { root, engine: subject } = await engine();
+    const runId = await pendingGate(subject);
+    const usage = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "review"]));
+    expect(usage.code).toBe(2);
+    expect(usage.stderr).toContain("--token");
+    // The gate must still be awaiting — no token, no decision.
+    const gates = await withStateRoot(root, () => captureMain(["query", "gates"]));
+    expect(JSON.parse(gates.stdout)).toHaveLength(1);
+  });
+
+  it("rejects a stale observation-time token after the gate advances to a new round", async () => {
+    const { root, engine: subject } = await engine();
+    const planned = await subject.plan(gateReviseFlow, {});
+    if (planned.status !== "ready") throw new Error("expected work ready");
+    const runId = planned.runId;
+    await subject.stepDone(runId, "work", { output: { value: "round-1" } });
+
+    // The human observes round 1 and captures its token.
+    const round1Token = await gateTokenFor(root, runId);
+
+    // Meanwhile the gate is revised (valid at round 1), routing back to work; a
+    // fresh work result re-reaches the gate at round 2 with a NEW token.
+    const revised = await withStateRoot(root, () => captureMain(["gate", "revise", runId, "review", "--token", round1Token]));
+    expect(revised.code).toBe(0);
+    await subject.stepDone(runId, "work", { output: { value: "round-2" } });
+    const round2Token = await gateTokenFor(root, runId);
+    expect(round2Token).not.toBe(round1Token);
+
+    // The human's stale round-1 decision must be rejected by the engine fencing,
+    // not silently rebound to the current round.
+    const stale = await withStateRoot(root, () => captureMain(["gate", "approve", runId, "review", "--token", round1Token]));
+    expect(stale.code).toBe(1);
+    expect(JSON.parse(stale.stdout)).toMatchObject({ error: { code: "INVALID" } });
+    expect(stale.stdout).toContain("superseded gate round");
+
+    // The gate is still awaiting round 2 — the stale decision changed nothing.
+    const gates = await withStateRoot(root, () => captureMain(["query", "gates"]));
+    expect(JSON.parse(gates.stdout)).toHaveLength(1);
   });
 });
