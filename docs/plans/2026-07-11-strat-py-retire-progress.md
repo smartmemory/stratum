@@ -36,6 +36,34 @@ each phase. Absolute SHAs / versions only.
 
 ## Phase 2 — TS parity (stratum repo)
 
+- **STRAT-PY-RETIRE ENDGAME (compose python deletion) — ✅ DONE 2026-07-17 (compose develop @ 62f115a). THE PYTHON EXECUTION PATH IS GONE. Epic build work COMPLETE — only merge day (owner-gated atomic develop→main, both repos) remains.**
+  Safety first per owner directive: local `python-legacy` branches at the last python-bearing
+  commits (compose cc390a7, stratum 642dda3) BEFORE any deletion. Deleted: python dispatch
+  branches, executeParallelDispatch* + server/routing/worktree machinery, python parallel MCP
+  methods + tool discovery, connector-factory shim (test capability → test/helpers/
+  ts-agent-harness.js), python init (pip/stratum-mcp), python-era tests — 9,968 lines net.
+  Python selection now FAILS LOUDLY naming python-legacy (incl. the design-routes cached-client
+  path); no silent TS fallback anywhere. **Two-lens review (Codex + Opus) proved its worth: the
+  deletion took LIVE behavior with it** — dirty-review recovery, GSD timing/diff instrumentation,
+  bug-mode recovery checkpoints, diagnose rejected-hypotheses context, cockpit parallel-task
+  events — and Opus caught the untracked load-bearing test harness that staging would have
+  missed. THREE restoration rounds (H1–H8, I1–I4, J1–J2), with the middle round itself caught
+  validating against proxies (helpers/injected flags/fabricated history) — controller mandate
+  thereafter: real-path proof only (real runBuild/runGsd over the live TS bin, engine-audit
+  assertions), which surfaced two further masked defects (normalization resets lenses_run;
+  instrumentation keyed item-index vs task-id). **Design landed: dirty-review recovery is
+  engine-native** — review_gate after the reducer (on_revise → review_triage, max_rounds 10),
+  compose resolves by policy (clean→approve; dirty→pre-normalization dirty-lens capture →
+  corrective fixer → revise), sidecar cleared at fresh start, result re-derived from engine
+  audit on resume. Deleted-test specs recovered from cc390a7 drove every re-expression.
+  Follow-ups filed: TS runGsd/runBuild harness + 3 python-era survivor suite ports (fidelity
+  debt, still green); stratum issues (bg workspace-write agents + claude allowlists;
+  deterministic test-judge backend) BLOCKED on gh reauth. Gates: **full suite 4608/4608 —
+  0 fail 0 cancelled, the first fully green suite of the migration**; ts-cutover 117/117;
+  every round independently verified. NOTE: the stratum-repo python tree (src/stratum,
+  stratum-mcp) is NOT deleted this slice — compose no longer references it; its removal is
+  merge-day housekeeping (owner call, alongside the atomic merges).
+
 - **STRAT-TS-FLAG-DAY (both repos) — ✅ DONE 2026-07-17 (stratum develop @ 9c78b73 SURFACE 9; compose develop @ cc390a7). Epic status: only endgame (#11) remains.**
   Stratum: stepDone REQUIRES dispatchToken (ordinary+subflow), gateResolve REQUIRES gateToken,
   epoch retired (strict-schema rejected), enforcement at three boundaries (runtime guards for
