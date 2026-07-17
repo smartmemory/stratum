@@ -6,6 +6,7 @@ import { CHECKPOINT_EXCLUDED, CHECKPOINT_FIELDS, commitCheckpoint, revertCheckpo
 import { StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { StateStore, type PersistedRun } from "../../src/engine/state.js";
+import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))); });
@@ -22,7 +23,7 @@ const twoStepFlow = {
 async function subject(root?: string, connector: EngineConnector = async () => ({ output: { value: "done" } })) {
   const stateRoot = root ?? await mkdtemp(join(tmpdir(), "stratum-flowctl-"));
   if (!root) roots.push(stateRoot);
-  return new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector });
+  return tokenEchoingEngine(new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector }));
 }
 
 function run(): PersistedRun {

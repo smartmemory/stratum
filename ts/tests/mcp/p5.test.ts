@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { T2F5_DONE_SENTINEL, cancelBackgroundRun, pollBackgroundRun, runAgent } from "../../src/connectors/index.js";
 import { StratumEngine } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
-import { assertToolResponse, mcpSurface } from "../../src/mcp/contracts.js";
+import { assertToolRequest, assertToolResponse, mcpSurface } from "../../src/mcp/contracts.js";
 import { createMcpServer, type McpDependencies, type ToolName } from "../../src/mcp/server.js";
 import { main } from "../../src/cli/stratum.js";
 
@@ -123,7 +123,7 @@ describe("P5 frozen MCP surface", () => {
       const checkpointRun = ready.runId as string;
       await call("stratum_commit", { flow_id: checkpointRun, label: "before_first" });
       await call("stratum_commit", { flow_id: "no-such-flow", label: "cp" });
-      await call("stratum_step_done", { runId: checkpointRun, stepId: "first", result: { output: { value: "first" } } });
+      await call("stratum_step_done", { runId: checkpointRun, stepId: "first", dispatchToken: readyToken(ready), result: { output: { value: "first" } } });
       await call("stratum_revert", { flow_id: checkpointRun, label: "before_first" });
       await call("stratum_revert", { flow_id: checkpointRun, label: "missing" });
       const checkpointGate = await call("stratum_plan", { spec: initialGateFlow(), input: { name: "x" } });
@@ -132,20 +132,21 @@ describe("P5 frozen MCP surface", () => {
       // revert also exposes completed — reverting to a post-completion checkpoint on a
       // retained terminal run (Python parity: terminal runs stay checkpoint-operable).
       const checkpointDone = await call("stratum_plan", { spec: simpleFlow, input: { name: "x" } });
-      await call("stratum_step_done", { runId: checkpointDone.runId, stepId: "build", result: { output: { value: "done" } } });
+      await call("stratum_step_done", { runId: checkpointDone.runId, stepId: "build", dispatchToken: readyToken(checkpointDone), result: { output: { value: "done" } } });
       await call("stratum_commit", { flow_id: checkpointDone.runId, label: "post" });
       await call("stratum_revert", { flow_id: checkpointDone.runId, label: "post" });
 
       // step_done: ready, running at a gate, completed, failed, and budget exhaustion.
-      const chainRun = (await call("stratum_plan", { spec: chainFlow(), input: { name: "x" } })).runId as string;
-      await call("stratum_step_done", { runId: chainRun, stepId: "first", result: { output: { value: "first" } } });
+      const chain = await call("stratum_plan", { spec: chainFlow(), input: { name: "x" } });
+      const chainRun = chain.runId as string;
+      await call("stratum_step_done", { runId: chainRun, stepId: "first", dispatchToken: readyToken(chain), result: { output: { value: "first" } } });
       const gateRun = (await gateWaiting(call, gateFlow)) as string;
       const complete = await call("stratum_plan", { spec: simpleFlow, input: { name: "x" } });
-      await call("stratum_step_done", { runId: complete.runId, stepId: "build", result: { output: { value: "done" } } });
+      await call("stratum_step_done", { runId: complete.runId, stepId: "build", dispatchToken: readyToken(complete), result: { output: { value: "done" } } });
       const failing = await call("stratum_plan", { spec: failureFlow(), input: { name: "x" } });
-      await call("stratum_step_done", { runId: failing.runId, stepId: "build", result: { failure: "broken" } });
+      await call("stratum_step_done", { runId: failing.runId, stepId: "build", dispatchToken: readyToken(failing), result: { failure: "broken" } });
       const budget = await call("stratum_plan", { spec: postDispatchBudgetFlow(), input: { name: "x" } });
-      await call("stratum_step_done", { runId: budget.runId, stepId: "first", result: { output: { value: "one" } } });
+      await call("stratum_step_done", { runId: budget.runId, stepId: "first", dispatchToken: readyToken(budget), result: { output: { value: "one" } } });
 
       // Checkpoints on retained terminal runs: committing after failure snapshots the
       // terminal status, so reverting restores it — failed and budget_exhausted are
@@ -168,15 +169,15 @@ describe("P5 frozen MCP surface", () => {
       // gate_resolve: ready, running via a fanout target, completed, failed,
       // and budget-exhausted via a gated, budgeted dispatch.
       const gateReady = await gateWaiting(call, gateFlow);
-      await call("stratum_gate_resolve", { runId: gateReady, stepId: "review", decision: "approve" });
+      await call("stratum_gate_resolve", { runId: gateReady, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateReady) });
       const gateRunning = await gateWaiting(call, gateFanoutFlow());
-      await call("stratum_gate_resolve", { runId: gateRunning, stepId: "review", decision: "approve" });
+      await call("stratum_gate_resolve", { runId: gateRunning, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateRunning) });
       const gateComplete = await gateWaiting(call, terminalGateFlow());
-      await call("stratum_gate_resolve", { runId: gateComplete, stepId: "review", decision: "approve" });
+      await call("stratum_gate_resolve", { runId: gateComplete, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateComplete) });
       const gateFailed = await gateWaiting(call, killGateFlow());
-      await call("stratum_gate_resolve", { runId: gateFailed, stepId: "review", decision: "kill" });
+      await call("stratum_gate_resolve", { runId: gateFailed, stepId: "review", decision: "kill", gateToken: await currentGateToken(e, gateFailed) });
       const gateBudget = await gateWaiting(call, gateBudgetFlow());
-      await call("stratum_gate_resolve", { runId: gateBudget, stepId: "review", decision: "approve" });
+      await call("stratum_gate_resolve", { runId: gateBudget, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateBudget) });
 
       // audit and flow_poll cover every durable state on independent real runs.
       for (const runId of [gateRun, complete.runId, failing.runId, budget.runId] as string[]) {
@@ -234,13 +235,10 @@ describe("P5 frozen MCP surface", () => {
     } finally { await pair.close(); }
   });
 
-  it("fences step_done with the ready entry's epoch when the client echoes it", async () => {
-    const root = await mkdtemp(join(tmpdir(), "stratum-p5-epoch-")); roots.push(root);
+  it("fences step_done with the ready entry's dispatch token across revision", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-token-")); roots.push(root);
     const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
     try {
-      // Revise bumps the step epoch: a wire report echoing the superseded epoch
-      // must be rejected, and one echoing the current epoch accepted (Phase-1
-      // fencing — see STRAT-TS-FANOUT-CONSUMER design, fencing scope amendment).
       const reviseFlow = { version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
         input: { name: "string" }, output: { from: "${build.output}", contract: "Result" }, max_rounds: 1,
         steps: [
@@ -250,12 +248,15 @@ describe("P5 frozen MCP surface", () => {
       } } };
       const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: reviseFlow, input: { name: "Ada" } } }));
       const runId = planned.runId as string;
-      expect((planned.ready as Array<{ id: string; epoch: number }>)[0]).toMatchObject({ id: "build", epoch: 0 });
-      response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "v1" } }, epoch: 0 } }));
-      response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: { runId, stepId: "review", decision: "revise" } }));
-      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "stale" } }, epoch: 0 } }))
-        .rejects.toThrow(/superseded epoch/);
-      const current = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", result: { output: { value: "v2" } }, epoch: 1 } }));
+      const firstToken = readyToken(planned);
+      response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", dispatchToken: firstToken, result: { output: { value: "v1" } } } }));
+      const audit = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId } }));
+      const gateToken = ((audit.steps as Record<string, Record<string, unknown>>).review!).gateToken;
+      const revised = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: { runId, stepId: "review", decision: "revise", gateToken } }));
+      const currentToken = readyToken(revised);
+      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", dispatchToken: firstToken, result: { output: { value: "stale" } } } }))
+        .rejects.toThrow(/superseded issuance/);
+      const current = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId, stepId: "build", dispatchToken: currentToken, result: { output: { value: "v2" } } } }));
       expect(current.status).toBe("running");
     } finally { await pair.close(); }
   });
@@ -346,8 +347,11 @@ describe("P5 frozen MCP surface", () => {
       await expect(pair.client.callTool({ name: "stratum_step_done", arguments: {
         runId: planned.runId, stepId: "build", dispatchToken: first.dispatchToken, result: { output: { value: "stale" } },
       } })).rejects.toThrow(/stale/);
+      await expect(pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "build", result: { output: { value: "missing echo" } },
+      } })).rejects.toThrow(/dispatchToken.*required/i);
       response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
-        runId: planned.runId, stepId: "build", result: { output: { value: "missing echo remains compatible" } },
+        runId: planned.runId, stepId: "build", dispatchToken: current.dispatchToken, result: { output: { value: "current" } },
       } }));
       expect(current.dispatchToken).not.toBe(first.dispatchToken);
       const audit2 = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
@@ -364,6 +368,12 @@ describe("P5 frozen MCP surface", () => {
     } finally { await pair.close(); }
   });
 
+  it("rejects the retired Phase-1 epoch field at the strict MCP request schema", async () => {
+    await expect(assertToolRequest("stratum_step_done", {
+      runId: "run", stepId: "step", dispatchToken: "token", epoch: 0, result: { output: { value: "old wire" } },
+    })).rejects.toThrow(/epoch.*undeclared/i);
+  });
+
   it("runs plan, stepDone, completed, and gate flows through an SDK client", async () => {
     const root = await mkdtemp(join(tmpdir(), "stratum-p5-mcp-")); roots.push(root);
     const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
@@ -375,14 +385,14 @@ describe("P5 frozen MCP surface", () => {
         status: "committed", flow_id: planned.runId, label: "initial", step_number: 1,
         current_step_id: "build", checkpoints: ["initial"],
       });
-      const done = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId: planned.runId, stepId: "build", result: { output: { value: "done" } } } }));
+      const done = response(await pair.client.callTool({ name: "stratum_step_done", arguments: { runId: planned.runId, stepId: "build", dispatchToken: readyToken(planned), result: { output: { value: "done" } } } }));
       expect(done).toMatchObject({ status: "completed", output: { value: "done" } });
 
       const revertPlan = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: gateFlow, input: { name: "x" } } }));
       await pair.client.callTool({ name: "stratum_commit", arguments: { flow_id: revertPlan.runId, label: "start" } });
       await pair.client.callTool({
         name: "stratum_step_done",
-        arguments: { runId: revertPlan.runId, stepId: "build", result: { output: { value: "changed" } } },
+        arguments: { runId: revertPlan.runId, stepId: "build", dispatchToken: readyToken(revertPlan), result: { output: { value: "changed" } } },
       });
       const reverted = response(await pair.client.callTool({ name: "stratum_revert", arguments: { flow_id: revertPlan.runId, label: "start" } }));
       expect(reverted).toMatchObject({ status: "ready", runId: revertPlan.runId, ready: [{ id: "build" }], reverted_to: "start" });
@@ -396,8 +406,10 @@ describe("P5 frozen MCP surface", () => {
       });
 
       const gatePlan = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: gateFlow, input: { name: "x" } } }));
-      await pair.client.callTool({ name: "stratum_step_done", arguments: { runId: gatePlan.runId, stepId: "build", result: { output: { value: "built" } } } });
-      const resolved = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: { runId: gatePlan.runId, stepId: "review", decision: "approve" } }));
+      await pair.client.callTool({ name: "stratum_step_done", arguments: { runId: gatePlan.runId, stepId: "build", dispatchToken: readyToken(gatePlan), result: { output: { value: "built" } } } });
+      const gateAudit = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: gatePlan.runId } }));
+      const gateToken = ((gateAudit.steps as Record<string, Record<string, unknown>>).review!).gateToken;
+      const resolved = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: { runId: gatePlan.runId, stepId: "review", decision: "approve", gateToken } }));
       expect(resolved).toMatchObject({ status: "ready", ready: [{ id: "finish" }] });
     } finally { await pair.close(); }
   });
@@ -438,7 +450,7 @@ describe("P5 stratum watch", () => {
     const engine = new StratumEngine({ stateRoot: root, evaluator: createEvaluator() });
     const planned = await engine.plan(simpleFlow, { name: "x" });
     if (planned.status !== "ready") throw new Error("expected ready flow");
-    await engine.stepDone(planned.runId, "build", { output: { value: "done" } });
+    await engine.stepDone(planned.runId, "build", { output: { value: "done" } }, planned.ready[0]!.dispatchToken);
     const watched = await captureMain(process.env.HOME ?? "", ["watch", planned.runId, "--events", "--kinds=completed"], root);
     expect(watched.code).toBe(0);
     const events = watched.stdout.trim().split("\n").map((line) => JSON.parse(line));
@@ -594,9 +606,21 @@ function flow(steps: unknown[], from: string) {
 async function gateWaiting(call: (tool: ToolName, args: Record<string, unknown>) => Promise<Record<string, unknown>>, spec: Record<string, unknown>): Promise<string> {
   const planned = await call("stratum_plan", { spec, input: { name: "x", items: ["a"] } });
   expect(planned.status).toBe("ready");
-  const waiting = await call("stratum_step_done", { runId: planned.runId, stepId: "build", result: { output: { value: "built" } } });
+  const waiting = await call("stratum_step_done", { runId: planned.runId, stepId: "build", dispatchToken: readyToken(planned), result: { output: { value: "built" } } });
   expect(waiting.status).toBe("running");
   return planned.runId as string;
+}
+
+function readyToken(response_: Record<string, unknown>): string {
+  const token = (response_.ready as Array<Record<string, unknown>> | undefined)?.[0]?.dispatchToken;
+  if (typeof token !== "string") throw new Error("expected ready dispatch token");
+  return token;
+}
+
+async function currentGateToken(engine: StratumEngine, runId: string, stepId = "review"): Promise<string> {
+  const token = (await engine.audit(runId)).steps[stepId]?.gateToken;
+  if (typeof token !== "string") throw new Error("expected current gate token");
+  return token;
 }
 
 async function waitForFlowBg(

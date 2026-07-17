@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### breaking: require report tokens and retire the Phase-1 epoch wire (STRAT-TS-FANOUT-CONSUMER flag-day, surface 9)
+
+The coordinated migration window is closed. `stratum_step_done` now requires
+the current issuance's `dispatchToken` for ordinary steps, scoped subflow
+steps, and consumer-fanout items; `stratum_gate_resolve` likewise requires the
+current round's `gateToken`. Missing echoes are rejected in the same stale
+report family as mismatched or superseded tokens. The temporary Phase-1
+`epoch` request field is retired from the engine and MCP wire, and strict MCP
+request validation rejects clients that still send it. Surface 8 → 9;
+`events.json` is unchanged.
+
+**Review round 1 (S1–S3).**
+
+- **S1** The human-gate CLI no longer defeats fencing by re-fetching the token at
+  resolve time. `stratum query gates` now exposes each waiting gate's `gate_token`
+  (its observation-time value), and `stratum gate <approve|reject|revise>` REQUIRES
+  a `--token <t>` argument that is passed to `gateResolve` verbatim (a missing token
+  is a CLI usage error). A stale decision — the human approves round 1's token after
+  the gate has advanced to round 2 — is now rejected by the engine's gate fencing and
+  surfaced as an error, instead of being silently rebound to the current round.
+- **S2** The public engine signatures now REQUIRE the token at the type boundary:
+  `StratumEngine.stepDone(..., dispatchToken: string)` and
+  `gateResolve(..., gateToken: string)` (previously optional). A tokenless
+  direct-engine call no longer compiles (it only failed at runtime before). The
+  engine's internal owned/locked settle methods keep the optional parameter for the
+  bg driver's own path; the runtime guards remain as defense-in-depth for untyped
+  (JS) callers.
+- **S3** The two explicit token-fencing tests (bg gate-revise dispatch-token
+  supersession; the P4 checkpoint stale-token assertion) now drive the RAW engine
+  directly instead of the token-echoing test adapter, which would forward an omitted
+  token and mask a regression. The adapter helper documents that it must never be
+  used for fencing assertions.
+
 ### feat: consumer-dispatched native fanout + dispatch descriptors (STRAT-TS-FANOUT-CONSUMER Slice D, surface 8)
 
 `fanout.dispatch: "consumer"` now executes end to end on the stratum side.

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine, type BgStatus, type EngineConnector } from "../../src/engine/engine.js";
 import { StateStore, type PersistedRun } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
+import { tokenEchoingEngine, type TokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -16,8 +17,8 @@ async function stateRoot(): Promise<string> {
   return root;
 }
 
-function engine(root: string, connector: EngineConnector): StratumEngine {
-  return new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector });
+function engine(root: string, connector: EngineConnector): TokenEchoingEngine {
+  return tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector }));
 }
 
 async function fixture(name: string): Promise<unknown> {

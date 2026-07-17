@@ -1,5 +1,5 @@
 {
-  "surface": 8,
+  "surface": 9,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -44,7 +44,7 @@
       }
     },
     "stratum_step_done": {
-      "request": { "runId": "string", "stepId": "string", "result": { "output?": "any", "failure?": "string", "usage?": "object", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } }, "epoch?": "number", "dispatchToken?": "string" },
+      "request": { "runId": "string", "stepId": "string", "result": { "output?": "any", "failure?": "string", "usage?": "object", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } }, "dispatchToken": "string" },
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
@@ -102,7 +102,7 @@
       }
     },
     "stratum_gate_resolve": {
-      "request": { "runId": "string", "stepId": "string", "decision": "string", "gateToken?": "string" },
+      "request": { "runId": "string", "stepId": "string", "decision": "string", "gateToken": "string" },
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },

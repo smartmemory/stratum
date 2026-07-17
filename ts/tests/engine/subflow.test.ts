@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StratumEngine } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
+import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -11,7 +12,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 async function engine(root?: string) {
   const stateRoot = root ?? await mkdtemp(join(tmpdir(), "stratum-subflow-"));
   if (!root) roots.push(stateRoot);
-  return { root: stateRoot, engine: new StratumEngine({ stateRoot, evaluator: createEvaluator() }) };
+  return { root: stateRoot, engine: tokenEchoingEngine(new StratumEngine({ stateRoot, evaluator: createEvaluator() })) };
 }
 
 const resultContract = { value: "string" };
