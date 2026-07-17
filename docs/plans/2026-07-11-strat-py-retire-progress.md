@@ -127,7 +127,10 @@ each phase. Absolute SHAs / versions only.
   interrupt = stratum follow-up issue (ts: workspace-write bg agent mode + claude
   allowlists on the agent surface; bg mode is codex-only+read-only-only per
   ts/src/mcp/background.ts:65/:68, sync agent_run returns no runId, server.ts:104 —
-  FILING BLOCKED on gh keyring reauth as of this entry). Next: flag-day (task #6).
+  FILING BLOCKED on gh keyring reauth as of this entry — RESOLVED later same day: the
+  "invalid tokens" were a transient network interception, not credential failure; FILED as
+  stratum #18 (+ #19 deterministic test-judge backend from the flag-day C5 kill)). Next:
+  flag-day (task #6).
 
 - **STRAT-TS-FANOUT-CONSUMER Slice E2b (bounded concurrent consumer execution) — ✅ DONE 2026-07-16 (compose develop @ 287ae75).**
   Resolves the E2-deferred serialization P3 (task #8, owner go-ahead on controller recommendation:
