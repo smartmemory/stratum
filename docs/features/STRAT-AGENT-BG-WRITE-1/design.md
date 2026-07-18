@@ -3,6 +3,7 @@
 **Status:** DESIGN  
 **Phase:** STRAT-AGENT: Agent Surface  
 **Created:** 2026-07-18  
+**Revised:** 2026-07-18 (r2 — design-gate findings addressed)  
 **Related:** [feature.json](./feature.json), GitHub #18
 
 ---
@@ -149,11 +150,19 @@ async function run(): Promise<void> {
   await connector.run(prompt);
 }
 
+// Finding 5 fix: stream errors in writeLine reject individual Promises but do not crash
+// the worker — the outer .catch() below writes the error sentinel to the stream
+// (best-effort) and stream.end() always runs via .finally(). If stream.end() itself
+// fails (e.g. disk full after the sentinel), the worker process exits uncleanly, which
+// causes the 'exit' event on the parent, and the exit-handler's writeSentinelIfAbsent
+// writes a rc=1 sentinel so poll always finds a terminal state.
 run()
   .then(() => writeLine({ [T2F5_DONE_SENTINEL]: 0 }))
   .catch(async (err: unknown) => {
-    await writeLine({ type: "error", message: String(err instanceof Error ? err.message : err) });
-    await writeLine({ [T2F5_DONE_SENTINEL]: 1 });
+    // Truncate error message to avoid unbounded writes on pathological errors
+    const msg = (err instanceof Error ? err.message : String(err)).slice(0, 2000);
+    await writeLine({ type: "error", message: msg }).catch(() => {/* stream may be broken */});
+    await writeLine({ [T2F5_DONE_SENTINEL]: 1 }).catch(() => {/* best-effort */});
   })
   .finally(() => stream.end());
 
@@ -211,8 +220,9 @@ export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta;
 
 ```typescript
 interface ClaudeBgEntry {
-  worker: Worker;      // from node:worker_threads
-  isAlive: boolean;    // set to false on 'exit' event
+  worker: Worker;       // from node:worker_threads
+  isAlive: boolean;     // set to false on 'exit' event
+  cancelling: boolean;  // set before worker.terminate() — suppresses exit-handler sentinel (Fix: cancel/exit race)
 }
 const claudeWorkerRegistry = new Map<string, ClaudeBgEntry>();
 ```
@@ -242,6 +252,16 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
 async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Promise<{
   status: "bg_started"; runId: string; streamPath: string;
 }> {
+  // Finding 1 fix: reject read-only sandboxMode for claude bg — enforcement is not implemented
+  // in v1. Claude background runs are workspace-write only. Future: map read-only to
+  // disallowedTools restrictions once the SDK restriction surface is settled.
+  if (options.sandboxMode === "read-only") {
+    throw new Error(
+      "claude background runs with sandboxMode='read-only' are not supported in v1. " +
+      "Claude's permissionMode cannot be safely enforced via the SDK without a mapped " +
+      "tool restriction list. Omit sandboxMode or pass 'workspace-write' explicitly."
+    );
+  }
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
   const streamPath = join(runDir, "stream.jsonl");
@@ -253,7 +273,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     writeFile(inputPath, options.prompt, { encoding: "utf8", mode: 0o600 }),
   ]);
   const model = options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
-  const sandboxMode = options.sandboxMode ?? "workspace-write";  // default write for claude bg
+  const sandboxMode = options.sandboxMode ?? "workspace-write";  // default write for claude bg (see D4)
   const workerInput: WorkerInput = {
     prompt: options.prompt,
     connectorOptions: {
@@ -268,13 +288,28 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   const worker = new Worker(new URL("./claude-bg-worker.js", import.meta.url), {
     workerData: workerInput,
   });
-  const entry: ClaudeBgEntry = { worker, isAlive: true };
+  const entry: ClaudeBgEntry = { worker, isAlive: true, cancelling: false };
   claudeWorkerRegistry.set(runId, entry);
   worker.once("exit", () => {
     entry.isAlive = false;
-    // If the worker died without writing a sentinel, write one now
-    // so poll can distinguish "running" from "died unexpectedly"
-    writeSentinelIfAbsent(streamPath, 1).catch(() => {/* best-effort */});
+    // Finding 2 fix: only write the error sentinel when cancel() didn't already claim
+    // ownership of the terminal record. Without this guard, cancel + exit both call
+    // writeSentinelIfAbsent concurrently — whichever checks "no sentinel" second wins,
+    // producing nondeterministic rc=1 vs rc=130.
+    if (!entry.cancelling) {
+      writeSentinelIfAbsent(streamPath, 1).catch(() => {/* best-effort */});
+    }
+  });
+  // Finding 5 fix: 'error' event fires when the worker fails to start or throws an
+  // uncaught top-level exception. Without a listener Node.js emits an uncaught exception
+  // and crashes the MCP process. Write a bounded error + sentinel so poll returns 'error'.
+  worker.on("error", (err: Error) => {
+    entry.isAlive = false;
+    if (!entry.cancelling) {
+      const errorLine = JSON.stringify({ type: "error", message: err.message.slice(0, 2000) }) + "\n";
+      const sentinelLine = JSON.stringify({ [T2F5_DONE_SENTINEL]: 1 }) + "\n";
+      appendFile(streamPath, errorLine + sentinelLine, { encoding: "utf8" }).catch(() => {/* best-effort */});
+    }
   });
   const meta: ClaudeRunMeta = {
     runId, agent: "claude", model, cwd: options.cwd, sandboxMode,
@@ -349,6 +384,12 @@ export async function cancelBackgroundRun(runId: string, options: RegistryOption
     const entry = claudeWorkerRegistry.get(runId);
     if (!entry) return { status: "not_found", runId };   // server restart case
     if (!entry.isAlive) return { status: "already_error", runId };
+    // Finding 2 fix: claim ownership of the terminal record BEFORE terminating.
+    // worker.terminate() triggers the 'exit' event; if that handler fires before
+    // writeSentinelIfAbsent(130) below, both callers could race through the "no sentinel yet"
+    // guard and write conflicting sentinels (rc=1 vs rc=130). Setting cancelling=true here
+    // causes the exit handler to skip its sentinel write.
+    entry.cancelling = true;
     // Death-confirmed: await worker.terminate() blocks until the thread is truly dead
     await entry.worker.terminate();
     // Write cancellation sentinel (exit code 130 = SIGTERM convention)
@@ -373,6 +414,19 @@ async function writeSentinelIfAbsent(streamPath: string, exitCode: number): Prom
 ```
 
 ### Modified: `ts/src/connectors/runner.ts`
+
+**Finding 4 fix — make `pid` optional in `runAgent` return type (runner.ts:27).**  
+`runAgent` currently promises `pid: number` (mandatory) in its `bg_started` branch. Claude background runs return no OS pid — the worker has only a `threadId`. Change the TypeScript return union:
+
+```typescript
+// Before (runner.ts:27):
+Promise<ConnectorResult | { status: "bg_started"; runId: string; pid: number; streamPath: string }>
+
+// After:
+Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string }>
+```
+
+This change belongs in BG-WRITE-A, not just the MCP surface contract. The TS type must be updated at the `runAgent` declaration so callers don't assume a pid is always present.
 
 Pass `allowedTools`/`disallowedTools` through the background path (currently dropped at this boundary):
 
@@ -456,21 +510,37 @@ This fix aligns with how the Compose `local-claude-connector.js` workaround work
     "model?": "string",
     "sandboxMode?": "string",
     "background?": "boolean",
-    "allowedTools?": "array",
-    "disallowedTools?": "array"
+    "allowedTools?": "string[]",
+    "disallowedTools?": "string[]"
   },
   ...
 }
 ```
 
+> **Finding 3 fix:** The contract specifies `string[]` (not bare `"array"`) to make the element type explicit. `optionalArray` would allow non-string elements to reach the Claude SDK silently. The server handler uses a new `optionalStringArray()` helper that validates every element is a string and throws on the first malformed element.
+
 ### `ts/src/mcp/server.ts` — read new fields in dispatcher
 
 ```typescript
+// New helper (Finding 3 fix): validates every array element is a string.
+// Throws a descriptive error on first non-string element so malformed input is
+// rejected at the MCP boundary, not silently passed to the Claude SDK.
+function optionalStringArray(req: Record<string, unknown>, key: string): string[] | undefined {
+  const val = req[key];
+  if (val === undefined) return undefined;
+  if (!Array.isArray(val)) throw new Error(`${key} must be an array`);
+  for (let i = 0; i < val.length; i++) {
+    if (typeof val[i] !== "string") throw new Error(`${key}[${i}] must be a string, got ${typeof val[i]}`);
+  }
+  return val as string[];
+}
+
 case "stratum_agent_run": {
   const model = optionalString(request, "model");
   const sandboxMode = optionalString(request, "sandboxMode");
-  const allowedTools = optionalArray(request, "allowedTools");
-  const disallowedTools = optionalArray(request, "disallowedTools");
+  // Finding 3 fix: use optionalStringArray instead of optionalArray to validate elements
+  const allowedTools = optionalStringArray(request, "allowedTools");
+  const disallowedTools = optionalStringArray(request, "disallowedTools");
   const executed = await agentRun({
     agent: string(request, "agent") as "claude" | "codex",
     prompt: string(request, "prompt"),
@@ -478,8 +548,8 @@ case "stratum_agent_run": {
     ...(model ? { model } : {}),
     ...(sandboxMode ? { sandboxMode: sandboxMode as "read-only" | "workspace-write" } : {}),
     ...(typeof request.background === "boolean" ? { background: request.background } : {}),
-    ...(allowedTools ? { allowedTools: allowedTools as string[] } : {}),
-    ...(disallowedTools ? { disallowedTools: disallowedTools as string[] } : {}),
+    ...(allowedTools ? { allowedTools } : {}),
+    ...(disallowedTools ? { disallowedTools } : {}),
   });
   response = "status" in executed ? { ...executed } : { status: "complete", ...executed };
   break;
@@ -492,12 +562,12 @@ case "stratum_agent_run": {
 
 | File | Type | Changes |
 |---|---|---|
-| `ts/src/connectors/background.ts` | modify | Remove guards at :65/:68; update `BackgroundRunMeta` type to discriminated union; add `claudeWorkerRegistry`; add `startClaudeBackgroundRun()`; update `loadMeta()` agent check; add claude branch to `pollBackgroundRun()` and `cancelBackgroundRun()`; add `writeSentinelIfAbsent()` helper |
-| `ts/src/connectors/claude-bg-worker.ts` | new | Worker thread entry point: receive workerData, run ClaudeConnector via query seam, write normalized JSONL, write T2F5 sentinel |
+| `ts/src/connectors/background.ts` | modify | Remove guards at :65/:68; update `BackgroundRunMeta` to discriminated union; add `claudeWorkerRegistry` with `cancelling` flag; add `startClaudeBackgroundRun()` with sandboxMode rejection, exit/error handlers; update `loadMeta()` agent check; add claude branch to `pollBackgroundRun()` and `cancelBackgroundRun()` with ownership-before-terminate; add `writeSentinelIfAbsent()` helper |
+| `ts/src/connectors/claude-bg-worker.ts` | new | Worker thread entry point: receive workerData, run ClaudeConnector via query seam, write normalized JSONL, write T2F5 sentinel; stream errors written to stderr, never crash worker |
 | `ts/src/connectors/claude.ts` | modify | Fix `allowedTools` → SDK `tools` mapping (availability, not auto-approve) |
-| `ts/src/connectors/runner.ts` | modify | Pass `allowedTools`/`disallowedTools` through to `startBackgroundRun()`; add both to `StartBackgroundRunOptions` |
-| `ts/contracts/mcp-surface.json` | modify | Add `allowedTools?`/`disallowedTools?` to `stratum_agent_run` request; make `pid?` optional in `bg_started` response |
-| `ts/src/mcp/server.ts` | modify | Read `allowedTools`/`disallowedTools` from request in `stratum_agent_run` handler |
+| `ts/src/connectors/runner.ts` | modify | Change `runAgent` return type: `pid: number` → `pid?: number` in `bg_started` union; add `allowedTools`/`disallowedTools` to `StartBackgroundRunOptions` and forward them to `startBackgroundRun()` |
+| `ts/contracts/mcp-surface.json` | modify | Add `allowedTools?: string[]`/`disallowedTools?: string[]` to `stratum_agent_run` request (typed as string arrays, not bare arrays); make `pid?` optional in `bg_started` response |
+| `ts/src/mcp/server.ts` | modify | Add `optionalStringArray()` helper; read `allowedTools`/`disallowedTools` via `optionalStringArray` in `stratum_agent_run` handler |
 
 ---
 
@@ -508,10 +578,12 @@ case "stratum_agent_run": {
 | D1 | Worker Threads for Claude background runs | `ClaudeConnector` uses `@anthropic-ai/claude-agent-sdk` `query()` in-process — no CLI binary equivalent of `codexCommand` exists. Worker Threads are the Node.js isolation boundary; `worker.terminate()` is genuinely fatal (death-confirmed) without requiring a subprocess boundary or separate binary. |
 | D2 | Codex-compatible JSONL format from worker | `scanStream()` already parses the Codex JSONL format. Normalizing claude events in the worker reuses the entire poll path without branching per agent type. |
 | D3 | In-memory claude worker registry (not durable) | Durability would require persisting worker state across process restarts, which is complex and not needed for the GSD use case — if the MCP server restarts, the flow itself needs to be resumed anyway. Poll correctly returns `child_died_without_sentinel` on restart, which Compose handles as an error boundary. |
-| D4 | Default `sandboxMode` for claude bg = `workspace-write` | The primary use case for claude background runs IS workspace mutation. Unlike Codex bg where read-only was the v1 scope, claude bg is specifically targeting write operations. Callers wanting read-only claude bg can pass `sandboxMode: "read-only"` explicitly. |
+| D4 | Default `sandboxMode` for claude bg = `workspace-write` | The primary use case for claude background runs IS workspace mutation. Unlike Codex bg where read-only was the v1 scope, claude bg is specifically targeting write operations. `read-only` is explicitly rejected (D8) — callers cannot accidentally get a "read-only" claude bg run that is actually write-capable. |
 | D5 | Fix `ClaudeConnector.allowedTools` → SDK `tools` mapping | The current mapping is a bug: `sdkOptions.allowedTools` controls auto-approve (permission), not which tools the model is offered (availability). The E3 reviewer read-only boundary failure was caused by this bug. The fix aligns with the Compose workaround's correct behavior. |
 | D6 | Codex workspace-write unlock is guard-only | Only `background.ts:68` blocks this path. `sandboxMode` is already stored in `BackgroundRunMeta`, threaded to `codexCommand()`, and used in the subprocess spawn. No further architectural change needed. |
-| D7 | `pid` made optional in `bg_started` response | Claude worker threads have a `worker.threadId` (not an OS pid). Making `pid` optional maintains backward compat for Codex callers (which still get a real pid) while not fabricating a pid for claude callers. Poll and cancel both use `runId`, not `pid`, so this has no functional impact. |
+| D7 | `pid` made optional in both MCP contract AND `runAgent` TypeScript return type | Claude worker threads have a `worker.threadId` (not an OS pid). Both the MCP contract (`bg_started.pid?`) and the TS type at `runner.ts:27` must change `pid: number` → `pid?: number` — if only the contract is updated, the TS type assertion on the Codex path still assumes a mandatory pid, causing a type error when returning claude bg results. |
+| D8 | Reject `sandboxMode: "read-only"` for claude bg runs in v1 | `claude.ts:43` hardcodes `permissionMode: "acceptEdits"` regardless of `sandboxMode`. There is no implemented mapping from `sandboxMode: "read-only"` to an SDK tool restriction. Silently accepting `read-only` and storing it in meta while running `acceptEdits` would be a false guarantee. Explicit rejection is chosen over partial enforcement (e.g. `disallowedTools: [Write, Edit, ...]`) because the SDK restriction surface for claude-agent-sdk is not yet settled in this codebase. Future: add `sandboxMode: "read-only"` support once the `allowedTools`/`disallowedTools` restriction semantics are validated in production. |
+| D9 | `cancelling` flag gates exit-handler sentinel, `error` handler added | Two containment fixes for the worker lifecycle: (1) `entry.cancelling = true` is set before `worker.terminate()` so the exit event handler skips its rc=1 sentinel write — cancel then writes rc=130 without a race. (2) A `worker.on("error", ...)` handler absorbs uncaught worker exceptions that would otherwise propagate as unhandled Node.js exceptions and crash the MCP server process. Both write bounded sentinel records so poll always finds a terminal state. |
 
 ---
 
@@ -538,11 +610,30 @@ case "stratum_agent_run": {
 - [ ] `stratum_agent_run` over MCP with `allowedTools`/`disallowedTools`: verify fields are read from request and passed to `runAgent()`
 - [ ] `stratum_agent_run` contract rejection: verify `assertToolRequest` blocks unknown extra fields in the request (no regression)
 - [ ] `stratum_agent_run` with `allowedTools` passed through `background:true` path: verify `allowedTools` reaches `startClaudeBackgroundRun()` and is stored in `meta.json`
+- [ ] `optionalStringArray` rejects non-string array elements: call `stratum_agent_run` with `allowedTools: ["Read", 42]`, verify the call is rejected with a descriptive error before reaching `runAgent()`
+- [ ] `optionalStringArray` accepts undefined: call without `allowedTools`, verify no error
+
+### BG-WRITE-A: sandboxMode enforcement (Finding 1)
+
+- [ ] Claude bg run with `sandboxMode: "read-only"` throws: call `startClaudeBackgroundRun()` with `sandboxMode: "read-only"`, verify it throws with a message mentioning enforcement not implemented
+- [ ] Claude bg run with `sandboxMode: "workspace-write"` succeeds (positive path)
+- [ ] Claude bg run with `sandboxMode` omitted uses `workspace-write` default (positive path)
+
+### BG-WRITE-A: cancel/exit sentinel race (Finding 2)
+
+- [ ] Cancel does not race exit-handler sentinel: use a worker stub that emits `exit` synchronously after `terminate()`; verify exactly one sentinel record in stream.jsonl and it has rc=130, not rc=1
+- [ ] Exit handler skips sentinel when `cancelling=true`: verify that after `entry.cancelling = true`, the exit callback does not call `writeSentinelIfAbsent`
+
+### BG-WRITE-A: worker error containment (Finding 5)
+
+- [ ] Worker `error` event is contained: inject a worker that emits `error` synchronously; verify no uncaught exception propagates, and that poll returns `{ status:"error" }` with error message in stream
+- [ ] Worker `error` sets `isAlive=false`: after worker error, verify `entry.isAlive === false`
 
 ### Regression
 
 - [ ] Codex read-only background run (existing behavior): full start/poll/cancel cycle unchanged
 - [ ] `stratum_agent_run` synchronous claude (foreground) with `allowedTools`: end-to-end via test query seam
+- [ ] `runAgent` return type: TypeScript compiles without error when destructuring `bg_started` result with `pid` as optional
 
 ---
 
