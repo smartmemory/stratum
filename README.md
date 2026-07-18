@@ -1,7 +1,5 @@
 # Stratum
 
-[![PyPI — stratum-mcp](https://img.shields.io/pypi/v/stratum-mcp?label=stratum-mcp)](https://pypi.org/project/stratum-mcp/)
-[![PyPI — stratum-py](https://img.shields.io/pypi/v/stratum-py?label=stratum-py)](https://pypi.org/project/stratum-py/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 **State machine dispatch server for AI agent workflows.**
@@ -10,10 +8,18 @@ Stratum gives AI coding agents (Claude Code, Codex, etc.) a formal execution mod
 
 The founding intent behind this machinery is recorded in [docs/VISION.md](docs/VISION.md): a spec language that keeps LLMs on rails invisibly, so the same conversation yields stronger results than freeform execution.
 
-Two shipped components:
+One shipped component:
 
-- **`stratum-mcp`** -- MCP server for Claude Code. Validates `.stratum.yaml` specs, manages flow execution state, enforces typed contracts and postconditions. Published on PyPI.
-- **`stratum-py`** -- Python library with `@infer`, `@contract`, `@compute`, `@flow` decorators for building production LLM systems. Published on PyPI.
+- **`ts/`** — the TypeScript engine (`@smartmemory/stratum`): IR validation (`version: 1` specs), flow execution with ensure postconditions, MCP server for Claude Code, `query`/`gate`/`guard` CLI, background flows and background agent runs. Runs from this checkout; not published to a registry.
+
+> **Engine status (2026-07-18, STRAT-PY-RETIRE):** the TS engine is the ONLY engine.
+> The Python library (`stratum-py`) and Python MCP server (`stratum-mcp`) are retired —
+> source archived on the [`python-legacy`](../../tree/python-legacy) branch, PyPI packages
+> frozen at their final releases. The engine executes **`version: 1`** specs exclusively;
+> legacy v0.x specs are rejected by `validate` and classified (report-only) by
+> `stratum migrate --check`. Sections below marked *(legacy dialect)* still show v0.x
+> syntax and are pending the v1 rewrite — the authoritative v1 shape is the IR schema in
+> [`ts/src/ir/`](ts/src/ir/) plus `stratum validate` output.
 
 **Governed workflows as auditable flows — on any agent, not just one vendor.** Unlike a single-vendor in-context orchestrator, Stratum runs as an MCP server and a library under Claude Code, Codex, or any MCP host; enforces typed contracts and `ensure` postconditions on every flow execution; stops at real human gates; dispatches Claude *and* Codex agents in one flow (so an independent reviewer can be a different model from the implementer); and persists flow state across sessions. Where you want raw in-context fan-out, reach for an in-host workflow runtime; where you want the run governed, portable, and auditable, that's a Stratum workflow.
 
@@ -49,36 +55,40 @@ Two shipped components:
 
 ## Installation
 
+The engine runs directly from a checkout — there is nothing to install from a registry.
+
+```bash
+git clone https://github.com/smartmemory/stratum
+cd stratum/ts && npm install    # or pnpm install
+```
+
+Requires node >= 22 (erasable-syntax type stripping; node >= 24 needs no flags — the CLI
+bootstrap gates `--experimental-transform-types` automatically).
+
 ### MCP Server (for Claude Code)
 
-```bash
-pip install stratum-mcp
-stratum-mcp install
+Register the MCP bin in your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "stratum": {
+      "command": "node",
+      "args": ["/absolute/path/to/stratum/ts/src/mcp/bin.mjs"]
+    }
+  }
+}
 ```
 
-`install` does three things:
-1. Writes `.claude/mcp.json` to register the MCP server
-2. Appends the Stratum execution model block to `CLAUDE.md`
-3. Installs eleven skills to `~/.claude/skills/`
-4. Installs session hooks to `~/.stratum/hooks/`
+Restart Claude Code to activate. Optionally append the [Stratum execution model block](#claudemd-block) to your `CLAUDE.md`.
 
-Restart Claude Code to activate.
-
-To remove:
-```bash
-stratum-mcp uninstall          # removes everything
-stratum-mcp uninstall --keep-skills  # keeps user-customized skills
-```
-
-### Python Library
+### CLI
 
 ```bash
-pip install stratum-py
+node ts/src/cli/bin.mjs help    # validate | migrate | query | gate | guard | watch
 ```
 
-Requires Python 3.11+. Dependencies: `litellm>=1.0`, `pydantic>=2.0`.
-
-Set an API key for your LLM provider (`GROQ_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) and specify the model in `model=`.
+A thin wrapper script (e.g. `~/bin/stratum-ts`) pointing at `ts/src/cli/bin.mjs` is convenient; the bare name `stratum` is not used to avoid PATH collisions.
 
 ---
 
@@ -138,6 +148,13 @@ Each step has a retry budget. When an ensure or schema validation fails, the ste
 ---
 
 ## YAML Spec Reference
+
+> **Legacy dialect — pending v1 rewrite.** The examples in this section are written in the retired v0.x dialect
+> (`functions:`, `function:` steps, `inputs:`). The TS engine executes `version: 1`
+> specs only (`contracts` + `flows` with `entry`, `do`/`out` steps) and rejects v0.x
+> at `validate`. Until this section is rewritten, use the IR schema in
+> [`ts/src/ir/`](ts/src/ir/) and `stratum validate` errors as the v1 authority;
+> `stratum migrate --check` classifies legacy constructs (report-only).
 
 A `.stratum.yaml` spec has four top-level sections: `version`, `contracts`, `functions`, and `flows`. An optional `workflow` block declares the spec as a registered workflow.
 
@@ -422,18 +439,6 @@ Resolve a gate step with a human/agent/system decision.
 
 **Returns:** Next step, flow completion, or flow termination.
 
-### `stratum_check_timeouts`
-
-Check whether a pending gate step has exceeded its configured timeout. Auto-kills with `resolved_by: "system"` if expired.
-
-**Inputs:** `flow_id` (str)
-
-### `stratum_skip_step`
-
-Explicitly skip the current step (cannot skip gate steps).
-
-**Inputs:** `flow_id` (str), `step_id` (str), `reason` (str)
-
 ### `stratum_commit`
 
 Save a named checkpoint of the current flow state.
@@ -446,26 +451,6 @@ Roll back flow state to a previously committed checkpoint.
 
 **Inputs:** `flow_id` (str), `label` (str)
 
-### `stratum_iteration_start`
-
-Start an iteration loop on the current step (requires `max_iterations` in the spec).
-
-**Inputs:** `flow_id` (str), `step_id` (str)
-
-### `stratum_iteration_report`
-
-Report one iteration result. Evaluates `exit_criterion`, increments count, checks `max_iterations`.
-
-**Inputs:** `flow_id` (str), `step_id` (str), `result` (dict)
-
-**Returns:** `iteration_continue` or `iteration_exit` with outcome.
-
-### `stratum_iteration_abort`
-
-Abort an active iteration loop before completion.
-
-**Inputs:** `flow_id` (str), `step_id` (str), `reason` (str)
-
 ### `stratum_compile_speckit`
 
 Compile a spec-kit tasks directory into a `.stratum.yaml` flow.
@@ -474,13 +459,19 @@ Compile a spec-kit tasks directory into a `.stratum.yaml` flow.
 
 **Returns:** `{status, yaml, flow_name, steps}` on success.
 
-### `stratum_list_workflows`
+### `stratum_resume`
 
-Scan a directory for `*.stratum.yaml` files with `workflow:` blocks. Returns registered workflows with name, description, input schema, and file path. Detects duplicate names.
+Rehydrate a persisted flow into this server process (live-process reparenting) so a fresh session can continue a run it did not start.
 
-### `stratum_draft_pipeline`
+### `stratum_flow_run_bg` / `stratum_flow_poll` / `stratum_flow_bg_poll` / `stratum_flow_cancel_bg`
 
-Push a pipeline draft to the PipelineEditor UI via `.stratum/pipeline-draft.json`.
+Detached background flow execution: start a flow under a background driver, poll its progress, cancel it. Survives the launching session.
+
+### `stratum_agent_run` / `stratum_agent_poll` / `stratum_cancel_agent_run`
+
+Dispatch an agent (Claude, Codex, opencode) as part of a flow step, synchronously or in the background; poll and cancel background runs. `cancel` is a documented no-op for synchronous runs.
+
+> The authoritative tool surface is [`ts/src/mcp/server.ts`](ts/src/mcp/server.ts). Python-era tools that were retired rather than ported (parallel lifecycle, iterations, timers/skip, `list_workflows`, `draft_pipeline`, judge/distill/goal surfaces) live on `python-legacy`; see the Phase 2/3 usage audit in [`docs/plans/2026-07-11-strat-py-retire-progress.md`](docs/plans/2026-07-11-strat-py-retire-progress.md) for per-tool dispositions.
 
 ---
 
@@ -697,7 +688,7 @@ flows:
 
 ### Resolution
 
-Gates are resolved via `stratum_gate_resolve` or the CLI `stratum-mcp gate` command:
+Gates are resolved via `stratum_gate_resolve` or the CLI `stratum gate` command:
 
 - **approve** -- routes to `on_approve` target (or completes flow if null)
 - **revise** -- archives the current round, resets state, routes to `on_revise` target
@@ -913,6 +904,10 @@ On any tool call, if the flow is not in memory, the server attempts to restore i
 
 ## Workflows
 
+> **Legacy note:** `stratum_list_workflows` was retired with the python server (not ported —
+> no live consumer). The workflow/flow terminology below still applies; the discovery
+> tool does not.
+
 Workflow declarations make specs discoverable via `stratum_list_workflows`:
 
 ```yaml
@@ -971,55 +966,39 @@ Add JWT-based authentication to the API.
 
 ### Usage
 
-```bash
-stratum-mcp compile tasks/ --output flow.stratum.yaml --flow my_flow
-```
-
-Or via MCP tool: `stratum_compile_speckit(tasks_dir, flow_name)`.
+Via MCP tool: `stratum_compile_speckit(tasks_dir, flow_name)`.
 
 ---
 
 ## Skills
 
-Eleven skills are installed by `stratum-mcp install`:
-
-| Skill | Purpose |
-|---|---|
-| `/stratum-onboard` | Read a new codebase cold, write project-specific `MEMORY.md` |
-| `/stratum-plan` | Design a feature, present for review -- no implementation |
-| `/stratum-feature` | Full feature build: read patterns, design, implement, test |
-| `/stratum-review` | Three-pass code review: security, logic, performance |
-| `/stratum-debug` | Hypothesis-driven debugging with elimination |
-| `/stratum-refactor` | File splitting with planned extraction order |
-| `/stratum-migrate` | Rewrite bare LLM calls as `@infer` + `@contract` |
-| `/stratum-test` | Write test suite for untested code (golden flows, error-path harness) |
-| `/stratum-learn` | Extract patterns from session transcripts into `MEMORY.md` |
-| `/stratum-build` | Compile tasks, drive execution via `stratum_plan` loop |
-| `/stratum-speckit` | Bridge skill for spec-kit phase execution |
-
-Each skill reads project-specific patterns from `MEMORY.md` before writing its spec and writes new patterns after `stratum_audit`.
+The eleven `/stratum-*` skills shipped and were installed by the python `stratum-mcp install`
+command, which is retired — their sources are archived on `python-legacy`
+(`stratum-mcp/src/stratum_mcp/skills/`). Skills already installed under `~/.claude/skills/`
+keep working (they drive the same `stratum_plan` / `stratum_step_done` / `stratum_audit`
+tools the TS server exposes). There is no TS installer yet.
 
 ---
 
 ## CLI Reference
 
+Two bins, both run with node from the checkout:
+
 ```
-stratum-mcp                        # Start stdio MCP server (for Claude Code)
-stratum-mcp install                # Configure Claude Code project for Stratum
-stratum-mcp uninstall              # Remove Stratum configuration
-stratum-mcp uninstall --keep-skills # Remove config but keep skill files
-stratum-mcp validate <file>        # Validate a .stratum.yaml spec
-stratum-mcp compile <dir>          # Compile tasks/*.md to .stratum.yaml
-  --output <file>                  #   Write to file instead of stdout
-  --flow <name>                    #   Flow name (default: "tasks")
-stratum-mcp query flows            # List all persisted flows (JSON)
-stratum-mcp query flow <id>        # Full state for a single flow (JSON)
-stratum-mcp query gates            # List all pending gate steps (JSON)
-stratum-mcp gate approve <flow_id> <step_id> [--note "reason"]
-stratum-mcp gate reject  <flow_id> <step_id> [--note "reason"]
-stratum-mcp gate revise  <flow_id> <step_id> [--note "reason"]
-  --resolved-by human|agent|system # Who resolved (default: human)
-stratum-mcp help                   # Show help
+node ts/src/mcp/bin.mjs            # Start stdio MCP server (for Claude Code)
+
+node ts/src/cli/bin.mjs <command>  # aka `stratum` via a wrapper script:
+stratum validate <file>            # Validate a .stratum.yaml spec (version: 1)
+stratum migrate --check <file>     # Report-only classification of a legacy v0.x spec
+stratum query flows                # List all persisted flows (JSON)
+stratum query flow <id>            # Full state for a single flow (JSON)
+stratum query gates                # List all pending gate steps (JSON)
+stratum gate approve <flow_id> <step_id> [--note "reason"]
+stratum gate reject  <flow_id> <step_id> [--note "reason"]
+stratum gate revise  <flow_id> <step_id> [--note "reason"]
+stratum guard <action>             # Guard ledger operations (see STRAT-GUARD)
+stratum watch <flow_id>            # Follow a flow's progress
+stratum help                       # Show usage
 ```
 
 ---
@@ -1032,23 +1011,20 @@ Persisted flows are stored in `~/.stratum/flows/{flow_id}.json`. This directory 
 
 ### Hooks
 
-Hooks are installed to `~/.stratum/hooks/` and registered in `.claude/settings.json`:
-
-| Hook Event | Script | Behavior |
-|---|---|---|
-| `SessionStart` | `stratum-session-start.sh` | Inject relevant `MEMORY.md` entries |
-| `Stop` | `stratum-session-stop.sh` | Append session summary to `MEMORY.md` |
-| `PostToolUseFailure` | `stratum-post-tool-failure.sh` | Record ensure failures and tool errors |
+The python installer's session hooks (`~/.stratum/hooks/`) are retired with it; sources
+are archived on `python-legacy`. Any hooks still registered in `.claude/settings.json`
+from an old install are inert once removed from there.
 
 ### MCP Registration
 
-The MCP server is registered in `.claude/mcp.json`:
+The MCP server is registered in the project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "stratum": {
-      "command": "stratum-mcp"
+      "command": "node",
+      "args": ["/absolute/path/to/stratum/ts/src/mcp/bin.mjs"]
     }
   }
 }
@@ -1074,67 +1050,13 @@ For non-trivial tasks, use Stratum internally:
 
 ## Python Library (Track 1)
 
-The `stratum-py` library provides decorators for building production LLM systems directly in Python. This is independent of the MCP server.
+**RETIRED.**
 
-### Core Decorators
-
-```python
-from stratum import contract, infer, compute, flow, Budget
-
-@contract
-class SentimentResult(BaseModel):
-    label: Literal["positive", "negative", "neutral"]
-    confidence: float
-    reasoning: str
-
-@infer(
-    intent="Classify the emotional tone of customer feedback",
-    ensure=lambda r: r.confidence > 0.7,
-    model="groq/llama-3.3-70b-versatile",
-    budget=Budget(ms=8000, usd=0.01),
-    retries=3,
-)
-def classify_sentiment(text: str) -> SentimentResult: ...
-
-@compute
-def format_result(result: SentimentResult) -> str:
-    return f"[{result.label}] {result.confidence:.0%}"
-
-@flow(budget=Budget(ms=30000, usd=0.05))
-async def analyse_batch(texts: list[str]) -> list[SentimentResult]:
-    return [await classify_sentiment(text=t) for t in texts]
-```
-
-### Key Features
-
-| Feature | Description |
-|---|---|
-| `@infer` / `@compute` | Identical type signatures -- swap without downstream changes |
-| `@contract` | Pydantic `BaseModel` compiled to JSON Schema with content hash |
-| `@flow` | Async flow wrapper with `Budget` and `ContextVar`-scoped flow_id |
-| `@refine` | Convergence loop -- iterates until `until(result)` passes |
-| `parallel(require=)` | `"all"` / `"any"` / N / `0` modes via `asyncio.TaskGroup` |
-| `debate()` | Multi-agent structured argumentation with synthesizer |
-| `await_human()` | HITL gate -- suspends flow until `ReviewSink` resolves |
-| `quorum=` | N parallel calls with agreement threshold |
-| `stable=` | Probabilistic output wrapping (`Probabilistic[T]`) |
-| `opaque[T]` | Prompt injection protection -- excluded from tool-call schema |
-| `Budget(ms=, usd=, tokens=)` | Hard time + cost + token limits |
-| OTLP trace export | Built-in emitter, no OTel SDK dependency |
-
-### Exceptions
-
-| Exception | Trigger |
-|---|---|
-| `PostconditionFailed` | `ensure` violations after all retries |
-| `PreconditionFailed` | `given` condition false before LLM call |
-| `ParseFailure` | LLM output cannot be parsed against contract |
-| `BudgetExceeded` | Time or cost budget exceeded |
-| `ConvergenceFailure` | `@refine` exhausted `max_iterations` |
-| `ConsensusFailure` | `quorum` could not reach `threshold` agreement |
-| `HITLTimeoutError` | `await_human` wall-clock timeout |
-| `StabilityAssertionError` | `Probabilistic[T].assert_stable()` below threshold |
-| `StratumCompileError` | Static violations at decoration time |
+The `stratum-py` decorator library (`@infer`, `@contract`, `@compute`, `@flow`,
+`@refine`, `parallel`, `debate`, `await_human`, budgets, OTLP export) was retired with
+the python engine on 2026-07-18 (STRAT-PY-RETIRE). Its final source is archived on the
+[`python-legacy`](../../tree/python-legacy) branch (`src/stratum/`), and its last PyPI
+release stays installable for existing users but receives no further updates.
 
 ---
 
@@ -1142,14 +1064,12 @@ async def analyse_batch(texts: list[str]) -> list[SentimentResult]:
 
 Working examples in [`examples/`](https://github.com/smartmemory/stratum/tree/main/examples):
 
-| File | What it demonstrates |
+| Directory | What it demonstrates |
 |---|---|
-| [`01_sentiment.py`](examples/01_sentiment.py) | `@infer` + `@contract` + `@flow` + `@compute` end-to-end |
-| [`02_migrate.py`](examples/02_migrate.py) | Migrating `@infer` to `@compute` without changing callers |
-| [`03_parallel.py`](examples/03_parallel.py) | Three concurrent `@infer` calls with `parallel(require="all")` |
-| [`04_refine.py`](examples/04_refine.py) | `@refine` convergence loop until quality passes |
-| [`05_debate.py`](examples/05_debate.py) | `debate()` -- two agents argue, synthesizer resolves |
-| [`06_hitl.py`](examples/06_hitl.py) | `await_human` -- human-in-the-loop approval gate |
+| [`custom-tracker/`](examples/custom-tracker) | Minimal MCP server exposing a project tracker over stdio (the compose-mcp pattern) |
+| [`nextjs/`](examples/nextjs) | Embedding Stratum pipeline monitoring into a Next.js app |
+
+The python decorator examples (`01_sentiment.py` … `06_hitl.py`) retired with `stratum-py`; see `python-legacy`.
 
 ---
 
@@ -1157,34 +1077,25 @@ Working examples in [`examples/`](https://github.com/smartmemory/stratum/tree/ma
 
 ```bash
 git clone https://github.com/smartmemory/stratum
-cd stratum
-git config core.hooksPath .githooks
+cd stratum/ts
+npm install                      # or pnpm install
+./node_modules/.bin/vitest run   # full engine suite
 ```
 
-### MCP Server
-
-```bash
-cd stratum-mcp
-pip install -e ".[dev]"
-pytest tests/
-```
-
-### Python Library
-
-```bash
-pip install -e ".[dev]"
-pytest tests/
-```
+Never run two full vitest passes concurrently — the suites share on-disk state roots.
 
 ### Test Counts
 
-The MCP server has 418+ tests across contracts, invariants, integration, and end-to-end suites. The Python library has 321+ tests including real LLM integration tests.
+The TS engine has 640+ vitest tests across the IR, engine, MCP surface, guard,
+parallel, and migrate suites, including cross-engine goldens that pin byte
+compatibility with python-era ledgers and specs. Compose's suite (4,600+ tests,
+including the `ts-cutover-*` goldens that drive this engine's real binaries
+end-to-end) is the downstream integration harness.
 
 ### CI/CD
 
-PyPI publishing runs automatically via GitHub Actions when `pyproject.toml` changes on `main`. Required secrets:
-- `PYPI_TOKEN_MCP` -- scoped to `stratum-mcp`
-- `PYPI_TOKEN_PY` -- scoped to `stratum-py`
+PyPI publishing is retired with the python packages. There is no npm publish
+pipeline yet — consumers run the engine from a checkout (see Installation).
 
 ---
 
