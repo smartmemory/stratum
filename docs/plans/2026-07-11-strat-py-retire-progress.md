@@ -29,6 +29,34 @@ each phase. Absolute SHAs / versions only.
   window" happens as local dogfooding IN the branch, before the atomic merge. Baseline freeze:
   compose main @ 869a55b, stratum main @ (this commit).
 
+## MERGE DAY — ✅ EXECUTED 2026-07-18 (epic CLOSED)
+
+Owner called merge day (session 3b22f245). Atomic develop→main in BOTH repos, pushed:
+
+- **compose**: main = develop = `219b407` (merge commit reconciling the 12 main-side
+  commits — COMP-TRIAGE-5 + docs — onto the cutover branch). Conflicts: CHANGELOG /
+  journal README (unions) + `lib/build.js` imports (kept `applyFrontTriage`/
+  `maybeEscalateLane`; dropped `shouldRunCrossModel` — its only caller
+  `runCrossModelReview` was consciously deleted in 62f115a, review is engine-native).
+  TRIAGE-5 pack green on the TS engine 71/71; full suite **4674/4674** pre-push, and
+  the pre-push hook re-ran it green on push.
+- **stratum**: main = develop = `4c4f591`. Python tree DELETED @ `6e222b3`
+  (src/stratum/, stratum-mcp/, tests/, pyproject.toml; −80,939 lines). Test fallout
+  handled in the same commit: migrate/check python-fixture sweep retired; the two live
+  "TS writes → Python verifies" guard tests retired (byte parity stays pinned by
+  captured goldens + the committed python-written fixture). Suite green **643/1 skip**.
+  `4c4f591` retires the pre-push PyPI auto-bump hook (both bumped tomls are gone; TS
+  versioning is a separate future decision — ts/package.json + server.ts are
+  placeholder 0.0.1).
+- **Archives published**: `python-legacy` branches (compose `cc390a7`, stratum
+  `642dda3`) and `pre-ts-cutover` freeze tags (compose `869a55b`, stratum `a1ea4ed`)
+  pushed to origin in both repos. NEVER delete python-legacy.
+- **guardBin unpin (STRAT-PY-SWEEP row 4)**: verified on disk — the guard seam
+  (`server/stratum-client.js` `flowGateBin()`) resolves `COMPOSE_STRATUM_TS_BIN ||
+  LIVE_STRATUM_TS_CLI_BIN`; no python pin remains.
+- **PyPI deprecation (D6)**: stratum-py + stratum-mcp — archiving is web-UI-only on
+  PyPI; owner action pending (see follow-ups).
+
 ## Status snapshot (2026-07-12)
 
 - stratum @ origin/main; TS v0.2.106 (STRAT-TS-FLOW-BG epic COMPLETE this session).
