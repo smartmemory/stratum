@@ -866,24 +866,25 @@ As noted in Step 6a — change `allowedTools: ["Read"]` to `tools: ["Read"]`.
 
 ### 7c. New test file: `ts/tests/connectors/background-claude.test.ts`
 
-Create this file to cover all BG-WRITE-A claude-specific test cases from the design's test plan. Key test scenarios (use Worker stub via `workerData` overrides and `registryRoot` seam):
+Create this file to cover all BG-WRITE-A claude-specific test cases from the design's test plan. Key test scenarios (two seams: `STRATUM_TEST_WORKER=1` for completed-state tests; `vi.mock('node:worker_threads')` Worker-constructor stub for held-state / callback-order tests):
 
-**Setup pattern:** Claude bg tests cannot use a real Worker (requires built files). Use a `command` seam equivalent — the design calls for testing via worker stubs. Since Worker Threads are not as seam-friendly as subprocess command, the preferred approach is:
+**Setup pattern — two seams:**
 
-1. **Unit tests for registry/finalization logic:** Test `claimFinalization`, `writeSentinelIfAbsent`, and cancel/poll flows by writing sentinel files directly and checking registry state. Export `claudeWorkerRegistry` for test introspection (or test via the poll/cancel public API).
-2. **Integration tests with a real worker:** `startBackgroundRun({ agent: "claude", ... })` with a real worker that uses the query seam to return a fake response quickly. These require the `claude-bg-worker.ts` file to be compiled first (vitest handles this via the TS config).
+1. **`STRATUM_TEST_WORKER=1` (env-gated stub in `claude-bg-worker.ts` Step 3):** Set this env var in the vitest environment for tests that need the worker to complete quickly (completed-state, error-state, meta validation). The stub writes a synthetic `item.completed` + `turn.completed` record and returns; the `.then()` continuation writes the `rc=0` sentinel immediately. Do NOT use this seam when the test requires the worker to be in a running state — the sentinel is committed before any test code can observe `"running"`.
+
+2. **`vi.mock('node:worker_threads')` Worker-constructor stub:** Mock the `Worker` constructor to return a plain `EventEmitter` stub with a controllable `terminate()` method. Use for tests that require a guaranteed running worker (poll-while-running, cancel-in-flight) or precise callback ordering (D9 interleaving tests). The stub never emits `exit` until the test explicitly drives it, giving deterministic control over lifecycle state.
 
 **Critical test cases to cover:**
 
 ```typescript
 // 1. Claude bg start — meta.json has agent:"claude", no pid in response
 it("claude background start writes meta.json with agent:claude and no pid", async () => {
-  // Use query seam: worker runs ClaudeConnector with a mock query
-  // Requires a way to inject query into workerData — see connector options
+  // STRATUM_TEST_WORKER=1 seam: worker writes synthetic records + rc=0 sentinel immediately.
+  // No workerData injection needed — the env var gates the stub path in claude-bg-worker.ts.
+  // Set STRATUM_TEST_WORKER=1 in vitest env (process.env or test setup) before this test.
   const registryRoot = await root();
   const started = await startBackgroundRun({
     agent: "claude", prompt: "test", cwd: registryRoot, registryRoot,
-    // TODO: inject mock query via workerData.connectorOptions.query seam
   });
   expect(started.status).toBe("bg_started");
   expect(started.runId).toMatch(/^[0-9a-f]{12}$/);
@@ -921,14 +922,14 @@ it("rejects unknown agent and sandboxMode values at startBackgroundRun entry", .
 - [ ] `sandboxMode:"workspace-write"` explicit: `startBackgroundRun({ agent:"claude", sandboxMode:"workspace-write", ... })` succeeds; `meta.json` has `sandboxMode:"workspace-write"`
 - [ ] `sandboxMode` omitted: `startBackgroundRun({ agent:"claude", ... })` succeeds; `meta.json` has `sandboxMode:"workspace-write"` (default)
 
-**Poll states (set `STRATUM_TEST_WORKER=1`; write sentinel file directly for complete/error/restart cases):**
-- [ ] Poll while running (no sentinel yet): `pollBackgroundRun(runId)` returns `{ status:"running" }`
+**Poll states (write sentinel file directly for complete/error/restart cases):**
+- [ ] Poll while running (use `vi.mock('node:worker_threads')` stub that never emits exit — do NOT use `STRATUM_TEST_WORKER=1` for this case as that seam commits the sentinel before poll can observe `"running"`): `pollBackgroundRun(runId)` returns `{ status:"running" }`
 - [ ] Poll after completion: write `{"__t2f5_done__":0}` sentinel + `item.completed` record to `stream.jsonl` directly; poll returns `{ status:"complete", text:"...", usage:{ input_tokens, output_tokens } }`
 - [ ] Poll after error: write `{"__t2f5_done__":1}` sentinel to `stream.jsonl` directly; poll returns `{ status:"error" }`
 - [ ] Poll after MCP server restart (no registry entry, no sentinel file): poll returns `{ status:"error", reason:"child_died_without_sentinel" }`
 
 **Cancel ordinary cases:**
-- [ ] Cancel in-flight: call `cancelBackgroundRun(runId)` while worker is alive (use `STRATUM_TEST_WORKER=1` with worker completing after cancel returns); `cancelBackgroundRun` returns `{ status:"cancelled" }`; sentinel in `stream.jsonl` has `exitCode:130`; subsequent poll returns `{ status:"error" }`
+- [ ] Cancel in-flight (use `vi.mock('node:worker_threads')` stub — mock worker holds indefinitely without emitting exit; test calls `cancelBackgroundRun(runId)`, then drives `mockWorker.emit('exit', 1)` synchronously to simulate OS signal delivery after terminate; do NOT use `STRATUM_TEST_WORKER=1` for this case as the sentinel races the cancel call): `cancelBackgroundRun` returns `{ status:"cancelled" }`; sentinel in `stream.jsonl` has `exitCode:130`; subsequent poll returns `{ status:"error" }`
 - [ ] Cancel after already complete (sentinel present): write `{"__t2f5_done__":0}` to stream first, then call `cancelBackgroundRun(runId)`; returns `{ status:"already_complete" }`
 - [ ] Cancel with no registry entry (no stream file — simulating server restart): `cancelBackgroundRun(runId)` returns `{ status:"not_found" }`
 - [ ] Worker wins the race: write `{"__t2f5_done__":0}` sentinel to `stream.jsonl` after start but before cancel scans; worker still in registry; `cancelBackgroundRun(runId)` returns `{ status:"already_complete" }`; subsequent poll also returns `{ status:"complete" }` — no cancel/poll disagreement
@@ -995,7 +996,7 @@ Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boun
 
 **Claude bg via MCP (design.md:682-683):**
 - `stratum_agent_run { agent:"claude", background:true, prompt:"p", cwd:"/tmp" }` via MCP client returns `{ status:"bg_started", runId, streamPath }` with no `pid` field; `meta.json` written with `agent:"claude"` — uses `STRATUM_TEST_WORKER=1` stub
-- Follow-up `stratum_agent_poll { runId }` via MCP client returns `{ status:"running" }` immediately after start
+- Follow-up `stratum_agent_poll { runId }` via MCP client returns `{ status:"complete" }` after start (`STRATUM_TEST_WORKER=1` commits the sentinel synchronously before any poll can run; do NOT assert `"running"` here — there is no guaranteed in-flight window with this seam)
 
 **MCP forwarding and rejection (design.md:697-701):**
 - `stratum_agent_run { agent:"claude", allowedTools:["Read"], background:false, prompt:"p", cwd:"/tmp" }` via MCP: captured `agentRun` call (spy/stub) receives `allowedTools: ["Read"]` — verifies `optionalArray` forwarding
