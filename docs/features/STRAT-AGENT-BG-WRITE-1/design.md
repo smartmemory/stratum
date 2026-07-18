@@ -3,7 +3,7 @@
 **Status:** DESIGN  
 **Phase:** STRAT-AGENT: Agent Surface  
 **Created:** 2026-07-18  
-**Revised:** 2026-07-18 (r3 — design-gate r2 findings addressed)  
+**Revised:** 2026-07-18 (r4 — design-gate r3 finding addressed: terminal sentinel writes serialized via per-run finalization lock)  
 **Related:** [feature.json](./feature.json), GitHub #18
 
 ---
@@ -223,9 +223,32 @@ interface ClaudeBgEntry {
   worker: Worker;       // from node:worker_threads
   // NOTE: no isAlive field — deletion from the registry IS the terminal signal (D10).
   // poll() uses Map.has(runId) to determine liveness.
-  cancelling: boolean;  // set before worker.terminate() — suppresses exit-handler sentinel (D9)
+  cancelling: boolean;  // set before worker.terminate() — suppresses exit/error-handler sentinel (D9)
+  // D13 — per-run finalization lock. The first path to fire (error handler, exit handler,
+  // or cancel) sets this promise. All subsequent paths chain on it rather than starting
+  // their own I/O. Guarantees at most one terminal record written and registry deleted once.
+  // Safe synchronous claim: JS is single-threaded, so the null-check + set is atomic at
+  // the event-loop level even though the enclosed I/O is async.
+  finalizationClaim: Promise<void> | null;
 }
 const claudeWorkerRegistry = new Map<string, ClaudeBgEntry>();
+
+// claimFinalization — single serialization point for all terminal writes on a claude bg run.
+// Only the first caller's doFinalize() executes; subsequent callers get the same promise
+// and their doFinalize is discarded. Registry deletion always happens after doFinalize settles.
+function claimFinalization(
+  entry: ClaudeBgEntry,
+  runId: string,
+  doFinalize: () => Promise<void>
+): Promise<void> {
+  if (entry.finalizationClaim !== null) {
+    return entry.finalizationClaim;  // already claimed — another path owns the terminal record
+  }
+  entry.finalizationClaim = doFinalize()
+    .catch(() => {/* best-effort — I/O failure should not block registry deletion */})
+    .finally(() => claudeWorkerRegistry.delete(runId));
+  return entry.finalizationClaim;
+}
 ```
 
 **Discriminant validation at `startBackgroundRun()` entry (Finding 3 fix):**
@@ -304,38 +327,34 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   const worker = new Worker(new URL("./claude-bg-worker.js", import.meta.url), {
     workerData: workerInput,
   });
-  const entry: ClaudeBgEntry = { worker, cancelling: false };
+  const entry: ClaudeBgEntry = { worker, cancelling: false, finalizationClaim: null };
   claudeWorkerRegistry.set(runId, entry);
 
-  // D9 (exit handler): Only write the error sentinel when cancel() didn't already claim
-  // ownership of the terminal record. Without this guard, cancel + exit both call
-  // writeSentinelIfAbsent concurrently — whichever checks "no sentinel" second wins,
-  // producing nondeterministic rc=1 vs rc=130.
-  // D10 (registry deletion): Delete after the sentinel is written, not before — so there is
-  // no window where a poll sees no registry entry AND no sentinel (child_died_without_sentinel
-  // false positive). Double-deletes are harmless (Map.delete is idempotent).
+  // D9 (exit handler): Skip when cancel owns finalization (cancelling=true).
+  // D13 (serialization): Route through claimFinalization() so that if 'error' already fired
+  // and claimed the lock, this exit handler discards its own sentinel write rather than
+  // appending a second one. JS single-threadedness makes the null-check atomic at the
+  // event-loop level — the first synchronous caller wins; the second sees a non-null claim.
+  // D10 (registry deletion): claimFinalization() calls registry.delete() in .finally() after
+  // the sentinel is written — no window where poll() sees no entry AND no sentinel.
   worker.once("exit", () => {
-    if (!entry.cancelling) {
-      writeSentinelIfAbsent(streamPath, 1)
-        .catch(() => {/* best-effort */})
-        .finally(() => claudeWorkerRegistry.delete(runId));
-    }
-    // If cancelling, the cancel() path owns the terminal record and will delete the entry.
+    if (entry.cancelling) return;  // cancel path owns finalization
+    claimFinalization(entry, runId, () => writeSentinelIfAbsent(streamPath, 1));
   });
 
-  // D9 (error handler): 'error' event fires when the worker fails to start or throws an
-  // uncaught top-level exception. Without a listener Node.js emits an uncaught exception
-  // and crashes the MCP process. 'exit' fires after 'error', so both handlers may race
-  // to write the sentinel — writeSentinelIfAbsent is idempotent (the second scan+check
-  // no-ops), and a double-delete of the registry entry is harmless.
+  // D9 (error handler): 'error' fires when the worker fails to start or throws an uncaught
+  // top-level exception. Without a listener Node.js emits an uncaught exception and crashes
+  // the MCP process. 'error' fires before 'exit' on worker exceptions — by claiming the
+  // finalization lock here synchronously, we prevent the subsequent 'exit' handler from
+  // starting its own sentinel write. D13 serialization applies: claimFinalization() ensures
+  // at most one terminal record is appended even when both events fire for the same run.
   worker.on("error", (err: Error) => {
-    if (!entry.cancelling) {
-      const errorLine = JSON.stringify({ type: "error", message: err.message.slice(0, 2000) }) + "\n";
-      const sentinelLine = JSON.stringify({ [T2F5_DONE_SENTINEL]: 1 }) + "\n";
+    if (entry.cancelling) return;  // cancel path owns finalization
+    const errorLine = JSON.stringify({ type: "error", message: err.message.slice(0, 2000) }) + "\n";
+    const sentinelLine = JSON.stringify({ [T2F5_DONE_SENTINEL]: 1 }) + "\n";
+    claimFinalization(entry, runId, () =>
       appendFile(streamPath, errorLine + sentinelLine, { encoding: "utf8" })
-        .catch(() => {/* best-effort */})
-        .finally(() => claudeWorkerRegistry.delete(runId));
-    }
+    );
   });
 
   const meta: ClaudeRunMeta = {
@@ -428,18 +447,23 @@ export async function cancelBackgroundRun(runId: string, options: RegistryOption
     const rescan = await scanStream(loaded.streamPath);
     if (rescan.exitCode !== undefined) {
       // Worker won the race — its terminal record is authoritative. Clean up registry.
-      claudeWorkerRegistry.delete(runId);
+      // cancelling=true suppressed error/exit handlers so finalizationClaim is still null;
+      // direct delete is safe (no concurrent finalizer is running). D13: use
+      // claimFinalization() with a no-op doFinalize so registry deletion still happens via
+      // the shared lock, guarding against a hypothetical concurrent second cancel call.
+      claimFinalization(entry, runId, () => Promise.resolve());
       if (rescan.exitCode === 0 && !rescan.error) {
         return { status: "already_complete", runId };
       }
       return { status: "already_error", runId };
     }
 
-    // No sentinel written — we own the terminal record.
-    // Write sentinel first, then delete registry entry (D10: no gap where poll returns
-    // child_died_without_sentinel while cancel is mid-flight).
-    await writeSentinelIfAbsent(loaded.streamPath, 130);
-    claudeWorkerRegistry.delete(runId);
+    // No sentinel written — we own the terminal record. D13: route through claimFinalization()
+    // so a concurrent second cancel call chains on the same promise rather than racing to
+    // write a second rc=130 sentinel.
+    // D10: sentinel is written inside doFinalize before .finally() deletes the registry entry —
+    // no window where poll sees no entry AND no sentinel.
+    await claimFinalization(entry, runId, () => writeSentinelIfAbsent(loaded.streamPath, 130));
     return { status: "cancelled", runId };
   }
 
@@ -598,7 +622,7 @@ case "stratum_agent_run": {
 
 | File | Type | Changes |
 |---|---|---|
-| `ts/src/connectors/background.ts` | modify | Remove guards at :65/:68; update `BackgroundRunMeta` to discriminated union; add `claudeWorkerRegistry` (no `isAlive` field); discriminant validation at `startBackgroundRun()` entry; add `startClaudeBackgroundRun()` with sandboxMode rejection, exit/error handlers that delete registry after sentinel; update `loadMeta()` agent check; add claude branch to `pollBackgroundRun()` (liveness via `Map.has`) and `cancelBackgroundRun()` with post-terminate rescan before writing rc=130; add `writeSentinelIfAbsent()` helper |
+| `ts/src/connectors/background.ts` | modify | Remove guards at :65/:68; update `BackgroundRunMeta` to discriminated union; add `claudeWorkerRegistry` (no `isAlive` field); add `claimFinalization()` serialization helper (D13); discriminant validation at `startBackgroundRun()` entry; add `startClaudeBackgroundRun()` with sandboxMode rejection, `finalizationClaim`-gated exit/error handlers, registry deletion via `claimFinalization().finally()`; update `loadMeta()` agent check; add claude branch to `pollBackgroundRun()` (liveness via `Map.has`) and `cancelBackgroundRun()` with post-terminate rescan and `claimFinalization()` in both branches; add `writeSentinelIfAbsent()` helper |
 | `ts/src/connectors/claude-bg-worker.ts` | new | Worker thread entry point: receive workerData, run ClaudeConnector via query seam, write normalized JSONL, write T2F5 sentinel; stream errors written to stderr, never crash worker |
 | `ts/src/connectors/claude.ts` | modify | Fix `allowedTools` → SDK `tools` mapping (availability, not auto-approve) |
 | `ts/src/connectors/runner.ts` | modify | Change `runAgent` return type: `pid: number` → `pid?: number` in `bg_started` union; add `allowedTools`/`disallowedTools` to `StartBackgroundRunOptions` and forward them to `startBackgroundRun()`; add discriminant validation for sync path |
@@ -623,6 +647,7 @@ case "stratum_agent_run": {
 | D10 | Registry entry deleted at terminal, not marked dead | Avoids unbounded memory growth in long-lived MCP server processes (Finding 4 r2). `Map.delete` is idempotent, so double-deletes from error+exit handler racing are harmless. `poll()` uses `Map.has(runId)` — entry absent means "not running" (same as old `isAlive=false`). Deletion happens AFTER the sentinel is written to disk so no poll() window exists where the entry is gone but no sentinel is present (which would produce a spurious `child_died_without_sentinel`). Cancel path deletes AFTER the post-terminate rescan and optional sentinel write (Finding 2 fix). |
 | D11 | Cancel rescans stream after `worker.terminate()` | Finding 2 (r2): the initial scan in cancel can race with the worker writing its own rc=0 sentinel. Setting `cancelling=true` suppresses the exit handler's sentinel write, but does not prevent the worker from writing its own sentinel between the scan and the terminate() call. Post-terminate rescan is the authoritative check: if the worker won (sentinel present), cancel returns `already_complete`/`already_error`; if no sentinel, cancel writes rc=130 and returns `cancelled`. This eliminates the cancel/poll status disagreement. |
 | D12 | `{"$array":"string"}` grammar, not `"string[]"`, for allowedTools/disallowedTools | `contracts.ts:46` LEAF_TYPES does not include `"string[]"` — it would be rejected as an unknown leaf type. `{"$array":"string"}` is the typed-array mechanism: `matchShape` iterates and validates each element against `"string"` (contracts.ts:98-101). This provides boundary validation via `assertToolRequest` for free — no `optionalStringArray()` helper needed in server.ts. |
+| D13 | Per-run `finalizationClaim` promise serializes all terminal writes | `'error'` fires before `'exit'` when a worker throws an uncaught exception. Both handlers previously started their own async I/O (appendFile / writeSentinelIfAbsent) concurrently — the scan inside `writeSentinelIfAbsent` could see no sentinel yet (the appendFile wasn't done), and both paths would each append a sentinel. `scanStream()` takes the LAST sentinel, making the terminal outcome timing-dependent. The fix is a per-`ClaudeBgEntry` `finalizationClaim` promise: the first synchronous caller (error handler fires before exit) sets the promise; all subsequent callers get the same promise with their `doFinalize` discarded. This is safe without any external lock because JavaScript is single-threaded — the null-check and set happen atomically at the event-loop level. The cancel path routes through `claimFinalization()` as well, guarding against concurrent cancel calls. |
 
 ---
 
@@ -676,6 +701,14 @@ case "stratum_agent_run": {
 - [ ] Registry entry deleted on cancel: after cancel returns `"cancelled"`, verify entry is deleted
 - [ ] Registry entry deleted after worker error: after `worker.error` event, verify entry is deleted
 - [ ] No double-write on error+exit: when both error and exit handlers fire (normal sequence after worker exception), verify only one sentinel is in the stream (second `writeSentinelIfAbsent` scan finds it and no-ops)
+
+### BG-WRITE-A: sentinel serialization via finalizationClaim (Finding r3)
+
+- [ ] **No double sentinel on error+exit**: inject a worker stub that emits `error` then `exit` synchronously; verify exactly ONE sentinel record in `stream.jsonl` — error handler claims `finalizationClaim`, exit handler sees it non-null and discards its own `doFinalize`
+- [ ] **finalizationClaim set synchronously by error handler**: after `error` event fires, `entry.finalizationClaim` is non-null before the appendFile() Promise resolves — proves the claim is captured synchronously, not deferred
+- [ ] **Concurrent cancel calls produce one sentinel**: call `cancelBackgroundRun()` twice concurrently for the same runId; verify exactly one rc=130 sentinel in the stream and exactly one `"cancelled"` response (or one `"cancelled"` + one idempotent `"cancelled"` from chaining on the same promise)
+- [ ] **Error handler suppressed when cancelling=true**: inject a worker that emits `error` after `cancelling=true` is set; verify the error handler returns without calling `claimFinalization`, and the cancel path's own finalization runs instead (one rc=130 sentinel, no rc=1 sentinel)
+- [ ] **Registry deleted in all paths via finalizationClaim.finally**: verify `claudeWorkerRegistry.delete(runId)` is called exactly once whether finalization was claimed by error, exit, or cancel
 
 ### BG-WRITE-A: worker error containment (Finding 5 r1)
 
