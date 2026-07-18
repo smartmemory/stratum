@@ -17,7 +17,7 @@ Work in this order — each step has verified gate conditions before the next:
 4. `runner.ts` — small plumbing changes
 5. `server.ts` — read new MCP fields
 6. `claude.ts` — BG-WRITE-B SDK mapping fix
-7. Tests — new file + existing test updates
+7. Tests — 3 new files + 2 existing test updates (Steps 7a–7e)
 
 ---
 
@@ -866,13 +866,11 @@ As noted in Step 6a — change `allowedTools: ["Read"]` to `tools: ["Read"]`.
 
 ### 7c. New test file: `ts/tests/connectors/background-claude.test.ts`
 
-Create this file to cover all BG-WRITE-A claude-specific test cases from the design's test plan. Key test scenarios (two seams: `STRATUM_TEST_WORKER=1` for completed-state tests; `vi.mock('node:worker_threads')` Worker-constructor stub for held-state / callback-order tests):
+Create this file to cover BG-WRITE-A claude-specific test cases that use the **`STRATUM_TEST_WORKER=1`** env-gated stub (real Worker threads, no `vi.mock`). Tests that require `vi.mock('node:worker_threads')` (poll-while-running, cancel-in-flight, D9 interleaving, D13/D14 races, worker error containment) are in `background-claude-interleavings.test.ts` (Step 7e). `vi.mock` is hoisted module-wide by vitest, so mocked-Worker tests and real-Worker env-stub tests cannot share a single file — the module-wide mock would prevent the real Worker from ever spawning, breaking the STRATUM_TEST_WORKER=1 tests.
 
-**Setup pattern — two seams:**
+**Test seam:**
 
-1. **`STRATUM_TEST_WORKER=1` (env-gated stub in `claude-bg-worker.ts` Step 3):** Set this env var in the vitest environment for tests that need the worker to complete quickly (completed-state, error-state, meta validation). The stub writes a synthetic `item.completed` + `turn.completed` record and returns; the `.then()` continuation writes the `rc=0` sentinel immediately. Do NOT use this seam when the test requires the worker to be in a running state — the sentinel is committed before any test code can observe `"running"`.
-
-2. **`vi.mock('node:worker_threads')` Worker-constructor stub:** Mock the `Worker` constructor to return a plain `EventEmitter` stub with a controllable `terminate()` method. Use for tests that require a guaranteed running worker (poll-while-running, cancel-in-flight) or precise callback ordering (D9 interleaving tests). The stub never emits `exit` until the test explicitly drives it, giving deterministic control over lifecycle state.
+**`STRATUM_TEST_WORKER=1` (env-gated stub in `claude-bg-worker.ts` Step 3):** Set this env var in `beforeAll` or the vitest `env` config for the whole file. When set, the worker skips the real SDK call and writes a synthetic `item.completed` + `turn.completed` record immediately; the `.then()` continuation writes the `rc=0` sentinel. Do NOT call `vi.mock('node:worker_threads')` anywhere in this file — that seam belongs in Step 7e.
 
 **Critical test cases to cover:**
 
@@ -913,7 +911,7 @@ it("rejects sandboxMode:read-only for claude background runs", async () => {
 it("rejects unknown agent and sandboxMode values at startBackgroundRun entry", ...);
 ```
 
-**Worker test seam — `STRATUM_TEST_WORKER=1`:** Functions cannot be serialized across Worker thread boundaries via `workerData` (structured clone rejects them). The chosen mechanism is the **env-gated stub path in `claude-bg-worker.ts`** specified in Step 3: when `process.env.STRATUM_TEST_WORKER === "1"`, the worker writes a synthetic `item.completed` + `turn.completed` record immediately and returns; the `.then()` continuation writes the `rc=0` sentinel. Set `STRATUM_TEST_WORKER=1` in the vitest environment for every test that calls `startBackgroundRun({ agent: "claude", ... })` to avoid real API calls.
+**Worker test seam (this file only — `STRATUM_TEST_WORKER=1`):** Functions cannot be serialized across Worker thread boundaries via `workerData` (structured clone rejects them). The env-gated stub path in `claude-bg-worker.ts` (Step 3) writes synthetic output immediately and exits without real API calls. Set `STRATUM_TEST_WORKER=1` in `beforeAll` or the vitest env config for the whole file. Do NOT call `vi.mock('node:worker_threads')` in this file — the `vi.mock` seam belongs in `background-claude-interleavings.test.ts` (Step 7e).
 
 **Normal-lifecycle test cases (mirrors plan.md:503-518):**
 
@@ -922,46 +920,17 @@ it("rejects unknown agent and sandboxMode values at startBackgroundRun entry", .
 - [ ] `sandboxMode:"workspace-write"` explicit: `startBackgroundRun({ agent:"claude", sandboxMode:"workspace-write", ... })` succeeds; `meta.json` has `sandboxMode:"workspace-write"`
 - [ ] `sandboxMode` omitted: `startBackgroundRun({ agent:"claude", ... })` succeeds; `meta.json` has `sandboxMode:"workspace-write"` (default)
 
-**Poll states (write sentinel file directly for complete/error/restart cases):**
-- [ ] Poll while running (use `vi.mock('node:worker_threads')` stub that never emits exit — do NOT use `STRATUM_TEST_WORKER=1` for this case as that seam commits the sentinel before poll can observe `"running"`): `pollBackgroundRun(runId)` returns `{ status:"running" }`
+**Poll states (write sentinel file directly for complete/error/restart cases — poll-while-running is in Step 7e):**
 - [ ] Poll after completion: write `{"__t2f5_done__":0}` sentinel + `item.completed` record to `stream.jsonl` directly; poll returns `{ status:"complete", text:"...", usage:{ input_tokens, output_tokens } }`
 - [ ] Poll after error: write `{"__t2f5_done__":1}` sentinel to `stream.jsonl` directly; poll returns `{ status:"error" }`
 - [ ] Poll after MCP server restart (no registry entry, no sentinel file): poll returns `{ status:"error", reason:"child_died_without_sentinel" }`
 
-**Cancel ordinary cases:**
-- [ ] Cancel in-flight (use `vi.mock('node:worker_threads')` stub — mock worker holds indefinitely without emitting exit; test calls `cancelBackgroundRun(runId)`, then drives `mockWorker.emit('exit', 1)` synchronously to simulate OS signal delivery after terminate; do NOT use `STRATUM_TEST_WORKER=1` for this case as the sentinel races the cancel call): `cancelBackgroundRun` returns `{ status:"cancelled" }`; sentinel in `stream.jsonl` has `exitCode:130`; subsequent poll returns `{ status:"error" }`
+**Cancel ordinary cases (cancel-in-flight is in Step 7e — requires vi.mock):**
 - [ ] Cancel after already complete (sentinel present): write `{"__t2f5_done__":0}` to stream first, then call `cancelBackgroundRun(runId)`; returns `{ status:"already_complete" }`
 - [ ] Cancel with no registry entry (no stream file — simulating server restart): `cancelBackgroundRun(runId)` returns `{ status:"not_found" }`
 - [ ] Worker wins the race: write `{"__t2f5_done__":0}` sentinel to `stream.jsonl` after start but before cancel scans; worker still in registry; `cancelBackgroundRun(runId)` returns `{ status:"already_complete" }`; subsequent poll also returns `{ status:"complete" }` — no cancel/poll disagreement
 
-**D9 callback-order interleaving tests (worker-stub precision — r1 plan-gate finding):**
-
-These 4 tests require a controllable worker stub that fires events in a specific synchronous order. The chosen seam: **mock the `Worker` constructor** using `vi.mock('node:worker_threads')` to return a plain `EventEmitter` stub with a controllable `terminate()` method. `startClaudeBackgroundRun()` proceeds normally and attaches the `exit`/`error` handlers to the mock; the test then fires events in the desired order. Do NOT set `STRATUM_TEST_WORKER=1` for these tests — the seam operates at the registry level in `background.ts`, not at the worker-entry level.
-
-- [ ] **Synchronous exit-after-terminate proves rc=130**: stub `worker.terminate()` to emit `exit(1)` synchronously (simulating the OS signal delivery path); with `entry.cancelling = true` already set before the event fires, verify the exit handler does NOT call `writeSentinelIfAbsent` and the cancel path writes exactly one sentinel with `exitCode:130`. Assert `stream.jsonl` contains exactly one `__t2f5_done__` line with value `130`.
-
-- [ ] **Exit-handler suppressed when `cancelling=true`**: inject a stub that emits `exit(1)` after `entry.cancelling = true` is set; verify `stream.jsonl` contains no sentinel written by the exit handler, and the cancel path's own `rc=130` sentinel is the only terminal record in the stream.
-
-- [ ] **Error-handler suppressed after cancellation**: inject a stub that emits `error(new Error("late"))` after `entry.cancelling = true` is set; verify the error handler returns without calling `claimFinalization`; the cancel path writes `rc=130` sentinel (not `rc=1`); `stream.jsonl` has exactly one `__t2f5_done__` line with value `130`.
-
-- [ ] **Single registry deletion via `finalizationClaim.finally`**: spy on `claudeWorkerRegistry.delete`; drive each terminal path (error, exit, cancel) in isolation; verify `delete(runId)` is called exactly once per run in every path. No path should leave a registry entry alive after finalization settles.
-
-**Additional required test cases (from the design test plan):**
-
-**Sentinel serialization (D13 — r3 finding):**
-- [ ] Error + exit both fire: exactly ONE sentinel record in `stream.jsonl` (error handler claims lock; exit handler discards its work)
-- [ ] `finalizationClaim` is non-null synchronously after error event fires (before `appendFile` resolves)
-- [ ] Two concurrent cancel calls: exactly one `rc=130` sentinel written, both calls resolve without error
-
-**Cancel-joins-error-claim race (D14 — r4 finding):**
-- [ ] Cancel joins error handler's claim: returns `"already_error"`, subsequent poll returns `"error"` — no cancel/poll disagreement
-- [ ] Cancel that owns `rc=130` (`finalizationClaim` was null): returns `"cancelled"`, subsequent poll returns `"error"`
-- [ ] Concurrent second cancel joins first cancel's claim: second returns `"already_error"` (after first writes `rc=130` and poll reads it), no second sentinel written
-
-**Worker error containment and stderr plumbing (D9 / plan-gate r1 finding 2):**
-- [ ] Worker emits `error` event: no uncaught exception propagates to MCP process; poll returns `{ status:"error" }`
-- [ ] Registry entry deleted after worker error
-- [ ] On simulated query failure: `stderrPath` (`.err` file) is non-empty after the catch block runs — asserts that `appendFileSync(workerData.stderrPath, ...)` wrote the error message
+Tests requiring the `vi.mock('node:worker_threads')` seam (poll-while-running, cancel-in-flight, D9 callback-order interleaving, D13 sentinel serialization, D14 cancel-joins-error-claim, worker error containment, and stderr plumbing) are in Step 7e — `background-claude-interleavings.test.ts`.
 
 ### 7d. New test file: `ts/tests/mcp/agent-run.test.ts`
 
@@ -1012,6 +981,69 @@ Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boun
 - [ ] `McpError` path asserts `agentRun` was NOT called (contract rejects before handler body)
 - [ ] `stratum_agent_run` without `allowedTools` test asserts `agentRun` was called with exactly the expected keys (no extra `allowedTools: undefined` or `allowedTools: []`)
 
+### 7e. New test file: `ts/tests/connectors/background-claude-interleavings.test.ts`
+
+**File:** `ts/tests/connectors/background-claude-interleavings.test.ts` (new)
+
+This file uses `vi.mock('node:worker_threads')` at module scope. Because vitest hoists `vi.mock` calls, this mock applies to the entire file — every `startClaudeBackgroundRun()` call in this file will receive the mocked `Worker` constructor. Do NOT set `STRATUM_TEST_WORKER=1` in this file; the env seam is for `background-claude.test.ts` only.
+
+**Test seam — `vi.mock('node:worker_threads')` Worker-constructor stub:**
+
+```typescript
+import { vi } from "vitest";
+
+vi.mock("node:worker_threads", () => ({
+  Worker: vi.fn(),
+}));
+```
+
+The mock `Worker` is a plain `EventEmitter` subclass returned by the mocked constructor. Each test builds its fixture by calling `startClaudeBackgroundRun()` (which invokes the mocked `Worker` constructor) and then driving events on the returned stub. `terminate()` must be defined on the stub; see the cancel-in-flight fixture note below.
+
+**Poll while running:**
+- [ ] `startClaudeBackgroundRun(...)` registers entry; mock worker never emits `exit`; `pollBackgroundRun(runId)` returns `{ status:"running" }`
+
+**Cancel in-flight:**
+- [ ] Mock `terminate()` as: `terminate() { this.emit('exit', 130); return Promise.resolve(); }` — emits `exit(130)` **synchronously** before returning, then returns a resolved Promise. This matters because `cancelBackgroundRun` does `await entry.worker.terminate()` — if `terminate()` only returned a promise without emitting, `cancelBackgroundRun` would await forever (test hangs). With the synchronous emit: `cancelling` is already `true` when `exit(130)` fires, so the exit handler is suppressed; `terminate()` resolves; cancel rescans (no sentinel), D14 check passes, cancel owns rc=130 record and returns `"cancelled"`. Assert: sentinel in `stream.jsonl` has `exitCode:130`; subsequent poll returns `{ status:"error" }`.
+
+**D9 callback-order interleaving tests (worker-stub precision — r1 plan-gate finding):**
+
+The `vi.mock` seam is already active for these tests (module-wide). `startClaudeBackgroundRun()` attaches the `exit`/`error` listeners to the mock; tests drive events in precise order.
+
+- [ ] **Synchronous exit-after-terminate proves rc=130**: `terminate()` emits `exit(130)` synchronously (same pattern as cancel-in-flight fixture above); with `entry.cancelling = true` already set before the event fires, verify the exit handler does NOT call `writeSentinelIfAbsent`; cancel path writes exactly one sentinel with `exitCode:130`; `stream.jsonl` has exactly one `__t2f5_done__` line with value `130`.
+
+- [ ] **Exit-handler suppressed when `cancelling=true`**: after setting `entry.cancelling = true` directly (bypassing terminate), emit `exit(1)` on the stub; verify `stream.jsonl` has no sentinel from the exit handler.
+
+- [ ] **Error-handler suppressed after cancellation**: after setting `entry.cancelling = true` directly, emit `error(new Error("late"))` on the stub; verify the error handler returns without calling `claimFinalization`; no sentinel written by the error handler; `stream.jsonl` has zero `__t2f5_done__` lines from this path.
+
+- [ ] **Single registry deletion via `finalizationClaim.finally`**: spy on `claudeWorkerRegistry.delete`; drive each terminal path (error, exit, cancel) in isolation; verify `delete(runId)` is called exactly once per run in every path.
+
+**Sentinel serialization (D13 — r3 finding):**
+- [ ] Error + exit both fire: emit `error(new Error("oops"))` then `exit(1)` on the stub; exactly ONE `__t2f5_done__` line in `stream.jsonl` (error handler claims finalizationClaim; exit handler discards its work).
+- [ ] `finalizationClaim` is non-null synchronously after error event fires (before `appendFile` resolves): drive `error` event; check `claudeWorkerRegistry.get(runId).finalizationClaim !== null` synchronously.
+- [ ] Two concurrent cancel calls: call `cancelBackgroundRun` twice concurrently; both `terminate()` invocations settle; exactly one `rc=130` sentinel in stream; both calls resolve without error.
+
+**Cancel-joins-error-claim race (D14 — r4 finding):**
+- [ ] Cancel joins error handler's claim: emit `error` event on stub (error handler claims finalizationClaim); then call `cancelBackgroundRun(runId)`; cancel detects `entry.finalizationClaim !== null`, awaits it, rescans; returns `"already_error"`. Subsequent poll returns `{ status:"error" }` — no cancel/poll disagreement.
+- [ ] Cancel that owns rc=130 (finalizationClaim was null at check): no prior error/exit event; cancel sees `finalizationClaim === null`, claims it, writes rc=130; returns `"cancelled"`. Subsequent poll returns `{ status:"error" }`.
+- [ ] Concurrent second cancel joins first cancel's claim: call `cancelBackgroundRun` twice with the same runId concurrently; first owns rc=130; second joins and returns `"already_error"` (after await + rescan); no second sentinel written.
+
+**Worker error containment and stderr plumbing (D9 / plan-gate r1 finding 2):**
+- [ ] Worker emits `error` event: emit `error(new Error("boom"))` on stub; verify no uncaught exception propagates to the MCP process; `pollBackgroundRun(runId)` returns `{ status:"error" }`.
+- [ ] Registry entry deleted after worker error: after error handler settles, `claudeWorkerRegistry.has(runId)` is `false`.
+- [ ] Stderr plumbing: mock `ClaudeConnector` to throw during `run()` (use `vi.mock('./claude.js', ...)`); the worker's catch block writes the error message to `workerData.stderrPath` via `appendFileSync`; assert the `.err` file is non-empty after the catch settles.
+
+**Registry cleanup (D10 — r2 finding):**
+- [ ] Registry entry deleted after normal completion (exit handler fires + sentinel written): `claudeWorkerRegistry.has(runId)` is `false` after finalizationClaim settles.
+- [ ] Registry entry deleted after cancel: same check.
+- [ ] Registry entry deleted after worker error: same check (also covered above).
+
+**Acceptance criteria:**
+- [ ] All test cases in this file pass with `vi.mock('node:worker_threads')` in place
+- [ ] No `STRATUM_TEST_WORKER=1` env var is set anywhere in this file
+- [ ] Exactly one `__t2f5_done__` line in `stream.jsonl` in every terminal-path test
+- [ ] Registry has no entries after any terminal path settles
+- [ ] Cancel-in-flight test does NOT hang (terminate() emits exit synchronously + returns resolved Promise)
+
 ---
 
 ## File Change Summary
@@ -1026,8 +1058,9 @@ Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boun
 | `ts/src/connectors/claude.ts` | modify | Line 47: `sdkOptions.allowedTools` → `sdkOptions.tools` (availability not auto-approve) |
 | `ts/tests/connectors/background.test.ts` | modify | Line 84: `started.pid` optional type; line 101: replace "codex-only" guard test with discriminant validation + D8 tests |
 | `ts/tests/connectors/claude.test.ts` | modify | Line 29: `allowedTools:["Read"]` → `tools:["Read"]` in expected options |
-| `ts/tests/connectors/background-claude.test.ts` | **new** | Claude bg start/poll/cancel test suite including D9 callback-order interleaving tests and stderr plumbing assertion (Step 7c) |
+| `ts/tests/connectors/background-claude.test.ts` | **new** | Claude bg start/meta/sandboxMode/poll(complete,error,restart)/cancel(already-complete,no-registry,worker-wins-race) — real-Worker tests via STRATUM_TEST_WORKER=1 only (Step 7c) |
 | `ts/tests/mcp/agent-run.test.ts` | **new** | Public MCP-surface tests: codex workspace-write, claude bg, allowedTools forwarding/rejection, foreground allowlist flow (Step 7d) |
+| `ts/tests/connectors/background-claude-interleavings.test.ts` | **new** | vi.mock Worker-constructor tests: poll-while-running, cancel-in-flight (terminate() emits exit synchronously), D9 callback-order, D13 sentinel serialization, D14 cancel-joins-error-claim, worker error containment, stderr plumbing (Step 7e) |
 
 ---
 
@@ -1046,7 +1079,8 @@ Gate conditions:
 - [ ] `vitest run` passes with no new failures
 - [ ] `tests/connectors/background.test.ts` still passes (regression: codex golden flow)
 - [ ] `tests/connectors/claude.test.ts` passes with updated `tools` assertion
-- [ ] `tests/connectors/background-claude.test.ts` all new cases pass (including D9 callback-order interleaving tests and stderr plumbing assertion)
+- [ ] `tests/connectors/background-claude.test.ts` all new cases pass (real-Worker/STRATUM_TEST_WORKER=1 tests; no vi.mock in this file)
+- [ ] `tests/connectors/background-claude-interleavings.test.ts` all cases pass (vi.mock Worker-constructor: poll-while-running, cancel-in-flight, D9 interleaving, D13/D14 races, worker error containment, stderr plumbing)
 - [ ] `tests/mcp/contracts-grammar.test.ts` passes (validates mcp-surface.json shape grammar)
 - [ ] `tests/mcp/agent-run.test.ts` all 9 new MCP-surface cases pass (Step 7d)
 - [ ] TypeScript compiles with no errors on the modified files (vitest uses esbuild but `tsc --noEmit` catches type errors)
