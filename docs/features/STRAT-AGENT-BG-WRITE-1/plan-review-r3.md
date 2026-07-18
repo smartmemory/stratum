@@ -1,0 +1,6 @@
+# Plan-gate review round 3 (codex gpt-5.6-terra/high) — REVISE
+
+All r2 additions verified present (stderrPath/.err plumbing, sync-path validation, D9/D13/D14 interleavings, public MCP tests). 2 remaining P1s in blueprint.md only:
+
+1. **P1 — Step 7c omits the plan's normal-lifecycle coverage.** Plan (settled) requires sandbox positive/default, poll states (running/complete/error/restart), and ordinary cancel/race cases (plan.md:497, :503-518). Blueprint 7c base cases stop at start/meta, read-only rejection, discriminants; later additions are D9/D13/D14/error only. Mirror plan lines 503-518 into blueprint 7c. (blueprint.md:867)
+2. **P1 — worker test seam unspecified, tests not hermetically executable.** Step 3 always invokes the real SDK query (blueprint.md:591); 7c admits functions can't cross workerData and leaves the mechanism open (blueprint.md:906); 7d requires STRATUM_TEST_WORKER=1 (blueprint.md:964) with no implementation specified. CHOOSE and specify the hook in Step 3 — either an env-gated stub query inside claude-bg-worker.ts (STRATUM_TEST_WORKER reads a fixture/behavior spec from env or a file) or a Worker-constructor injection boundary in background.ts (injectable worker entry URL via StartBackgroundRunOptions test-only field, matching the existing boundaries pattern in runner.ts). Whichever is chosen, 7c/7d must reference the same mechanism.

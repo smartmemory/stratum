@@ -97,7 +97,10 @@ flows:
     output:
       from: "${ship.output}"
       contract: PhaseResult
-    max_rounds: 10
+    # Flow-level revision budget shared across ALL gates. 10 was exhausted by two
+    # thorough gate loops (design 5 + plan 6 rounds) on the first dogfood build;
+    # per-gate max_rounds (10) stays the real convergence guard.
+    max_rounds: 40
     steps:
       - id: explore_design
         agent: claude

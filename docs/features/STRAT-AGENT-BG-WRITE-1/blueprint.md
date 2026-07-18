@@ -918,7 +918,7 @@ it("rejects sandboxMode:read-only for claude background runs", async () => {
 it("rejects unknown agent and sandboxMode values at startBackgroundRun entry", ...);
 ```
 
-**Worker test seam (this file only — `STRATUM_TEST_WORKER=1`):** Functions cannot be serialized across Worker thread boundaries via `workerData` (structured clone rejects them). The env-gated stub path in `claude-bg-worker.ts` (Step 3) writes synthetic output immediately and exits without real API calls. Set `STRATUM_TEST_WORKER=1` in `beforeAll` or the vitest env config for the whole file. Do NOT call `vi.mock('node:worker_threads')` in this file — the `vi.mock` seam belongs in `background-claude-interleavings.test.ts` (Step 7e).
+**Worker test seam (real-Worker test files: `background-claude.test.ts` (7c) and `agent-run.test.ts` (7d) — `STRATUM_TEST_WORKER=1`):** Functions cannot be serialized across Worker thread boundaries via `workerData` (structured clone rejects them). The env-gated stub path in `claude-bg-worker.ts` (Step 3) writes synthetic output immediately and exits without real API calls. Set `STRATUM_TEST_WORKER=1` in `beforeAll` or the vitest env config for the whole file. Do NOT call `vi.mock('node:worker_threads')` in this file — the `vi.mock` seam belongs in `background-claude-interleavings.test.ts` (Step 7e).
 
 **Normal-lifecycle test cases (mirrors plan.md:503-518):**
 
@@ -995,7 +995,7 @@ Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boun
 
 **File:** `ts/tests/connectors/background-claude-interleavings.test.ts` (new)
 
-This file uses `vi.mock('node:worker_threads')` at module scope. Because vitest hoists `vi.mock` calls, this mock applies to the entire file — every `startClaudeBackgroundRun()` call in this file will receive the mocked `Worker` constructor. Do NOT set `STRATUM_TEST_WORKER=1` in this file; the env seam is for real-Worker test files (`background-claude.test.ts` (7c) and `agent-run.test.ts` (7d)) — 7e is the only file where it must NOT be set.
+This file uses `vi.mock('node:worker_threads')` at module scope. Because vitest hoists `vi.mock` calls, this mock applies to the entire file — every `startClaudeBackgroundRun()` call in this file will receive the mocked `Worker` constructor. Do NOT set `STRATUM_TEST_WORKER` (any value) in this file; the env seam is for real-Worker test files (`background-claude.test.ts` (7c) and `agent-run.test.ts` (7d)) — 7e is the only file where it must NOT be set.
 
 **Test seam — `vi.mock('node:worker_threads')` Worker-constructor stub:**
 
@@ -1050,7 +1050,7 @@ The `vi.mock` seam is already active for these tests (module-wide). `startClaude
 
 **Acceptance criteria:**
 - [ ] All test cases in this file pass with `vi.mock('node:worker_threads')` in place
-- [ ] No `STRATUM_TEST_WORKER=1` env var is set anywhere in this file
+- [ ] No `STRATUM_TEST_WORKER` env var (any value) is set anywhere in this file
 - [ ] Exactly one `__t2f5_done__` line in `stream.jsonl` in every terminal-path test
 - [ ] Registry has no entries after any terminal path settles
 - [ ] Cancel-in-flight test does NOT hang (terminate() emits exit synchronously + returns resolved Promise)
