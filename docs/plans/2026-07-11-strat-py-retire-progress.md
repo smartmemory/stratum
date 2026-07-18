@@ -781,5 +781,44 @@ gpt-5.6-sol/high, write=true), every change adjudicated vs code + verified local
   (`~/.stratum/flows/` write); outside the sandbox all 13 pass. A codex "# fail 1" on that file is a
   jail artifact, not a real failure.
 
+### TASK #14 — GSD real-path harness follow-up — DONE 2026-07-18 (compose develop @ 4e6c843)
+The last fidelity-debt item from the endgame commit ("TS runGsd/runBuild harness + three
+python-era survivor suite ports"). All re-expressions drive the REAL TS engine; NO fabricated
+stubs (the deleted tests drove the retired parallelPoll/parallelAdvance/execute_step protocol).
+Full suite 4616/4616 (was 4608 + 8 net new). Self-implemented; independent codex review (default
+model — gpt-5.6-sol/high rejected by the ChatGPT-account CLI) returned 2 findings, both adjudicated.
+- **Harness:** `runGsdWithAgentFactory` (test/helpers/ts-agent-harness.js) — runGsd mirror of
+  runBuildWithAgentFactory via `opts.stratum`. Happy path already proven inline by
+  ts-cutover-pipeline-fanout-golden; this names it for the re-expressions.
+- **gsd-stuck-resume-golden.test.js (6):** a same-file Edit loop trips the REAL GsdStuckDetector
+  (worktree/engine path — confirmed the harness tool_use→tool_use_summary dispatch reaches
+  onAgentEvent→stuckDetector.record with file_path); real stuck.json/pause.json/stuck.md +
+  full --resume guard set (live-pid, mode-mismatch, missing-pause, held-claim).
+- **gsd-budget-terminal-golden.test.js (1):** injected `max_agent_dispatches:2` trips mid-fanout
+  (decompose=1, T01=2, reserving T02=3 exceeds) → status:budget + kind:budget pause + released
+  claim. Probed dispatch accounting empirically; asserts the REAL mid-fanout semantics (T01's
+  worktree diff never merges at execute_merge, so it correctly re-dispatches → remaining=[T01,T02],
+  completed=[]). My first-guess "T01 done, T02 remains" was wrong; corrected to observed behavior.
+- **Survivor ports:** build-modes(3)/compose-fix-resume(6)/comp-fix-hard-gaps(1 mock-using of 10)
+  moved off dead v0.x envelopes to surface-9 (`{status:'completed', runId}`). RED-proven the old
+  `flow_id`-only mock silently wrote `undefined` to active-build.flowId (build.js:4088 reads
+  `response.runId`); the port adds the flowId guard. The 3 vacuous CLI-validation tests in
+  compose-fix-resume (assert their own setup, never call the handler) left out of scope — flagged.
+- **FIX 1 (build.js, RED-first):** GSD stuck diagnostics keyed the fanout index (`execute:0`)
+  not the decompose id (`T01`) — the engine's GSD consumer descriptor carries no `.item`. Threaded
+  `context.gsdTaskId` (same precedence as gsdTaskId 20 lines below); build-mode byte-identical
+  (120 adjacent tests green).
+- **FIX 2 (gsd.js, Codex finding #2, MEDIUM):** my FIX-1 keyed the detector on gsdTaskId, which
+  collides on duplicate decompose ids (old fanout-index key was collision-free). Root cause:
+  validateAndRepairTaskGraph enforced files_owned uniqueness but NOT id uniqueness — duplicate ids
+  already cross-contaminate blackboard/results/milestone. Added `TaskGraphDuplicateIdError`
+  (retryable, same channel as TaskGraphOwnershipError) + test. Protects ALL id-keyed systems.
+- **Codex finding #1 (HIGH) — adjudicated NOT-A-FIX:** the stuck golden proves detector→artifact
+  plumbing but not in-flight interruption of a runaway sync WRITE agent (worktree → sync engine
+  agent_run can't abort mid-stream; documented at result-normalizer useLocalClaude /
+  stratum-mcp-client cancelAgentRun). Pre-existing + already filed = stratum #18. Documented the
+  honest coverage boundary in the golden header (mirrors the human-gate golden precedent).
+- **Merge status:** committed to LOCAL develop only; nothing pushed. Merge stays owner-gated.
+
 ## Phase 0/1 (compose repo) — not started this session
 ## Phase 4 (sweep) / Phase 5 (remove) — not started
