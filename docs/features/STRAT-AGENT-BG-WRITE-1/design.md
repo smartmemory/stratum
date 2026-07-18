@@ -3,7 +3,7 @@
 **Status:** DESIGN  
 **Phase:** STRAT-AGENT: Agent Surface  
 **Created:** 2026-07-18  
-**Revised:** 2026-07-18 (r2 — design-gate findings addressed)  
+**Revised:** 2026-07-18 (r3 — design-gate r2 findings addressed)  
 **Related:** [feature.json](./feature.json), GitHub #18
 
 ---
@@ -150,7 +150,7 @@ async function run(): Promise<void> {
   await connector.run(prompt);
 }
 
-// Finding 5 fix: stream errors in writeLine reject individual Promises but do not crash
+// Stream errors in writeLine reject individual Promises but do not crash
 // the worker — the outer .catch() below writes the error sentinel to the stream
 // (best-effort) and stream.end() always runs via .finally(). If stream.end() itself
 // fails (e.g. disk full after the sentinel), the worker process exits uncleanly, which
@@ -221,30 +221,46 @@ export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta;
 ```typescript
 interface ClaudeBgEntry {
   worker: Worker;       // from node:worker_threads
-  isAlive: boolean;     // set to false on 'exit' event
-  cancelling: boolean;  // set before worker.terminate() — suppresses exit-handler sentinel (Fix: cancel/exit race)
+  // NOTE: no isAlive field — deletion from the registry IS the terminal signal (D10).
+  // poll() uses Map.has(runId) to determine liveness.
+  cancelling: boolean;  // set before worker.terminate() — suppresses exit-handler sentinel (D9)
 }
 const claudeWorkerRegistry = new Map<string, ClaudeBgEntry>();
 ```
 
-**`startBackgroundRun()` dispatch:**
+**Discriminant validation at `startBackgroundRun()` entry (Finding 3 fix):**
 
 ```typescript
 export async function startBackgroundRun(options: StartBackgroundRunOptions): Promise<{
   status: "bg_started"; runId: string; pid?: number; streamPath: string;
 }> {
-  // Remove guard at line 65 (agent !== "codex")
-  // Remove guard at line 68 (sandboxMode !== "read-only")
+  // Finding 3 fix: explicit runtime validation of discriminant fields.
+  // TypeScript casts at the MCP boundary (server.ts:115) do not catch unknown agents
+  // at runtime — an unrecognised value would fall through to the codex branch silently.
+  // Validate here so the check holds even for callers that bypass the MCP surface.
+  const VALID_AGENTS = new Set(["claude", "codex"]);
+  const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write"]);
+  if (!VALID_AGENTS.has(options.agent)) {
+    throw new Error(`Unknown agent ${JSON.stringify(options.agent)}; must be "claude" or "codex"`);
+  }
+  if (options.sandboxMode !== undefined && !VALID_SANDBOX_MODES.has(options.sandboxMode)) {
+    throw new Error(
+      `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only" or "workspace-write"`
+    );
+  }
+
   if (options.budgeted) throw new Error("background agent runs cannot debit run budgets yet");
 
   if (options.agent === "claude") {
     return startClaudeBackgroundRun(options);
   }
-  // Codex path (unchanged except guard removal):
+  // Codex path (unchanged except guard removal at :68):
   const sandboxMode = options.sandboxMode ?? "read-only";
   ...
 }
 ```
+
+The same validation should be added to the synchronous `runAgent()` path in `runner.ts` — validate `agent` and `sandboxMode` before dispatching to the connector.
 
 **New `startClaudeBackgroundRun()` (internal):**
 
@@ -252,7 +268,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
 async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Promise<{
   status: "bg_started"; runId: string; streamPath: string;
 }> {
-  // Finding 1 fix: reject read-only sandboxMode for claude bg — enforcement is not implemented
+  // D8: reject read-only sandboxMode for claude bg — enforcement is not implemented
   // in v1. Claude background runs are workspace-write only. Future: map read-only to
   // disallowedTools restrictions once the SDK restriction surface is settled.
   if (options.sandboxMode === "read-only") {
@@ -273,7 +289,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     writeFile(inputPath, options.prompt, { encoding: "utf8", mode: 0o600 }),
   ]);
   const model = options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
-  const sandboxMode = options.sandboxMode ?? "workspace-write";  // default write for claude bg (see D4)
+  const sandboxMode = options.sandboxMode ?? "workspace-write";  // default write for claude bg (D4)
   const workerInput: WorkerInput = {
     prompt: options.prompt,
     connectorOptions: {
@@ -288,29 +304,40 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   const worker = new Worker(new URL("./claude-bg-worker.js", import.meta.url), {
     workerData: workerInput,
   });
-  const entry: ClaudeBgEntry = { worker, isAlive: true, cancelling: false };
+  const entry: ClaudeBgEntry = { worker, cancelling: false };
   claudeWorkerRegistry.set(runId, entry);
+
+  // D9 (exit handler): Only write the error sentinel when cancel() didn't already claim
+  // ownership of the terminal record. Without this guard, cancel + exit both call
+  // writeSentinelIfAbsent concurrently — whichever checks "no sentinel" second wins,
+  // producing nondeterministic rc=1 vs rc=130.
+  // D10 (registry deletion): Delete after the sentinel is written, not before — so there is
+  // no window where a poll sees no registry entry AND no sentinel (child_died_without_sentinel
+  // false positive). Double-deletes are harmless (Map.delete is idempotent).
   worker.once("exit", () => {
-    entry.isAlive = false;
-    // Finding 2 fix: only write the error sentinel when cancel() didn't already claim
-    // ownership of the terminal record. Without this guard, cancel + exit both call
-    // writeSentinelIfAbsent concurrently — whichever checks "no sentinel" second wins,
-    // producing nondeterministic rc=1 vs rc=130.
     if (!entry.cancelling) {
-      writeSentinelIfAbsent(streamPath, 1).catch(() => {/* best-effort */});
+      writeSentinelIfAbsent(streamPath, 1)
+        .catch(() => {/* best-effort */})
+        .finally(() => claudeWorkerRegistry.delete(runId));
     }
+    // If cancelling, the cancel() path owns the terminal record and will delete the entry.
   });
-  // Finding 5 fix: 'error' event fires when the worker fails to start or throws an
+
+  // D9 (error handler): 'error' event fires when the worker fails to start or throws an
   // uncaught top-level exception. Without a listener Node.js emits an uncaught exception
-  // and crashes the MCP process. Write a bounded error + sentinel so poll returns 'error'.
+  // and crashes the MCP process. 'exit' fires after 'error', so both handlers may race
+  // to write the sentinel — writeSentinelIfAbsent is idempotent (the second scan+check
+  // no-ops), and a double-delete of the registry entry is harmless.
   worker.on("error", (err: Error) => {
-    entry.isAlive = false;
     if (!entry.cancelling) {
       const errorLine = JSON.stringify({ type: "error", message: err.message.slice(0, 2000) }) + "\n";
       const sentinelLine = JSON.stringify({ [T2F5_DONE_SENTINEL]: 1 }) + "\n";
-      appendFile(streamPath, errorLine + sentinelLine, { encoding: "utf8" }).catch(() => {/* best-effort */});
+      appendFile(streamPath, errorLine + sentinelLine, { encoding: "utf8" })
+        .catch(() => {/* best-effort */})
+        .finally(() => claudeWorkerRegistry.delete(runId));
     }
   });
+
   const meta: ClaudeRunMeta = {
     runId, agent: "claude", model, cwd: options.cwd, sandboxMode,
     promptChars: options.prompt.length, createdAt: new Date().toISOString(),
@@ -335,6 +362,8 @@ if (!isRecord(raw) || raw.runId !== runId || (raw.agent !== "codex" && raw.agent
 
 **`pollBackgroundRun()` — claude branch:**
 
+Registry entry presence is the liveness signal (D10 — entry is deleted when terminal):
+
 ```typescript
 export async function pollBackgroundRun(runId: string, options: RegistryOptions = {}): Promise<BackgroundPollResult> {
   const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
@@ -344,13 +373,12 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   const text = capText(scan.text, streamPath);
 
   if (loaded.meta.agent === "claude") {
-    // Claude path: liveness from in-memory registry, not proc_identity
+    // Claude path: liveness from in-memory registry (entry present = running; deleted = terminal)
     if (scan.exitCode === undefined) {
-      const entry = claudeWorkerRegistry.get(runId);
-      if (entry?.isAlive) {
+      if (claudeWorkerRegistry.has(runId)) {
         return { status: "running", runId, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
       }
-      // Not alive and no sentinel = worker died unexpectedly (or server restarted)
+      // Not in registry and no sentinel: worker died unexpectedly, or server restarted
       return {
         status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
         stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
@@ -369,7 +397,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
 }
 ```
 
-**`cancelBackgroundRun()` — claude branch:**
+**`cancelBackgroundRun()` — claude branch (Finding 2 + Finding 4 fix):**
 
 ```typescript
 export async function cancelBackgroundRun(runId: string, options: RegistryOptions = {}): Promise<Record<string, unknown>> {
@@ -383,17 +411,35 @@ export async function cancelBackgroundRun(runId: string, options: RegistryOption
     }
     const entry = claudeWorkerRegistry.get(runId);
     if (!entry) return { status: "not_found", runId };   // server restart case
-    if (!entry.isAlive) return { status: "already_error", runId };
-    // Finding 2 fix: claim ownership of the terminal record BEFORE terminating.
-    // worker.terminate() triggers the 'exit' event; if that handler fires before
-    // writeSentinelIfAbsent(130) below, both callers could race through the "no sentinel yet"
-    // guard and write conflicting sentinels (rc=1 vs rc=130). Setting cancelling=true here
+
+    // D9: claim ownership of the terminal record BEFORE terminating.
+    // worker.terminate() triggers the 'exit' event; setting cancelling=true here
     // causes the exit handler to skip its sentinel write.
     entry.cancelling = true;
-    // Death-confirmed: await worker.terminate() blocks until the thread is truly dead
+    // Death-confirmed: await worker.terminate() blocks until the thread is truly dead.
     await entry.worker.terminate();
-    // Write cancellation sentinel (exit code 130 = SIGTERM convention)
+
+    // Finding 2 fix: rescan AFTER terminate().
+    // The worker can commit its own rc=0 sentinel between the initial scan above and
+    // the terminate() call (scan sees no sentinel → worker writes sentinel → cancel terminates).
+    // In that case writeSentinelIfAbsent(130) would no-op and cancel would return "cancelled"
+    // while a subsequent poll returns "complete". Rescanning after terminate() and honoring
+    // any sentinel the worker already committed avoids this cancel/poll disagreement.
+    const rescan = await scanStream(loaded.streamPath);
+    if (rescan.exitCode !== undefined) {
+      // Worker won the race — its terminal record is authoritative. Clean up registry.
+      claudeWorkerRegistry.delete(runId);
+      if (rescan.exitCode === 0 && !rescan.error) {
+        return { status: "already_complete", runId };
+      }
+      return { status: "already_error", runId };
+    }
+
+    // No sentinel written — we own the terminal record.
+    // Write sentinel first, then delete registry entry (D10: no gap where poll returns
+    // child_died_without_sentinel while cancel is mid-flight).
     await writeSentinelIfAbsent(loaded.streamPath, 130);
+    claudeWorkerRegistry.delete(runId);
     return { status: "cancelled", runId };
   }
 
@@ -415,7 +461,7 @@ async function writeSentinelIfAbsent(streamPath: string, exitCode: number): Prom
 
 ### Modified: `ts/src/connectors/runner.ts`
 
-**Finding 4 fix — make `pid` optional in `runAgent` return type (runner.ts:27).**  
+**Finding 4 fix (carried from r1) — make `pid` optional in `runAgent` return type (runner.ts:27).**  
 `runAgent` currently promises `pid: number` (mandatory) in its `bg_started` branch. Claude background runs return no OS pid — the worker has only a `threadId`. Change the TypeScript return union:
 
 ```typescript
@@ -425,8 +471,6 @@ Promise<ConnectorResult | { status: "bg_started"; runId: string; pid: number; st
 // After:
 Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string }>
 ```
-
-This change belongs in BG-WRITE-A, not just the MCP surface contract. The TS type must be updated at the `runAgent` declaration so callers don't assume a pid is always present.
 
 Pass `allowedTools`/`disallowedTools` through the background path (currently dropped at this boundary):
 
@@ -510,37 +554,27 @@ This fix aligns with how the Compose `local-claude-connector.js` workaround work
     "model?": "string",
     "sandboxMode?": "string",
     "background?": "boolean",
-    "allowedTools?": "string[]",
-    "disallowedTools?": "string[]"
+    "allowedTools?": { "$array": "string" },
+    "disallowedTools?": { "$array": "string" }
   },
   ...
 }
 ```
 
-> **Finding 3 fix:** The contract specifies `string[]` (not bare `"array"`) to make the element type explicit. `optionalArray` would allow non-string elements to reach the Claude SDK silently. The server handler uses a new `optionalStringArray()` helper that validates every element is a string and throws on the first malformed element.
+> **Finding 1 fix (r2):** The grammar uses `{"$array": "string"}` not `"string[]"`. `LEAF_TYPES` in `contracts.ts:46` is `{any, array, boolean, null, number, object, string}` — `"string[]"` would be rejected as an unknown leaf type. The structured shape `{"$array": "string"}` is the correct typed-array mechanism: `assertToolRequest` calls `matchShape`, which iterates the array and validates each element against `"string"` (contracts.ts:98-101). This provides MCP-boundary validation for free — no custom `optionalStringArray()` helper is needed.
 
 ### `ts/src/mcp/server.ts` — read new fields in dispatcher
 
-```typescript
-// New helper (Finding 3 fix): validates every array element is a string.
-// Throws a descriptive error on first non-string element so malformed input is
-// rejected at the MCP boundary, not silently passed to the Claude SDK.
-function optionalStringArray(req: Record<string, unknown>, key: string): string[] | undefined {
-  const val = req[key];
-  if (val === undefined) return undefined;
-  if (!Array.isArray(val)) throw new Error(`${key} must be an array`);
-  for (let i = 0; i < val.length; i++) {
-    if (typeof val[i] !== "string") throw new Error(`${key}[${i}] must be a string, got ${typeof val[i]}`);
-  }
-  return val as string[];
-}
+Since `assertToolRequest` with `{"$array": "string"}` already validates each element is a string, the server handler uses the existing `optionalArray()` helper — no new helper needed:
 
+```typescript
 case "stratum_agent_run": {
   const model = optionalString(request, "model");
   const sandboxMode = optionalString(request, "sandboxMode");
-  // Finding 3 fix: use optionalStringArray instead of optionalArray to validate elements
-  const allowedTools = optionalStringArray(request, "allowedTools");
-  const disallowedTools = optionalStringArray(request, "disallowedTools");
+  // assertToolRequest above already validated allowedTools/disallowedTools elements are strings
+  // (via {"$array":"string"} contract) — optionalArray() is sufficient here.
+  const allowedTools = optionalArray(request, "allowedTools") as string[] | undefined;
+  const disallowedTools = optionalArray(request, "disallowedTools") as string[] | undefined;
   const executed = await agentRun({
     agent: string(request, "agent") as "claude" | "codex",
     prompt: string(request, "prompt"),
@@ -556,18 +590,20 @@ case "stratum_agent_run": {
 }
 ```
 
+> **Finding 3 note:** The TypeScript casts `as "claude" | "codex"` and `as "read-only" | "workspace-write"` remain in `server.ts` for type-narrowing purposes. Runtime validation of the discriminant values happens in `startBackgroundRun()` (and `runAgent()` for the sync path) — so even direct callers that bypass the MCP surface are protected.
+
 ---
 
 ## File Change Map
 
 | File | Type | Changes |
 |---|---|---|
-| `ts/src/connectors/background.ts` | modify | Remove guards at :65/:68; update `BackgroundRunMeta` to discriminated union; add `claudeWorkerRegistry` with `cancelling` flag; add `startClaudeBackgroundRun()` with sandboxMode rejection, exit/error handlers; update `loadMeta()` agent check; add claude branch to `pollBackgroundRun()` and `cancelBackgroundRun()` with ownership-before-terminate; add `writeSentinelIfAbsent()` helper |
+| `ts/src/connectors/background.ts` | modify | Remove guards at :65/:68; update `BackgroundRunMeta` to discriminated union; add `claudeWorkerRegistry` (no `isAlive` field); discriminant validation at `startBackgroundRun()` entry; add `startClaudeBackgroundRun()` with sandboxMode rejection, exit/error handlers that delete registry after sentinel; update `loadMeta()` agent check; add claude branch to `pollBackgroundRun()` (liveness via `Map.has`) and `cancelBackgroundRun()` with post-terminate rescan before writing rc=130; add `writeSentinelIfAbsent()` helper |
 | `ts/src/connectors/claude-bg-worker.ts` | new | Worker thread entry point: receive workerData, run ClaudeConnector via query seam, write normalized JSONL, write T2F5 sentinel; stream errors written to stderr, never crash worker |
 | `ts/src/connectors/claude.ts` | modify | Fix `allowedTools` → SDK `tools` mapping (availability, not auto-approve) |
-| `ts/src/connectors/runner.ts` | modify | Change `runAgent` return type: `pid: number` → `pid?: number` in `bg_started` union; add `allowedTools`/`disallowedTools` to `StartBackgroundRunOptions` and forward them to `startBackgroundRun()` |
-| `ts/contracts/mcp-surface.json` | modify | Add `allowedTools?: string[]`/`disallowedTools?: string[]` to `stratum_agent_run` request (typed as string arrays, not bare arrays); make `pid?` optional in `bg_started` response |
-| `ts/src/mcp/server.ts` | modify | Add `optionalStringArray()` helper; read `allowedTools`/`disallowedTools` via `optionalStringArray` in `stratum_agent_run` handler |
+| `ts/src/connectors/runner.ts` | modify | Change `runAgent` return type: `pid: number` → `pid?: number` in `bg_started` union; add `allowedTools`/`disallowedTools` to `StartBackgroundRunOptions` and forward them to `startBackgroundRun()`; add discriminant validation for sync path |
+| `ts/contracts/mcp-surface.json` | modify | Add `allowedTools?: {"$array":"string"}` / `disallowedTools?: {"$array":"string"}` to `stratum_agent_run` request; make `pid?` optional in `bg_started` response |
+| `ts/src/mcp/server.ts` | modify | Read `allowedTools`/`disallowedTools` via `optionalArray()` in `stratum_agent_run` handler (no custom helper needed — contract validation handles element type) |
 
 ---
 
@@ -583,7 +619,10 @@ case "stratum_agent_run": {
 | D6 | Codex workspace-write unlock is guard-only | Only `background.ts:68` blocks this path. `sandboxMode` is already stored in `BackgroundRunMeta`, threaded to `codexCommand()`, and used in the subprocess spawn. No further architectural change needed. |
 | D7 | `pid` made optional in both MCP contract AND `runAgent` TypeScript return type | Claude worker threads have a `worker.threadId` (not an OS pid). Both the MCP contract (`bg_started.pid?`) and the TS type at `runner.ts:27` must change `pid: number` → `pid?: number` — if only the contract is updated, the TS type assertion on the Codex path still assumes a mandatory pid, causing a type error when returning claude bg results. |
 | D8 | Reject `sandboxMode: "read-only"` for claude bg runs in v1 | `claude.ts:43` hardcodes `permissionMode: "acceptEdits"` regardless of `sandboxMode`. There is no implemented mapping from `sandboxMode: "read-only"` to an SDK tool restriction. Silently accepting `read-only` and storing it in meta while running `acceptEdits` would be a false guarantee. Explicit rejection is chosen over partial enforcement (e.g. `disallowedTools: [Write, Edit, ...]`) because the SDK restriction surface for claude-agent-sdk is not yet settled in this codebase. Future: add `sandboxMode: "read-only"` support once the `allowedTools`/`disallowedTools` restriction semantics are validated in production. |
-| D9 | `cancelling` flag gates exit-handler sentinel, `error` handler added | Two containment fixes for the worker lifecycle: (1) `entry.cancelling = true` is set before `worker.terminate()` so the exit event handler skips its rc=1 sentinel write — cancel then writes rc=130 without a race. (2) A `worker.on("error", ...)` handler absorbs uncaught worker exceptions that would otherwise propagate as unhandled Node.js exceptions and crash the MCP server process. Both write bounded sentinel records so poll always finds a terminal state. |
+| D9 | `cancelling` flag gates exit-handler sentinel; `error` handler added | Two containment fixes for the worker lifecycle: (1) `entry.cancelling = true` is set before `worker.terminate()` so the exit event handler skips its rc=1 sentinel write — cancel then owns the terminal record. (2) A `worker.on("error", ...)` handler absorbs uncaught worker exceptions that would otherwise propagate as unhandled Node.js exceptions and crash the MCP server process. |
+| D10 | Registry entry deleted at terminal, not marked dead | Avoids unbounded memory growth in long-lived MCP server processes (Finding 4 r2). `Map.delete` is idempotent, so double-deletes from error+exit handler racing are harmless. `poll()` uses `Map.has(runId)` — entry absent means "not running" (same as old `isAlive=false`). Deletion happens AFTER the sentinel is written to disk so no poll() window exists where the entry is gone but no sentinel is present (which would produce a spurious `child_died_without_sentinel`). Cancel path deletes AFTER the post-terminate rescan and optional sentinel write (Finding 2 fix). |
+| D11 | Cancel rescans stream after `worker.terminate()` | Finding 2 (r2): the initial scan in cancel can race with the worker writing its own rc=0 sentinel. Setting `cancelling=true` suppresses the exit handler's sentinel write, but does not prevent the worker from writing its own sentinel between the scan and the terminate() call. Post-terminate rescan is the authoritative check: if the worker won (sentinel present), cancel returns `already_complete`/`already_error`; if no sentinel, cancel writes rc=130 and returns `cancelled`. This eliminates the cancel/poll status disagreement. |
+| D12 | `{"$array":"string"}` grammar, not `"string[]"`, for allowedTools/disallowedTools | `contracts.ts:46` LEAF_TYPES does not include `"string[]"` — it would be rejected as an unknown leaf type. `{"$array":"string"}` is the typed-array mechanism: `matchShape` iterates and validates each element against `"string"` (contracts.ts:98-101). This provides boundary validation via `assertToolRequest` for free — no `optionalStringArray()` helper needed in server.ts. |
 
 ---
 
@@ -596,7 +635,7 @@ case "stratum_agent_run": {
 - [ ] Claude background poll — running: poll immediately after start, verify `{ status:"running" }`
 - [ ] Claude background poll — complete: wait for worker exit sentinel, verify `{ status:"complete", text, usage }`
 - [ ] Claude background poll — worker died without sentinel: simulate server restart (clear in-memory registry, no sentinel in file), verify `{ status:"error", reason:"child_died_without_sentinel" }`
-- [ ] Claude background cancel — death-confirmed: cancel an in-flight claude bg run, verify `worker.terminate()` was called (test uses worker stub), verify `{ status:"cancelled" }`, verify sentinel was written, verify subsequent poll returns `{ status:"error" }`
+- [ ] Claude background cancel — death-confirmed: cancel an in-flight claude bg run, verify `worker.terminate()` was called (test uses worker stub), verify `{ status:"cancelled" }`, verify sentinel was written with rc=130, verify subsequent poll returns `{ status:"error" }`
 - [ ] Claude background cancel — already complete: cancel after sentinel, verify `{ status:"already_complete" }`
 - [ ] Claude background cancel — not in registry: cancel after simulated restart (no registry entry, no sentinel), verify `{ status:"not_found" }`
 - [ ] `loadMeta` accepts `agent:"claude"` meta files
@@ -610,24 +649,38 @@ case "stratum_agent_run": {
 - [ ] `stratum_agent_run` over MCP with `allowedTools`/`disallowedTools`: verify fields are read from request and passed to `runAgent()`
 - [ ] `stratum_agent_run` contract rejection: verify `assertToolRequest` blocks unknown extra fields in the request (no regression)
 - [ ] `stratum_agent_run` with `allowedTools` passed through `background:true` path: verify `allowedTools` reaches `startClaudeBackgroundRun()` and is stored in `meta.json`
-- [ ] `optionalStringArray` rejects non-string array elements: call `stratum_agent_run` with `allowedTools: ["Read", 42]`, verify the call is rejected with a descriptive error before reaching `runAgent()`
-- [ ] `optionalStringArray` accepts undefined: call without `allowedTools`, verify no error
+- [ ] `{"$array":"string"}` contract validates elements: call `stratum_agent_run` with `allowedTools: ["Read", 42]` (note: this hits `assertToolRequest` validation, not a helper), verify the call is rejected with a descriptive error before reaching `runAgent()`
+- [ ] `optionalArray` accepts undefined: call without `allowedTools`, verify no error
 
-### BG-WRITE-A: sandboxMode enforcement (Finding 1)
+### BG-WRITE-A: sandboxMode enforcement (Finding 1 r1)
 
 - [ ] Claude bg run with `sandboxMode: "read-only"` throws: call `startClaudeBackgroundRun()` with `sandboxMode: "read-only"`, verify it throws with a message mentioning enforcement not implemented
 - [ ] Claude bg run with `sandboxMode: "workspace-write"` succeeds (positive path)
 - [ ] Claude bg run with `sandboxMode` omitted uses `workspace-write` default (positive path)
 
-### BG-WRITE-A: cancel/exit sentinel race (Finding 2)
+### BG-WRITE-A: cancel/exit sentinel race (Finding 2 r2)
 
 - [ ] Cancel does not race exit-handler sentinel: use a worker stub that emits `exit` synchronously after `terminate()`; verify exactly one sentinel record in stream.jsonl and it has rc=130, not rc=1
 - [ ] Exit handler skips sentinel when `cancelling=true`: verify that after `entry.cancelling = true`, the exit callback does not call `writeSentinelIfAbsent`
+- [ ] **Worker wins the race (Finding 2 r2 new test)**: simulate the interleaving where the worker writes rc=0 AFTER the initial scan but BEFORE terminate(); verify that `cancelBackgroundRun()` returns `{ status:"already_complete" }` (not `"cancelled"`), and that a subsequent poll also returns `{ status:"complete" }` — no cancel/poll disagreement
 
-### BG-WRITE-A: worker error containment (Finding 5)
+### BG-WRITE-A: discriminant validation (Finding 3 r2)
+
+- [ ] Unknown agent rejected: call `startBackgroundRun({ agent: "gemini", ... })`, verify throws with descriptive error mentioning valid values
+- [ ] Unknown sandboxMode rejected: call `startBackgroundRun({ agent: "codex", sandboxMode: "locked", ... })`, verify throws with descriptive error
+- [ ] Valid discriminants pass: `agent: "claude"` and `agent: "codex"` with valid sandboxModes succeed (positive path)
+
+### BG-WRITE-A: registry cleanup (Finding 4 r2)
+
+- [ ] Registry entry deleted on completion: after a worker completes and sentinel is written, verify `claudeWorkerRegistry.has(runId)` is false
+- [ ] Registry entry deleted on cancel: after cancel returns `"cancelled"`, verify entry is deleted
+- [ ] Registry entry deleted after worker error: after `worker.error` event, verify entry is deleted
+- [ ] No double-write on error+exit: when both error and exit handlers fire (normal sequence after worker exception), verify only one sentinel is in the stream (second `writeSentinelIfAbsent` scan finds it and no-ops)
+
+### BG-WRITE-A: worker error containment (Finding 5 r1)
 
 - [ ] Worker `error` event is contained: inject a worker that emits `error` synchronously; verify no uncaught exception propagates, and that poll returns `{ status:"error" }` with error message in stream
-- [ ] Worker `error` sets `isAlive=false`: after worker error, verify `entry.isAlive === false`
+- [ ] Worker `error` removes registry entry: after worker error, verify `claudeWorkerRegistry.has(runId)` is false
 
 ### Regression
 
