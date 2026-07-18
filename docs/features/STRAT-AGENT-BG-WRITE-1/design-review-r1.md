@@ -1,0 +1,9 @@
+# Design-gate review round 1 (codex gpt-5.6-terra/high) — REVISE
+
+Fix these in design.md (design-actionable only; verified against current source):
+
+1. **Critical — claude sandboxMode not enforced.** The design persists `sandboxMode` for claude bg runs but never passes it to ClaudeConnector; claude.ts:40 hardcodes `permissionMode: "acceptEdits"`, so `sandboxMode: "read-only"` still yields a write-capable run. Define an enforced claude sandbox policy (map read-only → SDK permission/tool restriction) or explicitly reject claude `read-only` until one exists. (design.md:255, :511)
+2. **High — worker.terminate() races the exit-sentinel writer.** Exit handler writes rc=1 sentinel async; cancel writes rc=130 async; scanStream takes the last sentinel → nondeterministic terminal state. Give cancellation ownership of the terminal record (mark entry cancelling before terminate; exit handler skips its sentinel) or serialize the transition. (design.md:273, :352; background.ts:207)
+3. **High — contract fields typed "array" but code assumes string[].** optionalArray casts; malformed elements would reach the Claude SDK. Spec the mcp-surface fields as string arrays and add a string-array reader/validator at the MCP boundary. (design.md:459, :472)
+4. **Medium — runner.ts return contract.** bg_started currently promises mandatory `pid: number` (runner.ts:27); the claude starter returns no pid. Include the runner response union/type change in BG-WRITE-A, not just the MCP surface. (design.md:223, :409)
+5. **Medium — worker error containment.** Only an `exit` listener is designed; an unhandled worker `error` event can crash the MCP process, and stream failures can skip the terminal record. Add an `error` handler writing a bounded error sentinel; ensure stream errors cannot crash the host. (design.md:111, :152, :271)
