@@ -591,6 +591,13 @@ async function run(): Promise<void> {
     await writeLine({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
     return;
   }
+  // STRATUM_TEST_WORKER=fail: simulate run() throwing before any sentinel is written.
+  // The .catch() block writes the error message to workerData.stderrPath via appendFileSync,
+  // then writes the rc=1 sentinel. Used by background-claude.test.ts (Step 7c) to drive
+  // the stderr-plumbing assertion without mocking the Worker constructor.
+  if (process.env.STRATUM_TEST_WORKER === "fail") {
+    throw new Error("STRATUM_TEST_WORKER=fail: simulated run() failure");
+  }
 
   let inputTokens = 0;
   let outputTokens = 0;
@@ -930,7 +937,10 @@ it("rejects unknown agent and sandboxMode values at startBackgroundRun entry", .
 - [ ] Cancel with no registry entry (no stream file — simulating server restart): `cancelBackgroundRun(runId)` returns `{ status:"not_found" }`
 - [ ] Worker wins the race: write `{"__t2f5_done__":0}` sentinel to `stream.jsonl` after start but before cancel scans; worker still in registry; `cancelBackgroundRun(runId)` returns `{ status:"already_complete" }`; subsequent poll also returns `{ status:"complete" }` — no cancel/poll disagreement
 
-Tests requiring the `vi.mock('node:worker_threads')` seam (poll-while-running, cancel-in-flight, D9 callback-order interleaving, D13 sentinel serialization, D14 cancel-joins-error-claim, worker error containment, and stderr plumbing) are in Step 7e — `background-claude-interleavings.test.ts`.
+**Stderr plumbing (design.md:648 — real-Worker test via `STRATUM_TEST_WORKER=fail`):**
+- [ ] Set `STRATUM_TEST_WORKER=fail` in the test env (step 3's fail stub throws before any sentinel); after the worker exits, assert the `.err` file alongside `stream.jsonl` is non-empty (error message written by the worker's catch block via `appendFileSync`); assert `pollBackgroundRun(runId)` returns `{ status:"error" }` with rc=1 sentinel
+
+Tests requiring the `vi.mock('node:worker_threads')` seam (poll-while-running, cancel-in-flight, D9 callback-order interleaving, D13 sentinel serialization, D14 cancel-joins-error-claim, and worker error containment) are in Step 7e — `background-claude-interleavings.test.ts`.
 
 ### 7d. New test file: `ts/tests/mcp/agent-run.test.ts`
 
@@ -985,7 +995,7 @@ Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boun
 
 **File:** `ts/tests/connectors/background-claude-interleavings.test.ts` (new)
 
-This file uses `vi.mock('node:worker_threads')` at module scope. Because vitest hoists `vi.mock` calls, this mock applies to the entire file — every `startClaudeBackgroundRun()` call in this file will receive the mocked `Worker` constructor. Do NOT set `STRATUM_TEST_WORKER=1` in this file; the env seam is for `background-claude.test.ts` only.
+This file uses `vi.mock('node:worker_threads')` at module scope. Because vitest hoists `vi.mock` calls, this mock applies to the entire file — every `startClaudeBackgroundRun()` call in this file will receive the mocked `Worker` constructor. Do NOT set `STRATUM_TEST_WORKER=1` in this file; the env seam is for real-Worker test files (`background-claude.test.ts` (7c) and `agent-run.test.ts` (7d)) — 7e is the only file where it must NOT be set.
 
 **Test seam — `vi.mock('node:worker_threads')` Worker-constructor stub:**
 
@@ -1027,10 +1037,11 @@ The `vi.mock` seam is already active for these tests (module-wide). `startClaude
 - [ ] Cancel that owns rc=130 (finalizationClaim was null at check): no prior error/exit event; cancel sees `finalizationClaim === null`, claims it, writes rc=130; returns `"cancelled"`. Subsequent poll returns `{ status:"error" }`.
 - [ ] Concurrent second cancel joins first cancel's claim: call `cancelBackgroundRun` twice with the same runId concurrently; first owns rc=130; second joins and returns `"already_error"` (after await + rescan); no second sentinel written.
 
-**Worker error containment and stderr plumbing (D9 / plan-gate r1 finding 2):**
+**Worker error containment (D9 / plan-gate r1 finding 2):**
 - [ ] Worker emits `error` event: emit `error(new Error("boom"))` on stub; verify no uncaught exception propagates to the MCP process; `pollBackgroundRun(runId)` returns `{ status:"error" }`.
 - [ ] Registry entry deleted after worker error: after error handler settles, `claudeWorkerRegistry.has(runId)` is `false`.
-- [ ] Stderr plumbing: mock `ClaudeConnector` to throw during `run()` (use `vi.mock('./claude.js', ...)`); the worker's catch block writes the error message to `workerData.stderrPath` via `appendFileSync`; assert the `.err` file is non-empty after the catch settles.
+
+> **Stderr plumbing** is tested in `background-claude.test.ts` (Step 7c) via `STRATUM_TEST_WORKER=fail` — the real Worker runs, throws, and writes to `.err`. It cannot run here because `vi.mock('node:worker_threads')` prevents the real worker thread from spawning.
 
 **Registry cleanup (D10 — r2 finding):**
 - [ ] Registry entry deleted after normal completion (exit handler fires + sentinel written): `claudeWorkerRegistry.has(runId)` is `false` after finalizationClaim settles.
@@ -1058,9 +1069,9 @@ The `vi.mock` seam is already active for these tests (module-wide). `startClaude
 | `ts/src/connectors/claude.ts` | modify | Line 47: `sdkOptions.allowedTools` → `sdkOptions.tools` (availability not auto-approve) |
 | `ts/tests/connectors/background.test.ts` | modify | Line 84: `started.pid` optional type; line 101: replace "codex-only" guard test with discriminant validation + D8 tests |
 | `ts/tests/connectors/claude.test.ts` | modify | Line 29: `allowedTools:["Read"]` → `tools:["Read"]` in expected options |
-| `ts/tests/connectors/background-claude.test.ts` | **new** | Claude bg start/meta/sandboxMode/poll(complete,error,restart)/cancel(already-complete,no-registry,worker-wins-race) — real-Worker tests via STRATUM_TEST_WORKER=1 only (Step 7c) |
-| `ts/tests/mcp/agent-run.test.ts` | **new** | Public MCP-surface tests: codex workspace-write, claude bg, allowedTools forwarding/rejection, foreground allowlist flow (Step 7d) |
-| `ts/tests/connectors/background-claude-interleavings.test.ts` | **new** | vi.mock Worker-constructor tests: poll-while-running, cancel-in-flight (terminate() emits exit synchronously), D9 callback-order, D13 sentinel serialization, D14 cancel-joins-error-claim, worker error containment, stderr plumbing (Step 7e) |
+| `ts/tests/connectors/background-claude.test.ts` | **new** | Claude bg start/meta/sandboxMode/poll(complete,error,restart)/cancel(already-complete,no-registry,worker-wins-race)/stderr-plumbing — real-Worker tests via STRATUM_TEST_WORKER=1 and STRATUM_TEST_WORKER=fail (Step 7c) |
+| `ts/tests/mcp/agent-run.test.ts` | **new** | Public MCP-surface tests: codex workspace-write, claude bg, allowedTools forwarding/rejection, foreground allowlist flow — real-Worker via STRATUM_TEST_WORKER=1 for claude bg cases (Step 7d) |
+| `ts/tests/connectors/background-claude-interleavings.test.ts` | **new** | vi.mock Worker-constructor tests: poll-while-running, cancel-in-flight (terminate() emits exit synchronously), D9 callback-order, D13 sentinel serialization, D14 cancel-joins-error-claim, worker error containment (Step 7e; no STRATUM_TEST_WORKER env var) |
 
 ---
 
@@ -1079,8 +1090,8 @@ Gate conditions:
 - [ ] `vitest run` passes with no new failures
 - [ ] `tests/connectors/background.test.ts` still passes (regression: codex golden flow)
 - [ ] `tests/connectors/claude.test.ts` passes with updated `tools` assertion
-- [ ] `tests/connectors/background-claude.test.ts` all new cases pass (real-Worker/STRATUM_TEST_WORKER=1 tests; no vi.mock in this file)
-- [ ] `tests/connectors/background-claude-interleavings.test.ts` all cases pass (vi.mock Worker-constructor: poll-while-running, cancel-in-flight, D9 interleaving, D13/D14 races, worker error containment, stderr plumbing)
+- [ ] `tests/connectors/background-claude.test.ts` all new cases pass (real-Worker/STRATUM_TEST_WORKER=1 and STRATUM_TEST_WORKER=fail tests; no vi.mock in this file; stderr-plumbing .err file is non-empty)
+- [ ] `tests/connectors/background-claude-interleavings.test.ts` all cases pass (vi.mock Worker-constructor: poll-while-running, cancel-in-flight, D9 interleaving, D13/D14 races, worker error containment; no STRATUM_TEST_WORKER env var in this file)
 - [ ] `tests/mcp/contracts-grammar.test.ts` passes (validates mcp-surface.json shape grammar)
 - [ ] `tests/mcp/agent-run.test.ts` all 9 new MCP-surface cases pass (Step 7d)
 - [ ] TypeScript compiles with no errors on the modified files (vitest uses esbuild but `tsc --noEmit` catches type errors)
