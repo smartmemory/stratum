@@ -2,28 +2,31 @@
 
 ## What This Repo Is
 
-**Stratum** — headless execution kernel for AI-driven development. Two shipped components:
+**Stratum** — headless execution kernel for AI-driven development. One shipped component:
 
-- **`src/stratum/`** — Python library (`@pipeline`, `@phase`, `stratum.run()`). Published as `stratum-py` on PyPI.
-- **`stratum-mcp/`** — MCP server (`stratum_plan`, `stratum_step_done`, `stratum_audit`) + query/gate CLI. Published as `stratum-mcp` on PyPI.
+- **`ts/`** — TypeScript engine (`@smartmemory/stratum`): IR validation, flow execution,
+  MCP server (`stratum_plan`, `stratum_step_done`, `stratum_audit`, guard/gate/bg-agent
+  surfaces), CLI. This is the ONLY engine (surface 9) since the 2026-07 TS cutover.
 
-UI and pipeline monitoring live in **Compose** (`/Users/ruze/reg/my/forge/compose/`), which integrates with stratum via the query/gate CLI contract.
+The Python library (`src/stratum/`, PyPI `stratum-py`) and Python MCP server
+(`stratum-mcp/`, PyPI `stratum-mcp`) were retired with the STRAT-PY-RETIRE epic.
+Their last python-bearing commit is archived on the `python-legacy` branch (642dda3) —
+recovery is `git show python-legacy:<file>`. Never delete that branch.
+
+UI and pipeline monitoring live in **Compose** (`/Users/ruze/reg/my/forge/compose/`),
+which drives stratum via the TS CLI/MCP contract.
 
 ## Repo Layout
 
 ```
-src/stratum/           — Python library source
-stratum-mcp/           — MCP server (FastMCP, fastapi)
-  src/stratum_mcp/
-    server.py          — MCP tools
-    executor.py        — FlowState, persistence (~/.stratum/flows/)
-    task_compiler.py   — tasks/*.md → .stratum.yaml
-    skills/            — stratum-build, stratum-speckit, stratum-plan, ...
-    hooks/             — session-start/stop/failure shell hooks
-app/                   — (Legacy) Compose source — extracted to standalone project
-                         See /Users/ruze/reg/my/forge/compose/
+ts/                    — TypeScript engine (sole engine)
+  src/
+    engine/            — flow state, execution, ensure postconditions
+    mcp/               — MCP server surface
+    cli/               — CLI bins (node ≥24; erasable-syntax type stripping)
+    guard/ judge/ parallel/ connectors/ speckit/ ir/ ...
 docs/                  — Stratum-level docs
-  plans/               — Implementation plans
+  plans/               — Implementation plans + epic ledgers
   features/            — Feature specs
   app/                 — Archived coder-compose docs (brainstorm, PRD, decisions, journal)
 ROADMAP.md             — Canonical roadmap (all tracks)
@@ -31,10 +34,9 @@ ROADMAP.md             — Canonical roadmap (all tracks)
 
 ## Development
 
-**Python library / MCP server:**
 ```bash
-cd stratum-mcp && pip install -e ".[dev]"
-pytest stratum-mcp/tests/
+cd ts && ./node_modules/.bin/vitest run   # full TS suite; pnpm not on PATH — use ./node_modules/.bin/
+                                          # NEVER two concurrent full runs
 ```
 
 **Compose app (standalone project):**
@@ -42,20 +44,14 @@ pytest stratum-mcp/tests/
 cd /Users/ruze/reg/my/forge/compose && npm install && npm run dev   # starts Vite + Express on port 3001
 ```
 
-**MCP server (local):**
-```bash
-stratum-mcp install   # registers with Claude Code
-stratum-mcp compile <tasks-dir>   # compile tasks/*.md → .stratum.yaml
-```
-
 ## Key Docs
 
 - `ROADMAP.md` — all tracks (T1 Python lib → T5 MCP → Evaluation)
 - **GitHub issues** (`gh issue list --repo smartmemory/stratum`) — filed follow-ups and deferred
-  features live HERE in addition to ROADMAP.md (e.g. #8 ${} escape, #9 terminate-any-run,
-  #10 retention/GC, #11 timers/signals, #12 provenance verbs). Check BOTH when looking for
+  features live HERE in addition to ROADMAP.md (e.g. #18 workspace-write bg agent mode,
+  #19 deterministic test-judge backend). Check BOTH when looking for
   pending/deferred work. File new follow-ups as issues (authored as smartmem-dev).
-- `stratum-mcp/src/stratum_mcp/skills/` — skill reference for stratum-build, stratum-speckit
+- `docs/plans/2026-07-11-strat-py-retire-progress.md` — TS-cutover epic ledger (full trail)
 - `docs/app/` — full Compose design history: brainstorm, PRD, discovery, decisions, journal
 
 ## Stratum Execution Model
