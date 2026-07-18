@@ -583,6 +583,15 @@ function writeLine(record: Record<string, unknown>): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  // STRATUM_TEST_WORKER=1: bypass real SDK and emit a synthetic response immediately.
+  // Tests set this env var to avoid real API calls. The `.then()` continuation writes
+  // the rc=0 sentinel after run() returns. Do not set this in production.
+  if (process.env.STRATUM_TEST_WORKER === "1") {
+    await writeLine({ type: "item.completed", item: { type: "agent_message", text: "stub response" } });
+    await writeLine({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+    return;
+  }
+
   let inputTokens = 0;
   let outputTokens = 0;
 
@@ -903,15 +912,30 @@ it("rejects sandboxMode:read-only for claude background runs", async () => {
 it("rejects unknown agent and sandboxMode values at startBackgroundRun entry", ...);
 ```
 
-**Note on Worker seam:** The `ClaudeConnectorOptions.query` seam passes through to the worker via `workerData.connectorOptions.query`. However, functions cannot be serialized across Worker thread boundaries via `workerData` (structured clone algorithm rejects functions). The blueprint recommends one of:
-- Test real Worker integration with a live (but cheap/mocked at the API layer) ClaudeConnector
-- Or export an environment-variable-based test hook in `claude-bg-worker.ts` that substitutes a stub query when `process.env.STRATUM_TEST_WORKER=1` is set
+**Worker test seam — `STRATUM_TEST_WORKER=1`:** Functions cannot be serialized across Worker thread boundaries via `workerData` (structured clone rejects them). The chosen mechanism is the **env-gated stub path in `claude-bg-worker.ts`** specified in Step 3: when `process.env.STRATUM_TEST_WORKER === "1"`, the worker writes a synthetic `item.completed` + `turn.completed` record immediately and returns; the `.then()` continuation writes the `rc=0` sentinel. Set `STRATUM_TEST_WORKER=1` in the vitest environment for every test that calls `startBackgroundRun({ agent: "claude", ... })` to avoid real API calls.
 
-The design's test plan acknowledges "test uses worker stub" — the implementer should decide the seam mechanism. Document the decision in the file.
+**Normal-lifecycle test cases (mirrors plan.md:503-518):**
+
+**sandboxMode enforcement (D8) — all three paths:**
+- [ ] `sandboxMode:"read-only"` rejected: `startBackgroundRun({ agent:"claude", sandboxMode:"read-only", ... })` throws `"sandboxMode='read-only' are not supported"` (case 4 above — listed again for completeness)
+- [ ] `sandboxMode:"workspace-write"` explicit: `startBackgroundRun({ agent:"claude", sandboxMode:"workspace-write", ... })` succeeds; `meta.json` has `sandboxMode:"workspace-write"`
+- [ ] `sandboxMode` omitted: `startBackgroundRun({ agent:"claude", ... })` succeeds; `meta.json` has `sandboxMode:"workspace-write"` (default)
+
+**Poll states (set `STRATUM_TEST_WORKER=1`; write sentinel file directly for complete/error/restart cases):**
+- [ ] Poll while running (no sentinel yet): `pollBackgroundRun(runId)` returns `{ status:"running" }`
+- [ ] Poll after completion: write `{"__t2f5_done__":0}` sentinel + `item.completed` record to `stream.jsonl` directly; poll returns `{ status:"complete", text:"...", usage:{ input_tokens, output_tokens } }`
+- [ ] Poll after error: write `{"__t2f5_done__":1}` sentinel to `stream.jsonl` directly; poll returns `{ status:"error" }`
+- [ ] Poll after MCP server restart (no registry entry, no sentinel file): poll returns `{ status:"error", reason:"child_died_without_sentinel" }`
+
+**Cancel ordinary cases:**
+- [ ] Cancel in-flight: call `cancelBackgroundRun(runId)` while worker is alive (use `STRATUM_TEST_WORKER=1` with worker completing after cancel returns); `cancelBackgroundRun` returns `{ status:"cancelled" }`; sentinel in `stream.jsonl` has `exitCode:130`; subsequent poll returns `{ status:"error" }`
+- [ ] Cancel after already complete (sentinel present): write `{"__t2f5_done__":0}` to stream first, then call `cancelBackgroundRun(runId)`; returns `{ status:"already_complete" }`
+- [ ] Cancel with no registry entry (no stream file — simulating server restart): `cancelBackgroundRun(runId)` returns `{ status:"not_found" }`
+- [ ] Worker wins the race: write `{"__t2f5_done__":0}` sentinel to `stream.jsonl` after start but before cancel scans; worker still in registry; `cancelBackgroundRun(runId)` returns `{ status:"already_complete" }`; subsequent poll also returns `{ status:"complete" }` — no cancel/poll disagreement
 
 **D9 callback-order interleaving tests (worker-stub precision — r1 plan-gate finding):**
 
-These 4 tests require a controllable worker stub that fires events in a specific synchronous order. The stub must be a plain `EventEmitter` placed into the registry in place of a real `Worker` (mock the `Worker` constructor or use a test-only boundary on `startClaudeBackgroundRun` that accepts a pre-built entry).
+These 4 tests require a controllable worker stub that fires events in a specific synchronous order. The chosen seam: **mock the `Worker` constructor** using `vi.mock('node:worker_threads')` to return a plain `EventEmitter` stub with a controllable `terminate()` method. `startClaudeBackgroundRun()` proceeds normally and attaches the `exit`/`error` handlers to the mock; the test then fires events in the desired order. Do NOT set `STRATUM_TEST_WORKER=1` for these tests — the seam operates at the registry level in `background.ts`, not at the worker-entry level.
 
 - [ ] **Synchronous exit-after-terminate proves rc=130**: stub `worker.terminate()` to emit `exit(1)` synchronously (simulating the OS signal delivery path); with `entry.cancelling = true` already set before the event fires, verify the exit handler does NOT call `writeSentinelIfAbsent` and the cancel path writes exactly one sentinel with `exitCode:130`. Assert `stream.jsonl` contains exactly one `__t2f5_done__` line with value `130`.
 
@@ -961,7 +985,7 @@ async function connected(dependencies: McpDependencies) {
 }
 ```
 
-Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boundary stubs) to avoid real SDK/codex process spawning. Use `STRATUM_TEST_WORKER=1` for claude bg runs.
+Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boundary stubs) to avoid real SDK/codex process spawning. For claude bg runs, set `STRATUM_TEST_WORKER=1` in the test environment — this triggers the env-gated stub path in `claude-bg-worker.ts` (Step 3) that writes a synthetic response and `rc=0` sentinel immediately without invoking the real SDK.
 
 **Required test cases (all 9 must be implemented as concrete `it(...)` blocks):**
 
