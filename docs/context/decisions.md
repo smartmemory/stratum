@@ -37,3 +37,15 @@ Decisions accumulate here during builds.
 ## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan_gate
 **Outcome:** revise
 **Rationale:** Codex plan-gate review round 4: r3 fixes verified. ONE remaining P1 + one cleanup (detail in docs/features/STRAT-AGENT-BG-WRITE-1/plan-review-r4.md): the immediate-complete STRATUM_TEST_WORKER stub cannot produce a guaranteed running worker, so the poll-running and cancel-in-flight tests race the rc=0 path. Either extend the env seam with a held-worker mode (worker waits for a release file before writing the sentinel) or explicitly route the running/cancel-in-flight cases through the vi.mock Worker-constructor seam — pick one and spec it where those tests reference it. Also remove the superseded workerData-query TODO at blueprint.md:869 which contradicts the chosen seam. Nothing else.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan_gate
+**Outcome:** revise
+**Rationale:** Codex plan-gate review round 5: r4 fixes verified. ONE remaining P1 + one clarity fix (detail in docs/features/STRAT-AGENT-BG-WRITE-1/plan-review-r5.md): vi.mock('node:worker_threads') hoists module-wide, so the mocked-Worker interleaving tests and the real-Worker env-stub tests cannot share one test file as currently specified (and blueprint.md:916's blanket env instruction contradicts :926/:939). Split the mocked tests into a separate file (background-claude-interleavings.test.ts) and scope the env seam to the real-Worker file — simplest vitest-idiomatic fix. Also spec the cancel-in-flight fixture's terminate() to emit exit and resolve its promise, since cancelBackgroundRun awaits it (otherwise the test hangs). Nothing else.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan_gate
+**Outcome:** revise
+**Rationale:** Codex plan-gate review round 6: the r5 split is correct; 2 remaining P1s are wording/placement fallout (detail + prescribed fixes in docs/features/STRAT-AGENT-BG-WRITE-1/plan-review-r6.md): (1) rescope the env-seam wording to 'real-Worker test files (7c and 7d)' — 7e is the only file where it must not be set — resolving the 7c-only vs 7d contradiction; (2) move the stderr-plumbing test from 7e (mocked Worker — real worker never runs, nothing can write .err) into 7c, and add a STRATUM_TEST_WORKER=fail mode to Step 3's env seam (run() throws before the sentinel → catch writes .err + rc=1 sentinel) to drive it. Nothing else.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan_gate
+**Outcome:** revise
+**Rationale:** Codex plan-gate review round 7: everything verified except TWO literal wording edits (exact replacements in docs/features/STRAT-AGENT-BG-WRITE-1/plan-review-r7.md): (1) blueprint.md:921 'this file only' → 'real-Worker test files (7c background-claude.test.ts and 7d agent-run.test.ts)'; (2) blueprint.md:998 and :1053 → 7e prohibits STRATUM_TEST_WORKER entirely (any value), not just =1. Apply exactly these two edits and nothing else.

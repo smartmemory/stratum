@@ -1,0 +1,1433 @@
+{
+  "status": "failed",
+  "runId": "b0a68e21-48bc-410b-a2d8-0345522a16fd",
+  "events": [
+    {
+      "at": "2026-07-18T11:03:42.791Z",
+      "type": "planned"
+    },
+    {
+      "at": "2026-07-18T11:03:42.794Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:06:36.649Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:06:36.655Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T11:07:04.347Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "explore_design",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+          "outcome": "complete",
+          "summary": "Design doc for STRAT-AGENT-BG-WRITE-1 verified accurate against all referenced source files (background.ts guards at :65/:68, BackgroundRunMeta codex-only interface, runner.ts tool filter gap, claude.ts allowedTools→wrong SDK field bug, mcp-surface.json missing fields, server.ts handler at lines 111-120). Feature status updated to IN_PROGRESS. Design is complete and ready for implementation.",
+          "plan_items": [
+            "Explore codebase architecture for background agent mode",
+            "Map existing tool allowlist implementation",
+            "Analyze runner.ts, background.ts, claude.ts, server.ts for gaps",
+            "Write design doc with problem statement, proposed changes, and implementation notes"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+            "docs/features/STRAT-AGENT-BG-WRITE-1/feature.json"
+          ],
+          "commit_hash": "2b6ae42"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:07:04.349Z",
+      "type": "gate_waiting",
+      "stepId": "design_gate"
+    },
+    {
+      "at": "2026-07-18T11:09:50.189Z",
+      "type": "resumed"
+    },
+    {
+      "at": "2026-07-18T11:12:28.817Z",
+      "type": "gate_resolved",
+      "stepId": "design_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "explore_design"
+      }
+    },
+    {
+      "at": "2026-07-18T11:12:28.825Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:17:45.935Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"revised\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'revised'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:17:45.937Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T11:18:28.524Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "explore_design",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+          "outcome": "complete",
+          "summary": "Design doc r2 for STRAT-AGENT-BG-WRITE-1 is complete and committed. Addresses all 5 design-gate findings: (1) explicit read-only sandboxMode rejection for claude bg runs — claude.ts hardcodes acceptEdits with no SDK enforcement path, so we reject rather than silently violate; (2) cancelling boolean flag on ClaudeBgEntry gates the exit-handler sentinel write, eliminating the cancel/exit race condition; (3) allowedTools/disallowedTools contract fields typed as string[] with a new optionalStringArray() validation helper at the MCP boundary; (4) runAgent() return type changed from pid: number to pid?: number at runner.ts:27 — Worker Threads expose threadId not OS pid; (5) worker.on('error', ...) handler added to absorb uncaught worker exceptions and prevent MCP server crash. New decisions D8-D9 and test cases for all 5 findings added. Architecture: discriminated BackgroundRunMeta union (CodexRunMeta | ClaudeRunMeta), in-memory claudeWorkerRegistry, new claude-bg-worker.ts Worker Thread entry point writing Codex-compatible JSONL.",
+          "plan_items": [
+            "Remove background.ts guard at line 65 (agent !== codex)",
+            "Remove background.ts guard at line 68 (sandboxMode !== read-only)",
+            "Add ClaudeRunMeta discriminated union type to BackgroundRunMeta",
+            "Add claudeWorkerRegistry with ClaudeBgEntry (worker, isAlive, cancelling fields)",
+            "Implement startClaudeBackgroundRun() with sandboxMode=read-only rejection",
+            "Add worker exit handler with cancelling flag guard (Finding 2)",
+            "Add worker error handler for uncaught exceptions (Finding 5)",
+            "Create ts/src/connectors/claude-bg-worker.ts Worker Thread entry point",
+            "Update loadMeta() to accept agent=claude",
+            "Add claude branch to pollBackgroundRun() using in-memory liveness",
+            "Add claude branch to cancelBackgroundRun() with ownership-before-terminate",
+            "Add writeSentinelIfAbsent() helper",
+            "Fix ClaudeConnector allowedTools → SDK tools mapping (availability, not permission) in claude.ts",
+            "Change runner.ts runAgent return type: pid: number → pid?: number",
+            "Add allowedTools/disallowedTools to StartBackgroundRunOptions and forward through runner.ts",
+            "Add optionalStringArray() helper to server.ts (Finding 3)",
+            "Read allowedTools/disallowedTools in stratum_agent_run handler via optionalStringArray",
+            "Update mcp-surface.json: add allowedTools?/disallowedTools? as string[], make bg_started.pid optional"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+          ],
+          "commit_hash": "f6b8449"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:18:28.525Z",
+      "type": "gate_waiting",
+      "stepId": "design_gate"
+    },
+    {
+      "at": "2026-07-18T11:21:43.220Z",
+      "type": "gate_resolved",
+      "stepId": "design_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "explore_design"
+      }
+    },
+    {
+      "at": "2026-07-18T11:21:43.225Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:28:40.522Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:28:40.524Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T11:29:03.574Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "explore_design",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+          "outcome": "complete",
+          "summary": "Design doc r3 for STRAT-AGENT-BG-WRITE-1 is complete and committed. Addresses all 4 r2 design-gate findings: (1) allowedTools/disallowedTools contract fields changed from invalid 'string[]' to {\"$array\":\"string\"} — assertToolRequest already element-validates so no optionalStringArray helper needed; (2) cancel path rescans stream after worker.terminate() and defers to any sentinel the worker already committed, eliminating cancel/poll disagreement on the race where worker commits rc=0 between scan and terminate; (3) explicit runtime validation of agent ∈ {claude,codex} and sandboxMode ∈ {read-only,workspace-write} added at startBackgroundRun() entry point — not just TypeScript discriminants; (4) ClaudeBgEntry isAlive field removed — registry deletion is the terminal signal, with deletion always happening after sentinel is written to disk. New decisions D10-D12 and test cases for all 4 findings added. Architecture: discriminated BackgroundRunMeta union (CodexRunMeta | ClaudeRunMeta), in-memory claudeWorkerRegistry, new claude-bg-worker.ts Worker Thread entry point writing Codex-compatible JSONL.",
+          "plan_items": [
+            "Map existing bg-agent architecture (runner.ts, connectors, mcp surface)",
+            "Identify similar features (codex bg runs, workspace-write mode)",
+            "Draft design.md with discriminated union, worker registry, JSONL format",
+            "Address r1 gate findings (sandboxMode enforcement, cancel/exit race, array types, pid contract, error containment)",
+            "Address r2 gate findings ($array grammar, cancel ownership, runtime validation, registry deletion)"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+          ],
+          "commit_hash": "c4e659f"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:29:03.574Z",
+      "type": "gate_waiting",
+      "stepId": "design_gate"
+    },
+    {
+      "at": "2026-07-18T11:31:02.049Z",
+      "type": "gate_resolved",
+      "stepId": "design_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "explore_design"
+      }
+    },
+    {
+      "at": "2026-07-18T11:31:02.054Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:35:22.361Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "result": {
+          "phase": "explore_design",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+          "outcome": "complete",
+          "summary": "Design doc r4 for STRAT-AGENT-BG-WRITE-1 is complete and committed (64ab0e3). Addresses the sole remaining design-gate r3 finding: terminal sentinel writes were not serialized — the error handler and exit handler could both pass their own no-sentinel check and each append a sentinel, with scanStream() taking the last one (timing-dependent outcome). Fix: added `finalizationClaim: Promise<void> | null` to `ClaudeBgEntry` plus a `claimFinalization()` helper that is the single serialization point for all terminal writes. The null-check + set is synchronous at the JS event-loop level, so the first path to fire (error before exit on worker exceptions) atomically claims the lock and the exit handler discards its own doFinalize. Cancel path routes through claimFinalization() in both the rescan-won and cancel-owned branches, guarding concurrent cancel calls. Registry deletion always happens in .finally() — exactly once per run. Added D13 decision and 5 new test cases covering the serialization invariant. No other sections changed from r3.",
+          "plan_items": [
+            "Addressed design-gate r3 finding: finalizationClaim lock on ClaudeBgEntry",
+            "Added claimFinalization() helper as single serialization point",
+            "Updated exit handler to route through claimFinalization()",
+            "Updated error handler to route through claimFinalization()",
+            "Updated cancel path (both rescan branches) to use claimFinalization()",
+            "Added D13 decision log entry",
+            "Added 5 sentinel-serialization test cases"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+          ],
+          "commit_hash": "64ab0e3"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:35:22.363Z",
+      "type": "gate_waiting",
+      "stepId": "design_gate"
+    },
+    {
+      "at": "2026-07-18T11:37:36.824Z",
+      "type": "gate_resolved",
+      "stepId": "design_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "explore_design"
+      }
+    },
+    {
+      "at": "2026-07-18T11:37:36.829Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:40:42.535Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:40:42.537Z",
+      "type": "ready",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T11:41:09.183Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "explore_design",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+          "outcome": "complete",
+          "summary": "Design r5 for STRAT-AGENT-BG-WRITE-1 is complete and committed (2dfe058). All 4 rounds of design-gate findings have been resolved: (1) sandboxMode='read-only' rejected for claude bg runs — D8; (2) cancelling boolean flag gates exit-handler sentinel write — D9; (3) allowedTools/disallowedTools contract fields use {\"$array\":\"string\"} — D10-D11; (4) runtime validation of agent and sandboxMode discriminants at entry — D11; (5) registry deletion is the terminal signal — D12; (6) claimFinalization() serializes all terminal sentinel writes — D13; (7) cancel returns 'cancelled' only when it owns the rc=130 finalization; joins await and rescan — D14. Architecture: discriminated BackgroundRunMeta union (CodexRunMeta | ClaudeRunMeta), in-memory claudeWorkerRegistry, new claude-bg-worker.ts Worker Thread entry point writing Codex-compatible JSONL.",
+          "plan_items": [],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+          ],
+          "commit_hash": "2dfe058"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:41:09.184Z",
+      "type": "gate_waiting",
+      "stepId": "design_gate"
+    },
+    {
+      "at": "2026-07-18T11:42:03.395Z",
+      "type": "gate_resolved",
+      "stepId": "design_gate",
+      "detail": {
+        "decision": "approve",
+        "target": "prd"
+      }
+    },
+    {
+      "at": "2026-07-18T11:42:03.398Z",
+      "type": "skipped",
+      "stepId": "prd"
+    },
+    {
+      "at": "2026-07-18T11:42:03.400Z",
+      "type": "skipped",
+      "stepId": "architecture"
+    },
+    {
+      "at": "2026-07-18T11:42:03.406Z",
+      "type": "ready",
+      "stepId": "blueprint",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:47:43.488Z",
+      "type": "result",
+      "stepId": "blueprint",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"done\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'done'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:47:43.490Z",
+      "type": "ready",
+      "stepId": "blueprint",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T11:48:18.468Z",
+      "type": "result",
+      "stepId": "blueprint",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "blueprint",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+          "outcome": "complete",
+          "summary": "Implementation blueprint written with verified file:line references for all 9 changed files (2 new, 7 modified). Covers execution order, exact diffs for background.ts (discriminated union, claude registry, claimFinalization, cancelBackgroundRun claude branch), new claude-bg-worker.ts, runner.ts/server.ts/claude.ts changes, and test update requirements including the optionalArray empty-array gotcha.",
+          "plan_items": [
+            "Step 1: ts/contracts/mcp-surface.json — add allowedTools/disallowedTools with {\"$array\":\"string\"}; make pid? optional in bg_started",
+            "Step 2: ts/src/connectors/background.ts — discriminated BackgroundRunMeta union, claude worker registry, claimFinalization, startClaudeBackgroundRun, loadMeta/poll/cancel claude branches",
+            "Step 3: ts/src/connectors/claude-bg-worker.ts — new Worker thread entry point",
+            "Step 4: ts/src/connectors/runner.ts — pid? optional, allowedTools/disallowedTools forwarding",
+            "Step 5: ts/src/mcp/server.ts — read allowedTools/disallowedTools with Array.isArray guard",
+            "Step 6: ts/src/connectors/claude.ts — map allowedTools → sdkOptions.tools (availability not auto-approve)",
+            "Step 7: tests — update background.test.ts, claude.test.ts; add background-claude.test.ts"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+          ],
+          "commit_hash": "3395162"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:48:18.470Z",
+      "type": "ready",
+      "stepId": "verification",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:50:13.440Z",
+      "type": "result",
+      "stepId": "verification",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"pass\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'pass'\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"null\",\n    \"path\": [\n      \"commit_hash\"\n    ],\n    \"message\": \"Expected string, received null\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:50:13.442Z",
+      "type": "ready",
+      "stepId": "verification",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T11:52:00.385Z",
+      "type": "result",
+      "stepId": "verification",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "verification",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+          "outcome": "complete",
+          "summary": "All 21 file:line references in blueprint.md verified against source. Every 'current code' snippet matches the actual file at the cited line. No Boundary Map present — validateBoundaryMap skipped. Zero violations.",
+          "plan_items": [
+            "Verify ts/contracts/mcp-surface.json:152 and :155",
+            "Verify ts/src/connectors/background.ts:23-35, 37-48, 62-68, 131-148, 150-162, 187-188",
+            "Verify ts/src/connectors/runner.ts:30, 33-43",
+            "Verify ts/src/mcp/server.ts:111-121, 238",
+            "Verify ts/src/connectors/claude.ts:43, 46-48",
+            "Verify ts/tests/connectors/background.test.ts:84, 101",
+            "Verify ts/tests/connectors/claude.test.ts:29",
+            "Verify ts/src/mcp/contracts.ts:46, 98-101",
+            "Check for Boundary Map — not present, validateBoundaryMap skipped"
+          ],
+          "files_changed": [],
+          "commit_hash": "339516202d7113fb4aadda26b74ce9cbf71060d4"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:52:00.387Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T11:55:21.391Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written for STRAT-AGENT-BG-WRITE-1. Tasks are sequenced by dependency: (1) MCP contract additions, (2a–2i) background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants, (3) new claude-bg-worker.ts Worker thread entry, (4) runner.ts pid-optional + tool-filter forwarding, (5) server.ts optionalArray guard, (6) claude.ts SDK-tools mapping fix, (7) three test files updated/created. Each task has explicit file path, before/after anchors from the verified blueprint, and checkbox-style acceptance criteria. Key invariants (no double sentinel, registry deletion ordering, cancel/poll agreement, D14 join-race, optionalArray empty-array gotcha) are called out prominently.",
+          "plan_items": [
+            "Task 1 — MCP contract (mcp-surface.json): add allowedTools/disallowedTools with {\"$array\":\"string\"}, make pid optional in bg_started",
+            "Task 2a — background.ts: add appendFile/Worker imports, ClaudeConnectorOptions type import",
+            "Task 2b — background.ts: replace BackgroundRunMeta with CodexRunMeta|ClaudeRunMeta discriminated union",
+            "Task 2c — background.ts: add allowedTools/disallowedTools to StartBackgroundRunOptions",
+            "Task 2d — background.ts: add claudeWorkerRegistry, ClaudeBgEntry, claimFinalization(), writeSentinelIfAbsent()",
+            "Task 2e — background.ts: update startBackgroundRun() — pid optional, remove old guards, add discriminant validation + claude dispatch, remove codex workspace-write guard",
+            "Task 2f — background.ts: new startClaudeBackgroundRun() with D8 read-only rejection, Worker spawn, entry registration, exit/error handlers via claimFinalization",
+            "Task 2g — background.ts: update loadMeta() agent check to accept 'claude', make childPid validation codex-discriminated",
+            "Task 2h — background.ts: add claude branch to pollBackgroundRun() using registry liveness",
+            "Task 2i — background.ts: add claude branch to cancelBackgroundRun() with D9/D11/D13/D14 semantics",
+            "Task 3 — new claude-bg-worker.ts: Worker thread entry, query seam intercepts SDK events, normalizes to T2F5 JSONL, writes sentinel on success/error",
+            "Task 4a — runner.ts: make pid optional in runAgent return type",
+            "Task 4b — runner.ts: forward allowedTools/disallowedTools through background path",
+            "Task 5 — server.ts: read allowedTools/disallowedTools with Array.isArray() guard + optionalArray()",
+            "Task 6 — claude.ts: fix allowedTools → sdkOptions.tools (availability, not auto-approve)",
+            "Task 7a — background.test.ts: update pid optional assertion, replace codex-only test with discriminant+D8 tests",
+            "Task 7b — claude.test.ts: update allowedTools → tools in expected SDK options",
+            "Task 7c — new background-claude.test.ts: full claude bg start/poll/cancel/race/serialization test suite"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md"
+          ],
+          "commit_hash": "c70a17c"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:55:21.392Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T11:58:38.192Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T11:58:38.194Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T12:04:43.199Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:04:43.201Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T12:05:28.541Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written and revised for STRAT-AGENT-BG-WRITE-1. Addresses all 4 plan-gate r1 findings: (1) Task 4c adds sync-path agent/sandboxMode discriminant validation in runAgent() with rejection tests; (2) WorkerInput.stderrPath added to Task 2f and Task 3 writes caught errors to stderrPath via appendFileSync with test assertion on .err file; (3) Task 7c gains 4 D9 callback-order worker-stub precision tests; (4) new Task 7d creates ts/tests/mcp/agent-run.test.ts with 9 concrete MCP-surface test cases. Tasks are sequenced by dependency: MCP contract → background.ts → claude-bg-worker.ts → runner.ts → server.ts → claude.ts → tests.",
+          "plan_items": [
+            "Task 1: MCP Contract (ts/contracts/mcp-surface.json) — add allowedTools/disallowedTools with {\"$array\":\"string\"} shape, make pid optional in bg_started",
+            "Task 2a-2i: background.ts discriminated union, claude registry, claimFinalization, cancel/poll invariants, D13/D14 serialization",
+            "Task 3: New claude-bg-worker.ts Worker thread entry point with stderrPath plumbing",
+            "Task 4a-4c: runner.ts pid-optional, tool-filter forwarding, sync-path discriminant validation",
+            "Task 5: server.ts optionalArray guard with Array.isArray pre-check",
+            "Task 6: claude.ts SDK allowedTools → tools mapping fix (D5)",
+            "Task 7a: Update background.test.ts (pid optional, new discriminant/D8 assertions)",
+            "Task 7b: Update claude.test.ts (allowedTools → tools assertion)",
+            "Task 7c: New background-claude.test.ts (all claude bg cases + D9 callback-order interleaving tests)",
+            "Task 7d: New tests/mcp/agent-run.test.ts (9 MCP-surface test cases)"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md"
+          ],
+          "commit_hash": "60c6a16"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:05:28.543Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T12:06:38.903Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T12:06:38.905Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T12:11:08.250Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"revised\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'revised'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:11:08.252Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T12:11:46.823Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1. Addresses all 4 plan-gate findings across 2 review rounds: (1) Task 4c adds sync-path agent/sandboxMode discriminant validation in runAgent() with rejection tests; (2) WorkerInput.stderrPath added to Task 2f and Task 3 writes caught errors to stderrPath via appendFileSync with .err assertion; (3) Task 7c gains 4 D9 callback-order worker-stub precision tests; (4) Task 7d creates ts/tests/mcp/agent-run.test.ts with 9 concrete MCP-surface test cases. Blueprint.md also updated to mirror all plan-gate r2 findings.",
+          "plan_items": [
+            "Task 1: MCP contract additions (feature.json / server.ts schema)",
+            "Task 2a-2i: background.ts — discriminated union, claude registry, ClaudeBgEntry, claimFinalization, startBackgroundRun claude branch, cancelBackgroundRun claude branch, WorkerInput.stderrPath",
+            "Task 3: New claude-bg-worker.ts Worker Thread entry point with stderr plumbing",
+            "Task 4a-4c: runner.ts — pid-optional return type, tool-filter forwarding, sync-path discriminant validation",
+            "Task 5: server.ts — optionalArray guard for allowedTools/disallowedTools",
+            "Task 6: claude.ts — SDK-tools mapping fix",
+            "Task 7a-7d: Tests — background.test.ts, runner.test.ts (D9 interleaving), claude-bg-worker integration, MCP-surface agent-run.test.ts"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+            "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+          ],
+          "commit_hash": "16a69a8"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:11:46.824Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T12:14:09.267Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T12:14:09.271Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T12:19:38.786Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"revised\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'revised'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:19:38.789Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T12:20:31.016Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1. Addresses all plan-gate findings across 3 review rounds: (1) Task 4c adds sync-path agent/sandboxMode discriminant validation in runAgent() with rejection tests; (2) WorkerInput.stderrPath added to Task 2f and Task 3 writes caught errors via appendFileSync with .err assertion; (3) Task 7c gains 4 D9 callback-order worker-stub precision tests plus normal-lifecycle cases; (4) Task 7d creates ts/tests/mcp/agent-run.test.ts with 9 concrete MCP-surface test cases using STRATUM_TEST_WORKER=1 seam. Blueprint.md also updated to mirror all plan changes.",
+          "plan_items": [
+            "Task 1: MCP contract additions (allowedTools, disallowedTools, optional pid) — ts/contracts/mcp-surface.json",
+            "Task 2a-2i: background.ts discriminated union, claude registry, claimFinalization, cancel/poll invariants, stderrPath plumbing",
+            "Task 3: New claude-bg-worker.ts Worker thread entry with STRATUM_TEST_WORKER=1 test seam",
+            "Task 4a-4c: runner.ts pid-optional, tool-filter forwarding, sync-path discriminant validation + rejection tests",
+            "Task 5: server.ts optionalArray guard for allowedTools/disallowedTools",
+            "Task 6: claude.ts SDK tools mapping fix (tools param vs sdkOptions.allowedTools)",
+            "Task 7a-7d: tests — background.test.ts update, new background-claude.test.ts with D9/D13/D14 interleaving tests, claude.test.ts update, new agent-run.test.ts MCP-surface tests"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+            "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+          ],
+          "commit_hash": "1a412cc"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:20:31.017Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T12:21:31.271Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T12:21:31.277Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T12:24:55.096Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:24:55.098Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T12:25:38.905Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1 across 4 plan-gate review rounds. Tasks sequenced by dependency: (1) MCP contract additions, (2a-2i) background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants, (3) new claude-bg-worker.ts Worker thread entry with STRATUM_TEST_WORKER=1 env seam, (4) runner.ts pid-optional + sync-path discriminant validation + tool-filter forwarding, (5) server.ts optionalArray guard, (6) claude.ts SDK-tools mapping fix, (7) three test files updated/created including D9 callback-order interleaving tests and MCP-surface test suite. Blueprint.md also updated to mirror all plan changes including stderrPath plumbing, vi.mock Worker-constructor seam for held-worker tests, and normal-lifecycle test cases.",
+          "plan_items": [
+            "Task 1: MCP contract additions (allowedTools/disallowedTools as {\"$array\":\"string\"}, pid? optional in bg_started)",
+            "Task 2a-2i: background.ts — BackgroundRunMeta discriminated union, claudeWorkerRegistry, ClaudeBgEntry interface, claimFinalization() lock, startBackgroundRun() claude branch, cancelBackgroundRun() claude branch with D14 join-race handling, pollBackgroundRun() claude branch, runtime discriminant validation",
+            "Task 3: New claude-bg-worker.ts Worker thread entry point with STRATUM_TEST_WORKER=1 env seam and stderrPath plumbing",
+            "Task 4: runner.ts — pid? optional in BG-WRITE-A, sync-path agent/sandboxMode discriminant validation, allowedTools/disallowedTools forwarding to connectors",
+            "Task 5: server.ts — optionalArray() guard for allowedTools/disallowedTools MCP boundary validation",
+            "Task 6: claude.ts — fix allowedTools to map to SDK tools param (not sdkOptions.allowedTools)",
+            "Task 7a: Update ts/tests/background.test.ts with codex workspace-write guard-removal tests",
+            "Task 7b: Update ts/tests/runner.test.ts with new discriminant validation rejection tests",
+            "Task 7c: Update ts/tests/claude-bg-worker.test.ts with D9 callback-order interleaving tests (vi.mock seam), normal-lifecycle cases (STRATUM_TEST_WORKER=1 seam), and D13/D14 serialization assertions",
+            "Task 7d: Create ts/tests/mcp/agent-run.test.ts with 9 MCP-surface test cases using createMcpServer+InMemoryTransport"
+          ],
+          "files_changed": [
+            "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+            "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+          ],
+          "commit_hash": "19eeeca"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:25:38.907Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T12:27:15.394Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T12:27:15.403Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T12:37:28.789Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"done\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'done'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:37:28.791Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T12:39:09.420Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1 across 5 plan-gate review rounds. Tasks sequenced by dependency: (1) MCP contract additions (allowedTools/disallowedTools as {\"$array\":\"string\"}, pid? optional in bg_started), (2a-2i) background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants, (3) new claude-bg-worker.ts Worker thread entry with STRATUM_TEST_WORKER=1 env seam, (4) runner.ts pid-optional + sync-path discriminant validation + tool-filter forwarding, (5) server.ts optionalArray guard, (6) claude.ts SDK-tools mapping fix, (7) three test files updated/created including D9 callback-order interleaving tests and MCP-surface test suite. Blueprint.md also updated to mirror all plan changes including stderrPath plumbing, vi.mock Worker-constructor seam split into background-claude-interleavings.test.ts (Step 7e), and normal-lifecycle test cases.",
+          "plan_items": [
+            "Task 1 — MCP Contract (ts/contracts/mcp-surface.json): add allowedTools?/disallowedTools? as {\"$array\":\"string\"}, make pid? optional in bg_started",
+            "Task 2 — Core Background Implementation (ts/src/connectors/background.ts): discriminated BackgroundRunMeta union, ClaudeBgEntry + claudeWorkerRegistry, claimFinalization() serialization lock, cancelBackgroundRun claude branch, scanStream/pollBackgroundRun claude support",
+            "Task 3 — New Worker File (ts/src/connectors/claude-bg-worker.ts): Worker Thread entry point writing Codex-compatible JSONL, stderrPath plumbing via appendFileSync, STRATUM_TEST_WORKER=1 env-gated stub",
+            "Task 4 — Runner Plumbing (ts/src/connectors/runner.ts): pid? optional in BG-WRITE-A return, allowedTools/disallowedTools forwarding to startBackgroundRun, sync-path discriminant validation (agent ∈ {claude,codex}, sandboxMode ∈ {read-only,workspace-write}) with rejection tests",
+            "Task 5 — MCP Server Handler (ts/src/mcp/server.ts): optionalArray helper with empty-array guard, extract allowedTools/disallowedTools from request before passing to runAgent",
+            "Task 6 — SDK Mapping Fix (ts/src/connectors/claude.ts): fix allowedTools to map to SDK tools param (availability restriction) not sdkOptions.allowedTools (auto-approve), add disallowedTools → SDK disallowedTools",
+            "Task 7 — Tests: 7a update background.test.ts codex golden flow, 7b update claude.test.ts for tools assertion, 7c new background-claude.test.ts with normal-lifecycle + STRATUM_TEST_WORKER=1 seam, 7d new agent-run.test.ts with 9 MCP-surface test cases, 7e new background-claude-interleavings.test.ts with vi.mock Worker-constructor seam for D9/D13/D14 interleaving tests"
+          ],
+          "files_changed": [
+            "ts/contracts/mcp-surface.json",
+            "ts/src/connectors/background.ts",
+            "ts/src/connectors/claude-bg-worker.ts",
+            "ts/src/connectors/runner.ts",
+            "ts/src/mcp/server.ts",
+            "ts/src/connectors/claude.ts",
+            "ts/tests/connectors/background.test.ts",
+            "ts/tests/connectors/claude.test.ts",
+            "ts/tests/connectors/background-claude.test.ts",
+            "ts/tests/connectors/background-claude-interleavings.test.ts",
+            "ts/tests/mcp/agent-run.test.ts"
+          ],
+          "commit_hash": "a18d792"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:39:09.421Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T12:39:39.650Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T12:39:39.652Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-07-18T12:44:26.844Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:44:26.847Z",
+      "type": "ready",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2
+      }
+    },
+    {
+      "at": "2026-07-18T12:45:11.706Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 2,
+        "result": {
+          "phase": "plan",
+          "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "outcome": "complete",
+          "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1 across 6 plan-gate review rounds. Tasks sequenced by dependency: (1) MCP contract additions (allowedTools/disallowedTools as {\"$array\":\"string\"}, pid? optional in bg_started), (2a-2i) background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants, (3) new claude-bg-worker.ts Worker thread entry with STRATUM_TEST_WORKER=1/fail env seam, (4) runner.ts pid-optional + sync-path discriminant validation + tool-filter forwarding, (5) server.ts optionalArray guard, (6) claude.ts SDK-tools mapping fix, (7) three test files updated/created (background-claude.test.ts, agent-run.test.ts, background-claude-interleavings.test.ts). Blueprint.md updated to mirror all plan changes including stderrPath plumbing, vi.mock Worker-constructor seam split, env seam scoped to real-Worker files, and stderr-plumbing test moved to 7c with STRATUM_TEST_WORKER=fail mode.",
+          "plan_items": [
+            "Task 1: MCP Contract — add allowedTools/disallowedTools fields, make pid optional in bg_started",
+            "Task 2a-2i: background.ts — discriminated BackgroundRunMeta union, ClaudeBgEntry, claudeWorkerRegistry, claimFinalization lock, startClaudeBackgroundRun, cancelBackgroundRun claude branch, poll claude branch",
+            "Task 3: claude-bg-worker.ts — new Worker thread entry point with STRATUM_TEST_WORKER env seam",
+            "Task 4a-4c: runner.ts — pid optional, tool-filter forwarding, sync-path discriminant validation",
+            "Task 5: server.ts — optionalArray guard for allowedTools/disallowedTools",
+            "Task 6: claude.ts — fix allowedTools to map to SDK tools param, not sdkOptions.allowedTools",
+            "Task 7a-7e: tests — update background.test.ts, create background-claude.test.ts (real-Worker), create agent-run.test.ts (MCP surface), create background-claude-interleavings.test.ts (vi.mock seam)"
+          ],
+          "files_changed": [
+            "ts/contracts/mcp-surface.json",
+            "ts/src/connectors/background.ts",
+            "ts/src/connectors/claude-bg-worker.ts (new)",
+            "ts/src/connectors/runner.ts",
+            "ts/src/mcp/server.ts",
+            "ts/src/connectors/claude.ts",
+            "ts/tests/connectors/background.test.ts",
+            "ts/tests/connectors/background-claude.test.ts (new)",
+            "ts/tests/mcp/agent-run.test.ts (new)",
+            "ts/tests/connectors/background-claude-interleavings.test.ts (new)",
+            "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+            "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+          ],
+          "commit_hash": "ee032f3"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:45:11.707Z",
+      "type": "gate_waiting",
+      "stepId": "plan_gate"
+    },
+    {
+      "at": "2026-07-18T12:45:47.956Z",
+      "type": "gate_resolved",
+      "stepId": "plan_gate",
+      "detail": {
+        "decision": "revise",
+        "target": "plan"
+      }
+    },
+    {
+      "at": "2026-07-18T12:45:47.956Z",
+      "type": "failed",
+      "detail": {
+        "attempt": 0,
+        "reason": "gate revision rounds exhausted"
+      }
+    }
+  ],
+  "steps": {
+    "explore_design": {
+      "status": "succeeded",
+      "attempts": [
+        {
+          "attempt": 1,
+          "at": "2026-07-18T11:40:42.535Z",
+          "failure": {
+            "attempt": 1,
+            "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+          },
+          "result": {
+            "phase": "explore_design",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+            "outcome": "success",
+            "summary": "Design r5 for STRAT-AGENT-BG-WRITE-1 committed (2dfe058). Addresses the sole r4 finding: a cancel that joins a pre-existing error/exit finalizationClaim unconditionally returned 'cancelled' while the committed sentinel was rc=1 — cancel/poll disagreement. Fix (D14): before calling claimFinalization(rc=130), check entry.finalizationClaim !== null. If non-null, we joined rather than owned — await the existing claim, rescan, return already_complete/already_error per the actual committed sentinel. Return 'cancelled' only when finalizationClaim was null at the check (we own the rc=130 record). The null-check + set is atomic at the JS event-loop level. Added D14 to the decision log and 3 new test cases: (1) cancel joins error claim → returns already_error with matching poll; (2) cancel owns rc=130 → still returns 'cancelled'; (3) concurrent second cancel joins first cancel's claim correctly. No other sections changed from r4.",
+            "plan_items": [
+              "Fix cancelBackgroundRun() claude branch: add finalizationClaim !== null guard with await + rescan + correct status before the claimFinalization(rc=130) call",
+              "Add D14 decision to decision log explaining the join-vs-own distinction",
+              "Add 3 new test cases for the r4 interleaving, positive cancel-owns path, and concurrent second cancel joining first cancel's claim"
+            ],
+            "files_changed": [
+              "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+            ],
+            "commit_hash": "2dfe058"
+          }
+        },
+        {
+          "attempt": 2,
+          "at": "2026-07-18T11:41:09.183Z",
+          "result": {
+            "phase": "explore_design",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+            "outcome": "complete",
+            "summary": "Design r5 for STRAT-AGENT-BG-WRITE-1 is complete and committed (2dfe058). All 4 rounds of design-gate findings have been resolved: (1) sandboxMode='read-only' rejected for claude bg runs — D8; (2) cancelling boolean flag gates exit-handler sentinel write — D9; (3) allowedTools/disallowedTools contract fields use {\"$array\":\"string\"} — D10-D11; (4) runtime validation of agent and sandboxMode discriminants at entry — D11; (5) registry deletion is the terminal signal — D12; (6) claimFinalization() serializes all terminal sentinel writes — D13; (7) cancel returns 'cancelled' only when it owns the rc=130 finalization; joins await and rescan — D14. Architecture: discriminated BackgroundRunMeta union (CodexRunMeta | ClaudeRunMeta), in-memory claudeWorkerRegistry, new claude-bg-worker.ts Worker Thread entry point writing Codex-compatible JSONL.",
+            "plan_items": [],
+            "files_changed": [
+              "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+            ],
+            "commit_hash": "2dfe058"
+          }
+        }
+      ],
+      "spent": {
+        "dispatches": 2
+      },
+      "epoch": 4,
+      "failure": {
+        "attempt": 1,
+        "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+      },
+      "output": {
+        "phase": "explore_design",
+        "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/design.md",
+        "outcome": "complete",
+        "summary": "Design r5 for STRAT-AGENT-BG-WRITE-1 is complete and committed (2dfe058). All 4 rounds of design-gate findings have been resolved: (1) sandboxMode='read-only' rejected for claude bg runs — D8; (2) cancelling boolean flag gates exit-handler sentinel write — D9; (3) allowedTools/disallowedTools contract fields use {\"$array\":\"string\"} — D10-D11; (4) runtime validation of agent and sandboxMode discriminants at entry — D11; (5) registry deletion is the terminal signal — D12; (6) claimFinalization() serializes all terminal sentinel writes — D13; (7) cancel returns 'cancelled' only when it owns the rc=130 finalization; joins await and rescan — D14. Architecture: discriminated BackgroundRunMeta union (CodexRunMeta | ClaudeRunMeta), in-memory claudeWorkerRegistry, new claude-bg-worker.ts Worker Thread entry point writing Codex-compatible JSONL.",
+        "plan_items": [],
+        "files_changed": [
+          "docs/features/STRAT-AGENT-BG-WRITE-1/design.md"
+        ],
+        "commit_hash": "2dfe058"
+      },
+      "acceptedDispatchToken": "6f28422d-2534-4716-ae85-b0efc640088f"
+    },
+    "design_gate": {
+      "status": "succeeded",
+      "attempts": [],
+      "spent": {},
+      "epoch": 4,
+      "iterations": 4
+    },
+    "prd": {
+      "status": "skipped",
+      "attempts": [],
+      "spent": {},
+      "epoch": 4,
+      "routed": {
+        "attempt": 0,
+        "reason": "gate approve"
+      }
+    },
+    "architecture": {
+      "status": "skipped",
+      "attempts": [],
+      "spent": {},
+      "epoch": 4
+    },
+    "blueprint": {
+      "status": "succeeded",
+      "attempts": [
+        {
+          "attempt": 1,
+          "at": "2026-07-18T11:47:43.488Z",
+          "failure": {
+            "attempt": 1,
+            "reason": "[\n  {\n    \"received\": \"done\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'done'\"\n  }\n]"
+          },
+          "result": {
+            "phase": "blueprint",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+            "outcome": "done",
+            "summary": "Implementation blueprint written with verified file:line references for all 9 changed files (2 new, 7 modified). Covers execution order, exact diffs for background.ts (discriminated union, claude registry, claimFinalization, cancelBackgroundRun claude branch), new claude-bg-worker.ts, runner.ts/server.ts/claude.ts changes, and test update requirements including the optionalArray empty-array gotcha.",
+            "plan_items": [
+              "Step 1: mcp-surface.json — add allowedTools?/disallowedTools? with {\"$array\":\"string\"}, make pid? optional",
+              "Step 2: background.ts — discriminated union, claude registry + claimFinalization, startClaudeBackgroundRun, poll/cancel claude branches",
+              "Step 3: new claude-bg-worker.ts — Worker thread entry point with query seam normalization",
+              "Step 4: runner.ts — pid? optional, forward allowedTools/disallowedTools to startBackgroundRun",
+              "Step 5: server.ts — read allowedTools/disallowedTools with Array.isArray guard",
+              "Step 6: claude.ts — map allowedTools → sdkOptions.tools (availability, not auto-approve)",
+              "Step 7: tests — update background.test.ts:101/84, claude.test.ts:29, new background-claude.test.ts"
+            ],
+            "files_changed": [
+              "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+            ],
+            "commit_hash": "339516202d7113fb4aadda26b74ce9cbf71060d4"
+          }
+        },
+        {
+          "attempt": 2,
+          "at": "2026-07-18T11:48:18.468Z",
+          "result": {
+            "phase": "blueprint",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+            "outcome": "complete",
+            "summary": "Implementation blueprint written with verified file:line references for all 9 changed files (2 new, 7 modified). Covers execution order, exact diffs for background.ts (discriminated union, claude registry, claimFinalization, cancelBackgroundRun claude branch), new claude-bg-worker.ts, runner.ts/server.ts/claude.ts changes, and test update requirements including the optionalArray empty-array gotcha.",
+            "plan_items": [
+              "Step 1: ts/contracts/mcp-surface.json — add allowedTools/disallowedTools with {\"$array\":\"string\"}; make pid? optional in bg_started",
+              "Step 2: ts/src/connectors/background.ts — discriminated BackgroundRunMeta union, claude worker registry, claimFinalization, startClaudeBackgroundRun, loadMeta/poll/cancel claude branches",
+              "Step 3: ts/src/connectors/claude-bg-worker.ts — new Worker thread entry point",
+              "Step 4: ts/src/connectors/runner.ts — pid? optional, allowedTools/disallowedTools forwarding",
+              "Step 5: ts/src/mcp/server.ts — read allowedTools/disallowedTools with Array.isArray guard",
+              "Step 6: ts/src/connectors/claude.ts — map allowedTools → sdkOptions.tools (availability not auto-approve)",
+              "Step 7: tests — update background.test.ts, claude.test.ts; add background-claude.test.ts"
+            ],
+            "files_changed": [
+              "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+            ],
+            "commit_hash": "3395162"
+          }
+        }
+      ],
+      "spent": {
+        "dispatches": 2
+      },
+      "epoch": 4,
+      "failure": {
+        "attempt": 1,
+        "reason": "[\n  {\n    \"received\": \"done\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'done'\"\n  }\n]"
+      },
+      "output": {
+        "phase": "blueprint",
+        "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+        "outcome": "complete",
+        "summary": "Implementation blueprint written with verified file:line references for all 9 changed files (2 new, 7 modified). Covers execution order, exact diffs for background.ts (discriminated union, claude registry, claimFinalization, cancelBackgroundRun claude branch), new claude-bg-worker.ts, runner.ts/server.ts/claude.ts changes, and test update requirements including the optionalArray empty-array gotcha.",
+        "plan_items": [
+          "Step 1: ts/contracts/mcp-surface.json — add allowedTools/disallowedTools with {\"$array\":\"string\"}; make pid? optional in bg_started",
+          "Step 2: ts/src/connectors/background.ts — discriminated BackgroundRunMeta union, claude worker registry, claimFinalization, startClaudeBackgroundRun, loadMeta/poll/cancel claude branches",
+          "Step 3: ts/src/connectors/claude-bg-worker.ts — new Worker thread entry point",
+          "Step 4: ts/src/connectors/runner.ts — pid? optional, allowedTools/disallowedTools forwarding",
+          "Step 5: ts/src/mcp/server.ts — read allowedTools/disallowedTools with Array.isArray guard",
+          "Step 6: ts/src/connectors/claude.ts — map allowedTools → sdkOptions.tools (availability not auto-approve)",
+          "Step 7: tests — update background.test.ts, claude.test.ts; add background-claude.test.ts"
+        ],
+        "files_changed": [
+          "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+        ],
+        "commit_hash": "3395162"
+      },
+      "acceptedDispatchToken": "acf8e2ce-3f11-4c7d-8729-c84b1fd4d2ea"
+    },
+    "verification": {
+      "status": "succeeded",
+      "attempts": [
+        {
+          "attempt": 1,
+          "at": "2026-07-18T11:50:13.440Z",
+          "failure": {
+            "attempt": 1,
+            "reason": "[\n  {\n    \"received\": \"pass\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'pass'\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"null\",\n    \"path\": [\n      \"commit_hash\"\n    ],\n    \"message\": \"Expected string, received null\"\n  }\n]"
+          },
+          "result": {
+            "phase": "verification",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+            "outcome": "pass",
+            "summary": "All 25 file:line references in blueprint.md verified against source. Every 'current code' snippet matches the actual file at the cited line. No Boundary Map present — validateBoundaryMap skipped. Zero violations.",
+            "plan_items": [
+              "Verify mcp-surface.json:152 and :155",
+              "Verify background.ts lines 23-35, 37-48, 12, 62-63, 65-68, 131-148, 150-162, 187-188, 198, 226",
+              "Verify runner.ts lines 6-18, 30, 33-43",
+              "Verify server.ts lines 111-121, 238",
+              "Verify claude.ts lines 43, 46-48",
+              "Verify background.test.ts lines 84, 101",
+              "Verify claude.test.ts line 29",
+              "Verify contracts.ts lines 46, 98-101",
+              "Check for Boundary Map and invoke validateBoundaryMap if present"
+            ],
+            "files_changed": [],
+            "commit_hash": null
+          }
+        },
+        {
+          "attempt": 2,
+          "at": "2026-07-18T11:52:00.384Z",
+          "result": {
+            "phase": "verification",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+            "outcome": "complete",
+            "summary": "All 21 file:line references in blueprint.md verified against source. Every 'current code' snippet matches the actual file at the cited line. No Boundary Map present — validateBoundaryMap skipped. Zero violations.",
+            "plan_items": [
+              "Verify ts/contracts/mcp-surface.json:152 and :155",
+              "Verify ts/src/connectors/background.ts:23-35, 37-48, 62-68, 131-148, 150-162, 187-188",
+              "Verify ts/src/connectors/runner.ts:30, 33-43",
+              "Verify ts/src/mcp/server.ts:111-121, 238",
+              "Verify ts/src/connectors/claude.ts:43, 46-48",
+              "Verify ts/tests/connectors/background.test.ts:84, 101",
+              "Verify ts/tests/connectors/claude.test.ts:29",
+              "Verify ts/src/mcp/contracts.ts:46, 98-101",
+              "Check for Boundary Map — not present, validateBoundaryMap skipped"
+            ],
+            "files_changed": [],
+            "commit_hash": "339516202d7113fb4aadda26b74ce9cbf71060d4"
+          }
+        }
+      ],
+      "spent": {
+        "dispatches": 2
+      },
+      "epoch": 4,
+      "failure": {
+        "attempt": 1,
+        "reason": "[\n  {\n    \"received\": \"pass\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'pass'\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"null\",\n    \"path\": [\n      \"commit_hash\"\n    ],\n    \"message\": \"Expected string, received null\"\n  }\n]"
+      },
+      "output": {
+        "phase": "verification",
+        "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+        "outcome": "complete",
+        "summary": "All 21 file:line references in blueprint.md verified against source. Every 'current code' snippet matches the actual file at the cited line. No Boundary Map present — validateBoundaryMap skipped. Zero violations.",
+        "plan_items": [
+          "Verify ts/contracts/mcp-surface.json:152 and :155",
+          "Verify ts/src/connectors/background.ts:23-35, 37-48, 62-68, 131-148, 150-162, 187-188",
+          "Verify ts/src/connectors/runner.ts:30, 33-43",
+          "Verify ts/src/mcp/server.ts:111-121, 238",
+          "Verify ts/src/connectors/claude.ts:43, 46-48",
+          "Verify ts/tests/connectors/background.test.ts:84, 101",
+          "Verify ts/tests/connectors/claude.test.ts:29",
+          "Verify ts/src/mcp/contracts.ts:46, 98-101",
+          "Check for Boundary Map — not present, validateBoundaryMap skipped"
+        ],
+        "files_changed": [],
+        "commit_hash": "339516202d7113fb4aadda26b74ce9cbf71060d4"
+      },
+      "acceptedDispatchToken": "e783fa8a-ab07-42ba-ab10-12fa5821c92d"
+    },
+    "plan": {
+      "status": "succeeded",
+      "attempts": [
+        {
+          "attempt": 1,
+          "at": "2026-07-18T12:44:26.844Z",
+          "failure": {
+            "attempt": 1,
+            "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+          },
+          "result": {
+            "phase": "plan",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md",
+            "outcome": "success",
+            "summary": "Fixed blueprint.md per plan-gate r6: (1) added STRATUM_TEST_WORKER=fail mode to Step 3 env seam — run() throws before sentinel, catch writes .err + rc=1 sentinel; (2) moved stderr-plumbing test from 7e (vi.mock file — real worker never runs) into 7c (real-Worker file) using the fail mode; (3) rescoped env-seam wording in 7e intro from 'background-claude.test.ts only' to 'real-Worker test files (7c and 7d) — 7e is the only file where it must NOT be set'; (4) updated File Change Summary and Verification Checklist. plan.md unchanged (settled).",
+            "plan_items": [
+              "Task 1: MCP contract additions (allowedTools/disallowedTools as {\"$array\":\"string\"}, pid? optional)",
+              "Task 2a-2i: background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants",
+              "Task 3: new claude-bg-worker.ts with STRATUM_TEST_WORKER=1 (immediate complete) and STRATUM_TEST_WORKER=fail (throw before sentinel) env seam",
+              "Task 4a-4c: runner.ts pid-optional + tool-filter forwarding + sync-path discriminant validation",
+              "Task 5: server.ts optionalArray guard for allowedTools/disallowedTools",
+              "Task 6: claude.ts SDK tools mapping fix (allowedTools -> tools)",
+              "Task 7a: update background.test.ts (codex golden flow, pid optional)",
+              "Task 7b: update claude.test.ts (allowedTools -> tools assertion)",
+              "Task 7c: new background-claude.test.ts — real-Worker tests via STRATUM_TEST_WORKER=1 and STRATUM_TEST_WORKER=fail (includes stderr-plumbing test)",
+              "Task 7d: new agent-run.test.ts — MCP-surface tests using InMemoryTransport + STRATUM_TEST_WORKER=1",
+              "Task 7e: new background-claude-interleavings.test.ts — vi.mock Worker-constructor tests (poll-while-running, cancel-in-flight, D9, D13, D14, worker error containment; no STRATUM_TEST_WORKER env var)"
+            ],
+            "files_changed": [
+              "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+            ],
+            "commit_hash": "ee032f3"
+          }
+        },
+        {
+          "attempt": 2,
+          "at": "2026-07-18T12:45:11.706Z",
+          "result": {
+            "phase": "plan",
+            "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+            "outcome": "complete",
+            "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1 across 6 plan-gate review rounds. Tasks sequenced by dependency: (1) MCP contract additions (allowedTools/disallowedTools as {\"$array\":\"string\"}, pid? optional in bg_started), (2a-2i) background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants, (3) new claude-bg-worker.ts Worker thread entry with STRATUM_TEST_WORKER=1/fail env seam, (4) runner.ts pid-optional + sync-path discriminant validation + tool-filter forwarding, (5) server.ts optionalArray guard, (6) claude.ts SDK-tools mapping fix, (7) three test files updated/created (background-claude.test.ts, agent-run.test.ts, background-claude-interleavings.test.ts). Blueprint.md updated to mirror all plan changes including stderrPath plumbing, vi.mock Worker-constructor seam split, env seam scoped to real-Worker files, and stderr-plumbing test moved to 7c with STRATUM_TEST_WORKER=fail mode.",
+            "plan_items": [
+              "Task 1: MCP Contract — add allowedTools/disallowedTools fields, make pid optional in bg_started",
+              "Task 2a-2i: background.ts — discriminated BackgroundRunMeta union, ClaudeBgEntry, claudeWorkerRegistry, claimFinalization lock, startClaudeBackgroundRun, cancelBackgroundRun claude branch, poll claude branch",
+              "Task 3: claude-bg-worker.ts — new Worker thread entry point with STRATUM_TEST_WORKER env seam",
+              "Task 4a-4c: runner.ts — pid optional, tool-filter forwarding, sync-path discriminant validation",
+              "Task 5: server.ts — optionalArray guard for allowedTools/disallowedTools",
+              "Task 6: claude.ts — fix allowedTools to map to SDK tools param, not sdkOptions.allowedTools",
+              "Task 7a-7e: tests — update background.test.ts, create background-claude.test.ts (real-Worker), create agent-run.test.ts (MCP surface), create background-claude-interleavings.test.ts (vi.mock seam)"
+            ],
+            "files_changed": [
+              "ts/contracts/mcp-surface.json",
+              "ts/src/connectors/background.ts",
+              "ts/src/connectors/claude-bg-worker.ts (new)",
+              "ts/src/connectors/runner.ts",
+              "ts/src/mcp/server.ts",
+              "ts/src/connectors/claude.ts",
+              "ts/tests/connectors/background.test.ts",
+              "ts/tests/connectors/background-claude.test.ts (new)",
+              "ts/tests/mcp/agent-run.test.ts (new)",
+              "ts/tests/connectors/background-claude-interleavings.test.ts (new)",
+              "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+              "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+            ],
+            "commit_hash": "ee032f3"
+          }
+        }
+      ],
+      "spent": {
+        "dispatches": 2
+      },
+      "epoch": 10,
+      "failure": {
+        "attempt": 1,
+        "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+      },
+      "output": {
+        "phase": "plan",
+        "artifact": "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+        "outcome": "complete",
+        "summary": "Ordered 7-task implementation plan written and fully revised for STRAT-AGENT-BG-WRITE-1 across 6 plan-gate review rounds. Tasks sequenced by dependency: (1) MCP contract additions (allowedTools/disallowedTools as {\"$array\":\"string\"}, pid? optional in bg_started), (2a-2i) background.ts discriminated union + claude registry + claimFinalization + cancel/poll invariants, (3) new claude-bg-worker.ts Worker thread entry with STRATUM_TEST_WORKER=1/fail env seam, (4) runner.ts pid-optional + sync-path discriminant validation + tool-filter forwarding, (5) server.ts optionalArray guard, (6) claude.ts SDK-tools mapping fix, (7) three test files updated/created (background-claude.test.ts, agent-run.test.ts, background-claude-interleavings.test.ts). Blueprint.md updated to mirror all plan changes including stderrPath plumbing, vi.mock Worker-constructor seam split, env seam scoped to real-Worker files, and stderr-plumbing test moved to 7c with STRATUM_TEST_WORKER=fail mode.",
+        "plan_items": [
+          "Task 1: MCP Contract — add allowedTools/disallowedTools fields, make pid optional in bg_started",
+          "Task 2a-2i: background.ts — discriminated BackgroundRunMeta union, ClaudeBgEntry, claudeWorkerRegistry, claimFinalization lock, startClaudeBackgroundRun, cancelBackgroundRun claude branch, poll claude branch",
+          "Task 3: claude-bg-worker.ts — new Worker thread entry point with STRATUM_TEST_WORKER env seam",
+          "Task 4a-4c: runner.ts — pid optional, tool-filter forwarding, sync-path discriminant validation",
+          "Task 5: server.ts — optionalArray guard for allowedTools/disallowedTools",
+          "Task 6: claude.ts — fix allowedTools to map to SDK tools param, not sdkOptions.allowedTools",
+          "Task 7a-7e: tests — update background.test.ts, create background-claude.test.ts (real-Worker), create agent-run.test.ts (MCP surface), create background-claude-interleavings.test.ts (vi.mock seam)"
+        ],
+        "files_changed": [
+          "ts/contracts/mcp-surface.json",
+          "ts/src/connectors/background.ts",
+          "ts/src/connectors/claude-bg-worker.ts (new)",
+          "ts/src/connectors/runner.ts",
+          "ts/src/mcp/server.ts",
+          "ts/src/connectors/claude.ts",
+          "ts/tests/connectors/background.test.ts",
+          "ts/tests/connectors/background-claude.test.ts (new)",
+          "ts/tests/mcp/agent-run.test.ts (new)",
+          "ts/tests/connectors/background-claude-interleavings.test.ts (new)",
+          "docs/features/STRAT-AGENT-BG-WRITE-1/plan.md",
+          "docs/features/STRAT-AGENT-BG-WRITE-1/blueprint.md"
+        ],
+        "commit_hash": "ee032f3"
+      },
+      "acceptedDispatchToken": "d280361c-8843-4f01-9c7b-7da533718b6e"
+    },
+    "plan_gate": {
+      "status": "waiting_gate",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10,
+      "iterations": 6
+    },
+    "decompose": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "execute": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "execute_merge": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "review_triage": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "review_lenses": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "review_lenses_gate": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "review_merge": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "review_gate": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "codex_review": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "coverage": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "test_review": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "report": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "docs": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "ship": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    },
+    "ship_gate": {
+      "status": "pending",
+      "attempts": [],
+      "spent": {},
+      "epoch": 10
+    }
+  },
+  "flowSpent": {
+    "dispatches": 26
+  }
+}
