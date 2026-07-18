@@ -3,7 +3,7 @@
 **Status:** DESIGN  
 **Phase:** STRAT-AGENT: Agent Surface  
 **Created:** 2026-07-18  
-**Revised:** 2026-07-18 (r4 — design-gate r3 finding addressed: terminal sentinel writes serialized via per-run finalization lock)  
+**Revised:** 2026-07-18 (r5 — design-gate r4 finding addressed: cancel that joins pre-existing error claim now returns actual terminal outcome, not 'cancelled')  
 **Related:** [feature.json](./feature.json), GitHub #18
 
 ---
@@ -458,9 +458,31 @@ export async function cancelBackgroundRun(runId: string, options: RegistryOption
       return { status: "already_error", runId };
     }
 
-    // No sentinel written — we own the terminal record. D13: route through claimFinalization()
-    // so a concurrent second cancel call chains on the same promise rather than racing to
-    // write a second rc=130 sentinel.
+    // No sentinel written by the worker yet. Check whether an error/exit handler already
+    // claimed finalization before cancelling=true was set (D14).
+    // Interleaving: worker throws before cancel call arrives → 'error' handler fires, sees
+    // cancelling=false, calls claimFinalization(rc=1), appendFile in-flight → cancel starts,
+    // initial scan sees no sentinel (appendFile pending), gets entry, sets cancelling=true,
+    // terminates (worker already dead), post-terminate rescan also sees no sentinel →
+    // reaches here. entry.finalizationClaim is non-null (error handler set it).
+    // Calling claimFinalization(rc=130) here would return the error handler's existing promise
+    // with our doFinalize discarded — we would unconditionally return 'cancelled' while the
+    // committed sentinel is rc=1, making cancel/poll disagree.
+    // Fix: if we joined a pre-existing claim, await it, rescan, return the actual outcome.
+    // Return 'cancelled' ONLY when we own (rc=130) the finalization.
+    if (entry.finalizationClaim !== null) {
+      // Another path already claimed finalization — await its I/O to settle.
+      await entry.finalizationClaim;
+      const finalScan = await scanStream(loaded.streamPath);
+      if (finalScan.exitCode === 0 && !finalScan.error) {
+        return { status: "already_complete", runId };
+      }
+      return { status: "already_error", runId };
+    }
+    // We own the terminal record. D13: route through claimFinalization() so a concurrent
+    // second cancel call chains on the same promise rather than racing to write a second
+    // rc=130 sentinel. The null-check above + claimFinalization set is atomic at the JS
+    // event-loop level — no await between check and set.
     // D10: sentinel is written inside doFinalize before .finally() deletes the registry entry —
     // no window where poll sees no entry AND no sentinel.
     await claimFinalization(entry, runId, () => writeSentinelIfAbsent(loaded.streamPath, 130));
@@ -648,6 +670,7 @@ case "stratum_agent_run": {
 | D11 | Cancel rescans stream after `worker.terminate()` | Finding 2 (r2): the initial scan in cancel can race with the worker writing its own rc=0 sentinel. Setting `cancelling=true` suppresses the exit handler's sentinel write, but does not prevent the worker from writing its own sentinel between the scan and the terminate() call. Post-terminate rescan is the authoritative check: if the worker won (sentinel present), cancel returns `already_complete`/`already_error`; if no sentinel, cancel writes rc=130 and returns `cancelled`. This eliminates the cancel/poll status disagreement. |
 | D12 | `{"$array":"string"}` grammar, not `"string[]"`, for allowedTools/disallowedTools | `contracts.ts:46` LEAF_TYPES does not include `"string[]"` — it would be rejected as an unknown leaf type. `{"$array":"string"}` is the typed-array mechanism: `matchShape` iterates and validates each element against `"string"` (contracts.ts:98-101). This provides boundary validation via `assertToolRequest` for free — no `optionalStringArray()` helper needed in server.ts. |
 | D13 | Per-run `finalizationClaim` promise serializes all terminal writes | `'error'` fires before `'exit'` when a worker throws an uncaught exception. Both handlers previously started their own async I/O (appendFile / writeSentinelIfAbsent) concurrently — the scan inside `writeSentinelIfAbsent` could see no sentinel yet (the appendFile wasn't done), and both paths would each append a sentinel. `scanStream()` takes the LAST sentinel, making the terminal outcome timing-dependent. The fix is a per-`ClaudeBgEntry` `finalizationClaim` promise: the first synchronous caller (error handler fires before exit) sets the promise; all subsequent callers get the same promise with their `doFinalize` discarded. This is safe without any external lock because JavaScript is single-threaded — the null-check and set happen atomically at the event-loop level. The cancel path routes through `claimFinalization()` as well, guarding against concurrent cancel calls. |
+| D14 | Cancel returns its actual outcome when it joins a pre-existing finalizationClaim | Interleaving: worker crashes before cancel sets `cancelling=true` → error handler claims finalization (rc=1) with appendFile still pending → cancel starts, scans (no sentinel yet), sets `cancelling=true`, terminates (worker already dead), rescans (still no sentinel) → calls `claimFinalization(rc=130)` → gets the error handler's existing promise, its own `doFinalize` is discarded → awaits it → sentinel on disk is rc=1 → cancel returned `'cancelled'`, poll returns `'error'` — disagreement. Fix: before calling `claimFinalization()`, check `entry.finalizationClaim !== null`. If non-null, we joined rather than owned — await the existing claim, rescan, return `already_complete`/`already_error` per the actual committed sentinel. Return `'cancelled'` ONLY when `finalizationClaim` was null at the check (we own the rc=130 record). The null-check plus the `claimFinalization` set is atomic at the event-loop level — no `await` between them. |
 
 ---
 
@@ -701,6 +724,12 @@ case "stratum_agent_run": {
 - [ ] Registry entry deleted on cancel: after cancel returns `"cancelled"`, verify entry is deleted
 - [ ] Registry entry deleted after worker error: after `worker.error` event, verify entry is deleted
 - [ ] No double-write on error+exit: when both error and exit handlers fire (normal sequence after worker exception), verify only one sentinel is in the stream (second `writeSentinelIfAbsent` scan finds it and no-ops)
+
+### BG-WRITE-A: cancel joins pre-existing error claim (r4 finding)
+
+- [ ] **Cancel joins error claim, returns already_error (r4 interleaving)**: simulate the interleaving where the worker throws (error handler fires, claims finalizationClaim with rc=1, appendFile in-flight) BEFORE `cancelling=true` is set; cancel scans (no sentinel yet — I/O pending), gets entry, sets `cancelling=true`, terminates (worker already dead), rescans (still no sentinel), reaches the `finalizationClaim !== null` branch → awaits the error handler's promise → sentinel settles as rc=1 → cancel returns `{ status:"already_error" }`. Verify a subsequent `poll` also returns `{ status:"error" }` — no cancel/poll disagreement.
+- [ ] **Cancel that owns rc=130 still returns 'cancelled'**: verify the positive case where `entry.finalizationClaim` IS null at the check (no prior error/exit claim) — cancel proceeds through `claimFinalization(rc=130)` and returns `{ status:"cancelled" }` with the sentinel at rc=130, and a subsequent poll returns `{ status:"error", exitCode:130 }`.
+- [ ] **Concurrent second cancel joins first cancel's claimFinalization**: two concurrent cancel calls; first owns rc=130 (claimFinalization sets promise); second sees `finalizationClaim !== null` (owns:false path via D13) — both resolve correctly, second's scan finds rc=130 sentinel and returns `already_error`. (Covers the corner case where the second cancel arrives after the first sets the claim but before its I/O resolves.)
 
 ### BG-WRITE-A: sentinel serialization via finalizationClaim (Finding r3)
 
