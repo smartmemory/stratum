@@ -49,3 +49,11 @@ Decisions accumulate here during builds.
 ## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan_gate
 **Outcome:** revise
 **Rationale:** Codex plan-gate review round 7: everything verified except TWO literal wording edits (exact replacements in docs/features/STRAT-AGENT-BG-WRITE-1/plan-review-r7.md): (1) blueprint.md:921 'this file only' → 'real-Worker test files (7c background-claude.test.ts and 7d agent-run.test.ts)'; (2) blueprint.md:998 and :1053 → 7e prohibits STRATUM_TEST_WORKER entirely (any value), not just =1. Apply exactly these two edits and nothing else.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — design_gate
+**Outcome:** approve
+**Rationale:** design.md r5 unchanged since codex REVIEW CLEAN (5 gate rounds in prior flow b0a68e21, killed only by the flow-level max_rounds exhaustion — see stratum 84cc343 and compose #48). Findings trail: design-review-r1..r4.md. Approving the settled artifact.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan
+**Outcome:** complete
+**Rationale:** plan.md committed and current at 84cc343. Went through 7 plan-gate review rounds in prior flow (all findings resolved): stderrPath plumbing in Task 2f/3, sync-path discriminant validation in Task 4c, 4 D9 callback-order interleaving tests in Task 7c, concrete MCP-surface test cases in Task 7d, vi.mock/env-seam split into background-claude-interleavings.test.ts (Task 7e), env seam scoped to real-Worker files (7c+7d), 7e prohibits STRATUM_TEST_WORKER entirely. Prior flow failed only at gate-revision-rounds exhaustion after round 7 revise applied 2 literal wording edits — plan artifact is settled.
