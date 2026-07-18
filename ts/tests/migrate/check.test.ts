@@ -18,11 +18,6 @@ function captureMain(argv: string[]) {
   return main(argv).then((code) => ({ code, stdout, stderr })).finally(() => { process.stdout.write = out; process.stderr.write = err; });
 }
 
-async function pythonTestFiles(root: string): Promise<string[]> {
-  const names = await readdir(root, { recursive: true });
-  return names.filter((name) => typeof name === "string" && name.endsWith(".py")).map((name) => join(root, name));
-}
-
 describe("P6 report-only compatibility linter", () => {
   it("classifies table constructs without translating the legacy document", () => {
     const source = `version: "0.3"
@@ -74,9 +69,11 @@ flows:
     expect(await captureMain(["validate", input])).toMatchObject({ code: 0, stdout: '{"valid":true}\n', stderr: "" });
   });
 
-  it("classifies every checked-in .stratum YAML file and embedded v0 fixture without crashing", async () => {
-    // The Python suites embed their spec fixtures in test source; the only
-    // physical .stratum.yaml documents live under docs/.
+  it("classifies every checked-in .stratum YAML file without crashing", async () => {
+    // The only physical .stratum.yaml documents live under docs/. The Python
+    // suites' embedded v0 fixtures were swept here too until the python tree
+    // was deleted on merge day (STRAT-PY-RETIRE) — that corpus is archived on
+    // the python-legacy branch and no longer exists in the worktree.
     const docsRoot = resolve(import.meta.dirname, "../../../docs");
     const physical = (await readdir(docsRoot, { recursive: true })).filter((name) => typeof name === "string" && /\.stratum\.ya?ml$/i.test(name)).map((name) => join(docsRoot, name));
     expect(physical.length).toBeGreaterThan(0);
@@ -84,27 +81,5 @@ flows:
       const yaml = await readFile(path, "utf8");
       expect(() => checkLegacyYaml(yaml)).not.toThrow();
     }
-    // Both Python suites: the core library's tests/ and stratum-mcp/tests.
-    const testRoots = ["../../../tests", "../../../stratum-mcp/tests"].map((root) => resolve(import.meta.dirname, root));
-    let snippets = 0;
-    const sweep = (yaml: string) => {
-      if (!/^\s*version:\s*["']?0\.[123]/m.test(yaml)) return;
-      snippets += 1;
-      expect(() => checkLegacyYaml(yaml)).not.toThrow();
-    };
-    for (const testsRoot of testRoots) {
-      for (const path of await pythonTestFiles(testsRoot)) {
-        const text = await readFile(path, "utf8");
-        for (const match of text.matchAll(/([rubfRUBF]{0,2})(\"\"\"|''')([\s\S]*?)\2/g)) sweep(match[3] ?? "");
-        // Fixtures built from implicitly concatenated single-line literals,
-        // e.g. spec = ('version: "0.2"\n' 'flows:\n' ...).
-        for (const block of text.matchAll(/(?:^[ \t]*(["'])(?:\\.|(?!\1)[^\\\n])*\1[ \t]*\n){2,}/gm)) {
-          const fragments = [...block[0].matchAll(/(["'])((?:\\.|(?!\1)[^\\\n])*)\1/g)]
-            .map((fragment) => (fragment[2] ?? "").replace(/\\n/g, "\n").replace(/\\(["'\\])/g, "$1"));
-          sweep(fragments.join(""));
-        }
-      }
-    }
-    expect(snippets).toBeGreaterThan(20);
   });
 });

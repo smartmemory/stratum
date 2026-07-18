@@ -1,9 +1,6 @@
-import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson } from "../../src/guard/canonical.js";
 import { LedgerCorrupt, ResourceIdMismatch } from "../../src/guard/errors.js";
@@ -25,12 +22,8 @@ import {
   verifyChain,
 } from "../../src/guard/store.js";
 
-const execFileAsync = promisify(execFile);
 const originalGuardsDir = GUARDS_DIR;
 const roots: string[] = [];
-const testDirectory = dirname(fileURLToPath(import.meta.url));
-const pythonPackage = resolve(testDirectory, "../../../stratum-mcp");
-const python = "/Users/ruze/miniconda3/bin/python";
 
 const PYTHON_LEDGER = String.raw`{"entry_digest":"a84c5f214e260ea3a924b4cf7ff6f2f7791727de0163a87c2e11ef138f740362","from_state":"draft","idempotency_key":"req-1","kind":"transition","outcome":"applied","payload_digest":null,"prev_digest":"","rationale":"caf\u00e9 \ud83d\ude00","resolved_by":"agent","to_state":"review","ts_ms":1735689600123,"verdict":{"budget_consumed":{"dollars":0.0,"wall_clock_s":0.0},"ok":true}}
 {"entry_digest":"c07627cc4672841435e4ec8bf43bc676669c105bd8a5dd4e464b995bad343c9c","from_state":"review","idempotency_key":"req-2","kind":"deviation","outcome":"deviation","payload_digest":null,"prev_digest":"a84c5f214e260ea3a924b4cf7ff6f2f7791727de0163a87c2e11ef138f740362","rationale":null,"resolved_by":"human","to_state":"done","ts_ms":1735689600456,"verdict":{"approved":true,"budget_consumed":{"dollars":1.0,"wall_clock_s":2.0}}}` + "\n";
@@ -101,32 +94,11 @@ describe("guard store Python byte parity", () => {
     expect(currentStateFromLedger(entries, "draft")).toBe("done");
   });
 
-  it("writes a ledger that Python read_ledger and verify_chain accept", async () => {
-    const root = await tempGuardsRoot();
-    appendLedger("ts:δ", entry({ idempotency_key: "ts-1", rationale: "café 😀" }));
-    appendLedger("ts:δ", entry({
-      ts_ms: 1735689600456,
-      from_state: "review",
-      to_state: "done",
-      outcome: "deviation",
-      kind: "deviation",
-      resolved_by: "human",
-      idempotency_key: "ts-2",
-      verdict: { approved: true, budget_consumed: { dollars: 1, wall_clock_s: 2 } },
-    }));
-
-    const script = [
-      "import sys",
-      "from pathlib import Path",
-      "import stratum_mcp.guard.store as s",
-      "s.GUARDS_DIR = Path(sys.argv[1])",
-      "entries = s.read_ledger(sys.argv[2])",
-      "print(len(entries), s.verify_chain(entries), s.current_state_from_ledger(entries, 'draft'))",
-    ].join("; ");
-    const result = await execFileAsync(python, ["-c", script, root, "ts:δ"], { cwd: pythonPackage });
-
-    expect(result.stdout.trim()).toBe("2 True done");
-  });
+  // The live "TS writes → Python read_ledger/verify_chain accepts" test was
+  // retired with the python tree on merge day (STRAT-PY-RETIRE). Byte parity
+  // stays pinned by the captured PYTHON_LEDGER golden and the
+  // compute_entry_digest golden above; the python side is archived on the
+  // python-legacy branch.
 });
 
 describe("guard store paths and registry", () => {
