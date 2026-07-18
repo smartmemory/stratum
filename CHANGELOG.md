@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### fix: MCP progress heartbeats during tool calls (python parity)
+
+The TS MCP server never emitted `notifications/progress`, so clients relying
+on `resetTimeoutOnProgress` (compose sets a 10-minute per-heartbeat timeout on
+`stratum_agent_run`) timed out with MCP -32001 on any synchronous agent run
+longer than one timeout window — hit on the first compose-in-stratum dogfood
+build (`explore_design` died at exactly 600s). The python server streamed
+`ctx.report_progress`; the TS port dropped it. The tool-call handler now emits
+interval heartbeats (default 15s, injectable `heartbeatMs` dependency) for
+requests carrying a progressToken, cleared on completion or failure. Streaming
+real BuildStreamEvents (cockpit visibility parity) remains a follow-up.
+
 ### chore: compose workspace scaffolding (dogfood)
 
 Stratum is now a Compose workspace: `compose init` artifacts committed

@@ -19,6 +19,13 @@ export interface McpDependencies {
   cancelBackgroundRun?: typeof cancelBackgroundRun;
   /** Isolated-test seam for LLM-tier guard predicates. */
   guardJudge?: GuardJudge | null;
+  /**
+   * Interval between notifications/progress heartbeats while a tool call
+   * executes, for requests that carry a progressToken. Keeps clients using
+   * resetTimeoutOnProgress alive through agent runs longer than one timeout
+   * window (python-server parity: ctx.report_progress).
+   */
+  heartbeatMs?: number;
 }
 
 export type ToolName =
@@ -184,9 +191,25 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
       inputSchema: jsonSchema(definition.request),
     })),
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const payload = await dispatcher.call(request.params.name as ToolName, request.params.arguments ?? {});
-    return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
+  const heartbeatMs = dependencies.heartbeatMs ?? 15_000;
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const progressToken = request.params._meta?.progressToken;
+    let heartbeat: NodeJS.Timeout | undefined;
+    if (progressToken !== undefined) {
+      let seq = 0;
+      heartbeat = setInterval(() => {
+        seq += 1;
+        void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress: seq } })
+          .catch(() => { /* transport gone — the call itself will surface the failure */ });
+      }, heartbeatMs);
+      heartbeat.unref?.();
+    }
+    try {
+      const payload = await dispatcher.call(request.params.name as ToolName, request.params.arguments ?? {});
+      return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
+    } finally {
+      if (heartbeat !== undefined) clearInterval(heartbeat);
+    }
   });
   return server;
 }
