@@ -1,0 +1,19 @@
+# contracts/vocabulary.yaml — project naming vocabulary (STRAT-VOCAB)
+#
+# Declare canonical names and the aliases that must NOT appear in code. During
+# `compose build`, the review step scans the files changed by the build for any
+# rejected alias (whole-word, case-sensitive) and fails until each is replaced
+# with its canonical name. An empty / comments-only file is a no-op.
+#
+# Format — a flat map of canonical_name -> { reject: [...], reason: "..." }:
+#
+#   auth_token:
+#     reject: [jwt, accessToken, JwtToken, authToken]
+#     reason: "use auth_token everywhere for the session credential"
+#
+#   user_id:
+#     reject: [uid, userId, UserId]
+#
+# Rules: canonical names and aliases must be identifiers; an alias may not also
+# be a canonical name or be repeated across entries; `reason` is optional.
+# Uncomment and edit the examples above (or add your own) to enable enforcement.

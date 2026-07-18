@@ -1,0 +1,369 @@
+# metadata:
+#   id: build
+#   label: "Feature Build"
+#   description: "Execute a feature through the full Compose lifecycle — design, plan, implement, review, test, ship"
+#   category: development
+#   steps: 19
+#   estimated_minutes: 120
+
+version: 1
+
+contracts:
+  PhaseResult:
+    phase: string
+    artifact: string
+    outcome: complete|skipped|failed
+    summary: string
+    plan_items: array?
+    files_changed: string[]?
+    commit_hash: string?
+
+  ReviewResult:
+    clean: boolean
+    summary: string
+    findings: array
+    meta: object
+    lenses_run: string[]
+    auto_fixes: array
+    asks: array
+
+  TestResult:
+    passing: boolean
+    summary: string
+    failures: string[]
+
+  TaskGraph:
+    tasks: object[]
+
+  TaskResult:
+    outcome: string
+    summary: string
+    files_changed: string[]?
+
+  TriageResult:
+    tasks: object[]
+
+flows:
+  entry: build
+
+  # Task-only subflow: cross-model implementation review.
+  review_check:
+    input:
+      task: string
+      blueprint: string
+      reviewer_agent: string
+    output:
+      from: "${review.output}"
+      contract: ReviewResult
+    steps:
+      - id: review
+        agent: "$.input.reviewer_agent"
+        do: >
+          Review the implementation against the blueprint and task.
+          Task: ${input.task}
+          Blueprint: ${input.blueprint}
+          Return the canonical ReviewResult shape.
+        out: ReviewResult
+        ensure:
+          - expr: "result.clean == true"
+        attempts: 5
+
+  # Task-only subflow: test generation and coverage sweep.
+  coverage_check:
+    input:
+      task: string
+      plan: string
+    output:
+      from: "${run_tests.output}"
+      contract: TestResult
+    steps:
+      - id: run_tests
+        agent: claude
+        do: >
+          Run the project test suite for ${input.task}, following plan ${input.plan}.
+          Return {passing, summary, failures}.
+        out: TestResult
+        ensure:
+          - expr: "result.passing == true"
+        attempts: 15
+
+  build:
+    input:
+      featureCode: string
+      description: string
+      pre_merge_gate: string[]?
+      implementer_agent: string
+      reviewer_agent: string
+    output:
+      from: "${ship.output}"
+      contract: PhaseResult
+    max_rounds: 10
+    steps:
+      - id: explore_design
+        agent: claude
+        do: >
+          Explore the codebase and write a design doc for ${input.featureCode}.
+          Launch 2-3 explorer subagents in parallel to map architecture, find similar
+          features, and analyze related implementations. Feature: ${input.description}.
+          Write docs/features/${input.featureCode}/design.md and return PhaseResult.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+          - expr: "file_exists(result.artifact)"
+        attempts: 2
+
+      - id: design_gate
+        after: [explore_design]
+        gate:
+          on_approve: prd
+          on_revise: explore_design
+          on_kill: null
+
+      - id: prd
+        when: "false"
+        agent: claude
+        do: >
+          Write a product requirements document for ${input.featureCode} at
+          docs/features/${input.featureCode}/prd.md. Return PhaseResult.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+          - expr: "file_exists(result.artifact)"
+        attempts: 2
+
+      - id: architecture
+        after: [prd]
+        when: "false"
+        agent: claude
+        do: >
+          Write an architecture doc with competing proposals for ${input.featureCode}
+          at docs/features/${input.featureCode}/architecture.md. Return PhaseResult.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+          - expr: "file_exists(result.artifact)"
+        attempts: 2
+
+      - id: blueprint
+        after: [architecture]
+        agent: claude
+        do: >
+          Write an implementation blueprint with verified file:line references for
+          ${input.featureCode} at docs/features/${input.featureCode}/blueprint.md.
+          Return PhaseResult.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+          - expr: "file_exists(result.artifact)"
+        attempts: 3
+
+      - id: verification
+        after: [blueprint]
+        agent: claude
+        do: >
+          Verify every file:line reference in ${blueprint.output.artifact}. If it has a
+          Boundary Map, invoke validateBoundaryMap from lib/boundary-map.js. Return a
+          complete PhaseResult only when references are valid and violations are zero.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+        attempts: 2
+
+      - id: plan
+        after: [verification]
+        agent: claude
+        do: >
+          Write an ordered implementation plan for ${input.featureCode} with tasks,
+          dependencies, file paths, and acceptance criteria at
+          docs/features/${input.featureCode}/plan.md. Return PhaseResult.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+          - expr: "file_exists(result.artifact)"
+        attempts: 2
+
+      - id: plan_gate
+        after: [plan]
+        gate:
+          on_approve: decompose
+          on_revise: plan
+          on_kill: null
+
+      - id: decompose
+        agent: claude
+        do: >
+          Read ${plan.output.artifact} and decompose it into independent tasks. For each
+          task identify id, description, files_owned, files_read, and depends_on. Reject
+          file ownership conflicts. Return {tasks}.
+        out: TaskGraph
+        ensure:
+          - expr: "len(result.tasks) >= 1"
+        attempts: 2
+
+      # v0.3 parallel_dispatch -> TS v1 consumer fanout. Compose owns worktrees,
+      # pre-merge commands, retained diffs, and the downstream merge handshake.
+      - id: execute
+        after: [decompose]
+        attempts: 2
+        fanout:
+          over: "${decompose.output.tasks}"
+          dispatch: consumer
+          concurrency: 3
+          isolation: worktree
+          require: all
+          merge: sequential
+          pre_merge: "$.input.pre_merge_gate"
+          steps:
+            - agent: "$.input.implementer_agent"
+              do: >
+                Implement the task described by ${item} using TDD. Write the test first,
+                watch it fail, implement, and watch it pass. Honor the item's id,
+                files_owned, files_read, description, and dependency fields.
+                Return {outcome, summary, files_changed}.
+              out: TaskResult
+
+      - id: execute_merge
+        after: [execute]
+        gate:
+          on_approve: review_triage
+          on_revise: execute
+          on_kill: null
+          max_rounds: 10
+
+      # The former parallel_review subflow is flattened because TS v1 permits
+      # fanout only in the entry flow.
+      - id: review_triage
+        agent: claude
+        do: >
+          Select review lenses for the implementation results ${execute.output}.
+
+          RETRY PATH — If .compose/prior_dirty_lenses.json exists, read its JSON array.
+          Activate all lenses listed in that array. Always also include diff-quality
+          and contract-compliance. Skip all other lenses because they already passed
+          clean.
+
+          FIRST RUN PATH — If .compose/prior_dirty_lenses.json does not exist, always
+          include diff-quality, contract-compliance, and debug-discipline. Add security
+          for auth, crypto, SQL, or HTTP-handler changes, and add framework for detected
+          framework files.
+
+          Return {tasks}; each task must include id, lens_name, lens_focus,
+          confidence_gate, and exclusions.
+        out: TriageResult
+
+      - id: review_lenses
+        after: [review_triage]
+        fanout:
+          over: "${review_triage.output.tasks}"
+          dispatch: consumer
+          concurrency: 4
+          isolation: none
+          require: all
+          merge: sequential
+          steps:
+            - agent: claude
+              do: >
+                Run the review lens described by ${item}. Honor its lens_name,
+                lens_focus, confidence_gate, and exclusions fields. Return the canonical
+                ReviewResult shape.
+              out: ReviewResult
+
+      - id: review_lenses_gate
+        after: [review_lenses]
+        gate:
+          on_approve: review_merge
+          on_revise: review_triage
+          on_kill: null
+          max_rounds: 10
+
+      - id: review_merge
+        agent: claude
+        do: >
+          Merge ${review_lenses.output} into one canonical ReviewResult. Concatenate and
+          deduplicate findings by file+line+lens, keep the highest confidence, recompute
+          clean, set lenses_run to dirty lens ids, and classify auto_fixes and asks.
+        out: ReviewResult
+
+      # I1: dirty-review recovery is engine-native. review_merge cannot converge on
+      # its own (re-running the reducer re-merges the SAME frozen lens outputs), so
+      # the cleanliness decision is a GATE. Compose resolves it by policy: a clean
+      # merge approves; a dirty merge runs the corrective fixer, persists the dirty
+      # lens ids, and REVISES — the engine reroutes to review_triage, whose RETRY
+      # PATH reads the sidecar and re-runs only the dirty lenses on the fixed code.
+      - id: review_gate
+        after: [review_merge]
+        gate:
+          on_approve: codex_review
+          on_revise: review_triage
+          on_kill: null
+          max_rounds: 10
+
+      - id: codex_review
+        after: [review_gate]
+        run: review_check
+        with:
+          task: "${review_merge.output.summary}"
+          blueprint: "${blueprint.output.artifact}"
+          reviewer_agent: "${input.reviewer_agent}"
+
+      - id: coverage
+        after: [codex_review]
+        run: coverage_check
+        with:
+          task: "${input.description}"
+          plan: "${plan.output.artifact}"
+
+      # Advisory by construction: no output contract and no ensure.
+      - id: test_review
+        after: [coverage]
+        agent: "$.input.reviewer_agent"
+        do: >
+          Review tests generated for ${input.featureCode}. Flag placeholders,
+          tautologies, and assertions that only exercise mocks. Cite file:line and the
+          missing real assertion. This is advisory and must not block ship.
+
+      - id: report
+        after: [test_review]
+        when: "false"
+        agent: claude
+        do: >
+          Write docs/features/${input.featureCode}/report.md covering delivered work,
+          deviations, and lessons learned. Return PhaseResult.
+        out: PhaseResult
+        ensure:
+          - expr: "result.outcome == 'complete'"
+          - expr: "file_exists(result.artifact)"
+        attempts: 2
+
+      - id: docs
+        after: [report]
+        agent: claude
+        do: >
+          Update CHANGELOG.md and ROADMAP.md for ${input.featureCode}. Update README.md,
+          CLAUDE.md, and public docs only when the feature changes their documented
+          surfaces. Commit nothing. Return PhaseResult.
+        out: PhaseResult
+        attempts: 2
+
+      - id: ship
+        after: [docs]
+        agent: claude
+        do: >
+          Run the full test suite and build for ${input.featureCode}; fix failures.
+          Verify CHANGELOG.md and ROADMAP.md, stage only feature files, commit and push.
+          Parse plan acceptance criteria with lib/plan-parser.js and return PhaseResult
+          including plan_items, files_changed, and commit_hash.
+        out: PhaseResult
+        # C5: the judged ship ensure was removed — it is unevaluable from the
+        # {result, input} the judge receives (it fails closed even on evidenced
+        # results, so real TS-default builds would plausibly die at ship). Same
+        # class as the F5 vocabulary ruling. Ship stays gated by ship_gate; revisit
+        # when a deterministic/tunable judge backend exists (stratum follow-up).
+        attempts: 2
+
+      - id: ship_gate
+        after: [ship]
+        gate:
+          on_approve: null
+          on_revise: ship
+          on_kill: null

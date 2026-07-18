@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "capabilities": {
+    "stratum": true,
+    "lifecycle": true
+  },
+  "agents": {
+    "claude": {
+      "detected": true,
+      "skillInstalled": true
+    },
+    "codex": {
+      "detected": true,
+      "skillInstalled": true
+    },
+    "gemini": {
+      "detected": true,
+      "skillInstalled": false
+    }
+  },
+  "paths": {
+    "docs": "docs",
+    "roadmap": "docs/plans/COMPOSE-ROADMAP.md",
+    "features": "docs/features",
+    "journal": "docs/journal",
+    "context": "docs/context",
+    "ideabox": "docs/product/ideabox.md"
+  }
+}

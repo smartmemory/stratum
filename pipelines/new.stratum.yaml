@@ -1,0 +1,101 @@
+version: 1
+
+contracts:
+  ResearchResult:
+    priorArt: array
+    patterns: array
+    risks: array
+    summary: string
+
+  BrainstormResult:
+    features: array
+    userStories: array
+    archOptions: array
+    summary: string
+
+  RoadmapResult:
+    phases: array
+    features: array
+    summary: string
+    artifact: string
+
+  ScaffoldResult:
+    created: array
+    summary: string
+
+flows:
+  entry: new
+
+  new:
+    input:
+      projectName: string
+      intent: string
+    output:
+      from: "${scaffold.output}"
+      contract: ScaffoldResult
+    max_rounds: 10
+    steps:
+      - id: research
+        agent: claude
+        do: >
+          Research prior art for ${input.intent}. Find existing tools, common
+          architectural patterns, known pitfalls, and risks. Write the findings
+          to docs/discovery/research.md, building on that file if it exists.
+          Return ResearchResult.
+        out: ResearchResult
+        ensure:
+          - expr: "file_exists('docs/discovery/research.md')"
+        attempts: 3
+
+      - id: brainstorm
+        after: [research]
+        agent: claude
+        do: >
+          Brainstorm features, dependency-ordered feature codes, user stories,
+          and 2-3 architecture options with trade-offs for ${input.intent}.
+          Read docs/discovery/research.md first if it exists. Write the complete
+          result to docs/discovery/brainstorm.md and return BrainstormResult.
+        out: BrainstormResult
+        ensure:
+          - expr: "file_exists('docs/discovery/brainstorm.md')"
+        attempts: 3
+
+      - id: review_gate
+        after: [brainstorm]
+        gate:
+          on_approve: roadmap
+          on_revise: brainstorm
+          on_kill: null
+
+      - id: roadmap
+        after: [review_gate]
+        agent: claude
+        do: >
+          Read the approved docs/discovery/brainstorm.md and write a phased
+          ROADMAP.md for ${input.projectName}. Include project conventions and
+          dependency-ordered feature tables with PLANNED status. Return
+          RoadmapResult with artifact set to ROADMAP.md.
+        out: RoadmapResult
+        ensure:
+          - expr: "file_exists('ROADMAP.md')"
+        attempts: 3
+
+      - id: roadmap_gate
+        after: [roadmap]
+        gate:
+          on_approve: scaffold
+          on_revise: roadmap
+          on_kill: null
+
+      - id: scaffold
+        after: [roadmap_gate]
+        agent: claude
+        do: >
+          Read the approved ROADMAP.md and create docs/features/CODE/design.md
+          seed documents for every feature. Include title, PLANNED status,
+          created date, intent, and a note that compose build will refine it.
+          Return ScaffoldResult listing every created file.
+        out: ScaffoldResult
+        ensure:
+          - expr: "len(result.created) > 0"
+        attempts: 2
