@@ -15,7 +15,7 @@ Two independent sub-features, unified in one implementation pass:
 - **BG-WRITE-A** — Enable claude background runs (Worker Threads) and unlock codex `workspace-write` background runs (guard removal). Adds discriminated `BackgroundRunMeta` union, in-memory `claudeWorkerRegistry`, `claimFinalization()` serialization lock, and a new `claude-bg-worker.ts` Worker thread entry point.
 - **BG-WRITE-B** — Fix `ClaudeConnector.allowedTools` to map to the SDK `tools` param (availability restriction) instead of `sdkOptions.allowedTools` (auto-approve). Expose `allowedTools`/`disallowedTools` over the MCP wire via the `stratum_agent_run` contract.
 
-**Execution order:** MCP contract → background.ts → claude-bg-worker.ts → runner.ts → server.ts → claude.ts → tests. Each step is independently compilable; dependencies flow one way.
+**Execution order:** MCP contract → background.ts → claude-bg-worker.ts → runner.ts → server.ts → claude.ts → tests (unit + MCP surface). Each step is independently compilable; dependencies flow one way.
 
 ---
 
@@ -159,7 +159,7 @@ Key behaviors:
 - D8: throw if `options.sandboxMode === "read-only"` (enforcement not implemented in v1)
 - D4: default `sandboxMode = "workspace-write"` when omitted
 - Create run dir and three files (`stream.jsonl`, `.err`, `.in`) at mode `0o600`
-- Build `workerInput: WorkerInput` (model, cwd, allowedTools, disallowedTools, env, streamPath)
+- Build `workerInput: WorkerInput` (model, cwd, allowedTools, disallowedTools, env, streamPath, **stderrPath**). `WorkerInput` interface must include `stderrPath: string` so the worker can write caught errors there (design.md:648 — "stream errors written to stderr, never crash worker").
 - Spawn `new Worker(new URL("./claude-bg-worker.js", import.meta.url), { workerData: workerInput })`
 - Register entry: `{ worker, cancelling: false, finalizationClaim: null }`
 - Wire `worker.once("exit", ...)` — D9 + D13: skip if `entry.cancelling`, else `claimFinalization(entry, runId, () => writeSentinelIfAbsent(streamPath, 1))`
@@ -173,6 +173,7 @@ Key behaviors:
 - [ ] `meta.json` written with `agent:"claude"` and `sandboxMode:"workspace-write"` (default)
 - [ ] `claudeWorkerRegistry.has(runId)` is `true` immediately after start
 - [ ] `stream.jsonl` file exists with mode 0o600
+- [ ] `workerInput.stderrPath` equals the `.err` path alongside `stream.jsonl` (i.e. `streamPath + ".err"`)
 
 #### Task 2g — Update `loadMeta` agent check (current line 187)
 
@@ -248,7 +249,7 @@ Insert claude branch after the `not_found` guard. Full logic per D9/D11/D13/D14:
 Worker Thread entry point. Receives `workerData`, runs `ClaudeConnector` with a query seam that normalizes SDK events to T2F5 JSONL format.
 
 ```typescript
-import { createWriteStream } from "node:fs";
+import { appendFileSync, createWriteStream } from "node:fs";
 import { workerData } from "node:worker_threads";
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { ClaudeConnector } from "./claude.js";
@@ -262,9 +263,22 @@ Key behaviors:
   - Result events → `{ type:"turn.completed", usage:{ input_tokens, output_tokens } }` (cumulative)
   - Yields original events to the connector's accumulator
 - `run().then(() => writeLine({ [T2F5_DONE_SENTINEL]: 0 }))` — success sentinel
-- `.catch(async (err) => { await writeLine({type:"error", message:msg}); await writeLine({[T2F5_DONE_SENTINEL]: 1}) })` — both best-effort
+- `.catch(async (err) => { await writeLine({type:"error", message:msg}); await writeLine({[T2F5_DONE_SENTINEL]: 1}) })` — both best-effort; **also write err.message to `workerData.stderrPath`** using `appendFileSync` (synchronous avoids timing issues in the catch block)
 - `.finally(() => stream.end())`
 - `isRecord(v)` guard function at bottom
+
+**Stderr plumbing (design.md:648 — "stream errors written to stderr, never crash worker"):**  
+The worker receives `stderrPath` in `workerData`. On error in the catch block, after writing the error JSONL record to `stream.jsonl`, write the error message to `stderrPath`:
+```typescript
+.catch(async (err: unknown) => {
+  const msg = err instanceof Error ? err.message.slice(0, 2000) : String(err);
+  // Write error to stderr path (best-effort; never throw from catch)
+  try { appendFileSync(workerData.stderrPath, `${msg}\n`, "utf8"); } catch {}
+  await writeLine({ type: "error", message: msg });
+  await writeLine({ [T2F5_DONE_SENTINEL]: 1 });
+})
+```
+The `try/catch` wrapper around `appendFileSync` ensures a filesystem failure writing the `.err` file never causes the sentinel write to be skipped.
 
 **Note on Worker seam for tests:** Functions cannot be passed via `workerData` (structured-clone rejects them). The implementer should choose one of:
 - A `STRATUM_TEST_WORKER=1` env var that enables a stub query in the worker (avoids real SDK calls in tests)
@@ -278,6 +292,8 @@ Document the chosen approach in the file. For initial implementation, the env-va
 - [ ] No circular imports: worker imports background (for constant) and claude (for connector); background imports worker URL only at runtime via `new URL(...)` — not a TS import
 - [ ] On successful run: `stream.jsonl` ends with `{"__t2f5_done__":0}` line
 - [ ] On error: `stream.jsonl` ends with `{"__t2f5_done__":1}` line; `stream.end()` always called
+- [ ] On error: error message written to `stderrPath` (the `.err` file); test asserts `stderrPath` is non-empty after simulated query failure
+- [ ] `appendFileSync` write failure to `.err` file does NOT prevent sentinel write or crash the worker
 - [ ] `scanStream` can parse the worker's JSONL output without changes (D2 invariant)
 
 ---
@@ -287,7 +303,7 @@ Document the chosen approach in the file. For initial implementation, the env-va
 **Depends on:** Task 2 (calls `startBackgroundRun` which now accepts `allowedTools`/`disallowedTools`)  
 **File:** `ts/src/connectors/runner.ts`
 
-Two small changes:
+Three changes:
 
 #### Task 4a — Make `pid` optional in return type (current line 30)
 
@@ -315,6 +331,36 @@ Note: `AgentRunOptions` (lines 6–18) already declares `allowedTools?: string[]
 - [ ] `allowedTools` passed to `runAgent` reaches `startBackgroundRun` (verifiable via `meta.json` test)
 - [ ] Codex path still returns `pid: number` (the codex code sets `pid = child.pid`)
 - [ ] Existing `tests/connectors/background.test.ts:84` passes: `expect(meta.childPid).toBe(started.pid)` — update to `expect(typeof started.pid).toBe("number")` first
+
+#### Task 4c — Sync-path discriminant validation in `runAgent()` (current lines 44–61)
+
+Design.md:286 requires the same agent/sandboxMode guards in the synchronous foreground path. Currently `runAgent()` dispatches `options.agent === "codex"` to CodexConnector and everything else to ClaudeConnector with no validation — unknown agent values silently fall through to ClaudeConnector.
+
+Insert the following constants and guards at the top of the `runAgent()` body (before both the `background` and connector dispatch branches, i.e. before line 32):
+
+```typescript
+const VALID_AGENTS = new Set<string>(["claude", "codex"]);
+const VALID_SANDBOX_MODES = new Set<string>(["read-only", "workspace-write"]);
+
+if (!VALID_AGENTS.has(options.agent)) {
+  throw new Error(
+    `Unknown agent ${JSON.stringify(options.agent)}; must be "claude" or "codex"`
+  );
+}
+if (options.sandboxMode !== undefined && !VALID_SANDBOX_MODES.has(options.sandboxMode)) {
+  throw new Error(
+    `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only" or "workspace-write"`
+  );
+}
+```
+
+These constants can be defined as module-level `const` sets in `runner.ts` (not re-created per call) or inlined as literals inside the guard — either is acceptable. They are distinct from the ones in `background.ts` to avoid adding an import; the check is a one-liner per value and duplication is intentional for isolation.
+
+**Acceptance criteria:**
+- [ ] `runAgent({ agent: "gemini" as "claude", prompt: "p", cwd: "/tmp" })` throws with message containing `"Unknown agent"`
+- [ ] `runAgent({ agent: "codex", sandboxMode: "locked" as "read-only", prompt: "p", cwd: "/tmp" })` throws with message containing `"Unknown sandboxMode"`
+- [ ] `runAgent({ agent: "claude", ... }, { claudeQuery: stubQuery })` succeeds (foreground positive path)
+- [ ] `runAgent({ agent: "codex", sandboxMode: "read-only", ... }, { codexSpawn: stubSpawn })` succeeds (foreground codex positive path)
 
 ---
 
@@ -485,10 +531,68 @@ Create a new test file covering all claude-specific test cases from the design's
 - [ ] Worker emits `error` event: no uncaught exception propagates to MCP process; poll returns `{ status:"error" }`
 - [ ] Registry entry deleted after worker error
 
+**D9 callback-order interleaving tests (worker-stub precision — r1 plan-gate finding):**
+
+These tests require a controllable worker stub that fires events in a specific synchronous order. The stub can be a plain `EventEmitter` placed into the registry in place of a real `Worker` (mock the `Worker` constructor or use the test-only `startClaudeBackgroundRun` boundary).
+
+- [ ] **Synchronous exit-after-terminate proves rc=130**: stub `worker.terminate()` to emit `exit(1)` synchronously (simulating the OS signal path); with `entry.cancelling = true` already set before the event fires, verify the exit handler does NOT call `writeSentinelIfAbsent` and the cancel path writes exactly one sentinel with `exitCode:130`
+- [ ] **Exit-handler suppressed when `cancelling=true`**: inject a stub that emits `exit(1)` after `entry.cancelling = true` is set; verify `stream.jsonl` contains no sentinel from the exit handler and the cancel path's own sentinel at rc=130 is the only terminal record
+- [ ] **Error-handler suppressed after cancellation**: inject a stub that emits `error(new Error("late"))` after `entry.cancelling = true` is set; verify the error handler returns without calling `claimFinalization`; cancel path writes rc=130 sentinel (not rc=1); `stream.jsonl` has exactly one sentinel
+- [ ] **Single registry deletion via `finalizationClaim.finally`**: spy on `claudeWorkerRegistry.delete`; drive each terminal path (error, exit, cancel) in isolation; verify `delete(runId)` is called exactly once per run in every path
+
 **Registry cleanup (D10 — r2 finding):**
 - [ ] Registry entry deleted after completion
 - [ ] Registry entry deleted after cancel
 - [ ] Registry entry deleted after worker error
+
+#### Task 7d — New `ts/tests/mcp/agent-run.test.ts`
+
+**Depends on:** Tasks 1, 2, 3, 4, 5, 6 (full stack must be in place)  
+**File:** `ts/tests/mcp/agent-run.test.ts` (new)
+
+Create a new MCP-level test file using the `createMcpServer` + `InMemoryTransport` pattern (same as `tests/mcp/p5.test.ts`) to test `stratum_agent_run` at the **public MCP surface** — not by calling `startBackgroundRun()` or `runAgent()` directly. The design requires these tests to exercise the full request→handler→connector path, including contract validation, handler routing, and tool-filter forwarding.
+
+**Setup:**
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import { createMcpServer, type McpDependencies } from "../../src/mcp/server.js";
+
+async function connected(dependencies: McpDependencies) {
+  const server = await createMcpServer(dependencies);
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "agent-run-test", version: "0" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  return { client, close: async () => { await client.close(); await server.close(); } };
+}
+```
+
+Inject test boundaries via `McpDependencies` (`agentRun` stub or `runAgent` boundary stubs) to avoid real SDK/codex process spawning. Use `STRATUM_TEST_WORKER=1` for claude bg runs.
+
+**Required test cases:**
+
+**Codex workspace-write via command seam (design.md:681):**
+- [ ] `stratum_agent_run { agent:"codex", sandboxMode:"workspace-write", background:true, prompt:"p", cwd:"/tmp" }` via MCP client returns `{ status:"bg_started", runId, streamPath }` — uses `backgroundCommand` stub so no real codex process spawns
+- [ ] Follow-up `stratum_agent_poll { runId }` via MCP client returns `{ status:"running" }` or `{ status:"complete" }` (stub writes sentinel immediately on poll for determinism)
+
+**Claude bg via MCP (design.md:682-683):**
+- [ ] `stratum_agent_run { agent:"claude", background:true, prompt:"p", cwd:"/tmp" }` via MCP client returns `{ status:"bg_started", runId, streamPath }` with no `pid` field; `meta.json` written with `agent:"claude"` — uses `STRATUM_TEST_WORKER=1` stub
+- [ ] Follow-up `stratum_agent_poll { runId }` via MCP client returns `{ status:"running" }` immediately after start
+
+**MCP forwarding and rejection (design.md:697-701):**
+- [ ] `stratum_agent_run { agent:"claude", allowedTools:["Read"], background:false, prompt:"p", cwd:"/tmp" }` via MCP: captured `agentRun` call (spy/stub) receives `allowedTools: ["Read"]` — verifies `optionalArray` is forwarded correctly
+- [ ] `stratum_agent_run { agent:"claude", allowedTools:["Read", 42], background:false, ... }` via MCP: `McpError` thrown by `assertToolRequest` before `agentRun` is called (mixed-type array rejected at contract boundary)
+- [ ] `stratum_agent_run` without `allowedTools` via MCP: captured `agentRun` call does NOT receive `allowedTools` property (not `allowedTools: []`) — verifies the `Array.isArray` guard in `server.ts` Task 5
+
+**Foreground claude allowlist flow (design.md:750):**
+- [ ] `stratum_agent_run { agent:"claude", allowedTools:["Read"], background:false, prompt:"p", cwd:"/tmp" }` via MCP with `claudeQuery` boundary stub: captured SDK options have `tools: ["Read"]` (not `sdkOptions.allowedTools`) — end-to-end path from MCP wire → `server.ts` → `runAgent()` → `ClaudeConnector` → SDK options
+
+**Acceptance criteria:**
+- [ ] All 9 test cases above pass
+- [ ] No real codex or claude SDK process is spawned (all boundary stubs)
+- [ ] `McpError` path asserts `agentRun` was NOT called (contract rejects before handler body)
+- [ ] `stratum_agent_run` without `allowedTools` test asserts `agentRun` was called with exactly the expected keys (no extra `allowedTools: undefined` or `allowedTools: []`)
 
 ---
 
@@ -499,12 +603,13 @@ Create a new test file covering all claude-specific test cases from the design's
 | 1 | `ts/contracts/mcp-surface.json` | modify | Task 1 |
 | 2 | `ts/src/connectors/background.ts` | modify | Tasks 2a–2i |
 | 3 | `ts/src/connectors/claude-bg-worker.ts` | **new** | Task 3 |
-| 4 | `ts/src/connectors/runner.ts` | modify | Task 4 |
+| 4 | `ts/src/connectors/runner.ts` | modify | Tasks 4a–4c |
 | 5 | `ts/src/mcp/server.ts` | modify | Task 5 |
 | 6 | `ts/src/connectors/claude.ts` | modify | Task 6 |
 | 7 | `ts/tests/connectors/background.test.ts` | modify | Task 7a |
 | 8 | `ts/tests/connectors/claude.test.ts` | modify | Task 7b |
 | 9 | `ts/tests/connectors/background-claude.test.ts` | **new** | Task 7c |
+| 10 | `ts/tests/mcp/agent-run.test.ts` | **new** | Task 7d |
 
 ---
 
@@ -534,10 +639,12 @@ Gate conditions:
 - [ ] `vitest run` passes with no new failures
 - [ ] `tests/connectors/background.test.ts` still passes (codex golden flow regression)
 - [ ] `tests/connectors/claude.test.ts` passes with updated `tools` assertion
-- [ ] `tests/connectors/background-claude.test.ts` all new cases pass
+- [ ] `tests/connectors/background-claude.test.ts` all new cases pass (including D9 callback-order interleaving tests)
 - [ ] `tests/mcp/contracts-grammar.test.ts` passes
+- [ ] `tests/mcp/agent-run.test.ts` all new MCP-surface cases pass
 - [ ] `started.pid` is `undefined` for claude bg runs (TypeScript and runtime)
 - [ ] Existing codex background test at line 84 still asserts a real `pid` number
+- [ ] `runAgent({ agent:"gemini", ... })` throws (sync-path validation, Task 4c)
 
 ---
 
