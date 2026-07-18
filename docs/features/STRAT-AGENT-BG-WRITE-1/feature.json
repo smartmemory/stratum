@@ -1,0 +1,33 @@
+{
+  "code": "STRAT-AGENT-BG-WRITE-1",
+  "description": "Workspace-write background agent mode (run/poll/cancel) + claude tool allowlists on the agent surface. Closes the two E3-probed capability gaps (gh #18): (1) bg agent runs are codex-only + read-only-only (background.ts:65/:68) and sync agent_run returns no runId so in-flight write items cannot be interrupted — GSD worktree consumer items fail post-hoc on timeout but the agent keeps mutating the worktree; (2) claude-family tool allowlists cannot be carried over the wire (availability restriction, not permission auto-approve), forcing compose's local-claude-connector workaround. Ask: agent_run background mode for workspace-write runs with runId + event streaming + death-confirmed cancellation, and tool allowlist/denylist params for claude agents. Compose-side wiring is a follow-on slice in the compose repo.",
+  "status": "PLANNED",
+  "phase": "STRAT-AGENT: Agent Surface",
+  "created": "2026-07-18",
+  "updated": "2026-07-18",
+  "complexity": "L",
+  "position": 1,
+  "tags": [
+    "agent-surface",
+    "background",
+    "gh-18"
+  ],
+  "impact": "high",
+  "links": [
+    {
+      "kind": "external",
+      "provider": "github",
+      "repo": "smartmemory/stratum",
+      "issue": 18,
+      "note": "engine-side fix for the accepted GSD mid-fanout abort boundary",
+      "push": true
+    }
+  ],
+  "profile": {
+    "needs_prd": true,
+    "needs_architecture": true,
+    "needs_verification": true,
+    "needs_report": true
+  },
+  "triageTimestamp": "2026-07-18T10:22:56.086Z"
+}

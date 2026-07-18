@@ -1,0 +1,161 @@
+version: "0.3"
+
+# COMP-ROADMAP-PLAN — the `plan` product-planning lifecycle (peer to build/fix).
+# Front half of goal-to-product: frame → research → ideate → converge → estimate
+# → build-handshake. Top-level step IDs MUST equal the plan-mode phaseOrder
+# (explore_design / plan / ship) because phase tracking keys off the raw step_id
+# (lib/build.js). Flow input is {projectName, intent} to match the plan-mode
+# planInputs envelope (lib/lifecycle-modes.js plan.runner.planInputs == 'plan').
+# Absorbs `compose new`: ideation routes to the ideabox, output is canonical
+# feature.json (not hand-authored ROADMAP rows or design.md-only seeds).
+
+workflow:
+  name: plan
+  description: "Product-planning lifecycle — frame, research, ideate, converge to build-ready feature specs"
+  input:
+    projectName:
+      type: string
+      required: true
+    intent:
+      type: string
+      required: true
+
+contracts:
+  PlanDesignResult:
+    artifact:   {type: string}
+    features:   {type: array}
+    summary:    {type: string}
+
+  PlanConvergeResult:
+    artifact:   {type: string}
+    created:    {type: array}
+    summary:    {type: string}
+
+  PlanHandoffResult:
+    handed_off: {type: array}
+    summary:    {type: string}
+
+functions:
+  plan_design_gate:
+    mode: gate
+    timeout: 7200
+
+  plan_converge_gate:
+    mode: gate
+    timeout: 7200
+
+flows:
+  plan:
+    input:
+      projectName: {type: string}
+      intent: {type: string}
+    output: PlanHandoffResult
+    steps:
+      # Phase: explore_design — frame, research, ideate
+      - id: explore_design
+        agent: claude
+        intent: >
+          You are running the PRODUCT-PLANNING front half for this intent: {intent}
+
+          Do three things, then write the result to docs/plans/{projectName}/design.md:
+          1. FRAME — restate the goal, the problem it solves, who it is for, and the
+             scope boundaries (what is in v1, what is explicitly out).
+          2. RESEARCH — search the web and the codebase for prior art, existing
+             tools, architectural patterns, and risks. Summarize what is relevant.
+          3. IDEATE — propose candidate features (each with a short code and a
+             one-line description, ordered by dependency). Capture each idea in the
+             ideabox funnel (append to docs/product/ideabox.md, or run
+             `compose ideabox add`) so ideation lives in the funnel, not here. Then
+             shortlist the features you recommend building first.
+
+          Write docs/plans/{projectName}/design.md containing FRAME, RESEARCH, and
+          the shortlist (with feature codes). Return its path in "artifact" and the
+          shortlisted feature codes in "features".
+        inputs:
+          projectName: "$.input.projectName"
+          intent: "$.input.intent"
+        output_contract: PlanDesignResult
+        ensure:
+          - "file_exists(result.artifact)"
+          - "len(result.features) > 0"
+        retries: 2
+
+      # Gate: human reviews the framing + research + shortlist
+      - id: plan_design_gate
+        function: plan_design_gate
+        on_approve: plan
+        on_revise: explore_design
+        on_kill: null
+        depends_on: [explore_design]
+
+      # Phase: plan — converge, estimate, write build-ready specs
+      - id: plan
+        agent: claude
+        intent: >
+          Converge the shortlist in docs/plans/{projectName}/design.md into
+          build-ready feature specs. For EACH feature you commit to building:
+          1. ESTIMATE — assign a complexity (S | M | L | XL) and a triage build
+             profile (which lifecycle phases it needs, e.g.
+             {{"needs_prd": false, "needs_architecture": false}}).
+          2. SPEC — first write the per-feature design to <CODE>/design.md inside the
+             project features dir (docs/features/<CODE>/design.md by default, or the
+             paths.features root in .compose/compose.json). This is a real
+             product/feature design the build lifecycle will ratify. THEN create the
+             canonical feature.json by RUNNING this command from the project root
+             (it writes feature.json via the canonical writer, regenerates ROADMAP.md,
+             and auto-stamps triageTimestamp — works from any agent runtime, no MCP
+             needed):
+
+               compose roadmap add <CODE> --description "<one-line>" --phase "<phase>" \
+                 --status PLANNED --complexity <S|M|L|XL> \
+                 --profile '{"needs_prd":<bool>,"needs_architecture":<bool>,"needs_verification":<bool>,"needs_report":<bool>}' \
+                 --planned-by "{projectName}" [--impact <low|medium|high>]
+
+             Write design.md BEFORE running it (the command verifies design.md exists
+             and refuses otherwise). Do NOT hand-author ROADMAP rows or write
+             feature.json by hand.
+
+          Then write the planning narrative (decisions, estimates, sequencing) to
+          docs/plans/{projectName}/plan.md. Return plan.md in "artifact" and the
+          created feature codes in "created".
+        inputs:
+          projectName: "$.input.projectName"
+          intent: "$.input.intent"
+        output_contract: PlanConvergeResult
+        ensure:
+          - "file_exists(result.artifact)"
+          - "len(result.created) > 0"
+        retries: 2
+        depends_on: [plan_design_gate]
+
+      # Gate: human approves the converged plan + build-ready specs
+      - id: plan_converge_gate
+        function: plan_converge_gate
+        on_approve: ship
+        on_revise: plan
+        on_kill: null
+        depends_on: [plan]
+
+      # Phase: ship — handoff / verify build-readiness (plan mode does NOT git-commit
+      # here; runBuild's ship interception is gated off for mode=plan).
+      - id: ship
+        agent: claude
+        intent: >
+          Finalize the plan→build handoff. For EACH feature code in the provided
+          "created" list (the features the plan phase produced), verify its folder
+          under the project features dir (docs/features/<CODE>/ by default, or the
+          paths.features root in .compose/compose.json) has a feature.json (status
+          PLANNED, with plannedBy "{projectName}", complexity, profile,
+          triageTimestamp) and a design.md. Produce a short handoff summary listing
+          each build-ready feature and the exact `compose build <CODE>` command to
+          start it. Do NOT git-commit here — just verify and summarize. Return the
+          verified feature codes in "handed_off".
+        inputs:
+          projectName: "$.input.projectName"
+          intent: "$.input.intent"
+          created: "$.steps.plan.output.created"
+        output_contract: PlanHandoffResult
+        ensure:
+          - "len(result.handed_off) > 0"
+        retries: 1
+        depends_on: [plan_converge_gate]

@@ -20,6 +20,16 @@ package-lock.json
 .stratum/
 docs/features/*/.stratum.yaml
 
+# Compose local run state (compose.json is tracked)
+.compose/data/
+.compose/build-stream.jsonl
+.compose/breadcrumbs.log
+.compose/locks/
+.compose/inflight-followups/
+
+# OS
+.DS_Store
+
 # Secrets
 .mcpregistry_*_token
 

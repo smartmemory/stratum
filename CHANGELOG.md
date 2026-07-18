@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### chore: compose workspace scaffolding (dogfood)
+
+Stratum is now a Compose workspace: `compose init` artifacts committed
+(`.compose/compose.json`, `pipelines/`, `contracts/vocabulary.yaml`,
+`docs/context/`, `docs/product/`, generated `docs/plans/COMPOSE-ROADMAP.md`,
+and the `STRAT-AGENT-BG-WRITE-1` feature spec for gh #18). `.mcp.json` points
+at the compose MCP server plus the TS stratum MCP bin. Compose local run
+state (`.compose/data/`, stream/breadcrumb logs) is gitignored, mirroring the
+compose repo's convention.
+
 ### breaking: require report tokens and retire the Phase-1 epoch wire (STRAT-TS-FANOUT-CONSUMER flag-day, surface 9)
 
 The coordinated migration window is closed. `stratum_step_done` now requires
