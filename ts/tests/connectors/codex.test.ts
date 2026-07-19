@@ -55,18 +55,33 @@ describe("CodexConnector", () => {
     const blocked = new Promise<void>((resolve) => { finish = resolve; });
     async function* events() {
       await blocked;
+      yield { type: "thread.started" as const, thread_id: "thread-1" };
+      yield {
+        type: "item.completed" as const,
+        item: {
+          id: "cmd-1", type: "command_execution" as const, command: "npm test",
+          aggregated_output: "ok", exit_code: 0, status: "completed" as const,
+        },
+      };
+      yield {
+        type: "item.completed" as const,
+        item: { id: "edit-1", type: "file_change" as const, changes: [{ path: "/work/a.ts", kind: "update" as const }], status: "completed" as const },
+      };
+      yield { type: "item.completed" as const, item: { id: "r-1", type: "reasoning" as const, text: "checking" } };
       yield { type: "item.completed" as const, item: { id: "m-1", type: "agent_message" as const, text: "echo ok" } };
       yield { type: "turn.completed" as const, usage: { input_tokens: 3, cached_input_tokens: 0, output_tokens: 4, reasoning_output_tokens: 0 } };
     }
     const runStreamed = vi.fn(async () => ({ events: events() }));
     const startThread = vi.fn(() => ({ runStreamed }));
     const sdkFactory = vi.fn(() => ({ startThread }));
+    const connectorEvents: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
     const connector = new CodexConnector({
       model: "gpt-5.3-codex-spark/low",
       cwd: "/work",
       sandboxMode: "workspace-write",
       env: { PATH: "/definitely-missing", ANTHROPIC_API_KEY: "must-not-leak" },
       sdkFactory,
+      onEvent: async (event) => { connectorEvents.push(event); },
     });
 
     let settled = false;
@@ -89,6 +104,35 @@ describe("CodexConnector", () => {
       skipGitRepoCheck: true,
       workingDirectory: "/work",
     });
+    expect(connectorEvents).toEqual([
+      {
+        kind: "agent_started",
+        metadata: { agent: "codex", model: "gpt-5.3-codex-spark/low", prompt_chars: 9 },
+      },
+      {
+        kind: "tool_use_summary",
+        metadata: {
+          tool: "bash", summary: "npm test", ok: true, duration_ms: 0,
+          input: { command: "npm test" },
+        },
+      },
+      {
+        kind: "tool_use_summary",
+        metadata: {
+          tool: "edit", summary: "edit /work/a.ts", ok: true, duration_ms: 0,
+          input: { file_path: "/work/a.ts" },
+        },
+      },
+      { kind: "agent_relay", metadata: { text: "checking", role: "system" } },
+      { kind: "agent_relay", metadata: { text: "echo ok", role: "assistant" } },
+      {
+        kind: "step_usage",
+        metadata: {
+          input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0, cost_usd: 0, model: "gpt-5.3-codex-spark/low",
+        },
+      },
+    ]);
   });
 
   it("keeps four concurrent SDK turns owned until every turn settles", async () => {

@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
-import type { CodexSandboxMode, ConnectorResult } from "./base.js";
+import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 
 export type SpawnProcess = (
@@ -32,6 +32,7 @@ export interface CodexConnectorOptions {
   sdkFactory?: CodexSdkFactory;
   /** Process-boundary test seam. */
   spawn?: SpawnProcess;
+  onEvent?: ConnectorEventHandler;
 }
 
 const CODEX_SCRUB_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"] as const;
@@ -91,6 +92,7 @@ export class CodexConnector {
   private readonly transport: CodexTransport;
   private readonly sdkFactory: CodexSdkFactory;
   private readonly spawn: SpawnProcess;
+  private readonly onEvent: ConnectorEventHandler | undefined;
 
   constructor(options: CodexConnectorOptions = {}) {
     this.model = options.model ?? defaultCodexModel();
@@ -103,6 +105,7 @@ export class CodexConnector {
     this.transport = options.transport ?? (options.spawn ? "exec" : resolveCodexTransport(this.env));
     this.sdkFactory = options.sdkFactory ?? defaultSdkFactory;
     this.spawn = options.spawn ?? (nodeSpawn as SpawnProcess);
+    this.onEvent = options.onEvent;
   }
 
   async run(prompt: string): Promise<ConnectorResult> {
@@ -137,6 +140,9 @@ export class CodexConnector {
         controller.abort();
         throw stdoutOverrunError(stdoutLimit);
       }
+      for (const connectorEvent of codexConnectorEvents(event, this.model, prompt)) {
+        await this.emit(connectorEvent);
+      }
       if (event.type === "error") throw new Error(event.message);
       if (event.type === "turn.failed") throw new Error(event.error.message);
       if (event.type === "item.completed" && event.item.type === "agent_message" && event.item.text) {
@@ -166,9 +172,16 @@ export class CodexConnector {
     let inputTokens = 0;
     let outputTokens = 0;
     let codexError: string | undefined;
+    let eventDelivery = Promise.resolve();
     const handleLine = (line: string): void => {
       const record = parseRecord(line);
       if (!record) return;
+      const connectorEvents = codexConnectorEvents(record, this.model, prompt);
+      if (connectorEvents.length > 0) {
+        eventDelivery = eventDelivery.then(async () => {
+          for (const connectorEvent of connectorEvents) await this.emit(connectorEvent);
+        });
+      }
       if (record.type === "error" && codexError === undefined) {
         codexError = typeof record.message === "string" ? record.message : "codex error";
       }
@@ -225,6 +238,7 @@ export class CodexConnector {
       throw stdoutOverrunError(stdoutLimit);
     }
     if (pending) handleLine(pending);
+    await eventDelivery;
 
     if (codexError) throw new Error(codexError);
     if (exitCode !== 0 && text.length === 0) throw new Error(stderr.trim() || `codex exited with code ${exitCode}`);
@@ -234,6 +248,10 @@ export class CodexConnector {
       usage: { tokens: inputTokens + outputTokens, ms: durationMs },
       telemetry: { durationMs, ...modelIdentity(this.model) },
     };
+  }
+
+  private async emit(event: ConnectorEvent): Promise<void> {
+    await this.onEvent?.(event);
   }
 }
 
@@ -265,6 +283,70 @@ function parseRecord(line: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+const TOOL_DETAIL_CAP = 2_048;
+
+function codexConnectorEvents(value: unknown, model: string, prompt: string): ConnectorEvent[] {
+  if (!isRecord(value)) return [];
+  if (value.type === "thread.started") {
+    return [{ kind: "agent_started", metadata: { agent: "codex", model, prompt_chars: prompt.length } }];
+  }
+  if (value.type === "turn.completed" && isRecord(value.usage)) {
+    return [{
+      kind: "step_usage",
+      metadata: {
+        input_tokens: finiteNonnegative(value.usage.input_tokens),
+        output_tokens: finiteNonnegative(value.usage.output_tokens),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: finiteNonnegative(value.usage.cached_input_tokens),
+        cost_usd: 0,
+        model,
+      },
+    }];
+  }
+  if (value.type !== "item.completed" || !isRecord(value.item)) return [];
+  const item = value.item;
+  if (item.type === "agent_message" && typeof item.text === "string" && item.text) {
+    return [{ kind: "agent_relay", metadata: { text: item.text, role: "assistant" } }];
+  }
+  if (item.type === "reasoning" && typeof item.text === "string" && item.text) {
+    return [{ kind: "agent_relay", metadata: { text: item.text, role: "system" } }];
+  }
+  if (item.type === "command_execution") {
+    const command = typeof item.command === "string"
+      ? item.command
+      : isRecord(item.input) && typeof item.input.command === "string" ? item.input.command : "";
+    const exitCode = typeof item.exit_code === "number" ? item.exit_code : undefined;
+    return [{
+      kind: "tool_use_summary",
+      metadata: {
+        tool: "bash",
+        summary: command.length <= 80 ? command : `${command.slice(0, 77)}...`,
+        ok: exitCode === undefined || exitCode === 0,
+        duration_ms: Math.trunc(finiteNonnegative(item.duration_ms)),
+        input: { command: command.slice(0, TOOL_DETAIL_CAP) },
+      },
+    }];
+  }
+  if (item.type === "file_change") {
+    const path = typeof item.path === "string"
+      ? item.path
+      : Array.isArray(item.changes) && isRecord(item.changes[0]) && typeof item.changes[0].path === "string"
+        ? item.changes[0].path
+        : "";
+    return [{
+      kind: "tool_use_summary",
+      metadata: {
+        tool: "edit",
+        summary: `edit ${path}`.slice(0, 80),
+        ok: true,
+        duration_ms: 0,
+        input: { file_path: path },
+      },
+    }];
+  }
+  return [];
 }
 
 function exceedsStreamLimit(value: string, limit: number): boolean {

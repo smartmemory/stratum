@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### feat: stream BuildStreamEvents as progress notifications during agent runs (#21)
+
+During a synchronous `stratum_agent_run` the connector's message stream
+(assistant text, tool activity, usage) was invisible to the client until
+completion — the server emitted only bare heartbeat `notifications/progress`.
+Now foreground connectors forward their events, and the MCP boundary serializes
+each as a `BuildStreamEvent` envelope (schema 0.2.7: schema_version, flow_id,
+step_id, seq, ts, kind, metadata, reply_required; direct runs omit task_id) in
+the progress-notification `message` field, matching the contract Compose already
+demuxes for cockpit visibility. Event mapping matches the retired python server
+(agent_started, agent_relay assistant/system, tool_use_summary, tool_result,
+step_usage; tool payloads bounded to 2048 chars). The 15s heartbeat is preserved
+independently (quiet runs still get periodic progress, notification failures
+stay non-fatal, timer cleared in finally), and event forwarding is a no-op for
+background runs and when no progressToken is present. New tests pin the envelope
+fields and the codex/claude event mappings.
+
 ### feat: deterministic `fixture` judge backend for testing judged ensures (#19)
 
 `judgeBackend()` supported only `openai | codex`, so any pipeline carrying a

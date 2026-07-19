@@ -21,6 +21,14 @@ export interface ConnectorResult {
   telemetry: ConnectorTelemetry;
 }
 
+/** Connector-local narration event; the MCP boundary adds its wire envelope. */
+export interface ConnectorEvent {
+  kind: string;
+  metadata: Record<string, unknown>;
+}
+
+export type ConnectorEventHandler = (event: ConnectorEvent) => void | Promise<void>;
+
 export function modelIdentity(modelId: string): { model: string; effort?: string } {
   const slash = modelId.indexOf("/");
   if (slash < 0) return { model: modelId };
