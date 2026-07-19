@@ -78,12 +78,17 @@ jobs:
         working-directory: ts
         run: npm run typecheck
 
-      - name: Smoke the compiled MCP bin
+      - name: Smoke the compiled bins (MCP handshake + CLI via symlink)
         working-directory: ts
         run: |
+          # MCP bin answers the initialize handshake
           RESP=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | node dist/mcp/main.js)
           echo "$RESP"
           echo "$RESP" | grep -q '"serverInfo"' || { echo "MCP bin did not answer initialize"; exit 1; }
+          # CLI bin must run THROUGH A SYMLINK (how npm/npx installs bins) — guards the
+          # entrypoint-detection regression where argv[1] is the symlink, not the real file.
+          ln -s "$PWD/dist/cli/stratum.js" "$RUNNER_TEMP/stratum"
+          node "$RUNNER_TEMP/stratum" 2>&1 | grep -q "Usage: stratum" || { echo "CLI bin did not run via symlink"; exit 1; }
 
       - name: Publish to npm (stable)
         working-directory: ts

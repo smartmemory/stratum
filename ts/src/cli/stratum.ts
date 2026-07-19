@@ -1,6 +1,8 @@
 #!/usr/bin/env -S node --experimental-strip-types
+import { realpathSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { agentRunsRoot, T2F5_DONE_SENTINEL } from "../connectors/background.js";
 import { StratumEngine } from "../engine/engine.js";
@@ -251,6 +253,23 @@ type AgentEvent =
   | { event: "usage"; input_tokens: number; output_tokens: number; cache_read_input_tokens: number }
   | { event: "error"; message: string };
 
-if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
+// Run as CLI only when invoked as the entry (not when imported as a library, e.g.
+// by tests). Must resolve symlinks: npm/npx install bins as a symlink
+// (node_modules/.bin/stratum -> ../dist/cli/stratum.js), so process.argv[1] is the
+// symlink path while import.meta.url is the real file — a raw string compare fails
+// and the CLI silently no-ops.
+function isCliEntrypoint(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  const here = fileURLToPath(import.meta.url);
+  if (argv1 === here) return true;
+  try {
+    return realpathSync(argv1) === here;
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint()) {
   void main().then((code) => { process.exitCode = code; });
 }
