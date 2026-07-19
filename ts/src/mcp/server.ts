@@ -111,11 +111,28 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         case "stratum_agent_run": {
           const model = optionalString(request, "model");
           const sandboxMode = optionalString(request, "sandboxMode");
+          // assertToolRequest (line 72) has already validated allowedTools/disallowedTools
+          // element types via {"$array":"string"} in the contract — optionalArray() is safe.
+          // Check Array.isArray() first to distinguish "not provided" from "provided as []".
+          const allowedTools = Array.isArray(request.allowedTools)
+            ? optionalArray(request, "allowedTools")
+            : undefined;
+          const disallowedTools = Array.isArray(request.disallowedTools)
+            ? optionalArray(request, "disallowedTools")
+            : undefined;
           const executed = await agentRun({
-            agent: string(request, "agent") as "claude" | "codex", prompt: string(request, "prompt"), cwd: string(request, "cwd"),
-            ...(model ? { model } : {}),
-            ...(sandboxMode ? { sandboxMode: sandboxMode as "read-only" | "workspace-write" } : {}),
+            agent: string(request, "agent") as "claude" | "codex",
+            prompt: string(request, "prompt"),
+            cwd: string(request, "cwd"),
+            // Presence-based forwarding, NOT truthiness: sandboxMode:"" must reach
+            // runner/background discriminant validation and be rejected there — a
+            // truthy check silently drops it and the run falls back to the default
+            // (workspace-write for claude bg), bypassing the caller's intent.
+            ...(model !== undefined ? { model } : {}),
+            ...(sandboxMode !== undefined ? { sandboxMode: sandboxMode as "read-only" | "workspace-write" } : {}),
             ...(typeof request.background === "boolean" ? { background: request.background } : {}),
+            ...(allowedTools !== undefined ? { allowedTools } : {}),
+            ...(disallowedTools !== undefined ? { disallowedTools } : {}),
           });
           response = "status" in executed ? { ...executed } : { status: "complete", ...executed };
           break;

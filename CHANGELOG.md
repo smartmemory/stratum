@@ -2,7 +2,26 @@
 
 ## [Unreleased]
 
-### fix: MCP progress heartbeats during tool calls (python parity)
+### feat: workspace-write background agent runs + tool allowlists over MCP (STRAT-AGENT-BG-WRITE-1, #18)
+
+Claude agents can now run in BACKGROUND with run/poll/cancel, and codex
+background runs are no longer read-only-locked. Claude bg runs execute in a
+Worker Thread (`claude-bg-worker.ts`, in-process SDK — no CLI binary exists)
+writing Codex-compatible JSONL so `scanStream()` needs no per-agent branching;
+`worker.terminate()` gives death-confirmed cancellation. Terminal records are
+serialized through a per-run `claimFinalization` lock shared by the exit,
+error, and cancel paths (exactly-once sentinel; cancel reports `cancelled`
+only when it owns the rc=130 record, otherwise it rescans and reports the
+committed outcome). `sandboxMode: "read-only"` is REJECTED for claude runs
+(foreground and background) — the connector cannot enforce it, and a false
+guarantee is worse than a refusal. `allowedTools`/`disallowedTools` now cross
+the MCP wire (`{"$array":"string"}` contract shapes, element-validated at the
+boundary) and map to the SDK `tools` param (availability restriction) — fixing
+the mapping bug where they only controlled auto-approval. `bg_started.pid` is
+optional (worker threads have no OS pid). Node floor raised to >=22.15
+(`registerHooks` type-stripping loader for the worker). Built via the first
+compose-in-stratum dogfood pipeline (5-round design gate, 8-round plan gate,
+4-round codex merge gate; salvaged worktree fanout after compose #48/#49).
 
 The TS MCP server never emitted `notifications/progress`, so clients relying
 on `resetTimeoutOnProgress` (compose sets a 10-minute per-heartbeat timeout on

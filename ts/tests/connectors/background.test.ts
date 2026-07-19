@@ -81,6 +81,8 @@ describe("P3 background run gate", () => {
       status: "complete", text: "done text", exitCode: 0, usage: { tokens: 7 },
     });
     const meta = await readMeta(registryRoot, started.runId);
+    if (meta.agent !== "codex") throw new Error("golden Codex run persisted Claude metadata");
+    expect(typeof started.pid).toBe("number");
     expect(meta.childPid).toBe(started.pid);
     expect(meta.procStartTime).toBeTruthy();
   });
@@ -98,7 +100,13 @@ describe("P3 background run gate", () => {
 
   it("guards unsupported background lanes and returns not_found for unknown runs", async () => {
     const registryRoot = await root();
-    await expect(startBackgroundRun({ agent: "claude", prompt: "p", cwd: registryRoot, registryRoot })).rejects.toThrow("codex-only");
+    // Unknown agent rejected (D11 discriminant validation)
+    await expect(startBackgroundRun({ agent: "gemini" as "claude", prompt: "p", cwd: registryRoot, registryRoot }))
+      .rejects.toThrow("Unknown agent");
+    // Claude bg with sandboxMode:read-only rejected (D8)
+    await expect(startBackgroundRun({ agent: "claude", prompt: "p", cwd: registryRoot, registryRoot, sandboxMode: "read-only" }))
+      .rejects.toThrow("sandboxMode='read-only' are not supported");
+    // budgeted still rejected
     await expect(startBackgroundRun({ agent: "codex", prompt: "p", cwd: registryRoot, registryRoot, budgeted: true })).rejects.toThrow("cannot debit run budgets");
     await expect(pollBackgroundRun("missing", { registryRoot })).resolves.toEqual({ status: "not_found", runId: "missing" });
   });

@@ -57,3 +57,13 @@ Decisions accumulate here during builds.
 ## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan
 **Outcome:** complete
 **Rationale:** plan.md committed and current at 84cc343. Went through 7 plan-gate review rounds in prior flow (all findings resolved): stderrPath plumbing in Task 2f/3, sync-path discriminant validation in Task 4c, 4 D9 callback-order interleaving tests in Task 7c, concrete MCP-surface test cases in Task 7d, vi.mock/env-seam split into background-claude-interleavings.test.ts (Task 7e), env seam scoped to real-Worker files (7c+7d), 7e prohibits STRATUM_TEST_WORKER entirely. Prior flow failed only at gate-revision-rounds exhaustion after round 7 revise applied 2 literal wording edits — plan artifact is settled.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — plan_gate
+**Outcome:** approve
+**Rationale:** Codex plan-gate round 8: REVIEW CLEAN. The two r7-prescribed wording edits verified correctly applied at 84cc343 with no other blueprint changes and no new contradictions. Plan approved after 8 total review rounds (findings: 4→4→2→1→1→2→2-wording→0). Proceed to decompose/implementation.
+
+## [2026-07-18] STRAT-AGENT-BG-WRITE-1 — execute_merge
+**Outcome:** revise
+**Rationale:** MERGE_WITNESS_PRECOMPUTE_FAILED: consumer merge witness precompute failed: Command failed: git apply --cached --binary -
+error: patch failed: ts/contracts/mcp-surface.json:149
+error: ts/contracts/mcp-surface.json: patch does not apply
