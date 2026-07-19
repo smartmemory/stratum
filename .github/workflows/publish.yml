@@ -69,9 +69,21 @@ jobs:
         working-directory: ts
         run: npm install && npm run build
 
-      - name: Run tests
+      # Publish gate: verify the package is well-formed and runnable, not the full
+      # integration suite. The suite spawns real agent subprocesses and is timing/
+      # environment-sensitive (needs codex auth, a sibling checkout, etc.), so it
+      # flakes in CI and would randomly block releases. It runs on push/PR (test.yml)
+      # and locally instead. Here we gate on types + build + a real MCP handshake.
+      - name: Typecheck
         working-directory: ts
-        run: npm test
+        run: npm run typecheck
+
+      - name: Smoke the compiled MCP bin
+        working-directory: ts
+        run: |
+          RESP=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | node dist/mcp/main.js)
+          echo "$RESP"
+          echo "$RESP" | grep -q '"serverInfo"' || { echo "MCP bin did not answer initialize"; exit 1; }
 
       - name: Publish to npm (stable)
         working-directory: ts
