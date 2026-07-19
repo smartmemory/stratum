@@ -13,12 +13,11 @@ One shipped component:
 - **`ts/`** — the TypeScript engine (`@smartmemory/stratum`): IR validation (`version: 1` specs), flow execution with ensure postconditions, MCP server for Claude Code, `query`/`gate`/`guard` CLI, background flows and background agent runs. Runs from this checkout; not published to a registry.
 
 > **Engine status (2026-07-18, STRAT-PY-RETIRE):** the TS engine is the ONLY engine.
-> The Python library (`stratum-py`) and Python MCP server (`stratum-mcp`) are retired —
-> source archived on the [`python-legacy`](../../tree/python-legacy) branch, PyPI packages
-> frozen at their final releases. The engine executes **`version: 1`** specs exclusively;
-> legacy v0.x specs are rejected by `validate` and classified (report-only) by
-> `stratum migrate --check`. Sections below marked *(legacy dialect)* still show v0.x
-> syntax and are pending the v1 rewrite — the authoritative v1 shape is the IR schema in
+> The Python library (`stratum-py`) and Python MCP server (`stratum-mcp`) are retired.
+> Their source is archived on the [`python-legacy`](../../tree/python-legacy) branch, and PyPI packages are
+> frozen at their final releases. The engine executes **`version: 1`** specs exclusively.
+> Legacy v0.x specs are rejected by `validate` and classified (report-only) by
+> `stratum migrate --check`. The authoritative v1 shape is the Zod IR schema in
 > [`ts/src/ir/`](ts/src/ir/) plus `stratum validate` output.
 
 **Governed workflows as auditable flows — on any agent, not just one vendor.** Unlike a single-vendor in-context orchestrator, Stratum runs as an MCP server and a library under Claude Code, Codex, or any MCP host; enforces typed contracts and `ensure` postconditions on every flow execution; stops at real human gates; dispatches Claude *and* Codex agents in one flow (so an independent reviewer can be a different model from the implementer); and persists flow state across sessions. Where you want raw in-context fan-out, reach for an in-host workflow runtime; where you want the run governed, portable, and auditable, that's a Stratum workflow.
@@ -109,260 +108,203 @@ You see plain English narration throughout. The spec, state management, and post
 
 ## Core Concepts
 
-### Workflow vs Flow
+### Specification vs Flow
 
-Stratum uses these two terms deliberately — they are **not** interchangeable.
+A **specification** is the authored, version-controlled `.stratum.yaml` document. It declares contracts and one or more flows. The `flows.entry` field selects the flow that starts a run.
 
-A **workflow** is the *authored definition*: the named, registered, version-controlled artifact you write once and rerun (a `.stratum.yaml` spec with a `workflow:` block, discoverable via `stratum_list_workflows`). A **flow** is the *executable DAG definition*: a DAG of steps (`flows:`, `@flow`). Running a flow produces a **flow execution** — a single live instance tracked as a `FlowState` with a `flow_id`. A workflow composes flows; running a workflow produces flow executions.
-
-The split mirrors Temporal (Workflow Definition vs Execution) and Airflow (DAG vs DAG Run). Rule of thumb: if you can `git diff` it, it's a *workflow*; if it has a `flow_id` and a state, it's a *flow execution*.
+A **flow** is an executable directed acyclic graph of steps. Running the entry flow creates a persisted run with a `runId`. The v0.x top-level `workflow:` registration block and `stratum_list_workflows` were retired with the Python server.
 
 ### Flows
 
-A **flow** is a directed acyclic graph of steps with typed inputs and an output contract. Flows are defined either in `.stratum.yaml` specs (executed by the MCP server) or with the `@flow` decorator in the Python library.
+A flow declares typed `input` fields, a typed `output`, optional limits, and `steps`. References and `after` lists form data and ordering edges. Gate routing and `on_fail` add explicit routing edges.
 
 ### Steps
 
-A **step** is a single unit of work within a flow. Each step has an ID, an execution mode (function, inline, or flow), inputs that can reference flow-level inputs or prior step outputs, and optional postconditions.
+A step has an `id`, optional `after` dependencies, an optional `when` condition, and exactly one construct: `do`, `set`, `gate`, `fanout`, or `run`.
 
-### Functions
+### Tasks
 
-**Functions** are reusable definitions that steps reference. A function declares its mode (`infer`, `compute`, or `gate`), intent, input schema, output contract, postconditions, retry count, and optional model/budget.
+A `do` step is an agent-dispatched task. The task text is declared inline, and `${...}` references inject flow input or prior step output values. The v0.x `functions:` registry and `function:` steps have no place in a v1 document.
 
 ### Contracts
 
-**Contracts** define the shape of step outputs. They are named schemas with typed fields, validated against step results before postconditions run.
+Contracts define named output shapes. A `do` or `set` step declares its output contract with `out`. A flow declares both the step-output reference that supplies its result and the contract used to validate that result.
 
 ### Ensures
 
-**Ensures** are postcondition expressions evaluated against step results. If any ensure fails, the step is retried with the specific violation. Example: `result.confidence > 0.7`.
+Ensures are structured postconditions on `do`, `set`, and fanout stage results. V1 supports expression, file existence, file content, and judged predicates.
 
 ### Retries
 
-Each step has a retry budget. When an ensure or schema validation fails, the step is retried up to the declared limit. The agent receives the specific violations, not a blank replay.
+A `do` or `fanout` step can set the positive integer `attempts` limit. The default is two attempts. Contract failures, ensure failures, task failures, and exhausted iterations use the same failure path. A deterministic `set` failure terminates the flow without retrying.
 
 ### Gates
 
-**Gate** steps pause execution and wait for external resolution (human approval, agent decision, or system timeout). Gates support `approve`, `revise`, and `kill` outcomes with configurable routing.
+Gate steps pause execution for an external `approve`, `revise`, or `kill` decision. Approve and kill routes may name a later step or use `null`. A revise route may name a strict ancestor and requires a flow-level `max_rounds` limit.
 
 ---
 
 ## YAML Spec Reference
 
-> **Legacy dialect — pending v1 rewrite.** The examples in this section are written in the retired v0.x dialect
-> (`functions:`, `function:` steps, `inputs:`). The TS engine executes `version: 1`
-> specs only (`contracts` + `flows` with `entry`, `do`/`out` steps) and rejects v0.x
-> at `validate`. Until this section is rewritten, use the IR schema in
-> [`ts/src/ir/`](ts/src/ir/) and `stratum validate` errors as the v1 authority;
-> `stratum migrate --check` classifies legacy constructs (report-only).
+The Zod IR schema in [`ts/src/ir/`](ts/src/ir/) and the errors produced by `stratum validate` are authoritative. The root is strict and has exactly three fields: `version`, `contracts`, and `flows`. Unknown fields are rejected.
 
-A `.stratum.yaml` spec has four top-level sections: `version`, `contracts`, `functions`, and `flows`. An optional `workflow` block declares the spec as a registered workflow.
-
-### Minimal Example (v0.1)
+### Minimal Example
 
 ```yaml
-version: "0.1"
+version: 1
 contracts:
   SentimentResult:
-    label: {type: string}
-    confidence: {type: number}
-functions:
-  classify:
-    mode: infer
-    intent: "Classify the sentiment of this text"
-    input: {text: {type: string}}
-    output: SentimentResult
-    ensure:
-      - "result.label != ''"
-      - "result.confidence > 0.7"
-    retries: 2
+    label: string
+    confidence: number
 flows:
-  run:
-    input: {text: {type: string}}
-    output: SentimentResult
+  entry: classify
+  classify:
+    input:
+      text: string
+    output:
+      from: "${classify_text.output}"
+      contract: SentimentResult
     steps:
-      - id: s1
-        function: classify
-        inputs: {text: "$.input.text"}
+      - id: classify_text
+        do: "Classify the sentiment of ${input.text}"
+        agent: claude
+        out: SentimentResult
+        ensure:
+          - expr: "result.label != ''"
+          - expr: "result.confidence > 0.7"
+        attempts: 2
 ```
 
-### Full Example with Gates (v0.2)
+### Full Example with a Gate
 
 ```yaml
-version: "0.2"
+version: 1
 contracts:
   WorkOutput:
-    result: {type: string}
-    quality_score: {type: number}
-functions:
-  do_work:
-    mode: infer
-    intent: "Produce the deliverable"
-    input: {text: {type: string}}
-    output: WorkOutput
-    ensure:
-      - "result.quality_score >= 0.8"
-    retries: 3
-  review_gate:
-    mode: gate
-    timeout: 3600
+    result: string
+    quality_score: number
 flows:
+  entry: reviewed_work
   reviewed_work:
-    input: {text: {type: string}}
-    output: WorkOutput
+    input:
+      text: string
+    output:
+      from: "${work.output}"
+      contract: WorkOutput
     max_rounds: 3
     steps:
       - id: work
-        function: do_work
-        inputs: {text: "$.input.text"}
+        do: "Produce the deliverable requested in ${input.text}"
+        agent: codex
+        out: WorkOutput
+        ensure:
+          - expr: "result.quality_score >= 0.8"
+        attempts: 3
       - id: review
-        function: review_gate
-        on_approve: ~
-        on_revise: work
-        on_kill: ~
+        after: [work]
+        gate:
+          on_approve: null
+          on_revise: work
+          on_kill: null
+          max_rounds: 2
 ```
 
 ### Full Field Reference
 
 #### `version` (required)
 
-```yaml
-version: "0.1"   # or "0.2"
-```
+The only accepted value is the number `1`. Quoted strings such as `"1"` and all v0.x values are rejected.
 
-Version `"0.2"` adds gates, inline steps, flow composition, policies, iterations, skip_if, routing, and workflows.
+#### `contracts` (required)
 
-#### `contracts`
+Each contract maps field names to type strings. Objects are strict at runtime, so undeclared output fields are rejected.
 
-Named output schemas. Each contract is an object whose keys are field names and values are `{type: <type>}` objects.
+| Type form | Meaning |
+|---|---|
+| `string`, `integer`, `number`, `boolean` | Scalar value |
+| `object`, `array` | Untyped JSON object or array |
+| `string[]`, `Result[]` | Typed array |
+| `draft|final` | String enum |
+| `(draft|final)[]` | Array of string enum values |
+| `Result` | Another named contract |
+| `string?`, `Result[]?` | Optional field |
 
-```yaml
-contracts:
-  MyContract:
-    field_name: {type: string}
-    score: {type: number}
-    tags: {type: array}
-```
+Named contract references use an initial capital letter. Recursive contract references and unknown contract names are rejected.
 
-Supported types: `string`, `number`, `integer`, `boolean`, `array`, `object`.
+#### `flows` (required)
 
-#### `functions`
+`flows.entry` must name a flow in the same mapping. Every flow has these fields:
 
-Reusable step definitions referenced by function steps.
+| Field | Required | Shape |
+|---|---:|---|
+| `input` | yes | Field-to-type mapping using the contract type language |
+| `output` | yes | `{from: "${step_id.output}", contract: ContractName}` |
+| `steps` | yes | Array of strict step objects |
+| `budget` | no | Positive limits for one or more of `usd`, `tokens`, `dispatches`, or `ms` |
+| `max_rounds` | no | Positive integer required when a gate can revise to an ancestor |
 
-```yaml
-functions:
-  my_function:
-    mode: infer | compute | gate    # required
-    intent: "What this function does" # required for infer/compute
-    input:                            # required for infer/compute
-      param_name: {type: string}
-    output: ContractName              # required for infer/compute
-    ensure:                           # optional (forbidden on gate)
-      - "result.field > 0"
-    retries: 3                        # optional, default 3 (forbidden on gate)
-    budget:                           # optional (forbidden on gate)
-      ms: 5000
-      usd: 0.01
-    model: "gpt-4o"                   # optional
-    timeout: 3600                     # optional, gate only — seconds before auto-kill
-```
+The `output.from` value must be one full reference to a step output with a known contract. A fanout output is an array, so a flow output must select an item such as `${fan.output[0]}`.
 
-**Gate functions** only require `mode: gate`. They must not have `ensure`, `budget`, or `retries`.
+#### Steps
 
-#### `flows`
+Step IDs start with a lowercase letter and may contain lowercase letters, digits, underscores, and hyphens. IDs are unique within a flow. Every step accepts `id`, optional `after`, and optional `when`, then exactly one construct with only the fields listed below.
 
-Flow definitions with input schema, output contract, and ordered steps.
+| Construct | Purpose | Additional fields |
+|---|---|---|
+| `do` | Dispatch an inline task | `agent`, `out`, `ensure`, `attempts`, `iterate`, `budget`, `on_fail` |
+| `set` | Build an output object from expressions | required `out`, optional `ensure` |
+| `gate` | Pause for a decision | no fields outside the nested gate object |
+| `fanout` | Run stages over an array | `attempts`, `budget`, `on_fail` |
+| `run` | Invoke a subflow | required `with`, optional `budget`, `on_fail` |
 
-```yaml
-flows:
-  my_flow:
-    input:
-      param: {type: string}
-    output: ContractName             # optional for gate-only flows
-    budget:                          # optional
-      ms: 30000
-      usd: 0.10
-    max_rounds: 5                    # optional (v0.2) — max gate revise cycles
-    steps:
-      - id: step_id                  # required, unique within flow
-        # Execution mode — exactly one of:
-        function: my_function        # references a function definition
-        intent: "Do something"       # inline step (v0.2)
-        flow: sub_flow_name          # sub-flow invocation (v0.2)
+`agent` is either `claude` or `codex`. `attempts` is a positive integer. An `iterate` object requires positive integer `max` and string expression `until`.
 
-        # Common fields:
-        inputs:                      # optional
-          param: "$.input.param"
-          prior: "$.steps.s1.output.field"
-        depends_on: [s1, s2]         # optional — explicit dependencies
-        output_schema:               # optional — JSON Schema for result validation
-          type: object
-          required: [done]
-          properties:
-            done: {type: boolean}
+The nested `gate` object requires nullable `on_approve`, `on_revise`, and `on_kill` fields. It may also set a positive integer `max_rounds`.
 
-        # Inline step fields (v0.2, only with intent):
-        agent: claude                # optional — agent assignment
-        ensure:                      # optional
-          - "result.done == True"
-        retries: 2                   # optional, default 1
-        output_contract: MyContract  # optional
-        model: "gpt-4o"             # optional
-        budget:                      # optional
-          ms: 5000
+The nested `fanout` object requires `over`, one or more `steps`, positive integer `concurrency`, `isolation` of `worktree` or `none`, `require` of `all`, `any`, or a positive integer, and `merge: sequential`. Optional fields are `pre_merge` and `dispatch`, whose value is `engine` or `consumer`. Each fanout stage requires `do` and may use `agent`, `out`, `ensure`, `attempts`, and `when`.
 
-        # Gate step fields (v0.2, only with function referencing a gate):
-        on_approve: next_step | ~    # required — step to route to, or null for completion
-        on_revise: earlier_step      # required — must target topologically earlier step
-        on_kill: cleanup_step | ~    # required — step to route to, or null for termination
-        policy: gate | flag | skip   # optional — auto-resolution policy
-        policy_fallback: gate        # optional — requires policy
+### References
 
-        # Non-gate routing (v0.2):
-        on_fail: recovery_step       # optional — route on retry exhaustion (requires ensure)
-        next: loop_back_step         # optional — override linear advancement on success
-
-        # Conditional skip (v0.2):
-        skip_if: "$.steps.s1.output.skip == True"  # optional (forbidden on gates)
-        skip_reason: "Already done"                  # optional
-
-        # Iteration (v0.2):
-        max_iterations: 10                           # optional (forbidden on gates)
-        exit_criterion: "result.quality >= 0.9"      # optional, requires max_iterations
-        accumulate: "result.findings"                # optional; dedup items across rounds
-        accumulate_key: "item.id"                    # optional; requires accumulate
-```
-
-#### `workflow` (v0.2)
-
-Self-registering workflow declaration. Allows `stratum_list_workflows` to discover specs.
-
-```yaml
-workflow:
-  name: my-workflow              # lowercase, hyphens only
-  description: "What this workflow does"
-  input:
-    param_name:
-      type: string
-      required: true
-      default: "value"
-```
-
-Workflow input keys must exactly match the entry flow's input keys.
-
-### Input References
-
-Step inputs use `$` references to chain data through the flow:
+V1 uses `${...}` references in task templates, subflow inputs, fanout sources, and flow outputs.
 
 | Pattern | Resolves to |
 |---|---|
-| `$.input.<field>` | Flow-level input value |
-| `$.steps.<step_id>.output` | Full output of a prior step |
-| `$.steps.<step_id>.output.<field>` | Specific field from a prior step's output |
-| `literal_value` | Passed through as-is |
+| `${input.field}` | Flow input field |
+| `${step_id.output}` | Full output of a prior step |
+| `${step_id.output.field}` | Field in a prior step output |
+| `${fan.output[0].field}` | Field in one fanout item output |
+| `${item}` | Current item inside a fanout stage task |
+| `${prev}` | Previous stage output for the same fanout item |
 
-References create implicit dependencies. The server also uses explicit `depends_on` for topological ordering (Kahn's algorithm).
+A full-value reference preserves its JSON type in `with` and `fanout.over`. A reference embedded in other text is interpolated into a string. Step-output references create data dependencies. Use `after` for ordering dependencies that are not implied by references.
+
+Expressions in `ensure`, `when`, `set`, and `iterate.until` use the v1 expression bindings instead of `${...}` interpolation. `input` is the flow input. In an ensure, `result` is the output under test. In `when` and `set`, `result` is a mapping of completed step IDs to outputs. Fanout stage expressions also receive `item` and `prev`.
+
+### Migrating v0.x Specs
+
+`stratum migrate --check <old.yaml>` is a report-only classifier. It does not emit translated YAML.
+
+| V0.x construct | V1 construct |
+|---|---|
+| `functions` with `infer` or `compute`, plus `function` steps | Inline `do` task. Keep the step's `agent` when present, and do not translate `compute` to `set` |
+| Gate function plus routing fields | Nested `gate` object |
+| Inline `intent` step | `do` task |
+| Deterministic or judged predicates with one antecedent | Ensures on that antecedent |
+| `decompose` without cross-item dependencies | Task contract with `tasks: T[]`, followed by `fanout` |
+| `depends_on` | Data references plus `after` for remaining ordering edges |
+| `skip_if` | `when` with the condition inverted |
+| `flow` step plus `inputs` | `run` plus `with` |
+| `max_iterations` plus `exit_criterion` | `iterate: {max, until}` |
+| `parallel_dispatch` | Re-authored `fanout` |
+| Pipeline stage `when` | Fanout stage `when` |
+| Flow `max_rounds` | Flow `max_rounds` |
+| Reducible `next` routing | DAG edges and gate routing |
+| `on_fail` | `on_fail` targeting a topologically later step |
+| Legacy ensure expressions | Re-authored v1 expressions |
+| `output_schema` or `output_contract` | Named v1 contract language |
+| Route-dependent flow output | One static `output: {from, contract}` producer |
+
+Some legacy constructs have no v1 equivalent. These include verified or applied-gate judge predicates, judge budgets, score and accumulator fields, cross-item decompose dependencies, branch or manual parallel merge modes, certificate and timeout fields, nested pipeline regions, pipeline `exit_when`, gate policies, gate timeouts, and the top-level `workflow` block. Flatten or re-author supported regions. Unsupported regions must be redesigned before they can run on v1.
 
 ---
 
@@ -519,97 +461,148 @@ Return a resource's current state and its append-only, hash-chained transition/d
 
 ## Step Types
 
-### Function Steps
-
-Reference a named function definition. The function provides the intent, input schema, output contract, ensures, retries, and model.
+V1 has five mutually exclusive step constructs. This example includes all five:
 
 ```yaml
-steps:
-  - id: classify
-    function: classify_sentiment
-    inputs: {text: "$.input.text"}
+version: 1
+contracts:
+  Analysis:
+    summary: string
+    score: number
+  ItemResult:
+    value: string
+  Final:
+    message: string
+flows:
+  entry: main
+  main:
+    input:
+      topic: string
+      items: string[]
+    output:
+      from: "${finish.output}"
+      contract: Final
+    steps:
+      - id: analyze
+        do: "Analyze ${input.topic}"
+        agent: claude
+        out: Analysis
+      - id: normalize
+        after: [analyze]
+        set:
+          summary: "result.analyze.summary"
+          score: "result.analyze.score"
+        out: Analysis
+        ensure:
+          - expr: "result.score >= 0"
+      - id: review
+        after: [normalize]
+        gate:
+          on_approve: null
+          on_revise: null
+          on_kill: null
+      - id: inspect
+        after: [review]
+        fanout:
+          over: "${input.items}"
+          concurrency: 2
+          isolation: none
+          require: all
+          merge: sequential
+          steps:
+            - do: "Inspect ${item}"
+              agent: codex
+              out: ItemResult
+      - id: child
+        after: [inspect]
+        run: summarize
+        with:
+          topic: "${input.topic}"
+      - id: finish
+        after: [child]
+        do: "Finalize ${child.output.message}"
+        out: Final
+  summarize:
+    input:
+      topic: string
+    output:
+      from: "${write_summary.output}"
+      contract: Final
+    steps:
+      - id: write_summary
+        do: "Summarize ${input.topic}"
+        out: Final
 ```
 
-### Inline Steps (v0.2)
+### `do` Tasks
 
-Self-contained steps with `intent` and optional `agent`. No function reference needed. Execution fields (`ensure`, `retries`, `output_contract`, `model`, `budget`) are declared directly on the step.
+`do` contains the task text sent to an agent. `agent` defaults to `claude`. `out` names the result contract. A task may also declare `ensure`, `attempts`, `iterate`, `budget`, and `on_fail`.
 
-```yaml
-steps:
-  - id: analyze
-    intent: "Analyze the codebase for security vulnerabilities"
-    agent: claude
-    ensure:
-      - "result.vulnerabilities_checked == True"
-    retries: 2
-    output_contract: AnalysisResult
-```
+### `set` Steps
 
-### Flow Steps (v0.2)
+`set` evaluates each field expression without dispatching an agent. The resulting object is validated against the required `out` contract, then checked against any ensures. Set steps are deterministic and are not retried.
 
-Invoke a sub-flow defined in the same spec. The child flow runs to completion, and its output is unwrapped into the parent step's result.
+### `gate` Steps
 
-```yaml
-steps:
-  - id: run_tests
-    flow: test_suite
-    inputs: {project: "$.input.project"}
-    ensure:
-      - "result.all_passed == True"
-    on_fail: fix_tests
-```
+`gate` pauses the run until an external decision arrives. Its three route fields are required, although any of them may be `null`. Gate steps cannot carry task, retry, budget, or ensure fields.
 
-Flow steps must not have `agent`, `retries`, `model`, or `budget`. They may have `ensure` and `on_fail`.
+### `fanout` Steps
+
+`fanout.over` must be one full reference that resolves to an array. Each item moves through the declared stages. `${item}` is the source item and `${prev}` is the previous stage output. The final stage needs `out` when later steps or the flow output reference the fanout result.
+
+`isolation: worktree` gives each item a Git worktree. `merge` only accepts `sequential`. `require` decides how many item successes are needed before merge. `dispatch` defaults to `engine`. Consumer-dispatched worktree fanout has extra validation rules, including a required unconditional successor gate.
+
+### `run` Steps
+
+`run` names another flow in the same spec. `with` is required and its keys must exactly match the callee input keys. A run step's output contract is inherited from the callee. Non-entry flows cannot contain `run` or `fanout`, and recursive calls are rejected.
 
 ### Mode Exclusion
 
-Every step must have exactly one of `function`, `intent`, or `flow`. Having zero or more than one is a semantic error caught at parse time.
+Every step must have exactly one of `do`, `set`, `gate`, `fanout`, or `run`. Fields from one construct cannot be mixed into another.
 
 ---
 
 ## Ensures (Postconditions)
 
-Ensures are Python expressions evaluated against the step result. The result is available as `result` (dicts are wrapped in `SimpleNamespace` for attribute access).
+An `ensure` array contains strict predicate objects. Predicates run in order, and the first failure stops evaluation.
+
+| Predicate | Shape |
+|---|---|
+| Expression | `{expr: "result.confidence > 0.7"}` |
+| File exists | `{file_exists: "build/report.json"}` |
+| File contains text | `{file_contains: {path: "build/report.json", text: "passed"}}` |
+| Judged claim | `{judged: {statement: "result is accurate", stakes: "default"}}` |
+
+Judged stakes are `cheap`, `default`, or `paranoid`. A judged predicate fails closed if no judge runner is configured. File predicates require a workspace root and are jailed to that root.
 
 ### Expression Syntax
 
-```yaml
-ensure:
-  - "result.confidence > 0.7"
-  - "result.label != ''"
-  - "len(result.items) > 0"
-  - "result.status in ('success', 'partial')"
-```
+The v1 evaluator is a restricted expression language, not Python. It accepts JSON literals, member access, non-negative literal array indexes, function calls, parentheses, unary `!` and `-`, arithmetic, comparisons, `in`, `&&`, and `||`.
+
+In an ensure, `result` is the step output and `input` is the flow input. Fanout stage ensures also receive `item` and `prev`.
 
 ### Built-in Functions
 
 | Function | Signature | Description |
 |---|---|---|
-| `file_exists` | `file_exists(path)` | Returns `True` if the file exists on disk |
-| `file_contains` | `file_contains(path, substring)` | Returns `True` if the file contains the substring (10 MB limit) |
-| `len` | `len(x)` | Standard Python `len` |
-| `bool` | `bool(x)` | Standard Python `bool` |
-| `int` | `int(x)` | Standard Python `int` |
-| `str` | `str(x)` | Standard Python `str` |
+| `len` | `len(value)` | Length of a string, array, or object |
+| `any`, `all` | `any(array)`, `all(array)` | Truth test across an array |
+| `max`, `min` | `max(array)`, `min(array)` | Largest or smallest number or string |
+| `str`, `int`, `bool` | One argument | Restricted conversions |
+| `matches` | `matches(text, pattern)` | Bounded regular expression match |
+| `file_exists` | `file_exists(path)` | Check a file inside the workspace root |
+| `file_contains` | `file_contains(path, text)` | Check file content inside the workspace root |
 
 ### Safety
 
-- `__builtins__` is always empty -- no access to `os`, `sys`, `import`, etc.
-- Dunder attributes (`__`) are blocked at compile time
-- Expressions are compiled once and cached
+- Only `result`, `input`, `item`, and `prev` can be bound.
+- `__proto__`, `constructor`, and `prototype` member access is blocked.
+- Parsing, nesting, regular expression size, and regular expression input are bounded.
+- File helpers cannot escape the configured workspace root.
 
 ### Failure Behavior
 
-When an ensure expression fails, the server returns:
-```json
-{
-  "status": "ensure_failed",
-  "violations": ["ensure 'result.confidence > 0.7' failed"],
-  "retries_remaining": 2
-}
-```
-
-The agent receives the specific violations and can target its fix accordingly.
+An ensure failure records a structured failure reason. A `do` task is dispatched again while its `attempts` budget remains. Identical output evidence stops retries early because the same deterministic predicate cannot change its verdict.
 
 ---
 
@@ -617,38 +610,13 @@ The agent receives the specific violations and can target its fix accordingly.
 
 ### Contracts in the Spec
 
-Contracts define expected output shapes. Fields specify their type:
+Contracts use the field-to-type string language in the YAML reference. Task output is validated against `out` before ensures run. Flow output is validated again against `output.contract` when the referenced producer completes.
 
-```yaml
-contracts:
-  AnalysisResult:
-    summary: {type: string}
-    score: {type: number}
-    issues: {type: array}
-    metadata: {type: object}
-    is_valid: {type: boolean}
-```
-
-When a function or step references an output contract, the server resolves the contract fields and includes them in the step dispatch so the agent knows what shape to produce.
+`out` is required on `set`. A `do` step may omit `out` only when no later reference or flow output needs a contract for that result.
 
 ### Output Schema (Per-Step JSON Schema)
 
-Steps can declare a full JSON Schema for structural validation. This runs **before** ensure expressions:
-
-```yaml
-steps:
-  - id: s1
-    function: do_work
-    inputs: {text: "$.input.text"}
-    output_schema:
-      type: object
-      required: [done, tests_pass]
-      properties:
-        done: {type: boolean}
-        tests_pass: {type: boolean}
-```
-
-Schema violations are returned as `status: "schema_failed"` with specific error messages.
+V1 does not accept per-step `output_schema` or `output_contract`. Move supported fields into a named contract and reference it with `out`. The v1 contract language supports the types listed above, but it is not arbitrary JSON Schema.
 
 ---
 
@@ -658,222 +626,182 @@ Gates are approval checkpoints that pause flow execution until resolved external
 
 ### Defining a Gate
 
-```yaml
-functions:
-  approval:
-    mode: gate
-    timeout: 3600    # optional — auto-kill after 1 hour
-
-flows:
-  my_flow:
-    max_rounds: 3    # optional — limit revise cycles
-    steps:
-      - id: work
-        function: do_work
-        inputs: {text: "$.input.text"}
-      - id: review
-        function: approval
-        on_approve: ~           # null = complete the flow
-        on_revise: work         # must target a topologically earlier step
-        on_kill: ~              # null = terminate the flow
-```
+Declare the gate directly on a step, as shown in the [full gate example](#full-example-with-a-gate). There is no gate function declaration in v1.
 
 ### Gate Constraints
 
-- Gate functions must not have `ensure`, `budget`, or `retries`
-- Gate steps must not have `skip_if` or `output_schema`
-- Gate steps must explicitly declare `on_approve` and `on_kill` (even if null)
-- `on_revise` must be non-null and must target a topologically earlier step
-- `on_revise` must not self-reference
+- `on_approve`, `on_revise`, and `on_kill` are all required and nullable.
+- Named approve and kill targets must preserve an acyclic routing graph.
+- A usable revise target must be a strict ancestor of the gate.
+- Any non-null revise target requires flow-level `max_rounds`.
+- Gate-level `max_rounds` may impose a tighter positive limit on that gate.
+- A gate step accepts only common fields and the nested `gate` object.
 
 ### Resolution
 
-Gates are resolved via `stratum_gate_resolve` or the CLI `stratum gate` command:
+Gates are resolved through `stratum_gate_resolve` with `runId`, `stepId`, `decision`, and the observation-time `gateToken`. The token fences stale decisions. The CLI uses `approve`, `revise`, and `reject`, where `reject` maps to the engine's `kill` decision.
 
-- **approve** -- routes to `on_approve` target (or completes flow if null)
-- **revise** -- archives the current round, resets state, routes to `on_revise` target
-- **kill** -- routes to `on_kill` target (or terminates flow with `status: "killed"` if null)
+- **approve** routes to `on_approve`, or completes the gate when the route is `null`.
+- **revise** resets the affected descendant region and routes to `on_revise` while round limits remain.
+- **kill** routes to `on_kill`, or terminates the run when the route is `null`.
 
-`resolved_by` is one of `"human"`, `"agent"`, or `"system"`.
-
-### Gate Policies (v0.2)
-
-Gate steps can have an auto-resolution policy:
-
-```yaml
-- id: review
-  function: approval
-  policy: skip          # auto-approve without pausing
-  policy_fallback: gate # fall back to manual gate if policy fails
-  on_approve: ~
-  on_revise: work
-  on_kill: ~
-```
-
-| Policy | Behavior |
-|---|---|
-| `gate` | Default -- pause and wait for resolution |
-| `flag` | Auto-approve, but log a PolicyRecord in the trace |
-| `skip` | Auto-approve silently |
-
-`policy_fallback` requires `policy` to be set.
-
-### Timeout
-
-If a gate function has `timeout` set, `stratum_check_timeouts` will auto-kill the gate with `resolved_by: "system"` when the timeout expires.
+Gate policies, policy fallbacks, and gate timeouts were not ported to v1. Resolve every waiting gate explicitly.
 
 ### Rounds
 
-When a gate is resolved with `revise`, the current round's trace is archived into `state.rounds`, the active trace is reset, and the round counter increments. `max_rounds` on the flow limits how many revise cycles are allowed.
+Each successful revise increments the flow round counter and the gate's local revision counter. The flow and optional gate limits are enforced before another revision begins.
 
 ---
 
 ## Flow Composition
 
-Steps with `flow:` invoke a sub-flow defined in the same spec. The parent flow suspends until the child completes.
+Steps with `run` invoke a subflow defined in the same spec. The parent step completes only after the child flow produces and validates its output.
 
 ```yaml
+version: 1
+contracts:
+  TestResult:
+    all_passed: boolean
+  DeployResult:
+    status: string
 flows:
+  entry: deploy
   integration_tests:
-    input: {project: {type: string}}
-    output: TestResult
+    input:
+      project: string
+    output:
+      from: "${run_tests.output}"
+      contract: TestResult
     steps:
-      - id: run
-        intent: "Run integration tests"
+      - id: run_tests
+        do: "Run integration tests for ${input.project}"
+        out: TestResult
         ensure:
-          - "result.all_passed == True"
-
+          - expr: "result.all_passed == true"
   deploy:
-    input: {project: {type: string}}
-    output: DeployResult
+    input:
+      project: string
+    output:
+      from: "${release.output}"
+      contract: DeployResult
     steps:
       - id: test
-        flow: integration_tests
-        inputs: {project: "$.input.project"}
-        on_fail: rollback
+        run: integration_tests
+        with:
+          project: "${input.project}"
       - id: release
-        intent: "Deploy to production"
-      - id: rollback
-        intent: "Roll back deployment"
+        after: [test]
+        do: "Deploy after test result ${test.output.all_passed}"
+        out: DeployResult
 ```
 
-- Child flows get their own `FlowState` and `flow_id`
-- Child audit snapshots are accumulated in `child_audits` on the parent
-- Recursive flow references are detected and rejected at parse time
-- Flow steps must not set `agent`, `retries`, `model`, or `budget`
+- `with` values may contain nested literals and `${...}` references.
+- `with` keys must exactly match the callee input fields.
+- The run step inherits the callee output contract.
+- A run step may set `budget` and `on_fail`.
+- Recursive calls are rejected.
+- Non-entry flows cannot contain another `run` or a `fanout`.
 
 ---
 
 ## Routing
 
-### `on_fail` -- Recovery Routing
+### `on_fail` Recovery Routing
 
-Routes to a named recovery step when retries are exhausted (requires `ensure` or `output_schema`):
-
-```yaml
-- id: generate
-  function: generate_code
-  inputs: {spec: "$.input.spec"}
-  on_fail: manual_fix
-
-- id: manual_fix
-  intent: "Fix the generated code manually"
-```
-
-The failed step's output is preserved so the recovery step can access it via `$.steps.generate.output`.
-
-### `next` -- Success Routing
-
-Overrides linear step advancement on success. Enables review loops:
+`on_fail` activates a named recovery step after a task, fanout, or subflow exhausts its failure path. The target must be later in the validated DAG.
 
 ```yaml
-- id: write
-  intent: "Write the code"
-  next: review
-
-- id: review
-  intent: "Review the code"
-  ensure:
-    - "result.approved == True"
-  on_fail: write
+version: 1
+contracts:
+  TaskResult:
+    ok: boolean
+    details: string
+flows:
+  entry: build
+  build:
+    input:
+      spec: string
+    output:
+      from: "${publish.output}"
+      contract: TaskResult
+    steps:
+      - id: generate
+        do: "Generate code for ${input.spec}"
+        out: TaskResult
+        attempts: 2
+        on_fail: recover
+      - id: verify
+        after: [generate]
+        when: "result.generate.ok == true"
+        do: "Verify the generated code"
+        out: TaskResult
+      - id: recover
+        do: "Repair generation failure"
+        out: TaskResult
+      - id: publish
+        after: [verify, recover]
+        do: "Publish the final result"
+        out: TaskResult
 ```
 
-When `next` routes to a step, that step's attempts are cleared for fresh execution.
+Route-only recovery steps are skipped when their source succeeds. Downstream steps may depend on both the normal and recovery branches because skipped dependencies satisfy ordering edges.
+
+### Success Routing
+
+V1 has no `next` field. Success follows the DAG formed by `after` and step-output references. Gates provide explicit approve and kill routes. Backward success jumps are not supported.
 
 ### Conditional Skip
 
-Steps can be conditionally skipped based on prior outputs:
-
-```yaml
-- id: deploy
-  intent: "Deploy to staging"
-  skip_if: "$.steps.tests.output.all_passed == False"
-  skip_reason: "Tests failed, skipping deployment"
-```
-
-Skipped steps have their output set to `None`. Gate steps cannot have `skip_if`.
-
-`skip_if` expressions support `$` references, Python-style booleans (`True`, `False`, `None`), and YAML-style literals (`true`, `false`, `null`).
+`when` is a positive v1 expression. The step runs only when the expression evaluates to `true`. Any other result skips the step. To migrate `skip_if`, invert the condition. A skipped step has no output, so later data references to it cannot resolve.
 
 ---
 
 ## Iterations
 
-Steps with `max_iterations` support counted sub-loops. The agent iterates until `exit_criterion` is met or the maximum count is reached.
+`iterate` repeats a `do` task until its predicate holds or its positive `max` is reached.
 
 ```yaml
-- id: refine
-  intent: "Improve the output quality"
-  max_iterations: 5
-  exit_criterion: "result.quality >= 0.95"
+version: 1
+contracts:
+  Draft:
+    text: string
+    quality: number
+flows:
+  entry: refine
+  refine:
+    input:
+      brief: string
+    output:
+      from: "${improve.output}"
+      contract: Draft
+    steps:
+      - id: improve
+        do: "Improve the draft for ${input.brief}"
+        out: Draft
+        iterate:
+          max: 5
+          until: "result.quality >= 0.95"
 ```
 
-**Iteration workflow:**
-1. `stratum_iteration_start(flow_id, step_id)` -- begins the loop
-2. `stratum_iteration_report(flow_id, step_id, result)` -- reports each iteration; server evaluates `exit_criterion`
-3. Returns `iteration_continue` or `iteration_exit`
-4. `stratum_iteration_abort(flow_id, step_id, reason)` -- early exit
+The engine evaluates `until` after contracts and ensures pass. A false result records the attempt and redispatches the task. Repeated identical output stops early. Max exhaustion enters the normal failure path, including `on_fail` routing.
 
-Gate steps cannot use iterations. `exit_criterion` requires `max_iterations`. Iteration history is preserved across gate revise cycles in `archived_iterations`.
+### Removed Iteration Fields
 
-### Accumulator & loop-until-dry
-
-An iteration step can accumulate deduped items across rounds and exit when it stops finding
-new ones. Declare `accumulate` (an expression returning the round's item list) and optionally
-`accumulate_key` (a per-item dedup key, binding `item`):
-
-```yaml
-- id: hunt
-  intent: "Find issues; keep hunting until two dry rounds"
-  max_iterations: 20
-  accumulate: "result.findings"        # list extracted from each result
-  accumulate_key: "item.id"            # optional; default dedups on the whole item
-  exit_criterion: "dry_streak >= 2"    # K consecutive zero-new rounds → exit
-```
-
-`exit_criterion` additionally sees `accumulator` (the deduped list), `accumulated_count`,
-`new_count` (items added this round), and `dry_streak` (consecutive zero-new rounds) — compose
-them freely, e.g. `"dry_streak >= 2 or accumulated_count >= 50"`. On exit the deduped set is
-merged into the step's authoritative output as `accumulated`/`accumulated_count`. A malformed
-`accumulate`/`accumulate_key` is reported as `accumulate_error` and **freezes `dry_streak`** (a
-broken extractor can't fake dryness); accumulator loops are governed solely by `exit_criterion`
-and `max_iterations` (fingerprint-stagnation does not preempt them). Not valid on gate,
-`decompose`, or `parallel_dispatch` steps.
+V0.x `score_expr`, `accumulate`, and `accumulate_key` have no v1 equivalent. V1 also has no separate iteration lifecycle tools. Iteration is part of normal task dispatch and result reporting.
 
 ---
 
 ## Checkpoints
 
-Named snapshots of flow state for rollback scenarios.
+Checkpoints are runtime operations, not YAML constructs. `stratum_commit` accepts `flow_id` and a non-empty `label`. `stratum_revert` accepts the same fields and re-advances the restored run.
 
-```yaml
-# During execution:
-stratum_commit(flow_id, "after_analysis")
-# ... later steps fail ...
-stratum_revert(flow_id, "after_analysis")
+```json
+{"flow_id": "<run-id>", "label": "after_analysis"}
 ```
 
-Checkpoints capture: `step_outputs`, `attempts`, `records`, `current_idx`, round state, iteration state, and child flow state. They survive server restarts (persisted to disk).
+A checkpoint captures run status, output, failure, spent budget, rounds, step state, audit events, cancellation state, and parallel state. It does not snapshot the spec, input, workspace files, run identity, or the checkpoint list itself. Commit and revert are state-only operations. The caller owns file-level rollback.
+
+Checkpoints are stored with the persisted run and survive server restarts. Reusing a label replaces its snapshot while keeping the label's original insertion position.
 
 ---
 
@@ -881,51 +809,52 @@ Checkpoints capture: `step_outputs`, `attempts`, `records`, `current_idx`, round
 
 ### Retry Budget
 
-Each function or inline step declares a retry count (default 3 for functions, 1 for inline steps). The server tracks attempts per step.
+`do` tasks and fanout steps use `attempts`, with a default of two. A fanout stage can override the enclosing fanout attempt limit. `set` is deterministic and does not retry. `run` does not accept an `attempts` field.
 
 ### Retry Flow
 
-1. Agent submits result via `stratum_step_done`
-2. Server validates against `output_schema` (if declared) -- structural errors first
-3. Server evaluates `ensure` expressions
-4. If violations exist and retries remain: returns `ensure_failed` or `schema_failed` with violations and remaining retry count
-5. If retries exhausted and `on_fail` is set: routes to recovery step
-6. If retries exhausted with no `on_fail`: returns `retries_exhausted` error
+1. The executor reports a task result with the current dispatch token.
+2. The engine validates the result against `out`.
+3. The engine evaluates ensures in declaration order.
+4. The engine evaluates `iterate.until` when iteration is configured.
+5. A failure redispatches the task while attempts remain and evidence changed.
+6. Exhaustion activates `on_fail` when configured, otherwise it fails the flow.
 
 ### Persistence
 
-Flow state is persisted to `~/.stratum/flows/{flow_id}.json` after each state mutation. Flows survive MCP server restarts. Timing fields are reset on restore (step durations may be inaccurate for the resumed step).
+Flow state is persisted to `~/.stratum/ts/flows/{runId}.json` after state mutations. Runs survive MCP server restarts.
 
 ### Server Restart Recovery
 
-On any tool call, if the flow is not in memory, the server attempts to restore it from disk. The spec is re-parsed, steps are re-sorted, and execution resumes from the persisted `current_idx`.
+The engine loads a missing run from disk, revalidates its persisted spec, and resumes from persisted DAG state. Dispatch and gate tokens prevent stale work from mutating a newer issuance.
 
 ---
 
 ## Workflows
 
-> **Legacy note:** `stratum_list_workflows` was retired with the python server (not ported —
-> no live consumer). The workflow/flow terminology below still applies; the discovery
-> tool does not.
-
-Workflow declarations make specs discoverable via `stratum_list_workflows`:
+V1 has no top-level `workflow` declaration and no discovery registry. Name the file for people, and select the executable entry flow with `flows.entry`. The former code-review workflow becomes a normal v1 specification:
 
 ```yaml
-version: "0.2"
-workflow:
-  name: code-review
-  description: "Three-pass code review: security, logic, performance"
-  input:
-    files:
-      type: array
-      required: true
-    depth:
-      type: string
-      required: false
-      default: "standard"
+version: 1
+contracts:
+  ReviewResult:
+    summary: string
+flows:
+  entry: code_review
+  code_review:
+    input:
+      files: string[]
+      depth: string?
+    output:
+      from: "${review.output}"
+      contract: ReviewResult
+    steps:
+      - id: review
+        do: "Review ${input.files} for security, logic, and performance"
+        out: ReviewResult
 ```
 
-`stratum_list_workflows` scans a directory for `*.stratum.yaml` files with `workflow:` blocks and returns their metadata. Duplicate workflow names are reported as errors.
+V1 input contracts support optional fields, but not default values. The caller supplies defaults before planning a run.
 
 ---
 

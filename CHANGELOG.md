@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### feat: deterministic `fixture` judge backend for testing judged ensures (#19)
+
+`judgeBackend()` supported only `openai | codex`, so any pipeline carrying a
+`judged:` ensure could only be exercised via live, minute-long, non-deterministic
+LLM calls, leaving judged-ensure code paths (budget debit, fanout per-item
+judged events, failure routing) without deterministic coverage. Added
+`STRATUM_JUDGE_BACKEND=fixture`, which resolves judged predicates from canned
+verdicts supplied via `STRATUM_JUDGE_FIXTURE` (a statement-keyed JSON object or
+an ordered verdict array), returning the real `JudgedResult` shape
+(holds/reason/stakes/model/usage) so budget debits and `judged` audit events run
+the real paths. Guarded to `NODE_ENV="test"` at both backend selection and in
+the fixture constructor. Tests cover the production guard, keyed + scripted
+verdicts, retry exhaustion, on_fail routing, and fanout per-item judged events
+with `source: "judged"` ledger debits.
+
+### docs: rewrite the README YAML reference to v1 (retire the v0.x dialect) (#20)
+
+Merge day made the TS engine execute `version: 1` specs exclusively, but the
+README's YAML Spec Reference still documented the retired v0.x dialect behind a
+"pending v1 rewrite" banner. Rewrote the spec reference and concept sections to
+real v1 syntax sourced from the zod IR schema (`ts/src/ir/`) and the
+`stratum migrate --check` legacy classifications: top-level shape (`version: 1`,
+`contracts`, `flows` with `entry`, step `do`/`out`, `${}` refs), per-construct
+sections (step types, ensures, gates, routing, composition, iterations,
+checkpoints), and both former `version: "0.2"` examples replaced. All seven
+complete examples pass `stratum validate`. Constructs with no v1 equivalent are
+documented as removals rather than invented syntax. Banner removed.
+
 ### feat: expose `isFinalStage` on consumer ready-descriptors (#16)
 
 Consumer ready-descriptors omitted whether a stage was the item's LAST stage,
