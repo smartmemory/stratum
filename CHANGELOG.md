@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### fix: migrate CLI bootstrap loader to `module.registerHooks()` (DEP0205, #7)
+
+The TS bins (`stratum`, `stratum-mcp`) registered the NodeNext `.js`->`.ts`
+resolver via the deprecated loader-based `module.register()`, which emits
+`DEP0205` on node >=26 and is slated for removal. Migrated
+`ts/src/cli/bootstrap.mjs` to `module.registerHooks({ resolve })` and made the
+`resolve` hook in `ts/src/cli/ts-resolver.mjs` synchronous (it only remaps the
+specifier, so an in-thread synchronous hook is behaviorally equivalent). Both
+bins verified to still resolve `.js`->`.ts` deep-import chains after the change
+(CLI usage + `validate` subcommand load, MCP bin clean boot). No behavior
+change today; removes the deprecation before it becomes a hard break.
+
 ### feat: workspace-write background agent runs + tool allowlists over MCP (STRAT-AGENT-BG-WRITE-1, #18)
 
 Claude agents can now run in BACKGROUND with run/poll/cancel, and codex
