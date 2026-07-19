@@ -1,59 +1,102 @@
-name: Publish to PyPI
+name: Publish Stable Release
+
+# Publishes @smartmemory/stratum (the TS engine in ts/) to npm on a vX.Y.Z tag.
+# Replaces the retired PyPI workflow (stratum-py / stratum-mcp were deleted in
+# the 2026-07 TS cutover). Requires the NPM_TOKEN repo secret.
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "stratum-mcp/pyproject.toml"
-      - "pyproject.toml"
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.3.1). Leave empty to use ts/package.json version.'
+        required: false
+        type: string
 
 jobs:
-  publish-mcp:
+  publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          fetch-depth: 0
 
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build stratum-mcp
-        run: python -m build
-        working-directory: stratum-mcp
-
-      - name: Publish stratum-mcp
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/setup-node@v4
         with:
-          packages-dir: stratum-mcp/dist/
-          verbose: true
-          skip-existing: true
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
 
-  publish-py:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [[ "$REF_NAME" == v* ]]; then
+            VERSION="${REF_NAME#v}"
+          else
+            VERSION=$(node -p "require('./ts/package.json').version.split('-')[0]")
+          fi
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format: $VERSION"
+            exit 1
+          fi
 
-      - name: Install build tools
-        run: pip install build
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Releasing stable version: $VERSION"
 
-      - name: Build stratum-py
-        run: python -m build
+      - name: Update version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = 'ts/package.json';
+          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+          pkg.version = process.env.VERSION;
+          fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+          "
 
-      - name: Publish stratum-py
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verbose: true
-          skip-existing: true
+      - name: Install and build
+        working-directory: ts
+        run: npm install && npm run build
+
+      - name: Run tests
+        working-directory: ts
+        run: npm test
+
+      - name: Publish to npm (stable)
+        working-directory: ts
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! git tag -l "v${VERSION}" | grep -q "v${VERSION}"; then
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+          gh release create "v${VERSION}" --title "v${VERSION}" --notes "Stable release v${VERSION}" --latest || echo "Release may already exist"
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "## ✅ @smartmemory/stratum ${VERSION} published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Wire a consumer with:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          echo '"stratum": { "command": "npx", "args": ["-y", "--package=@smartmemory/stratum@'"${VERSION}"'", "stratum-mcp"] }' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

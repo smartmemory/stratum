@@ -2,30 +2,30 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 jobs:
-  # Single hermetic suite — no compose checkout, no secrets, no Docker/model
-  # access. Runs both packages in one process to preserve the cross-package
-  # contamination guard. Cross-repo contract tests skip when compose/contracts
-  # is absent; live model/Docker judge gates skip without OPENAI_API_KEY. To run
-  # those for real, check out compose as a sibling and export OPENAI_API_KEY
-  # locally (or wire a manual job later).
+  # TS engine suite (ts/). Replaces the retired Python pytest suite — stratum-py
+  # and stratum-mcp were deleted in the 2026-07 TS cutover. Live model/Docker
+  # judge gates skip without OPENAI_API_KEY.
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
+          node-version: '22'
 
-      - name: Install stratum-py (dev)
-        run: pip install -e ".[dev]"
+      - name: Install
+        working-directory: ts
+        run: npm install
 
-      - name: Install stratum-mcp
-        run: pip install -e "stratum-mcp"
+      - name: Typecheck
+        working-directory: ts
+        run: npm run typecheck
 
-      - name: Hermetic combined suite (cross-contamination guard)
-        run: pytest tests/ stratum-mcp/tests/ --ignore=tests/test_e2e.py --timeout=15 -q
+      - name: Test
+        working-directory: ts
+        run: npm test
