@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### feat: expose `isFinalStage` on consumer ready-descriptors (#16)
+
+Consumer ready-descriptors omitted whether a stage was the item's LAST stage,
+so Compose derived finality from its locally loaded pipeline — safe only because
+it pins/verifies `revisionDigest`, but a quiet violation of the "reconstructable
+with no local spec" guarantee that forced every consumer to keep a verified
+spec copy. Added `isFinalStage: boolean` to the descriptor, computed engine-side
+as `item.stage === step.fanout.steps.length - 1` — the exact predicate the
+authoritative stage-completion/advance logic already uses, so the flag cannot
+drift from real completion. Frozen MCP surface contract updated across all five
+ready-response descriptors (`stratum_plan`, `stratum_step_done`,
+`stratum_revert`, `stratum_resume`, `stratum_gate_resolve`). Additive and
+backward-compatible. Tests cover single-stage (true), multi-stage
+(false→true at the last stage), and the frozen contract-compliance check.
+
 ### fix: no orphaned detached process when background-run metadata fails to persist (#15)
 
 `startBackgroundRun` spawned and `unref()`'d the detached codex wrapper before

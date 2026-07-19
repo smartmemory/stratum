@@ -784,7 +784,7 @@ describe("P4 consumer-dispatched fanout", () => {
     const first = planned.ready[0] as unknown as Record<string, unknown>;
     expect(first).toMatchObject({
       id: "fan/0", do: "seed a", agent: "codex", attempt: 1, epoch: 0,
-      flow: "main", step: "fan", stage: 0, itemIndex: 0, generation: 1,
+      flow: "main", step: "fan", stage: 0, isFinalStage: false, itemIndex: 0, generation: 1,
       contract: { root: "StageOne", contracts: {
         StageOne: { seed: "string", meta: "Meta", history: "Meta[]" },
         Meta: { labels: "string[]", matrix: "integer[][]" },
@@ -808,7 +808,7 @@ describe("P4 consumer-dispatched fanout", () => {
     );
     if (next.status !== "ready") throw new Error("expected next stage");
     const second = next.ready.find((entry) => entry.id === "fan/0") as unknown as Record<string, unknown>;
-    expect(second).toMatchObject({ stage: 1, do: "finish a from {\"seed\":\"a\",\"meta\":{\"labels\":[\"x\"],\"matrix\":[[1]]},\"history\":[]}", itemIndex: 0, generation: 1 });
+    expect(second).toMatchObject({ stage: 1, isFinalStage: true, do: "finish a from {\"seed\":\"a\",\"meta\":{\"labels\":[\"x\"],\"matrix\":[[1]]},\"history\":[]}", itemIndex: 0, generation: 1 });
     expect(second.dispatchToken).not.toBe(firstToken);
     await expect(e.stepDone(planned.runId, "fan/0", { output: { value: "stale" } }, firstToken)).rejects.toThrow(/stale/);
     const afterFirst = await e.stepDone(planned.runId, "fan/0", { output: { value: "A" } }, second.dispatchToken as string);
@@ -835,6 +835,7 @@ describe("P4 consumer-dispatched fanout", () => {
     const planned = await e.plan(spec, { items: ["a"] });
     if (planned.status !== "ready") throw new Error("expected consumer item");
     const first = planned.ready[0]!;
+    expect(first as unknown as Record<string, unknown>).toMatchObject({ isFinalStage: true });
     const schemaRetry = await e.stepDone(planned.runId, "fan/0", { output: { nope: true } }, first.dispatchToken);
     if (schemaRetry.status !== "ready") throw new Error("expected contract retry");
     expect(schemaRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 2, previousFailure: { reason: expect.stringContaining("Unrecognized key") } });
@@ -1094,6 +1095,28 @@ describe("P4 frozen contracts", () => {
     const fPlanned = await f.plan(fSpec, { items: ["a"], name: "done" }, { workspaceRoot: repo });
     await waitForTerminal(f, fPlanned.runId);
     await collect(f, fPlanned.runId);
+
+    // Run G — consumer fanout: its ready descriptor must match the frozen surface shape.
+    const g = await engine();
+    const gSpec = {
+      version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", fanout: {
+          over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: "all", merge: "sequential",
+          steps: [{ do: "consume ${item}", out: "Result" }],
+        } }],
+      } },
+    };
+    const gPlanned = await g.plan(gSpec, { items: ["a"] });
+    responses.push({ tool: "stratum_plan", value: gPlanned as unknown as Record<string, unknown> });
+    if (gPlanned.status !== "ready") throw new Error("expected consumer descriptor");
+    responses.push({
+      tool: "stratum_step_done",
+      value: await g.stepDone(
+        gPlanned.runId, "fan/0", { output: { value: "done" } }, gPlanned.ready[0]!.dispatchToken,
+      ) as unknown as Record<string, unknown>,
+    });
+    await collect(g, gPlanned.runId);
 
     for (const { engine: source, runId } of runIds) allEvents.push(...(await source.audit(runId)).events);
 
