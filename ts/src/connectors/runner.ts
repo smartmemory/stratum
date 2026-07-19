@@ -1,4 +1,4 @@
-import type { AgentType, CodexSandboxMode, ConnectorResult } from "./base.js";
+import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { startBackgroundRun } from "./background.js";
 import { ClaudeConnector, type QueryFunction } from "./claude.js";
 import { CodexConnector, type SpawnProcess } from "./codex.js";
@@ -20,6 +20,8 @@ export interface AgentRunOptions {
   env?: NodeJS.ProcessEnv;
   allowedTools?: string[];
   disallowedTools?: string[];
+  /** Foreground connector narration; omitted for background runs. */
+  onEvent?: ConnectorEventHandler;
 }
 
 export interface AgentRunBoundaries {
@@ -80,6 +82,7 @@ export async function runAgent(
       ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       ...(boundaries.codexSpawn !== undefined ? { spawn: boundaries.codexSpawn } : {}),
+      ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
     }).run(options.prompt);
   }
   return new ClaudeConnector({
@@ -89,5 +92,6 @@ export async function runAgent(
     ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
     ...(options.env !== undefined ? { env: options.env } : {}),
     ...(boundaries.claudeQuery !== undefined ? { query: boundaries.claudeQuery } : {}),
+    ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
   }).run(options.prompt);
 }

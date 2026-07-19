@@ -36,6 +36,16 @@ const slowAgent = (delayMs: number): NonNullable<McpDependencies["runAgent"]> =>
   return { text: "ok", usage: {}, telemetry: { durationMs: delayMs, model: "stub" } };
 };
 
+const streamingAgent: NonNullable<McpDependencies["runAgent"]> = async (options) => {
+  const onEvent = (options as typeof options & {
+    onEvent?: (event: { kind: string; metadata: Record<string, unknown> }) => Promise<void>;
+  }).onEvent;
+  await onEvent?.({ kind: "agent_started", metadata: { agent: "claude", model: "stub", prompt_chars: 6 } });
+  await onEvent?.({ kind: "agent_relay", metadata: { text: "visible", role: "assistant" } });
+  await onEvent?.({ kind: "step_usage", metadata: { input_tokens: 3, output_tokens: 4, model: "stub" } });
+  return { text: "visible", usage: { tokens: 7 }, telemetry: { durationMs: 1, model: "stub" } };
+};
+
 function status(result: unknown): unknown {
   const first = (result as { content: Array<{ type: string; text?: string }> }).content[0];
   expect(first?.type).toBe("text");
@@ -43,6 +53,44 @@ function status(result: unknown): unknown {
 }
 
 describe("progress heartbeats during tool calls", () => {
+  it("forwards connector events as BuildStreamEvent JSON in progress messages", async () => {
+    const pair = await connected({ runAgent: streamingAgent, heartbeatMs: 60_000 });
+    try {
+      const messages: string[] = [];
+      const result = await pair.client.callTool(
+        { name: "stratum_agent_run", arguments: { agent: "claude", prompt: "stream", cwd: process.cwd() } },
+        undefined,
+        {
+          onprogress: (notification) => {
+            if (typeof notification.message === "string") messages.push(notification.message);
+          },
+          resetTimeoutOnProgress: true,
+          timeout: 60_000,
+        },
+      );
+      expect(status(result)).toBe("complete");
+      expect(messages).toHaveLength(3);
+      const events = messages.map((message) => JSON.parse(message) as Record<string, unknown>);
+      expect(events.map((event) => event.kind)).toEqual(["agent_started", "agent_relay", "step_usage"]);
+      expect(events.map((event) => event.seq)).toEqual([0, 1, 2]);
+      for (const event of events) {
+        expect(event).toEqual({
+          schema_version: "0.2.7",
+          flow_id: expect.any(String),
+          step_id: "_agent_run",
+          seq: expect.any(Number),
+          ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+          kind: expect.any(String),
+          metadata: expect.any(Object),
+          reply_required: false,
+        });
+        expect(event).not.toHaveProperty("task_id");
+      }
+      expect(new Set(events.map((event) => event.flow_id)).size).toBe(1);
+      expect(events[1]?.metadata).toEqual({ text: "visible", role: "assistant" });
+    } finally { await pair.close(); }
+  });
+
   it("emits notifications/progress while stratum_agent_run executes when the request carries a progressToken", async () => {
     const pair = await connected({ runAgent: slowAgent(150), heartbeatMs: 25 });
     try {

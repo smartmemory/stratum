@@ -1,8 +1,10 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
+import type { ConnectorEventHandler } from "../connectors/base.js";
 import { CheckpointOperationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { validateSpec } from "../ir/validate.js";
@@ -36,7 +38,11 @@ export type ToolName =
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
   | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_history";
 
-export interface ToolDispatcher { call(tool: ToolName, request: Record<string, unknown>): Promise<Record<string, unknown>> }
+interface ToolCallContext { onAgentEvent?: ConnectorEventHandler }
+
+export interface ToolDispatcher {
+  call(tool: ToolName, request: Record<string, unknown>, context?: ToolCallContext): Promise<Record<string, unknown>>;
+}
 
 /**
  * Judged-ensure backend: explicit via STRATUM_JUDGE_BACKEND, otherwise keyed
@@ -76,7 +82,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
   const agentPoll = dependencies.pollBackgroundRun ?? pollBackgroundRun;
   const agentCancel = dependencies.cancelBackgroundRun ?? cancelBackgroundRun;
   return {
-    async call(tool, request) {
+    async call(tool, request, context = {}) {
       try {
         await assertToolRequest(tool, request);
         let response: Record<string, unknown>;
@@ -142,6 +148,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             ...(typeof request.background === "boolean" ? { background: request.background } : {}),
             ...(allowedTools !== undefined ? { allowedTools } : {}),
             ...(disallowedTools !== undefined ? { disallowedTools } : {}),
+            ...(context.onAgentEvent !== undefined ? { onEvent: context.onAgentEvent } : {}),
           });
           response = "status" in executed ? { ...executed } : { status: "complete", ...executed };
           break;
@@ -220,18 +227,47 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
   const heartbeatMs = dependencies.heartbeatMs ?? 15_000;
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const progressToken = request.params._meta?.progressToken;
+    let progressSeq = 0;
+    const sendProgress = async (message?: string): Promise<void> => {
+      if (progressToken === undefined) return;
+      progressSeq += 1;
+      try {
+        await extra.sendNotification({
+          method: "notifications/progress",
+          params: { progressToken, progress: progressSeq, ...(message !== undefined ? { message } : {}) },
+        });
+      } catch { /* transport gone — the call itself will surface the failure */ }
+    };
     let heartbeat: NodeJS.Timeout | undefined;
     if (progressToken !== undefined) {
-      let seq = 0;
       heartbeat = setInterval(() => {
-        seq += 1;
-        void extra.sendNotification({ method: "notifications/progress", params: { progressToken, progress: seq } })
-          .catch(() => { /* transport gone — the call itself will surface the failure */ });
+        void sendProgress();
       }, heartbeatMs);
       heartbeat.unref?.();
     }
     try {
-      const payload = await dispatcher.call(request.params.name as ToolName, request.params.arguments ?? {});
+      let context: ToolCallContext | undefined;
+      if (request.params.name === "stratum_agent_run" && progressToken !== undefined) {
+        const flowId = randomUUID();
+        let eventSeq = 0;
+        context = {
+          onAgentEvent: async (event) => {
+            const message = JSON.stringify({
+              schema_version: "0.2.7",
+              flow_id: flowId,
+              step_id: "_agent_run",
+              seq: eventSeq,
+              ts: new Date().toISOString(),
+              kind: event.kind,
+              metadata: event.metadata,
+              reply_required: false,
+            });
+            eventSeq += 1;
+            await sendProgress(message);
+          },
+        };
+      }
+      const payload = await dispatcher.call(request.params.name as ToolName, request.params.arguments ?? {}, context);
       return { content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload };
     } finally {
       if (heartbeat !== undefined) clearInterval(heartbeat);

@@ -11,6 +11,53 @@ async function* messages() {
 }
 
 describe("ClaudeConnector", () => {
+  it("maps live assistant, tool, result, and usage messages to connector events", async () => {
+    const query: QueryFunction = async function* () {
+      yield {
+        type: "assistant",
+        message: { content: [
+          { type: "text", text: "working" },
+          { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "/work/a.ts" } },
+        ] },
+      };
+      yield {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "contents", is_error: false }] },
+      };
+      yield {
+        type: "result", subtype: "success", result: "done", duration_ms: 5, total_cost_usd: 0.01,
+        usage: { input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 2, cache_read_input_tokens: 1 },
+      };
+    };
+    const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
+    const connector = new ClaudeConnector({
+      model: "claude-test",
+      query,
+      onEvent: async (event) => { events.push(event); },
+    });
+
+    await expect(connector.run("ping")).resolves.toMatchObject({ text: "done", usage: { tokens: 7 } });
+    expect(events).toEqual([
+      { kind: "agent_started", metadata: { agent: "claude", model: "claude-test", prompt_chars: 4 } },
+      { kind: "agent_relay", metadata: { text: "working", role: "assistant" } },
+      {
+        kind: "tool_use_summary",
+        metadata: {
+          tool: "Read", summary: "/work/a.ts", ok: true, duration_ms: 0,
+          input: { file_path: "/work/a.ts" }, tool_use_id: "toolu_1",
+        },
+      },
+      { kind: "tool_result", metadata: { tool_use_id: "toolu_1", ok: true, output: "contents" } },
+      {
+        kind: "step_usage",
+        metadata: {
+          input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 2,
+          cache_read_input_tokens: 1, model: "claude-test",
+        },
+      },
+    ]);
+  });
+
   it("uses agent-sdk query() through a narrow boundary and reports resolved telemetry", async () => {
     const query = vi.fn<QueryFunction>(() => messages());
     const connector = new ClaudeConnector({
