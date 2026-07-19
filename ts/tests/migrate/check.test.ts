@@ -76,7 +76,10 @@ flows:
     // the python-legacy branch and no longer exists in the worktree.
     const docsRoot = resolve(import.meta.dirname, "../../../docs");
     const physical = (await readdir(docsRoot, { recursive: true })).filter((name) => typeof name === "string" && /\.stratum\.ya?ml$/i.test(name)).map((name) => join(docsRoot, name));
-    expect(physical.length).toBeGreaterThan(0);
+    // Post-cutover there may be ZERO committed .stratum docs (the python v0 corpus
+    // moved to python-legacy). Don't assert a count — classify whatever exists (0+)
+    // without crashing; this guards any future checked-in spec, and is CI-portable
+    // (the old `> 0` only passed on machines with untracked local fixtures).
     for (const path of physical) {
       const yaml = await readFile(path, "utf8");
       expect(() => checkLegacyYaml(yaml)).not.toThrow();
