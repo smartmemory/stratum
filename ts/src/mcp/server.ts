@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
 import type { ConnectorEventHandler } from "../connectors/base.js";
@@ -14,6 +15,14 @@ import { evaluateJudged } from "../judge/judged.js";
 import type { GuardJudge } from "../guard/transition.js";
 import { compileSpeckit, SpeckitCompileError } from "../speckit/compiler.js";
 import { assertEvent, assertShape, assertToolRequest, assertToolResponse, mcpSurface, validateShape, type OneOfShape, type Shape } from "./contracts.js";
+
+// Single source of truth for the MCP serverInfo version: the package manifest.
+// `../../package.json` resolves to the package root in both the dev tree
+// (src/mcp/) and the published tree (dist/mcp/), since npm always ships
+// package.json at the package root.
+const SERVER_VERSION: string = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+).version;
 
 export interface McpDependencies {
   engine?: Pick<StratumEngine, "plan" | "stepDone" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
@@ -216,7 +225,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
 export async function createMcpServer(dependencies: McpDependencies = {}): Promise<Server> {
   const dispatcher = createToolDispatcher(dependencies);
   const surface = await mcpSurface();
-  const server = new Server({ name: "stratum-mcp", version: "0.0.1" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "stratum-mcp", version: SERVER_VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: Object.entries(surface.tools).map(([name, definition]) => ({
       name,

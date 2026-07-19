@@ -15,13 +15,13 @@ importers:
         specifier: ^4.0.11
         version: 4.0.11(zod@3.25.76)
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.3.206
+        specifier: 0.3.206
         version: 0.3.206(@anthropic-ai/sdk@0.110.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))(zod@3.25.76)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@3.25.76)
       '@openai/codex-sdk':
-        specifier: ^0.144.3
+        specifier: 0.144.3
         version: 0.144.3
       ai:
         specifier: ^7.0.19
