@@ -1352,9 +1352,13 @@ export class StratumEngine {
     try {
       if (step.fanout.isolation === "worktree") {
         if (!cwd) throw new Error("worktree fanout requires workspaceRoot");
+        const previousWorktree = item.worktree;
         const directory = await mkdtemp(join(tmpdir(), `stratum-${run.id.slice(0, 8)}-${item.index}-`));
         await rm(directory, { recursive: true, force: true });
         await execFileAsync("git", ["-C", cwd, "worktree", "add", "--detach", directory, "HEAD"]);
+        if (previousWorktree && previousWorktree !== directory) {
+          await this.teardownWorktree(cwd, previousWorktree);
+        }
         item.worktree = directory;
         cwd = directory;
       }
@@ -1460,10 +1464,21 @@ export class StratumEngine {
     } finally {
       if (run.cancelRequested === true) delete item.dispatchToken;
       if (item.worktree && run.workspaceRoot) {
-        await execFileAsync("git", ["-C", run.workspaceRoot, "worktree", "remove", "--force", item.worktree]).catch(() => undefined);
+        await this.teardownWorktree(run.workspaceRoot, item.worktree);
         delete item.worktree;
       }
       await this.persist(run);
+    }
+  }
+
+  private async teardownWorktree(workspaceRoot: string, directory: string): Promise<void> {
+    try {
+      await execFileAsync("git", ["-C", workspaceRoot, "worktree", "remove", "--force", directory]);
+    } catch (error) {
+      process.stderr.write(`stratum: unable to remove worktree '${directory}': ${message(error)}\n`);
+      await execFileAsync("git", ["-C", workspaceRoot, "worktree", "prune"]).catch((pruneError: unknown) => {
+        process.stderr.write(`stratum: unable to prune worktree registrations: ${message(pruneError)}\n`);
+      });
     }
   }
 

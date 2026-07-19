@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### fix: prune the superseded worktree when a fanout item is redispatched (#14)
+
+Restarting an in-flight worktree fanout leaked the superseded worktree: on
+restart every nonterminal item is redispatched, `executeFanoutItem` created a
+NEW worktree and overwrote `item.worktree` without removing the old directory
+or its `git worktree` registration, and the `finally` cleanup only removed the
+current/new path. The old directories accumulated indefinitely (this is the
+bug behind a batch of 21 leaked worktrees found in housekeeping). Extracted a
+best-effort `teardownWorktree()` helper (remove --force, then prune on failure,
+never throws) and call it on the OLD path before overwriting `item.worktree`,
+guarded for same-path / already-gone / unset-first-dispatch. Cleanup reuses the
+same helper. Restart always creates a fresh worktree (never reuses), so the
+prune is unconditionally safe. Regression test asserts the old dir + git
+registration disappear while the replacement stays functional and merges.
+
 ### fix: enforce `STRATUM_CODEX_STREAM_LIMIT_BYTES` on the default SDK transport (#13)
 
 The output-memory safety bound only guarded the `runExec` path; on the
