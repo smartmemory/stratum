@@ -67,6 +67,29 @@ describe.sequential("stratum mcp install and doctor golden", () => {
     expect(await readFile(join(root, ".mcp.json"), "utf8")).toBe(before);
   });
 
+  it("upgrade repoints a retired entry to the pinned npx form, preserving siblings, idempotently (--no-python)", async () => {
+    const root = await project();
+    await writeFile(
+      join(root, ".mcp.json"),
+      `${JSON.stringify({ mcpServers: { stratum: { command: "stratum-mcp" }, other: { command: "x", args: ["y"] } } }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const upgraded = await captureMain(["upgrade", "--project", root, "--no-python"]);
+    expect(upgraded).toMatchObject({ code: 0, stderr: "" });
+    expect(upgraded.stdout).toContain("Upgrade complete");
+
+    const doc = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
+    expect(doc.mcpServers.stratum).toEqual(canonicalEntry());
+    expect(doc.mcpServers.other).toEqual({ command: "x", args: ["y"] });
+
+    // Idempotent: a second run leaves the entry already-current.
+    const again = await captureMain(["upgrade", "--project", root, "--no-python"]);
+    expect(again).toMatchObject({ code: 0, stderr: "" });
+    expect(again.stdout).toContain("already-current");
+    expect(JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")).mcpServers.stratum).toEqual(canonicalEntry());
+  });
+
   it.each([
     ["retired-bin", { command: "stratum-mcp", args: [] }],
     ["source-path", { command: "node", args: ["/consumer/stratum/ts/src/mcp/bin.mjs"] }],

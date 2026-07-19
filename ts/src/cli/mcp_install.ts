@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -69,6 +70,138 @@ export async function doctorCommand(args: string[]): Promise<number> {
     exitCode = Math.max(exitCode, code);
   }
   return exitCode;
+}
+
+interface UpgradeOptions {
+  project: string;
+  version: string;
+  all: boolean;
+  python: boolean;
+}
+
+const RETIRED_PYTHON_PACKAGES = ["stratum-mcp", "stratum-py"];
+
+/**
+ * One-shot migration/upgrade: repoint every target's .mcp.json stratum entry to
+ * the canonical npx form at THIS package's version (so running via
+ * `npx @smartmemory/stratum@latest stratum upgrade` bumps consumers to latest),
+ * then remove the retired Python packages. Nothing here fails the command.
+ */
+export async function upgradeCommand(args: string[]): Promise<number> {
+  const options = parseUpgrade(args);
+  if (!options) return usageUpgrade();
+
+  let projects: string[];
+  if (options.all) {
+    let registry: string[] | undefined;
+    try {
+      registry = await registeredConsumers();
+    } catch (error) {
+      process.stderr.write(`stratum upgrade: ${message(error)}\n`);
+      return 2;
+    }
+    if (!registry) {
+      process.stdout.write("no consumer registry configured\n");
+      projects = [];
+    } else {
+      projects = registry;
+    }
+  } else {
+    projects = [options.project];
+  }
+
+  for (const project of projects) {
+    try {
+      const result = await writeCanonical(project, options.version, true);
+      process.stdout.write(`${result.path}: ${result.action}\n`);
+    } catch (error) {
+      process.stderr.write(`stratum upgrade: ${project}: ${message(error)}\n`);
+    }
+  }
+
+  if (options.python) {
+    const py = removeRetiredPython();
+    if (py.skipped) process.stdout.write(`Retired Python packages: ${py.skipped}\n`);
+    else if (py.removed.length) process.stdout.write(`Removed retired Python packages: ${py.removed.join(", ")}\n`);
+    else process.stdout.write("Retired Python packages: none installed\n");
+  }
+
+  process.stdout.write("Upgrade complete — the new engine loads on your MCP client's next start (e.g. a fresh session).\n");
+  return 0;
+}
+
+/** Detect and uninstall the retired stratum-mcp / stratum-py PyPI packages. Never throws. */
+function removeRetiredPython(): { removed: string[]; skipped?: string } {
+  const pip = pipCommand();
+  if (!pip) return { removed: [], skipped: "pip not found — nothing to clean up" };
+  const removed: string[] = [];
+  for (const pkg of RETIRED_PYTHON_PACKAGES) {
+    try {
+      execFileSync(pip.command, [...pip.args, "show", pkg], { stdio: "ignore" });
+    } catch {
+      continue; // not installed
+    }
+    try {
+      execFileSync(pip.command, [...pip.args, "uninstall", "-y", pkg], { stdio: "ignore" });
+      removed.push(pkg);
+    } catch {
+      // best-effort; leave it rather than fail the upgrade
+    }
+  }
+  return { removed };
+}
+
+function pipCommand(): { command: string; args: string[] } | undefined {
+  const candidates = [
+    { command: "pip3", args: [] as string[] },
+    { command: "pip", args: [] as string[] },
+    { command: "python3", args: ["-m", "pip"] },
+  ];
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate.command, [...candidate.args, "--version"], { stdio: "ignore" });
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
+}
+
+function parseUpgrade(args: string[]): UpgradeOptions | undefined {
+  const rest = [...args];
+  let project = process.cwd();
+  let projectSet = false;
+  let version = PACKAGE_VERSION;
+  let all = false;
+  let python = true;
+  while (rest.length > 0) {
+    const flag = rest.shift();
+    if (flag === "--project") {
+      const value = rest.shift();
+      if (!value || projectSet) return undefined;
+      project = value;
+      projectSet = true;
+    } else if (flag === "--version") {
+      const value = rest.shift();
+      if (!value) return undefined;
+      version = value;
+    } else if (flag === "--all") {
+      if (all) return undefined;
+      all = true;
+    } else if (flag === "--no-python") {
+      python = false;
+    } else {
+      return undefined;
+    }
+  }
+  if (all && projectSet) return undefined;
+  return { project, version, all, python };
+}
+
+function usageUpgrade(): number {
+  process.stderr.write("Usage: stratum upgrade [--project <dir>] [--version <v>] [--all] [--no-python]\n");
+  return 2;
 }
 
 function parseInstall(args: string[]): InstallOptions | undefined {

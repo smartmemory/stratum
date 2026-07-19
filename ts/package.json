@@ -1,6 +1,6 @@
 {
   "name": "@smartmemory/stratum",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Stratum engine — typed, resumable, postcondition-enforced workflows for AI agents (TypeScript port)",
   "type": "module",
   "bin": {
