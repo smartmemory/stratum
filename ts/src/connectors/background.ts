@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -168,7 +168,6 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   });
   const pid = child.pid;
   if (pid === undefined) throw new Error("durable wrapper did not expose a pid");
-  child.unref();
   const startTime = await procStartTime(pid);
   const meta: CodexRunMeta = {
     runId,
@@ -183,7 +182,15 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     streamPath,
     stderrPath,
   };
-  await atomicWriteJson(join(runDir, "meta.json"), meta);
+  try {
+    await atomicWriteJson(join(runDir, "meta.json"), meta);
+  } catch (error) {
+    // No metadata means the caller cannot discover or cancel this detached run.
+    // Kill the whole process group and wait for the wrapper to exit before rejecting.
+    await killDetachedProcessGroup(child, pid);
+    throw error;
+  }
+  child.unref();
   return { status: "bg_started", runId, pid, streamPath };
 }
 
@@ -438,6 +445,18 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(value, null, 2), { encoding: "utf8", mode: 0o600 });
   await rename(temporary, path);
+}
+
+async function killDetachedProcessGroup(child: ChildProcess, pid: number): Promise<void> {
+  const exited = child.exitCode !== null || child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try { child.kill("SIGKILL"); } catch { /* already dead */ }
+  }
+  await exited;
 }
 
 async function loadMeta(runId: string, root: string): Promise<{ meta: BackgroundRunMeta; streamPath: string; stderrPath: string } | undefined> {
