@@ -35,7 +35,7 @@
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
+          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
         ] } }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
         "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
@@ -48,7 +48,7 @@
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
+          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
         ] } }, "ledger": { "spent": "object", "budget?": "object" } },
         "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" } },
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" } },
@@ -70,7 +70,7 @@
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
+          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
         ] } }, "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
         "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
@@ -84,7 +84,7 @@
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
+          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
         ] } }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
         "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
@@ -106,7 +106,7 @@
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
+          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
         ] } }, "ledger": { "spent": "object", "budget?": "object" } },
         "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" } },
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" } },

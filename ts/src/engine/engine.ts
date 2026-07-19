@@ -90,6 +90,7 @@ export interface ConsumerDispatchDescriptor extends ReadyStep {
   flow: string;
   step: string;
   stage: number;
+  isFinalStage: boolean;
   itemIndex: number;
   generation: number;
   contract: { root: string; contracts: Record<string, Record<string, string>> } | null;
@@ -1884,6 +1885,7 @@ export class StratumEngine {
       flow: run.flowName,
       step: step.id,
       stage: item.stage,
+      isFinalStage: item.stage === step.fanout.steps.length - 1,
       itemIndex: item.index,
       generation: item.generation,
       contract: closure,
