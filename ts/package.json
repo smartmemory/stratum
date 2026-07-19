@@ -9,7 +9,7 @@
     "stratum-mcp": "./src/mcp/bin.mjs"
   },
   "engines": {
-    "node": ">=22.7"
+    "node": ">=22.15"
   },
   "scripts": {
     "test": "vitest run",

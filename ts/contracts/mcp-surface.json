@@ -149,10 +149,10 @@
       }
     },
     "stratum_agent_run": {
-      "request": { "agent": "string", "prompt": "string", "cwd": "string", "model?": "string", "sandboxMode?": "string", "background?": "boolean" },
+      "request": { "agent": "string", "prompt": "string", "cwd": "string", "model?": "string", "sandboxMode?": "string", "background?": "boolean", "allowedTools?": { "$array": "string" }, "disallowedTools?": { "$array": "string" } },
       "responses": {
         "complete": { "text": "string", "usage": "object", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
-        "bg_started": { "runId": "string", "pid": "number", "streamPath": "string" }
+        "bg_started": { "runId": "string", "pid?": "number", "streamPath": "string" }
       }
     },
     "stratum_agent_poll": {

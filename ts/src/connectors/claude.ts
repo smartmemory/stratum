@@ -44,7 +44,7 @@ export class ClaudeConnector {
       env,
     };
     if (this.options.allowedTools !== undefined) {
-      sdkOptions.allowedTools = this.options.allowedTools;
+      sdkOptions.tools = this.options.allowedTools;
       if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
     } else {
       sdkOptions.tools = { type: "preset", preset: "claude_code" };

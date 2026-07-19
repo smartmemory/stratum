@@ -663,6 +663,35 @@ async function waitForBackground(runId: string, registryRoot: string, status: st
   throw new Error(`background ${runId} did not reach ${status}`);
 }
 
+describe("stratum_agent_run T1 contract changes", () => {
+  it("accepts allowedTools and disallowedTools as optional string arrays in the request", async () => {
+    await expect(assertToolRequest("stratum_agent_run", {
+      agent: "claude", prompt: "p", cwd: "/tmp",
+      allowedTools: ["Read", "Edit"],
+      disallowedTools: ["Write"],
+    })).resolves.toBeUndefined();
+  });
+
+  it("rejects a mixed-type allowedTools array at the contract boundary", async () => {
+    await expect(assertToolRequest("stratum_agent_run", {
+      agent: "claude", prompt: "p", cwd: "/tmp",
+      allowedTools: ["Read", 42],
+    })).rejects.toThrow(/allowedTools\[1\].*must be string/i);
+  });
+
+  it("accepts allowedTools and disallowedTools absent from the request", async () => {
+    await expect(assertToolRequest("stratum_agent_run", {
+      agent: "claude", prompt: "p", cwd: "/tmp",
+    })).resolves.toBeUndefined();
+  });
+
+  it("accepts a bg_started response without pid (pid is optional)", async () => {
+    await expect(assertToolResponse("stratum_agent_run", {
+      status: "bg_started", runId: "r123abc00001", streamPath: "/tmp/stream.jsonl",
+    })).resolves.toBeUndefined();
+  });
+});
+
 async function initializeMcpBin(bin: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bin], { stdio: ["pipe", "pipe", "pipe"] });

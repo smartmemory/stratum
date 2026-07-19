@@ -25,7 +25,7 @@ describe("ClaudeConnector", () => {
     expect(query).toHaveBeenCalledWith({
       prompt: "echo test",
       options: expect.objectContaining({
-        cwd: "/work", model: "claude-sonnet-4-6", permissionMode: "acceptEdits", allowedTools: ["Read"],
+        cwd: "/work", model: "claude-sonnet-4-6", permissionMode: "acceptEdits", tools: ["Read"],
       }),
     });
     expect(result).toEqual({
