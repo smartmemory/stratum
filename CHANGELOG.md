@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### fix: enforce `STRATUM_CODEX_STREAM_LIMIT_BYTES` on the default SDK transport (#13)
+
+The output-memory safety bound only guarded the `runExec` path; on the
+production-default `@openai/codex-sdk` transport the connector retained
+assembled event data with no cap, so the documented knob silently no-op'd
+there. `runSdk` now applies the same `resolveStdoutLimit()` per-event byte
+check (matching runExec's per-line policy), aborts the SDK turn via an
+`AbortController` signal on overflow, and throws the identical overrun error.
+Shared `exceedsStreamLimit`/`stdoutOverrunError` helpers are hoisted and reused
+by both paths. Residual (documented in code): the SDK's private readline/stderr
+buffers are not reachable from the connector, so the bound is enforced at the
+first accessible event boundary, not inside the SDK. Regression test feeds a
+>64 KiB SDK event and asserts abort + configured-limit error.
+
 ### fix: migrate CLI bootstrap loader to `module.registerHooks()` (DEP0205, #7)
 
 The TS bins (`stratum`, `stratum-mcp`) registered the NodeNext `.js`->`.ts`

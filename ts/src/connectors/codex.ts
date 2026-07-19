@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions } from "@openai/codex-sdk";
+import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 
@@ -12,7 +12,7 @@ export type SpawnProcess = (
 export type CodexTransport = "sdk" | "exec";
 
 export interface CodexSdkThread {
-  runStreamed(input: string): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
+  runStreamed(input: string, options?: TurnOptions): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
 }
 
 export interface CodexSdkClient {
@@ -111,6 +111,8 @@ export class CodexConnector {
 
   private async runSdk(prompt: string): Promise<ConnectorResult> {
     const startedAt = Date.now();
+    const stdoutLimit = resolveStdoutLimit();
+    const controller = new AbortController();
     const identity = modelIdentity(this.model);
     const options: ThreadOptions = {
       approvalPolicy: "never",
@@ -121,14 +123,20 @@ export class CodexConnector {
       ...(identity.effort !== undefined ? { modelReasoningEffort: reasoningEffort(identity.effort) } : {}),
     };
     const client = this.sdkFactory({ env: stringEnvironment(this.env) });
-    const streamed = await client.startThread(options).runStreamed(prompt);
+    const streamed = await client.startThread(options).runStreamed(prompt, { signal: controller.signal });
     const text: string[] = [];
     let inputTokens = 0;
     let outputTokens = 0;
     // Consume SDK events directly rather than run(), which buffers every tool
     // and file-change item for the whole turn. Stratum only retains the final
-    // agent text and accounting data, matching the direct JSONL transport.
+    // agent text and accounting data, matching the direct JSONL transport. The
+    // SDK does not expose its raw readline/stderr buffers, so this enforces the
+    // same per-JSONL-line bound immediately after each event is yielded.
     for await (const event of streamed.events) {
+      if (exceedsStreamLimit(JSON.stringify(event), stdoutLimit)) {
+        controller.abort();
+        throw stdoutOverrunError(stdoutLimit);
+      }
       if (event.type === "error") throw new Error(event.message);
       if (event.type === "turn.failed") throw new Error(event.error.message);
       if (event.type === "item.completed" && event.item.type === "agent_message" && event.item.text) {
@@ -198,7 +206,7 @@ export class CodexConnector {
         // raises LimitOverrunError for any line past the byte limit.
         const line = pending.slice(0, newline);
         const lineBytes = Buffer.byteLength(line);
-        if (lineBytes > stdoutLimit) return declareOverrun();
+        if (exceedsStreamLimit(line, stdoutLimit)) return declareOverrun();
         handleLine(line);
         pending = pending.slice(newline + 1);
         pendingBytes -= lineBytes + 1;
@@ -214,9 +222,7 @@ export class CodexConnector {
       child.once("close", (code) => resolve(code ?? 1));
     });
     if (overrun) {
-      throw new Error(
-        `codex stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES (current limit ${stdoutLimit} bytes). Raise the env knob and retry.`,
-      );
+      throw stdoutOverrunError(stdoutLimit);
     }
     if (pending) handleLine(pending);
 
@@ -259,4 +265,14 @@ function parseRecord(line: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function exceedsStreamLimit(value: string, limit: number): boolean {
+  return Buffer.byteLength(value) > limit;
+}
+
+function stdoutOverrunError(limit: number): Error {
+  return new Error(
+    `codex stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES (current limit ${limit} bytes). Raise the env knob and retry.`,
+  );
 }

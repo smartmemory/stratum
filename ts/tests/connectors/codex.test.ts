@@ -71,7 +71,7 @@ describe("CodexConnector", () => {
 
     let settled = false;
     const pending = connector.run("echo test").finally(() => { settled = true; });
-    await vi.waitFor(() => expect(runStreamed).toHaveBeenCalledWith("echo test"));
+    await vi.waitFor(() => expect(runStreamed).toHaveBeenCalledWith("echo test", { signal: expect.any(AbortSignal) }));
     expect(settled).toBe(false);
     finish?.();
 
@@ -129,6 +129,45 @@ describe("CodexConnector", () => {
     }));
     const connector = new CodexConnector({ sdkFactory });
     await expect(connector.run("test")).rejects.toThrow("sdk unhappy");
+  });
+
+  it("fails loudly and aborts when an SDK JSONL event exceeds STRATUM_CODEX_STREAM_LIMIT_BYTES", async () => {
+    vi.stubEnv("STRATUM_CODEX_STREAM_LIMIT_BYTES", "1"); // floors to 64 KiB
+    try {
+      let signal: AbortSignal | undefined;
+      let streamClosed = false;
+      async function* events() {
+        try {
+          yield {
+            type: "item.completed" as const,
+            item: {
+              id: "command-1",
+              type: "command_execution" as const,
+              command: "runaway",
+              aggregated_output: "x".repeat(70_000),
+              exit_code: 0,
+              status: "completed" as const,
+            },
+          };
+        } finally {
+          streamClosed = true;
+        }
+      }
+      const runStreamed = vi.fn(async (_input: string, options?: { signal?: AbortSignal }) => {
+        signal = options?.signal;
+        return { events: events() };
+      });
+      const sdkFactory = vi.fn(() => ({
+        startThread: vi.fn(() => ({ runStreamed })),
+      }));
+      const connector = new CodexConnector({ sdkFactory });
+
+      await expect(connector.run("test")).rejects.toThrow("exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES");
+      expect(signal?.aborted).toBe(true);
+      expect(streamClosed).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("keeps injected codex exec as the capped compatibility transport", async () => {
