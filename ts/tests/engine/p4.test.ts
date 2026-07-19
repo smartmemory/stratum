@@ -361,6 +361,72 @@ describe("P4 fanout", () => {
     expect(calls.filter((prompt) => prompt === "run a")).toHaveLength(1);
   });
 
+  it("tears down a persisted worktree before redispatching the item into a new one", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "stratum-p4-redispatch-"));
+    roots.push(repo);
+    await execFileAsync("git", ["init", "-q", repo]);
+    await execFileAsync("git", ["-C", repo, "config", "user.email", "test@example.com"]);
+    await execFileAsync("git", ["-C", repo, "config", "user.name", "Test"]);
+    await writeFile(join(repo, "README"), "base\n");
+    await execFileAsync("git", ["-C", repo, "add", "README"]);
+    await execFileAsync("git", ["-C", repo, "commit", "-qm", "base"]);
+
+    let oldWorktree = "";
+    let markFirstDispatch!: () => void;
+    const firstDispatched = new Promise<void>((resolve) => { markFirstDispatch = resolve; });
+    const first = await engine(async ({ cwd }) => {
+      oldWorktree = cwd!;
+      markFirstDispatch();
+      return new Promise(() => undefined); // simulated process exit mid-item
+    });
+    const spec = {
+      version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
+        input: { items: "string[]", name: "string" }, output: { from: "${finish.output}", contract: "Result" },
+        steps: [
+          { id: "fan", fanout: { over: "${input.items}", concurrency: 1, isolation: "worktree", require: "all", merge: "sequential", steps: [{ do: "write ${item}", out: "Result" }] } },
+          { id: "finish", after: ["fan"], set: { value: "input.name" }, out: "Result" },
+        ],
+      } },
+    };
+    const planned = await first.plan(spec, { items: ["a"], name: "done" }, { workspaceRoot: repo });
+    await firstDispatched;
+    roots.push(oldWorktree);
+    expect(await stat(oldWorktree)).toBeTruthy();
+
+    let newWorktree = "";
+    let markRedispatch!: () => void;
+    const redispatched = new Promise<void>((resolve) => { markRedispatch = resolve; });
+    let releaseRedispatch!: () => void;
+    const blocked = new Promise<void>((resolve) => { releaseRedispatch = resolve; });
+    const connector: EngineConnector = async ({ prompt, cwd }) => {
+      newWorktree = cwd!;
+      await writeFile(join(newWorktree, "redispatched.txt"), `${prompt}\n`);
+      markRedispatch();
+      await blocked;
+      return { output: { value: prompt } };
+    };
+    const stateRoot = (first as unknown as { store: { root: string } }).store.root;
+    const fresh = new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector });
+    let terminal: Awaited<ReturnType<typeof waitForTerminal>>;
+    try {
+      await fresh.resume(planned.runId);
+      await redispatched;
+      roots.push(newWorktree);
+
+      expect(newWorktree).not.toBe(oldWorktree);
+      await expect(stat(oldWorktree)).rejects.toThrow();
+      expect(await stat(newWorktree)).toBeTruthy();
+      expect((await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"])).stdout).not.toContain(oldWorktree);
+      expect((await execFileAsync("git", ["-C", newWorktree, "rev-parse", "--is-inside-work-tree"])).stdout.trim()).toBe("true");
+    } finally {
+      releaseRedispatch();
+      terminal = await waitForTerminal(fresh, planned.runId);
+    }
+
+    expect(terminal).toMatchObject({ status: "completed", output: { value: "done" } });
+    expect(await readFile(join(repo, "redispatched.txt"), "utf8")).toBe("write a\n");
+  });
+
   it("leaves the parent workspace untouched when require fails under worktree isolation", async () => {
     const repo = await mkdtemp(join(tmpdir(), "stratum-p4-nomerge-"));
     roots.push(repo);
