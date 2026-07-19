@@ -24,8 +24,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "query") return queryCommand(args);
   if (command === "gate") return gateCommand(args);
   if (command === "guard") return (await import("./guard.js")).guardCommand(args);
+  if (command === "mcp") return (await import("./mcp_install.js")).mcpCommand(args);
+  if (command === "doctor") return (await import("./mcp_install.js")).doctorCommand(args);
   if (command === "watch") return watchCommand(args);
-  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|watch> ...\n");
+  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|mcp|doctor|watch> ...\n");
   return 2;
 }
 
