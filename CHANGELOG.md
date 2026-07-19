@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### fix: no orphaned detached process when background-run metadata fails to persist (#15)
+
+`startBackgroundRun` spawned and `unref()`'d the detached codex wrapper before
+writing `meta.json`; a persistence failure rejected without killing the child
+and without returning a run id, leaving an undiscoverable orphan that poll/cancel
+could never reach. The codex path now `unref()`s only after a successful persist,
+and on persist failure kills the entire detached process group (`process.kill(-pid,
+SIGKILL)`, with a `child.kill` fallback), awaits the wrapper's exit, then rethrows.
+The claude Worker path already handled this (terminate + registry-cleanup on
+persist failure) and is unchanged; exactly-once `claimFinalization`/sentinel
+semantics are preserved. New regression test starts a real detached process,
+forces `meta.json` to fail, and asserts the process group is gone.
+
 ### fix: prune the superseded worktree when a fanout item is redispatched (#14)
 
 Restarting an in-flight worktree fanout leaked the superseded worktree: on
