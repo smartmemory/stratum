@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### fix: rescan the background stream before declaring child_died_without_sentinel (#24)
+
+`pollBackgroundRun` captured the event stream once, then checked liveness (the
+in-memory registry for claude, process-identity for codex) and, if the child was
+gone, returned a terminal `error` with reason `child_died_without_sentinel` —
+without re-reading the stream. This is a TOCTOU: the wrapper writes its exit-code
+sentinel *before* exiting, so between the stale scan and the child going away the
+sentinel can land, and the poll reports a terminal status with `exitCode` missing.
+On slow CI this surfaced as an intermittent flake in `background.test.ts` (error
+status recorded without `exitCode`). Both agent paths now rescan the stream before
+declaring death; only a rescan that still lacks the sentinel returns the error, so
+a terminal status always carries its `exitCode`. Producer was already correct
+(atomic sentinel); the fix is entirely in the reader. 15×0 flakes locally.
+
 ### feat: stream BuildStreamEvents as progress notifications during agent runs (#21)
 
 During a synchronous `stratum_agent_run` the connector's message stream
