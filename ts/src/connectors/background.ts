@@ -313,8 +313,8 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
   if (!loaded) return { status: "not_found", runId };
   const { streamPath, stderrPath } = loaded;
-  const scan = await scanStream(streamPath);
-  const text = capText(scan.text, streamPath);
+  let scan = await scanStream(streamPath);
+  let text = capText(scan.text, streamPath);
 
   if (loaded.meta.agent === "claude") {
     // D10: liveness via in-memory registry (entry present = running; deleted = terminal).
@@ -323,12 +323,20 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
       if (claudeWorkerRegistry.has(runId)) {
         return { status: "running", runId, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
       }
-      // Not in registry and no sentinel: worker died unexpectedly (MCP server restarted or
-      // process was killed externally). Poll surfaces this as an error boundary.
-      return {
-        status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
-        stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
-      };
+      // TOCTOU: `scan` was taken before the registry check. If the worker wrote its
+      // sentinel and deleted its registry entry in that window, the stale scan lacks
+      // exitCode while the registry now reports gone. Rescan before declaring death so
+      // we never surface a terminal status without the sentinel's exitCode (#24).
+      scan = await scanStream(streamPath);
+      text = capText(scan.text, streamPath);
+      if (scan.exitCode === undefined) {
+        // Not in registry and still no sentinel: worker died unexpectedly (MCP server
+        // restarted or process was killed externally). Surface as an error boundary.
+        return {
+          status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
+          stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
+        };
+      }
     }
     const telemetry = await terminalTelemetry(loaded.meta, streamPath);
     if (scan.exitCode === 0 && scan.error === undefined) {
@@ -340,15 +348,23 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     };
   }
 
-  // Codex path — unchanged:
+  // Codex path:
   if (scan.exitCode === undefined) {
     if (await processIdentityMatches(loaded.meta.childPid, loaded.meta.procStartTime)) {
       return { status: "running", runId, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
     }
-    return {
-      status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
-      stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
-    };
+    // TOCTOU: `scan` predates the process-identity check. The wrapper appends its exit-code
+    // sentinel and then exits, so between the stale scan and the child going away the sentinel
+    // may have landed. Rescan before declaring death so a terminal status always carries its
+    // exitCode (#24 — intermittent error-status-without-exitCode on slow CI).
+    scan = await scanStream(streamPath);
+    text = capText(scan.text, streamPath);
+    if (scan.exitCode === undefined) {
+      return {
+        status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
+        stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
+      };
+    }
   }
   const telemetry = await terminalTelemetry(loaded.meta, streamPath);
   if (scan.exitCode === 0 && scan.error === undefined) {
