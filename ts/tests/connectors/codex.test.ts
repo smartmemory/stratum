@@ -1,12 +1,19 @@
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyHeadlessShellEnv,
   CodexConnector,
+  CODEX_SANDBOX_PREAMBLE,
   codexExecArgs,
   resolveCodexTransport,
+  resolveHeadlessShellPath,
   type SpawnProcess,
+  withSandboxPreamble,
 } from "../../src/connectors/codex.js";
 import { runAgent } from "../../src/connectors/runner.js";
 
@@ -86,7 +93,7 @@ describe("CodexConnector", () => {
 
     let settled = false;
     const pending = connector.run("echo test").finally(() => { settled = true; });
-    await vi.waitFor(() => expect(runStreamed).toHaveBeenCalledWith("echo test", { signal: expect.any(AbortSignal) }));
+    await vi.waitFor(() => expect(runStreamed).toHaveBeenCalledWith(withSandboxPreamble("echo test"), { signal: expect.any(AbortSignal) }));
     expect(settled).toBe(false);
     finish?.();
 
@@ -107,7 +114,7 @@ describe("CodexConnector", () => {
     expect(connectorEvents).toEqual([
       {
         kind: "agent_started",
-        metadata: { agent: "codex", model: "gpt-5.3-codex-spark/low", prompt_chars: 9 },
+        metadata: { agent: "codex", model: "gpt-5.3-codex-spark/low", prompt_chars: withSandboxPreamble("echo test").length },
       },
       {
         kind: "tool_use_summary",
@@ -280,5 +287,50 @@ describe("CodexConnector", () => {
     );
     expect(result).toMatchObject({ text: "sync ok" });
     expect(result).not.toHaveProperty("runId");
+  });
+
+  it("frames every dispatch with the sandbox preamble, exactly once", async () => {
+    expect(withSandboxPreamble("do the task")).toBe(`${CODEX_SANDBOX_PREAMBLE}\n\ndo the task`);
+    expect(withSandboxPreamble(withSandboxPreamble("do the task"))).toBe(
+      `${CODEX_SANDBOX_PREAMBLE}\n\ndo the task`,
+    );
+
+    const spawn = fakeSpawn([{ type: "item.completed", item: { type: "agent_message", text: "ok" } }]);
+    const connector = new CodexConnector({ transport: "exec", spawn });
+    const stdinChunks: string[] = [];
+    spawn.mockImplementationOnce((command, args, options) => {
+      const child = fakeSpawn([{ type: "item.completed", item: { type: "agent_message", text: "ok" } }])(command, args, options);
+      child.stdin.on("data", (chunk: Buffer) => stdinChunks.push(chunk.toString("utf8")));
+      return child;
+    });
+    await connector.run("do the task");
+    expect(stdinChunks.join("")).toBe(`${CODEX_SANDBOX_PREAMBLE}\n\ndo the task`);
+  });
+
+  it("preserves a caller-set PUPPETEER_EXECUTABLE_PATH", () => {
+    const env: NodeJS.ProcessEnv = { PUPPETEER_EXECUTABLE_PATH: "/custom/chrome" };
+    applyHeadlessShellEnv(env, mkdtempSync(join(tmpdir(), "stratum-no-cache-")));
+    expect(env.PUPPETEER_EXECUTABLE_PATH).toBe("/custom/chrome");
+  });
+
+  it("resolves the newest cached chrome-headless-shell, or nothing", () => {
+    const emptyHome = mkdtempSync(join(tmpdir(), "stratum-no-cache-"));
+    expect(resolveHeadlessShellPath(emptyHome)).toBeUndefined();
+
+    const home = mkdtempSync(join(tmpdir(), "stratum-shell-cache-"));
+    const root = join(home, ".cache", "puppeteer", "chrome-headless-shell");
+    const binary = process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell";
+    for (const version of ["mac_arm-131.0.6778.204", "mac_arm-146.0.7680.153", "mac_arm-134.0.6998.35"]) {
+      const dir = join(root, version, `chrome-headless-shell-${version.split("-")[0]}64`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, binary), "");
+    }
+    expect(resolveHeadlessShellPath(home)).toBe(
+      join(root, "mac_arm-146.0.7680.153", "chrome-headless-shell-mac_arm64", binary),
+    );
+
+    const env: NodeJS.ProcessEnv = {};
+    applyHeadlessShellEnv(env, home);
+    expect(env.PUPPETEER_EXECUTABLE_PATH).toBe(resolveHeadlessShellPath(home));
   });
 });
