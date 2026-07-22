@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### fix(connectors): brief codex agents on the OS sandbox; point Puppeteer at chrome-headless-shell
+
+Codex agents dispatched into the seatbelt/landlock sandbox had no way to know
+GUI apps cannot start there: full Chrome aborts (SIGABRT) during macOS
+WindowServer registration even with `--headless`, so agents that hit a browser
+step crash-looped Chrome launch retries (observed 2026-07-22: five Chrome
+crash reports in four minutes from one SmartMemory S3 run). Every codex
+dispatch — `CodexConnector.run` (both sdk and exec transports) and the codex
+background path in `startBackgroundRun` — now prepends a short
+`[sandbox constraints]` preamble stating the constraint and the escape hatch
+(use `chrome-headless-shell`, never retry an aborted GUI launch). When the
+dispatch falls back to ambient `process.env` (a caller-supplied env stays
+authoritative), the connector also sets `PUPPETEER_EXECUTABLE_PATH` to the
+newest `chrome-headless-shell` in the Puppeteer cache when one exists, so
+Puppeteer scripts that honor the env work without agent intervention. New
+exports: `CODEX_SANDBOX_PREAMBLE`, `withSandboxPreamble`,
+`resolveHeadlessShellPath`, `applyHeadlessShellEnv`.
+
 ### fix: declare spec/input as "object" in the MCP tool contract (surface 10)
 
 `stratum_validate`, `stratum_plan`, and `stratum_flow_run_bg` declared `spec`

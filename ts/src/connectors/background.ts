@@ -9,7 +9,7 @@ import { Worker } from "node:worker_threads";
 import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorUsage } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
-import { codexCommand, defaultCodexModel } from "./codex.js";
+import { applyHeadlessShellEnv, codexCommand, defaultCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
@@ -140,7 +140,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   await Promise.all([
     writeFile(streamPath, "", { encoding: "utf8", mode: 0o600 }),
     writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600 }),
-    writeFile(inputPath, options.prompt, { encoding: "utf8", mode: 0o600 }),
+    writeFile(inputPath, withSandboxPreamble(options.prompt), { encoding: "utf8", mode: 0o600 }),
   ]);
   const model = options.model ?? defaultCodexModel();
   const command = options.command ?? codexCommand(model, options.cwd, sandboxMode);
@@ -153,6 +153,9 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   delete env.ANTHROPIC_API_KEY;
   delete env.CLAUDE_API_KEY;
   delete env.CLAUDECODE;
+  // A caller-supplied env is authoritative; the headless-shell default is
+  // only layered onto the ambient process.env fallback.
+  if (options.env === undefined) applyHeadlessShellEnv(env);
   // Stamped before spawn: durationMs is measured from here to the sentinel
   // write, so identity-lookup latency never deflates it.
   const createdAt = new Date().toISOString();

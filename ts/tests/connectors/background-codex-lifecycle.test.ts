@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { chmodSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +23,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { startBackgroundRun } from "../../src/connectors/background.js";
+import { CODEX_SANDBOX_PREAMBLE } from "../../src/connectors/codex.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -70,6 +71,27 @@ describe("Codex background start lifecycle", () => {
       if (child?.pid !== undefined && processGroupIsAlive(child.pid)) {
         process.kill(-child.pid, "SIGKILL");
       }
+    }
+  });
+
+  it("frames the background prompt file with the sandbox preamble", async () => {
+    const registryRoot = await mkdtemp(join(tmpdir(), "stratum-codex-preamble-"));
+    roots.push(registryRoot);
+
+    const { streamPath, pid } = await startBackgroundRun({
+      agent: "codex",
+      prompt: "do the task",
+      cwd: registryRoot,
+      registryRoot,
+      command: ["sh", "-c", "true"],
+      env: { ...process.env },
+    });
+
+    try {
+      const input = await readFile(`${streamPath}.in`, "utf8");
+      expect(input).toBe(`${CODEX_SANDBOX_PREAMBLE}\n\ndo the task`);
+    } finally {
+      if (pid !== undefined && processGroupIsAlive(pid)) process.kill(-pid, "SIGKILL");
     }
   });
 });

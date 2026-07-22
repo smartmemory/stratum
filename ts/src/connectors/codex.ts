@@ -1,4 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
@@ -36,6 +39,60 @@ export interface CodexConnectorOptions {
 }
 
 const CODEX_SCRUB_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"] as const;
+
+/** GUI apps cannot start inside the Codex OS sandbox: full Chrome aborts
+ * (SIGABRT) during WindowServer registration even with --headless. Agents that
+ * discover this by crashing tend to retry into a crash loop, so every dispatch
+ * states the constraint up front. */
+export const CODEX_SANDBOX_PREAMBLE = [
+  "[sandbox constraints]",
+  "You are running inside a restricted OS sandbox (macOS seatbelt / Linux landlock).",
+  "GUI applications cannot start here: full Chrome/Chromium, Electron, or anything",
+  "that opens a window aborts at launch (SIGABRT). That abort is the sandbox, not",
+  "a bug in the code under test. For browser work use chrome-headless-shell (set",
+  "via PUPPETEER_EXECUTABLE_PATH when available) or another headless-only tool.",
+  "If a GUI launch aborts, do not retry it.",
+  "[/sandbox constraints]",
+].join("\n");
+
+export function withSandboxPreamble(prompt: string): string {
+  if (prompt.startsWith("[sandbox constraints]")) return prompt;
+  return `${CODEX_SANDBOX_PREAMBLE}\n\n${prompt}`;
+}
+
+/** Newest chrome-headless-shell in the Puppeteer cache, if any. Sandboxed
+ * agents can run this binary where full Chrome aborts (see
+ * CODEX_SANDBOX_PREAMBLE), but cannot install it themselves without network. */
+export function resolveHeadlessShellPath(home: string = homedir()): string | undefined {
+  const root = join(home, ".cache", "puppeteer", "chrome-headless-shell");
+  if (!existsSync(root)) return undefined;
+  const buildOf = (dir: string): number[] => (dir.split("-").pop() ?? "").split(".").map(Number);
+  const versions = readdirSync(root)
+    .filter((dir) => /-[\d.]+$/.test(dir))
+    .sort((a, b) => {
+      const [va, vb] = [buildOf(a), buildOf(b)];
+      for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+        if ((va[i] ?? 0) !== (vb[i] ?? 0)) return (vb[i] ?? 0) - (va[i] ?? 0);
+      }
+      return 0;
+    });
+  const binaryName = process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell";
+  for (const version of versions) {
+    const versionDir = join(root, version);
+    const binary = readdirSync(versionDir)
+      .filter((dir) => dir.startsWith("chrome-headless-shell-"))
+      .map((dir) => join(versionDir, dir, binaryName))
+      .find((candidate) => existsSync(candidate));
+    if (binary) return binary;
+  }
+  return undefined;
+}
+
+export function applyHeadlessShellEnv(env: NodeJS.ProcessEnv, home?: string): void {
+  if (env.PUPPETEER_EXECUTABLE_PATH) return;
+  const shell = resolveHeadlessShellPath(home);
+  if (shell) env.PUPPETEER_EXECUTABLE_PATH = shell;
+}
 
 export function defaultCodexModel(): string {
   return process.env.CODEX_MODEL ?? "gpt-5.6-terra/high";
@@ -100,6 +157,9 @@ export class CodexConnector {
     this.sandboxMode = options.sandboxMode ?? "read-only";
     this.env = { ...(options.env ?? process.env) };
     for (const key of CODEX_SCRUB_VARS) delete this.env[key];
+    // A caller-supplied env is authoritative; the headless-shell default is
+    // only layered onto the ambient process.env fallback.
+    if (options.env === undefined) applyHeadlessShellEnv(this.env);
     // Passing an injected spawn is itself an explicit request for the legacy
     // process seam. Production selects exec with STRATUM_CODEX_TRANSPORT=exec.
     this.transport = options.transport ?? (options.spawn ? "exec" : resolveCodexTransport(this.env));
@@ -109,7 +169,8 @@ export class CodexConnector {
   }
 
   async run(prompt: string): Promise<ConnectorResult> {
-    return this.transport === "sdk" ? this.runSdk(prompt) : this.runExec(prompt);
+    const framed = withSandboxPreamble(prompt);
+    return this.transport === "sdk" ? this.runSdk(framed) : this.runExec(framed);
   }
 
   private async runSdk(prompt: string): Promise<ConnectorResult> {
