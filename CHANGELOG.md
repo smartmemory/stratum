@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### fix: declare spec/input as "object" in the MCP tool contract (surface 10)
+
+`stratum_validate`, `stratum_plan`, and `stratum_flow_run_bg` declared `spec`
+and `input` as `"any"`, which `schemaForValidated` maps to the empty JSON
+schema `{}`. MCP clients (Claude Code) deliver untyped arguments as raw
+strings, so every spec — valid or not — reached the engine as a string and
+died in the Zod object parse with `SCHEMA_INVALID "Expected object, received
+string"` at path `""`. The tools were uncallable from Claude Code entirely.
+Declaring the parameters `"object"` makes the advertised schema
+`{"type":"object"}` (clients now parse the JSON into a real object) and gives
+server-side shape assertion a clean named error
+(`stratum_plan.request.spec must be object`) for any client that still sends
+a string. Breaking for callers that passed scalar `input`, so the frozen
+surface version bumps 9 → 10. Pinned by tests in
+`tests/mcp/schema-grammar.test.ts` and the p5 boundary tests.
+
 ### fix: rescan the background stream before declaring child_died_without_sentinel (#24)
 
 `pollBackgroundRun` captured the event stream once, then checked liveness (the
