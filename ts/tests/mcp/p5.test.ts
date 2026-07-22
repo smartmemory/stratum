@@ -534,10 +534,11 @@ describe("P5 CLI and MCP process boundaries", () => {
   it("returns MCP errors for malformed calls and internal failures without breaking the connection", async () => {
     const pair = await connected({});
     try {
-      // input: 1 would be LEGAL — the frozen contract types it "any"; the
-      // malformed cases are a missing required key, a wrong-typed declared
-      // optional, and an undeclared extra field.
-      for (const arguments_ of [{ spec: simpleFlow }, { spec: simpleFlow, input: {}, workspaceRoot: 42 }, { spec: simpleFlow, input: {}, surprise: true }]) {
+      // Surface 10 types spec/input "object" (untyped "any" made MCP clients
+      // deliver them as raw strings): scalar input is now malformed alongside
+      // a missing required key, a wrong-typed declared optional, an undeclared
+      // extra field, and a string-serialized spec.
+      for (const arguments_ of [{ spec: simpleFlow }, { spec: simpleFlow, input: 1 }, { spec: JSON.stringify(simpleFlow), input: {} }, { spec: simpleFlow, input: {}, workspaceRoot: 42 }, { spec: simpleFlow, input: {}, surprise: true }]) {
         await expect(pair.client.callTool({ name: "stratum_plan", arguments: arguments_ })).rejects.toThrow("MCP error");
       }
       expect(response(await pair.client.callTool({ name: "stratum_validate", arguments: { spec: simpleFlow } }))).toEqual({ status: "valid" });

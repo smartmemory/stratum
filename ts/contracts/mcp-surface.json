@@ -1,5 +1,5 @@
 {
-  "surface": 9,
+  "surface": 10,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -17,7 +17,7 @@
   },
   "tools": {
     "stratum_validate": {
-      "request": { "spec": "any" },
+      "request": { "spec": "object" },
       "responses": {
         "valid": {},
         "invalid": { "errors": "array" }
@@ -31,7 +31,7 @@
       }
     },
     "stratum_plan": {
-      "request": { "spec": "any", "input": "any", "workspaceRoot?": "string" },
+      "request": { "spec": "object", "input": "object", "workspaceRoot?": "string" },
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
@@ -124,7 +124,7 @@
       }
     },
     "stratum_flow_run_bg": {
-      "request": { "spec": "any", "input": "any", "workspaceRoot?": "string" },
+      "request": { "spec": "object", "input": "object", "workspaceRoot?": "string" },
       "responses": {
         "running": { "runId": "string" }
       }
