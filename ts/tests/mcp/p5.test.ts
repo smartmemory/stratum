@@ -261,6 +261,27 @@ describe("P5 frozen MCP surface", () => {
     } finally { await pair.close(); }
   });
 
+  it("surfaces structured spec validation errors instead of a bare internal error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-spec-errors-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    try {
+      expect((await mcpSurface()).errors.spec_validation_failed).toEqual({
+        data: { code: "string", errors: { $array: { code: "string", path: "string", message: "string" } } },
+      });
+      let protocolError: unknown;
+      try {
+        await pair.client.callTool({ name: "stratum_plan", arguments: { spec: { version: 2, flows: {} }, input: {} } });
+      } catch (error) { protocolError = error; }
+      expect(protocolError).toBeInstanceOf(McpError);
+      const data = (protocolError as McpError).data as { code: string; errors: Array<Record<string, unknown>> };
+      expect(data.code).toBe("spec_validation_failed");
+      expect(data.errors.length).toBeGreaterThan(0);
+      for (const entry of data.errors) {
+        expect(entry).toMatchObject({ code: expect.any(String), path: expect.any(String), message: expect.any(String) });
+      }
+    } finally { await pair.close(); }
+  });
+
   it("pumps consumer fanout over MCP with descriptor tokens, metadata boundaries, and a typed bg rejection", async () => {
     const root = await mkdtemp(join(tmpdir(), "stratum-p5-consumer-")); roots.push(root);
     const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
