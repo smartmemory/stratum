@@ -199,9 +199,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         await assertToolResponse(tool, response);
         return response;
       } catch (error) {
-        if (tool === "stratum_flow_run_bg" && error instanceof SpecValidationError
-          && error.errors.some((entry) => entry.code === "consumer_dispatch_bg_unsupported")) {
-          const code = "consumer_dispatch_bg_unsupported";
+        if (error instanceof SpecValidationError) {
+          const code = tool === "stratum_flow_run_bg"
+            && error.errors.some((entry) => entry.code === "consumer_dispatch_bg_unsupported")
+            ? "consumer_dispatch_bg_unsupported" : "spec_validation_failed";
           const data = { code, errors: error.errors };
           const declaration = (await mcpSurface()).errors[code];
           if (!declaration) throw new Error(`MCP error registry is missing ${code}`);

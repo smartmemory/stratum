@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### fix(mcp): surface structured SpecValidationError entries from every spec-accepting tool (#26, surface 11)
+
+An invalid spec sent to `stratum_plan` (or any spec-accepting tool other than
+the one special-cased `stratum_flow_run_bg` bg-dispatch rejection) returned a
+bare `-32603 "spec validation failed"` — the structured `errors[]`
+(code/path/message per violation) existed on the thrown `SpecValidationError`
+but never reached the caller, forcing a manual `dist/ir/validate.js` repro to
+learn what was wrong. The catch block in `ts/src/mcp/server.ts` now handles
+ANY `SpecValidationError`: the existing `consumer_dispatch_bg_unsupported`
+case keeps its error code, and everything else maps to a new registry-declared
+`spec_validation_failed` error thrown as
+`McpError(InvalidParams, message, { code, errors })`. The error registry gains
+`spec_validation_failed` (same `{code, errors[]}` data shape), bumping the
+frozen surface version 10 → 11. Pinned by a new p5 boundary test.
+
 ### fix(connectors): brief codex agents on the OS sandbox; point Puppeteer at chrome-headless-shell
 
 Codex agents dispatched into the seatbelt/landlock sandbox had no way to know
