@@ -29,7 +29,8 @@ re-read from source rather than taken on the reviewer's word.
 ## Related Documents
 
 - `docs/features/STRAT-WORKFLOW-PIPELINE-FANOUT/design.md` — the bounded fan-out this extends; its
-  deferred row `-PIPELINE-FANOUT-DYNAMIC` is superseded by S2 here (see "Stale row" below)
+  sibling `-PIPELINE-FANOUT-DYNAMIC` is already SUPERSEDED (root-level runtime-K fan-out shipped in
+  STRAT-TS-PORT P4); S2 extends that to nested scopes (see "Stale row" below)
 - `docs/features/STRAT-WORKFLOW-PIPELINE-ROUTE/design.md` — origin of the `skipped` terminal state
 - `docs/plans/2026-07-11-agent-invocation-strategy.md` — D3/STRAT-FLOW-DETACH; the detachment story
 - `SPEC.md` §2.4 `@refine`, §5.1 `stratum.parallel` — the library-side analogues of S3/S4
@@ -69,11 +70,14 @@ has gone stale once already.
 | Scope-aware fan-out scheduling | **Absent — the S2 blocker** | `scheduleFanout(run, stepId)` takes no scope; resolves from the entry flow and keys on `run.steps[stepId]` (`engine.ts:1069-1085`). Readiness collection scans root fanouts only. |
 | Fan-out item owning subflow state | **Absent** | only `StepState` has `sub`; `FanoutItemState` has no child scope (`state.ts:33-55`, `124-151`) |
 
-**Stale row.** `STRAT-WORKFLOW-PIPELINE-FANOUT-DYNAMIC` is filed PLANNED as "unbounded — needs mid-run
-task injection into `ParallelExecutor`'s construction-fixed task set." That constraint was **Python**.
-The TS engine does not construct a fixed task set. The row appears closed-by-port and should be
-reconciled rather than built. This would be the ninth instance of the pattern in
-`feedback_verify_roadmap_rows_vs_disk`.
+**Stale row — already reconciled (checked 2026-07-24).** `STRAT-WORKFLOW-PIPELINE-FANOUT-DYNAMIC`'s
+old blocker was **Python**: mid-run task injection into `ParallelExecutor`'s construction-fixed task
+set. The TS engine does not construct a fixed task set, and this row is **already SUPERSEDED**
+(2026-07-10) in the forge-top ROADMAP — STRAT-TS-PORT P4 shipped engine-owned runtime-K fan-out
+(items materialise from the resolved `over` array with no static cap). So there is nothing to
+reconcile or build here: runtime-K fan-out exists at the **root**. S2 does not supersede a PLANNED
+row — it extends that already-shipped root-level fan-out to **nested** scopes, which is the separate
+scope-aware-scheduling gap R1 found.
 
 ## The insight: the evaluator returns the expansion
 
