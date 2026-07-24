@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { StratumEngine } from "../engine/engine.js";
 import { type PersistedRun, StateStore } from "../engine/state.js";
 import { createEvaluator } from "../eval/expr.js";
+import { createEvaluateRunner } from "../engine/evaluate.js";
 import { type Flow, type Step } from "../ir/schema.js";
 import { validateSpec } from "../ir/validate.js";
 
@@ -304,7 +305,7 @@ export async function gateCommand(args: string[]): Promise<number> {
     // resolve-time audit fetch. A stale token (the gate advanced to a new round
     // since the human observed it) is rejected by the engine's gate fencing,
     // surfaced below as an INVALID error, instead of being silently rebound.
-    const result = await new StratumEngine({ stateRoot: root, evaluator: createEvaluator() })
+    const result = await new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), evaluateRunner: createEvaluateRunner() })
       .gateResolve(parsed.flowId, parsed.stepId, decision, parsed.token);
     // Python result vocabulary, decided from the GATE'S OWN ROUTE, never from
     // downstream advancement (a routed target may complete synchronously):
