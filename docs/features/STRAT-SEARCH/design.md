@@ -4,10 +4,27 @@
 `mutable-state-inc/lean-collab` (MIT, multi-agent Lean 4 theorem proving) as a consumer, and finding
 that the orchestration it hand-rolls is mostly primitives Stratum already has — plus three it does not.
 
-**Maturity is uneven and deliberately so.** S1 and S2 are designed to the point of being buildable.
-S3-S5 are scoped and justified but not worked through; each needs its own pass before implementation.
-Read the sequencing table as an epic shape, not a plan. One contradiction was already caught and
-fixed in self-review (see S2's opening paragraph) — assume more remain, and gate accordingly.
+**Maturity after Codex design-gate round 1: only S1 is buildable.** R1 returned 9 findings including
+2 blockers, and 8 were accepted. The headline correction is that **the central "it's existing
+machinery" claim was wrong for the nested case** — see "Central claim, as corrected" below. S2 is a
+real engine change, not a validator relaxation. S3-S5 are scoped but each needs its own pass.
+
+## Review R1 adjudication (Codex sol/xhigh, 2026-07-24)
+
+8 accepted, 1 partially refuted. Verified independently before folding in — findings 1, 7 and 9 were
+re-read from source rather than taken on the reviewer's word.
+
+| # | Finding | Verdict |
+|---|---|---|
+| 1 | Fanout scheduling is root-only, so a nested fanout would never be scheduled | **ACCEPTED** — confirmed: `scheduleFanout(run, stepId)` takes no scope and resolves the step from the entry flow (`engine.ts:1069-1085`); the dedupe key reads `run.steps[stepId]`. This is the blocker; it invalidates the "three validator relaxations" framing. |
+| 2 | A depth cap does not bound total work when width is uncapped | **ACCEPTED** — correct on its own terms. Items are materialised per array element before dispatch, so work grows as B^D. Retracts S4's safety argument. |
+| 3 | `{status, children}` discards `status`; binding `children`→`over` alone recurses on `closed` and `failed` too | **ACCEPTED** — the contract needs cross-field invariants and an explicit status→engine transition. |
+| 4 | `depth` is incompatible with the budget ledger | **ACCEPTED** — sharpens this doc's own open question 1. Depth is path-local and rises and falls; siblings at one depth must not sum into "depth spent". It is a scope invariant, not a debit axis. |
+| 5 | "All three blockers must move" understates the IR/state redesign | **ACCEPTED** — `FanoutItemState` cannot own subflow state; only `StepState` has `sub`. Adds stage-kind exclusivity, lane call-graph analysis, `with` validation, recursive IDs and traversal. |
+| 6 | S3/S4 do not map onto current `iterate`/`require` | **ACCEPTED**, and the sharpest catch in the set: re-running a *deterministic* evaluator reproduces identical children, so the reset target must be the **agent-attempt step**, which this doc never named. Also: unmet `require` takes the failure path immediately and does not redispatch. |
+| 7 | "Raise the cap, continue" is incompatible with resume, and the cited dependency is stale | **ACCEPTED** — `STRAT-WORKFLOW-RESUME` and `T2-F5-RESUME` are both **COMPLETE (2026-05-31)**, and resume implements content-addressed result caching, not partial-tree continuation. The dependency was both stale and the wrong mechanism. Asserted from memory without verification — the exact failure this doc's own "stale row" section warns about. |
+| 8 | Evaluator output and `route` have no dynamic landing zone | **ACCEPTED** — `contractForStep` recognises only `do`/`set`/`fanout`/`run`, and fanout `agent` is a static enum read as `stage.agent ?? "claude"`. The claim that `route` "targets a field that already exists" was wrong: the field exists but is statically authored, not dynamically bindable. |
+| 9 | S5's current-code claims and precedent are wrong | **ACCEPTED IN PART.** Accepted: the status list omitted `waiting_gate`, and `RunStatus` **already includes `budget_exhausted`** — so this doc's "only one way to stop short" claim was false, and a non-failure terminal precedent already exists in-engine, which makes S5 *easier* than framed. Accepted: `inconclusive` touches every frozen `mcp-surface.json` variant, which default-deny undeclared statuses. **Refuted:** the `inconclusive` precedent cited is compose's judgment joint machine, in a different repo — the reviewer checked stratum's guard. The doc's fault was not naming the repo, not the precedent. |
 
 ## Related Documents
 
@@ -48,7 +65,9 @@ has gone stale once already.
 | Budget enforcement | Exists | `BudgetSchema`: `usd`, `tokens`, `dispatches`, `ms`, at flow / subflow / step |
 | Recursive or nested expansion | **Blocked, three ways** | `ir/validate.ts:539` `SUBFLOW_RECURSIVE` (no self-calls); `ir/validate.ts:565` `SUBFLOW_BODY_RESTRICTED` (non-entry flows are task-only); `FanoutStageSchema` is **`do`-only** — a lane cannot invoke a flow at all |
 | Calling an external program from a predicate | **Absent** | `EnsurePredicateSchema` has exactly four variants; none invokes a command |
-| A non-failure way to stop | **Absent** | step status is `pending \| ready \| running \| succeeded \| failed \| skipped`; budget exhaustion routes through `terminalBudget` as failure |
+| A non-failure way to stop | **Partly exists** | `RunStatus` is `running \| completed \| failed \| budget_exhausted` — a non-failure terminal already exists (`state.ts:6-7`). `StepStatus` adds `waiting_gate`; `BgStatus` adds `paused_gate` and `cancelled`. S5 extends a precedent rather than inventing one. |
+| Scope-aware fan-out scheduling | **Absent — the S2 blocker** | `scheduleFanout(run, stepId)` takes no scope; resolves from the entry flow and keys on `run.steps[stepId]` (`engine.ts:1069-1085`). Readiness collection scans root fanouts only. |
+| Fan-out item owning subflow state | **Absent** | only `StepState` has `sub`; `FanoutItemState` has no child scope (`state.ts:33-55`, `124-151`) |
 
 **Stale row.** `STRAT-WORKFLOW-PIPELINE-FANOUT-DYNAMIC` is filed PLANNED as "unbounded — needs mid-run
 task injection into `ParallelExecutor`'s construction-fixed task set." That constraint was **Python**.
@@ -78,11 +97,24 @@ returns the failing cases. A build system returns unsatisfied dependencies. In e
 answers *"did it work?"* also answers *"what is still open?"* — in the same call.
 
 Therefore the external evaluator is not an oracle bolted beside the engine. **It is the expansion
-function.** And its output lands on machinery that already exists: the `children` array it returns
-*is* a `fanout.over` array.
+function.**
 
-That is what makes this feature small enough to be worth doing. The recursion driver is not new
-scheduling logic; it is an existing uncapped fan-out, fed by a new port.
+### Central claim, as corrected by R1
+
+The original draft went one step further and claimed the recursion driver was therefore *free* — that
+`children` simply feeds `fanout.over`, so this is a port rather than a scheduler. **That was wrong,
+and it was the load-bearing sentence.** Stated precisely:
+
+- **Still true:** an evaluator can produce an array suitable as fan-out input, and at the *root* that
+  array drives an uncapped fan-out today with no engine change.
+- **False:** that this composes into recursion for free. Fan-out scheduling is root-only —
+  `scheduleFanout(run, stepId)` receives no scope and resolves its step from the entry flow
+  (`engine.ts:1069-1085`). A fan-out inside a subflow would be marked `running`, never found by the
+  scheduler, and never executed. Nested expansion needs **scope-aware scheduling**: new engine
+  machinery, not three validator relaxations.
+
+The honest framing: S1 is a genuinely small, independently valuable port. S2 is a real engine change,
+and this design previously understated it by roughly an order of magnitude.
 
 ## Design
 
@@ -120,25 +152,43 @@ bounded by the count of authored flows — fixed-depth nesting, which this featu
 3. **Lift `SUBFLOW_RECURSIVE`** (`validate.ts:539`) for flows reached through a fan-out lane, so a
    flow may re-enter itself once per level of discovered structure.
 
-**The termination guarantee changes hands, and this is the crux of the slice.** Today termination is
-free: the call graph is statically acyclic, so validation proves it. Once a flow may re-enter itself,
-that proof is gone and something must replace it. That replacement is the `depth` budget — a new
-axis alongside `usd` / `tokens` / `dispatches` / `ms`.
+**R1 added a fourth, and it is the blocker.** Fan-out scheduling is root-only. `scheduleFanout` takes
+no scope, resolves its step from the entry flow, and keys its dedupe on `run.steps[stepId]`
+(`engine.ts:1069-1085`); readiness collection scans root fanouts only. A nested fan-out would go
+`running` and never execute. **Scope-aware scheduling is therefore the substance of S2** — the
+validator relaxations are the easy part. It also drags in item-owned subflow state
+(`FanoutItemState` has no `sub`), recursive scope IDs, and recursive traversal.
 
-So `depth` is a failsafe against infinite iteration in exactly the sense intended: the judge (S4) is
-the control surface and should end branches long before the cap is approached, and a run that hits
-the cap has usually revealed a bad judge rather than a hard problem. But it is **load-bearing, not
-decorative** — it is the only thing standing where static acyclicity used to stand. It must be
-enforced unconditionally, on every path, including replay and resume.
+**The termination guarantee changes hands, and it needs two bounds, not one.** Today termination is
+free: the call graph is statically acyclic, so validation proves it. Once a flow may re-enter itself
+that proof is gone, and R1-2 showed a depth cap alone does not replace it — the engine materialises
+one item per array element *before* dispatch, so with uncapped width, work grows as B^D. A depth of
+12 with a branching factor of 20 is not a bound in any useful sense.
+
+So S2 requires:
+
+- **A depth bound**, expressed as a **scope invariant, not a budget axis** (R1-4). Depth is
+  path-local: it rises and falls as the tree is walked, and siblings at one depth must not sum into
+  "depth spent". Every existing budget key is monotonically debited spend, so cohabiting would be a
+  category error even though the ledger is convenient.
+- **A width or node-materialisation bound**, which the original draft lacked entirely. Without it the
+  depth cap is not a failsafe against runaway work, only against runaway *nesting*.
+
+Both must hold on replay and resume, not only first execution.
 
 Nested gates are a known unsolved edge: the scoped gate state machine supports one-level subflow
 gates only. v1 rejects gates below depth 1 at validation rather than guessing at a propagation
 protocol.
 
-**How S1 feeds S2, concretely:** an `evaluate:` step's `children` array is bound as the `over` source
-of a following `fanout` step, whose lanes `run` the same flow that produced them. One turn of the
-loop is: agent attempts → evaluator returns `{ status, children }` → fan-out over `children` → each
-lane re-enters the flow. Depth grows by one per turn and is charged against the `depth` budget.
+**How S1 feeds S2, concretely:** one turn of the loop is agent attempts → evaluator returns
+`{ status, children }` → **engine branches on `status`** → if and only if `open`, fan out over
+`children`, each lane re-entering the flow at depth + 1.
+
+The `status` branch is not optional decoration (R1-3). Binding `children` to `over` and ignoring
+`status` would recurse on `closed` and on `failed` alike, and would leave `open` with an empty
+`children` to be interpreted by `require` semantics — where empty `all` succeeds vacuously while
+empty `any` fails. The contract needs cross-field invariants (`closed` ⇒ no children; `open` ⇒ at
+least one) and an explicit status→engine transition table.
 
 ### S3 — Backtrack
 
@@ -146,7 +196,15 @@ Retrying a decomposition differently is the "climb back up" half, and it has no 
 `iterate` is granted to `do` steps only.
 
 - Permit `iterate { max, until }` on `fanout` steps: when the fan-out's `require` is unsatisfied,
-  re-run the producing step with feedback so the agent attempts a different decomposition.
+  retry the decomposition rather than failing outright.
+- **Name the reset target — the agent-attempt step, never the evaluator (R1-6).** This is the
+  sharpest R1 catch. `iterate` today re-pends *the same step* and feeds it its own prior failure. But
+  the evaluator is deterministic: re-running it reproduces byte-identical children and the loop spins
+  to `max` achieving nothing. The only reset that changes the outcome is the step that *chose the
+  tactic*. Backtrack is therefore not "iterate on the fanout" — it is "invalidate this subtree and
+  re-pend its producing attempt".
+- Two current behaviours must change, not just be reused: unmet `require` takes the failure/`on_fail`
+  path immediately with no redispatch, and `iterate`'s reset target is itself.
 - The children of a superseded attempt must be cancelled and recorded, not orphaned.
 - Backtrack is bounded by `iterate.max` and debits the same budget as everything else.
 
@@ -160,29 +218,52 @@ The judge answers exactly one question: **continue descending, or abandon this b
   any LLM judge runs. This is the one lesson worth taking from the reference implementation, which
   resolves most goals with free syntactic checks and pays for a model only on the residual. Promotes
   the parked `idea_tiered_gate_evaluation` from idea to shipped behaviour.
-- `route` lets the evaluator pick the agent (`claude` / `codex`), which is far cheaper than ranking
-  and targets a field that already exists per step and per fan-out stage.
-- **Explicit non-goal for v1:** no frontier, no priority queue, no best-first scheduling. Fan-out
-  remains a batch primitive. With a hard depth cap bounding total work, ranking is an *efficiency*
-  optimisation, not a *safety* requirement. Defer until a consumer proves batch-plus-pruning
-  insufficient.
+- `route` lets the evaluator pick the agent (`claude` / `codex`), which is far cheaper than ranking.
+  **Correction (R1-8):** the original claim that this "targets a field that already exists" was
+  wrong. `agent` exists per step and per fan-out stage but is a *static enum* read as
+  `stage.agent ?? "claude"`. A returned `route` needs a new dynamic binding and validation rule.
+  Likewise `contractForStep` recognises only `do`/`set`/`fanout`/`run`, so a repo-level
+  `contracts/evaluator-result.json` is not automatically in a spec's contract map — S1 must say how
+  `evaluate.output.children` becomes a valid typed reference.
+- **Abandonment needs an outcome algebra, and there isn't one (R1-6).** Fan-out items are only
+  `succeeded` / `failed` / `skipped`, and `require: all` counts an abandoned item as batch failure.
+  "Pruned deliberately" and "failed" must be distinguishable or the judge cannot be a control
+  surface at all.
+- **Deferred for v1, on a weaker argument than before:** no frontier, no priority queue, no
+  best-first scheduling. The original justification — that a hard depth cap bounds total work, making
+  ranking merely an efficiency concern — **was retracted by R1-2**: depth does not bound work when
+  width is uncapped. The deferral now rests entirely on the node-materialisation bound in S2. If that
+  bound is not built, ranking moves from efficiency to safety and this non-goal must be revisited.
 
 ### S5 — Ending without succeeding
 
-Today Stratum has one way to stop short: failure. For search that is wrong. *"Searched within the
-budget you set, found no proof"* is a result, not an error, and conflating them destroys the most
-valuable output — the partial tree.
+*"Searched within the budget you set, found no proof"* is a result, not an error, and conflating the
+two destroys the most valuable output — the partial tree.
 
 - A terminal `inconclusive` status, distinct from `failed`, carrying a structured partial result:
   what closed, what remains open, why it stopped.
-- Deliberately mirrors the judgment layer's joint machine, where `inconclusive` is first-class and
-  its edge demands `resolution { outcome: inconclusive, learned, would_have_settled }`. That pattern
-  has already been designed, shipped, and defended in this codebase.
+- **The precedent is in-engine already (R1-9).** An earlier draft claimed failure was Stratum's only
+  way to stop short. False: `RunStatus` already includes `budget_exhausted`, and `BgStatus` adds
+  `paused_gate` and `cancelled`. So this slice extends an accepted pattern rather than introducing
+  one — which makes it easier than originally framed.
+- The richer precedent for *carrying what was learned* is **compose's** judgment joint machine
+  (`lib/judgment-write-guard.js`, a different repo — R1 looked for it in stratum's guard and
+  correctly did not find it). There `inconclusive` is a first-class state whose edge demands
+  `resolution { outcome: inconclusive, learned, would_have_settled }` — a recorded finding, not a
+  failure. Worth copying the shape, explicitly not the code.
 - **Resumable**: the partial tree is a checkpoint. Raise the cap, continue, do not restart.
 
-**Accepted dependency:** resumption collides with `STRAT-WORKFLOW-RESUME`, which is filed, unbuilt,
-and blocked on `T2-F5-RESUME`. The owner has accepted this knowingly. It is recorded here so the
-sequencing decision is explicit rather than smuggled in with S5.
+**Corrected dependency (R1-7).** An earlier draft claimed resumption was blocked on
+`STRAT-WORKFLOW-RESUME`, "filed and unbuilt". Both that feature and `T2-F5-RESUME` are **COMPLETE
+(2026-05-31)**, and neither is the mechanism needed here: resume implements content-addressed result
+caching, and `resume` accepts only a `runId`, returning immediately for any run not marked `running`.
+So "raise the cap and continue" needs a **new mutation-or-clone protocol** on a terminal run — it
+cannot ride existing resume. This is larger than the original framing, not smaller.
+
+**Also in scope (R1-9):** `inconclusive` is not merely a new `RunStatus`. Every strict response
+variant in `ts/contracts/mcp-surface.json` — plan, step-done, revert, resume, audit, poll, bg-poll —
+default-denies undeclared statuses, so each must admit it. The upside is that `budget_exhausted`
+already proves the pattern is acceptable in this engine.
 
 ## Non-goals
 
@@ -198,8 +279,8 @@ sequencing decision is explicit rather than smuggled in with S5.
 
 | Slice | Depends on | Rationale |
 |---|---|---|
-| S1 evaluator port | — | The trust anchor and the expansion function. Independently useful to any workload with a test runner, compiler, or linter. |
-| S2 recursion | S1 | Needs a source of children worth recursing on. |
+| S1 evaluator port | — | The trust anchor and the expansion function. Independently useful to any workload with a test runner, compiler, or linter. **The only slice R1 left intact.** |
+| S2 recursion | S1 | Needs a source of children worth recursing on. **Re-scoped by R1 from "three validator relaxations" to scope-aware fan-out scheduling + item-owned subflow state + two independent bounds.** Sizeable engine work; deserves its own design pass before any plan. |
 | S3 backtrack | S2 | Only meaningful once there is a subtree to abandon. |
 | S4 judge | S2 | Only meaningful once branches compete. |
 | S5 inconclusive | S2 | Only meaningful once a run can legitimately not finish. |
