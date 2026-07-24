@@ -265,6 +265,56 @@ variant in `ts/contracts/mcp-surface.json` — plan, step-done, revert, resume, 
 default-denies undeclared statuses, so each must admit it. The upside is that `budget_exhausted`
 already proves the pattern is acceptable in this engine.
 
+## S1 Implementation Blueprint (added 2026-07-24 after source-code review)
+
+Read against `main` before writing code. The design's prose could not be taken literally — the
+name `evaluator` already means something else in this engine. Corrections table first.
+
+| Spec assumption | Actual code | Correction |
+|---|---|---|
+| "the evaluator" is the S1 external-program concept | `Evaluator` / `EvaluatorContext` (`engine.ts:18-35`, `eval/expr.ts`) is the **expression evaluator** — it evaluates `when` / `expr` / `until`. Required option `evaluator:`. | S1's port is named **`EvaluateRunner`**, its result **`EvaluatorResult`**, its step kind **`evaluate:`**. The name `Evaluator` is never reused. |
+| Contract lives at file `contracts/evaluator-result.json`, "referenced, not prose" | Spec contracts are an **inline `contracts:` map** in the spec (`schema.ts:114-118`, `CONTRACT_NAME = /^[A-Z][a-zA-Z0-9_]*$/`). `ts/contracts/*.json` are engine-internal (events, mcp-surface), not spec contracts, and are not loaded into a spec's contract map. | The engine owns a **fixed** `evaluatorResultSchema` (zod) — this is the trust anchor and the source of the typed failures; it does not depend on author declaration. `ts/contracts/evaluator-result.json` ships as the **canonical documented shape** authors copy into their own `contracts:` map when they want to reference fields. |
+| "new step kind declaring a command, input binding, timeout" | A step kind is four coordinated edits: a field on `StepShape`, membership in the `kinds` list, a `STEP_FIELDS` allow-list row, and superRefine rules (`schema.ts:53-100`). | Add an `evaluate` object field carrying `{ command, in, timeout_ms }`; register it in all four places. |
+| "Invoked by the engine, not an agent" | Server-side kinds (`set`/`run`/`fanout`) are handled in `advanceScopeLoop` **before** the `do` guard at `engine.ts:1031` (`"construct is outside P1 engine scope"`). `do` is the only agent-dispatched kind. | Add an `if (step.evaluate !== undefined)` branch just above line 1031. `await` the runner inline and settle like an async `set` (validate output, set `state.output`, run ensures, `succeeded` / typed `failAttempt`). Persist **only** the terminal outcome — no intermediate `running` — so a crash mid-evaluate leaves the step `pending` and it re-runs, matching `set`'s atomicity and keeping resume trivial. (Concurrency with sibling steps is an S2 concern, explicitly not S1.) |
+| injected external program | Precedent is `judge?: JudgeRunner` (`engine.ts:172`), absent ⇒ fail **closed** (`engine.ts:1651-1652`). | `evaluateRunner?: EvaluateRunner` option, absent ⇒ distinct typed fail-closed (`evaluate: no evaluate runner configured`). Default `createEvaluateRunner()` spawns the command with the timeout; wired into `StratumEngine` construction in `cli/stratum.ts:234`, `mcp/server.ts:83`, `cli/query_gate.ts:307` exactly where `createEvaluator()` already is. |
+| `evaluate.output.children` becomes a typed reference (R1-8) | `contractForStep` (`validate.ts:296-301`) recognises `do`/`set`/`fanout`/`run` only. | Add `if (step.evaluate !== undefined) return step.out;`. `out` is optional on `evaluate` (like `do`); referencing a field of an evaluate step with no `out` fires the existing `REF_OUTPUT_CONTRACT_REQUIRED` (`validate.ts:397`) for free. The author's `out` contract governs what is **referenceable**; the engine's fixed schema governs what the **data** must be. That separation is deliberate — an author cannot loosen the trust schema by declaring a weaker `out`. |
+
+**Trust / typed-failure taxonomy (acceptance criterion 2).** The runner reports a *transport* outcome
+distinct from the evaluator's *domain* verdict. Five distinct typed failures, none of which can be
+mistaken for a `closed` verdict:
+
+1. no runner configured (fail-closed)
+2. non-zero exit
+3. timeout
+4. stdout not valid JSON
+5. JSON valid but fails `evaluatorResultSchema` (incl. cross-field invariants: `closed` ⇒ empty `children`; `open` ⇒ non-empty `children`)
+
+A domain verdict of `status: "failed"` is **not** an engine failure — it is a well-formed result and
+becomes the step's `output`. The step *succeeded at running the evaluation*; the verdict is the payload.
+The `status` → engine transition (does `open` recurse? does `failed` route to `on_fail`?) is **S2's**
+job (the transition table in R1-3), explicitly out of S1 scope. For S1 an evaluate step **succeeds**
+iff the runner returns a contract-valid result, and typed-**fails** on 1-5 above.
+
+**Files:** `ir/schema.ts` (EDIT — kind), `ir/validate.ts` (EDIT — `contractForStep`, STEP_FIELDS parity),
+`engine/engine.ts` (EDIT — types, option, branch, `evaluatorResultSchema`), `engine/evaluate.ts` (NEW —
+`createEvaluateRunner`, spawn + timeout + parse, mirrors `eval/expr.ts` export style),
+`cli/stratum.ts` · `mcp/server.ts` · `cli/query_gate.ts` (EDIT — wire the port),
+`ts/contracts/evaluator-result.json` (NEW — canonical shape). Tests: happy path, all five typed
+failures, `closed`-never-synthesised-on-failure, and a contract-ref-through-`out` typing test.
+
+### S1 implementation review (R2, Codex sol/xhigh, 2026-07-24)
+
+6 findings; 4 real and fixed with tests, 1 already fixed, 1 refuted.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | The engine trusted the runner's `ok` discriminant without runtime validation — a malformed envelope (`ok: "false"`) could launder a `closed` payload through. | **FIXED.** `evaluateRunResultSchema` (discriminated union) validates the whole envelope at runtime, same trust posture as the judge verdict. Test: "rejects a malformed runner envelope". |
+| 2 | A thrown/rejected runner escaped as an unhandled `plan()` rejection instead of a typed failure; resume would repeat it. | **FIXED.** The runner call is wrapped in try/catch → typed `runner threw` failure. Test: "converts a thrown runner into a typed failure". |
+| 3 | Closed-stdin EPIPE could crash the engine process. | **ALREADY FIXED** pre-review (self-adversary pass): `child.stdin.on("error", …)` swallows it. |
+| 4 | Timeout killed only `/bin/sh`, orphaning backgrounded grandchildren holding stdio. | **FIXED.** Spawn `detached`, `process.kill(-pid)` the group on timeout. Test: "kills backgrounded grandchildren when the command times out". |
+| 5 | `evaluate.in` references were collected by the validator but NOT by the engine's own dependency mirror (`stringLeaves`), so an evaluate step bound to a prior step's output ran before that output existed and failed terminally. | **FIXED** (the sharpest catch). Added `evaluate.in` to `stringLeaves`. Test: "waits for a step referenced by its input binding". |
+| 6 | No `ensure` settlement on evaluate steps. | **REFUTED.** Deliberate scope decision — `ensure` was intentionally excluded from the evaluate field allowlist; it is not in S1's acceptance criteria, and the trust schema + `out` contract already validate the output. Not a defect. |
+
 ## Non-goals
 
 - Best-first search, priority queues, frontier re-ranking (deferred; see S4).
@@ -290,10 +340,10 @@ useful if the rest is never built.
 
 ## Acceptance criteria
 
-- [ ] S1: an `evaluate:` step invokes a declared command server-side and validates output against
-      `contracts/evaluator-result.json`
-- [ ] S1: non-zero exit, timeout, and unparseable output each produce a distinct typed failure; none
-      can yield `status: "closed"`
+- [x] S1: an `evaluate:` step invokes a declared command server-side and validates output against
+      the engine-owned `evaluatorResultSchema` (documented canonically in `ts/contracts/evaluator-result.json`)
+- [x] S1: no runner, non-zero exit, timeout, unparseable output, and contract-invalid output each
+      produce a distinct typed failure; none can yield `status: "closed"`
 - [ ] S2: a fan-out lane may `run` a flow (`FanoutStageSchema` accepts `run` / `with`)
 - [ ] S2: a non-entry flow may declare `fanout` and `run`
 - [ ] S2: a flow reached through a fan-out lane may re-enter itself; a self-call in an ordinary

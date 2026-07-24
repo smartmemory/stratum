@@ -8,6 +8,7 @@ import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/
 import type { ConnectorEventHandler } from "../connectors/base.js";
 import { CheckpointOperationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
+import { createEvaluateRunner } from "../engine/evaluate.js";
 import { validateSpec } from "../ir/validate.js";
 import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { createFixtureJudge } from "../judge/fixture_judged.js";
@@ -82,6 +83,7 @@ function defaultEngine(): StratumEngine {
     ...(process.env.STRATUM_STATE_ROOT ? { stateRoot: process.env.STRATUM_STATE_ROOT } : {}),
     evaluator: createEvaluator(),
     judge,
+    evaluateRunner: createEvaluateRunner(),
   });
 }
 

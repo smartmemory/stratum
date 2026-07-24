@@ -48,6 +48,55 @@ export type JudgeRunner = (
   context: { result: unknown; input: unknown },
 ) => Promise<JudgedOutcome>;
 
+/**
+ * The fixed shape every S1 `evaluate:` step must return. Engine-owned and
+ * strict — an author's `out` contract governs what is *referenceable*, this
+ * schema governs what the data must *be*. It is the trust anchor: a transport
+ * failure can never be laundered into a `closed` verdict, and the cross-field
+ * invariants (`closed` ⇒ no children, `open` ⇒ ≥1 child) are enforced here.
+ */
+export const evaluatorResultSchema = z.object({
+  status: z.enum(["closed", "open", "failed"]),
+  children: z.array(z.unknown()),
+  reason: z.string(),
+  score: z.number().optional(),
+  route: z.enum(["claude", "codex"]).optional(),
+}).strict().superRefine((result, ctx) => {
+  if (result.status === "closed" && result.children.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["children"], message: "a closed verdict must carry no children" });
+  }
+  if (result.status === "open" && result.children.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["children"], message: "an open verdict must carry at least one child" });
+  }
+});
+export type EvaluatorResult = z.infer<typeof evaluatorResultSchema>;
+
+/** Transport outcome of one evaluate invocation, distinct from the domain verdict it may carry. */
+export type EvaluateRunResult =
+  | { ok: true; result: unknown }
+  | { ok: false; kind: "exit" | "timeout" | "parse"; reason: string };
+
+/**
+ * The engine validates the runner's ENVELOPE at runtime, not just the verdict
+ * inside it — the `ok` discriminant is the runner's word for whether it even
+ * succeeded, and a malformed envelope must never let a `{status:"closed"}`
+ * payload reach the success path. Same trust posture as the judge verdict.
+ */
+const evaluateRunResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), result: z.unknown() }),
+  z.object({ ok: z.literal(false), kind: z.enum(["exit", "timeout", "parse"]), reason: z.string() }),
+]);
+
+/**
+ * Runner for `evaluate:` steps. Invoked BY THE ENGINE, never by an agent — a
+ * proof system that takes an agent's word for whether it proved something is
+ * not a proof system. Absent = evaluate steps fail closed.
+ */
+export type EvaluateRunner = (
+  invocation: { command: string; input: unknown; timeoutMs: number },
+  context: { workspaceRoot?: string },
+) => Promise<EvaluateRunResult>;
+
 type EnsureOutcome = undefined | { kind: "fail"; reason: string } | { kind: "flow_budget" } | { kind: "subflow_budget"; reason: string };
 
 /** Fanout-stage ensure evaluation context: legal item/prev bindings plus the item's jail root. */
@@ -170,6 +219,8 @@ export interface StratumEngineOptions {
   evaluator: Evaluator;
   /** Runner for `judged:` ensure predicates. Absent = judged predicates fail closed. */
   judge?: JudgeRunner;
+  /** Runner for `evaluate:` steps. Absent = evaluate steps fail closed. */
+  evaluateRunner?: EvaluateRunner;
   /** Engine-owned P4 dispatch seam. Defaults to the P3 connector runner. */
   connector?: EngineConnector;
 }
@@ -215,6 +266,7 @@ export class StratumEngine {
   private readonly store: StateStore;
   private readonly evaluator: Evaluator;
   private readonly judge?: JudgeRunner;
+  private readonly evaluateRunner?: EvaluateRunner;
   private readonly connector: EngineConnector;
   // Serializes load-modify-save per run: plan may hand out several ready steps, so
   // stepDone/resume can race in-process. The state root is owned by one engine process in v1.
@@ -233,6 +285,7 @@ export class StratumEngine {
     this.store = new StateStore(options.stateRoot);
     this.evaluator = options.evaluator;
     if (options.judge) this.judge = options.judge;
+    if (options.evaluateRunner) this.evaluateRunner = options.evaluateRunner;
     this.connector = options.connector ?? defaultConnector;
   }
 
@@ -1027,6 +1080,76 @@ export class StratumEngine {
             changed = true;
             break;
           }
+        }
+        if (step.evaluate !== undefined) {
+          const attempt = state.attempts.length + 1;
+          const evaluate = step.evaluate;
+          // Deterministic, single-shot, and atomic: no intermediate `running`
+          // is persisted, so a crash mid-evaluate leaves the step `pending` and
+          // it re-runs on resume. `forceExhausted` terminalizes every failure —
+          // retrying a deterministic evaluator is pointless (backtrack is S3).
+          const evalFail = (reason: string) =>
+            this.failAttempt(run, spec, contracts, scope, step, state, attempt, reason, {}, undefined, undefined, true);
+          if (!this.evaluateRunner) {
+            await evalFail("evaluate: no evaluate runner configured");
+            changed = true;
+            break;
+          }
+          let input: unknown;
+          try {
+            input = evaluate.in === undefined ? undefined : this.renderValue(evaluate.in, scope);
+          } catch (error) {
+            await evalFail(`evaluate: input render failed: ${message(error)}`);
+            changed = true;
+            break;
+          }
+          // Sandboxing (workspaceRoot jail) is deferred — see design open question 3.
+          let rawOutcome: unknown;
+          try {
+            rawOutcome = await this.evaluateRunner(
+              { command: evaluate.command, input, timeoutMs: evaluate.timeout_ms },
+              {},
+            );
+          } catch (error) {
+            await evalFail(`evaluate: runner threw: ${message(error)}`);
+            changed = true;
+            break;
+          }
+          const envelope = evaluateRunResultSchema.safeParse(rawOutcome);
+          if (!envelope.success) {
+            await evalFail(`evaluate: runner returned a malformed result envelope: ${envelope.error.message}`);
+            changed = true;
+            break;
+          }
+          const outcome = envelope.data;
+          if (!outcome.ok) {
+            const detail = outcome.reason;
+            const reason = outcome.kind === "exit" ? `evaluate: command exited with a non-zero status (${detail})`
+              : outcome.kind === "timeout" ? `evaluate: command timed out (${detail})`
+              : `evaluate: output was not valid JSON (${detail})`;
+            await evalFail(reason);
+            changed = true;
+            break;
+          }
+          const parsed = evaluatorResultSchema.safeParse(outcome.result);
+          if (!parsed.success) {
+            await evalFail(`evaluate: output failed the evaluator-result contract: ${parsed.error.message}`);
+            changed = true;
+            break;
+          }
+          const outError = this.contractError(step, parsed.data, contracts);
+          if (outError) {
+            await evalFail(`evaluate: output failed the ${step.out} contract: ${outError}`);
+            changed = true;
+            break;
+          }
+          state.status = "succeeded";
+          state.output = parsed.data;
+          state.attempts.push({ attempt, at: now(), result: parsed.data });
+          this.event(run, "result", this.scopedId(scope, step.id), { attempt, result: parsed.data });
+          await this.persist(run);
+          changed = true;
+          continue;
         }
         if (step.do === undefined) {
           await this.failScope(run, spec, contracts, scope, "construct is outside P1 engine scope");
@@ -2369,6 +2492,7 @@ function stringLeaves(step: Step): string[] {
   // templates and fanout over/stage templates reference steps too — a fanout
   // over "${prep.output.items}" must wait for prep, not fail at resolve time.
   if (step.with !== undefined) collect(step.with);
+  if (step.evaluate?.in !== undefined) collect(step.evaluate.in);
   if (step.fanout !== undefined) {
     collect(step.fanout.over);
     for (const stage of step.fanout.steps) {

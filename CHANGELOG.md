@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### feat(STRAT-SEARCH): S1 — the evaluate step (engine-owned external verdict)
+
+First slice of STRAT-SEARCH. A new `evaluate:` step kind delegates to an
+external program, invoked BY THE ENGINE (never by an agent), and receives a
+structured verdict `{ status: closed|open|failed, children[], reason, score?,
+route? }`. This is the trust anchor: a proof system that takes an agent's word
+for whether it proved something is not a proof system.
+
+- `EvaluateSchema` in `ts/src/ir/schema.ts` (`command`, optional `in`,
+  `timeout_ms`), registered as a sixth step kind across the kind list, the
+  field allowlist, and the mix check.
+- `contractForStep` and `referencesInStep` in `ts/src/ir/validate.ts` now know
+  `evaluate`, so `${step.output.field}` references type against the step's `out`
+  contract exactly as `do`/`set` do (R1-8).
+- `evaluatorResultSchema` in `ts/src/engine/engine.ts` is the engine-owned, strict
+  trust schema — it enforces the cross-field invariants (`closed` ⇒ no children,
+  `open` ⇒ ≥1 child, R1-3). The evaluate branch in `advanceScopeLoop` runs the
+  injected `EvaluateRunner` inline and settles atomically (no intermediate
+  `running` persisted, so a crash re-runs cleanly on resume).
+- Five distinct typed failures — no runner, non-zero exit, timeout, unparseable
+  stdout, contract-invalid output — none of which can be laundered into a
+  `closed` verdict.
+- Default `createEvaluateRunner` in `ts/src/engine/evaluate.ts` spawns the
+  command via `/bin/sh -c`, feeds the bound input as JSON on stdin, reads a JSON
+  verdict from stdout, and classifies only the transport outcome. Wired into the
+  MCP server and both CLI engine constructions.
+- `ts/contracts/evaluator-result.json` documents the canonical shape.
+- S2-S5 (recursion, backtrack, scored judge, inconclusive) remain unbuilt; S2
+  was re-scoped to real engine work by design-gate R1 and needs its own pass.
+
 ### fix(mcp): surface structured SpecValidationError entries from every spec-accepting tool (#26, surface 11)
 
 An invalid spec sent to `stratum_plan` (or any spec-accepting tool other than

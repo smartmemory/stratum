@@ -7,6 +7,7 @@ import { parseDocument } from "yaml";
 import { agentRunsRoot, T2F5_DONE_SENTINEL } from "../connectors/background.js";
 import { StratumEngine } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
+import { createEvaluateRunner } from "../engine/evaluate.js";
 import { validateSpec } from "../ir/validate.js";
 import { checkLegacyYaml, renderCompatReport } from "../migrate/check.js";
 import { assertEvent, eventContract } from "../mcp/contracts.js";
@@ -231,7 +232,7 @@ function unknownRun(options: WatchOptions): number {
   return 2;
 }
 
-function createFlowEngine(): StratumEngine { return new StratumEngine({ ...(process.env.STRATUM_STATE_ROOT ? { stateRoot: process.env.STRATUM_STATE_ROOT } : {}), evaluator: createEvaluator() }); }
+function createFlowEngine(): StratumEngine { return new StratumEngine({ ...(process.env.STRATUM_STATE_ROOT ? { stateRoot: process.env.STRATUM_STATE_ROOT } : {}), evaluator: createEvaluator(), evaluateRunner: createEvaluateRunner() }); }
 function take(args: string[], value: string): boolean { const index = args.indexOf(value); if (index < 0) return false; args.splice(index, 1); return true; }
 function lineOut(value: unknown): void { process.stdout.write(`${JSON.stringify(value)}\n`); }
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }

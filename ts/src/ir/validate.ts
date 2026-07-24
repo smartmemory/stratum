@@ -232,6 +232,7 @@ function referencesInStep(step: Step, base: readonly (string | number)[]): Array
   if (step.when !== undefined) add(step.when, [...base, "when"]);
   if (step.set !== undefined) add(step.set, [...base, "set"]);
   if (step.run !== undefined && step.with !== undefined) add(step.with, [...base, "with"]);
+  if (step.evaluate?.in !== undefined) add(step.evaluate.in, [...base, "evaluate", "in"]);
   if (step.fanout !== undefined) {
     add(step.fanout.over, [...base, "fanout", "over"]);
     step.fanout.steps.forEach((stage, index) => {
@@ -294,7 +295,7 @@ function flowEntries(spec: Specification): Array<[string, Flow]> {
 }
 
 function contractForStep(step: Step, flows: Record<string, Flow>): string | undefined {
-  if (step.do !== undefined || step.set !== undefined) return step.out;
+  if (step.do !== undefined || step.set !== undefined || step.evaluate !== undefined) return step.out;
   if (step.fanout !== undefined) return step.fanout.steps.at(-1)?.out;
   if (step.run !== undefined) return flows[step.run]?.output.contract;
   return undefined;

@@ -1,0 +1,17 @@
+{
+  "_source": "STRAT-SEARCH S1 — docs/features/STRAT-SEARCH/design.md",
+  "_roadmap": "STRAT-SEARCH",
+  "_note": "Canonical shape every `evaluate:` step returns. Engine-owned and enforced by `evaluatorResultSchema` in src/engine/engine.ts — this file is documentation, not a loaded schema. Copy the `fields` into a spec's `contracts:` map (as a contract like `Eval`) when you want to reference an evaluate step's output; the engine validates the data against its own strict schema regardless of what a spec declares.",
+  "fields": {
+    "status": "one of closed | open | failed. closed = goal discharged; open = work remains (carries children); failed = the attempt did not work (a verdict, not an engine error).",
+    "children": "array of newly-discovered sub-work items. MUST be empty when status is closed; MUST be non-empty when status is open. The fan-out source for S2.",
+    "reason": "human-readable explanation of the verdict.",
+    "score": "optional number; feeds S4 branch-abandonment.",
+    "route": "optional claude | codex; lets the evaluator pick the agent for follow-up work. Feeds S4."
+  },
+  "invariants": [
+    "status closed implies children is empty",
+    "status open implies children is non-empty",
+    "a transport failure (non-zero exit, timeout, unparseable output) is NEVER reported as closed — it is a distinct typed engine failure"
+  ]
+}

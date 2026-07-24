@@ -30,6 +30,12 @@ export const GateSchema = z.object({
   max_rounds: z.number().int().positive().optional(),
 }).strict();
 
+export const EvaluateSchema = z.object({
+  command: z.string().min(1),
+  in: z.string().optional(),
+  timeout_ms: z.number().int().positive(),
+}).strict();
+
 export const FanoutStageSchema = z.object({
   do: z.string(),
   agent: z.enum(["claude", "codex"]).optional(),
@@ -67,6 +73,7 @@ const StepShape = z.object({
   fanout: FanoutSchema.optional(),
   run: z.string().optional(),
   with: z.record(z.unknown()).optional(),
+  evaluate: EvaluateSchema.optional(),
 }).strict();
 
 const COMMON_STEP_FIELDS = new Set(["id", "after", "when"]);
@@ -76,10 +83,11 @@ const STEP_FIELDS: Record<string, readonly string[]> = {
   gate: ["id", "after", "when", "gate"],
   fanout: ["id", "after", "when", "fanout", "attempts", "budget", "on_fail"],
   run: ["id", "after", "when", "run", "with", "budget", "on_fail"],
+  evaluate: ["id", "after", "when", "evaluate", "out"],
 };
 
 export const StepSchema = StepShape.superRefine((step, ctx) => {
-  const kinds = ["do", "set", "gate", "fanout", "run"].filter((key) => step[key as keyof typeof step] !== undefined);
+  const kinds = ["do", "set", "gate", "fanout", "run", "evaluate"].filter((key) => step[key as keyof typeof step] !== undefined);
   if (kinds.length !== 1) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "E2_CONSTRUCT_MIX" });
     return;
