@@ -55,6 +55,13 @@ export const CODEX_SANDBOX_PREAMBLE = [
   "[/sandbox constraints]",
 ].join("\n");
 
+/** Deliberately NOT gated on sandboxMode. Both values of CodexSandboxMode
+ * ("read-only" | "workspace-write") are passed to `codex --sandbox`, so every
+ * dispatch runs under seatbelt/landlock — the modes differ in write permission,
+ * not window-server access, and GUI apps abort under both. Gating on the mode
+ * would strip the warning from workspace-write agents, which are exactly the
+ * ones that run browser tests and crash-looped before this existed. Revisit
+ * only if an unsandboxed mode is ever added to CodexSandboxMode. */
 export function withSandboxPreamble(prompt: string): string {
   if (prompt.startsWith("[sandbox constraints]")) return prompt;
   return `${CODEX_SANDBOX_PREAMBLE}\n\n${prompt}`;
