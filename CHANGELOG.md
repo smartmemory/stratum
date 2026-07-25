@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-07-25
+
+Reaches compose users automatically: compose 0.3.7 moved its stratum dependency
+from an exact pin to `^0.3.3`, so 0.3.x patches now arrive on a plain reinstall.
+Every change below is additive — the surface bump (10 → 11) only adds a
+`spec_validation_failed` entry to the `errors` map, and no existing tool's
+request or response shape changed.
+
 ### feat(STRAT-SEARCH): S1 — the evaluate step (engine-owned external verdict)
 
 First slice of STRAT-SEARCH. A new `evaluate:` step kind delegates to an
@@ -64,6 +72,14 @@ newest `chrome-headless-shell` in the Puppeteer cache when one exists, so
 Puppeteer scripts that honor the env work without agent intervention. New
 exports: `CODEX_SANDBOX_PREAMBLE`, `withSandboxPreamble`,
 `resolveHeadlessShellPath`, `applyHeadlessShellEnv`.
+
+## [Shipped in 0.2.0 – 0.3.3, never sectioned]
+
+Pre-existing bookkeeping debt, recorded here rather than silently absorbed into
+0.3.4: every entry below had already been released by the time 0.3.4 was cut,
+but no release rolled the `[Unreleased]` heading, so they accumulated under it.
+Left in place — reconstructing the exact version boundaries after the fact would
+be guesswork.
 
 ### fix: declare spec/input as "object" in the MCP tool contract (surface 10)
 
