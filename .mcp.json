@@ -3,13 +3,13 @@
     "compose": {
       "command": "node",
       "args": [
-        "/Users/ruze/reg/my/forge/compose/server/compose-mcp.js"
+        "../compose/server/compose-mcp.js"
       ]
     },
     "stratum": {
-      "command": "/opt/homebrew/Cellar/node@22/22.23.1/bin/node",
+      "command": "node",
       "args": [
-        "/Users/ruze/reg/my/forge/stratum/ts/src/mcp/bin.mjs"
+        "./ts/src/mcp/bin.mjs"
       ]
     }
   }
