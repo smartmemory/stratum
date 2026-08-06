@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### chore(license): add the Apache-2.0 LICENSE file the README already claimed
+
+The README has carried an Apache 2.0 badge since early on, but the repo shipped
+without a `LICENSE` file — so the actual legal status was all-rights-reserved,
+and neither GitHub nor npm could detect a license. Adds the canonical
+Apache-2.0 text (`Copyright 2026 regression-io`) and sets
+`"license": "Apache-2.0"` in `ts/package.json` so the published
+`@smartmemory/stratum` package declares it too. No code or behaviour change.
+
+`app/package.json` is `"private": true` and stays unlicensed by design.
+
 ## [0.3.4] — 2026-07-25
 
 Reaches compose users automatically: compose 0.3.7 moved its stratum dependency
