@@ -49,6 +49,12 @@ A default-OFF **inline self-patch harvester edge** on the judge kernel. When `st
 - `STRAT-LEARN-INLINE-ENSURE` — extend the trigger to the executor `ensure`-failure path (needs structured violations first).
 - `STRAT-LEARN-INLINE-CORRECTION` — inline user-correction trigger (lift postmortem `signals.py` into the live loop).
 - `STRAT-LEARN-INLINE-APPLY` — opt-in literal old→new synthesis + guarded apply path.
+  Acceptance criteria for the apply path are canonicalized in
+  `../STRAT-DISTILL-APPLY/design.md` §"Apply-path guardrails" (added 2026-08-06 from
+  IDEA-1199): session-local default, evidence-backed deltas, snapshot/rollback by id,
+  immutable core. Note (2026-08-06): v1 shipped in the Python engine, retired with
+  STRAT-PY-RETIRE — the harvester has no TS port yet, so this follow-up now also
+  requires porting the staging substrate to `ts/`.
 - `STRAT-LEARN-INLINE-GOAL` — harvest the goal-orchestrator `run_judge` loop (needs the goal FlowState serializer to carry `learn_*`).
 
 ## 8. Lessons Learned
