@@ -27,8 +27,10 @@ Net-new (do **not** assume reuse):
 
 LLM-driven, mirroring MiMo's 6-phase prompt: locate trajectory → inventory existing assets (extend-not-duplicate) → detect repeats from memory → confirm against raw trajectory → shortlist → pick smallest form → create + verify (Glob paths, Grep symbols).
 
+> **Contamination-chain note (2026-08-07):** phase 2 (*inventory existing assets*) is what makes an applied asset pool self-referential — a defective asset becomes reference material for the next candidate, so its flaw is inherited by descendants and per-asset rollback cannot fully undo it (arXiv:2608.05810). Harmless while v1 stages only; it is the mechanism that makes the pre-commit admission gate a requirement on every apply path. See `../STRAT-DISTILL-APPLY/design.md` §"Pre-commit admission — rationale".
+
 Discipline carried over from MiMo + Stratum constraints:
-- **Confidence bar:** a candidate counts only if it recurred **≥2×** with stable inputs + a clear stopping condition and isn't already covered by an existing asset.
+- **Confidence bar:** a candidate counts only if it recurred **≥2×** with stable inputs + a clear stopping condition and isn't already covered by an existing asset. **Note (2026-08-07):** this is a *relevance* bar, not a *quality* bar — it does not ask whether admitting the asset improves the pool. Any path that writes candidates into the live pool must additionally satisfy the pre-commit admission gate (gate 5 in `../STRAT-DISTILL-APPLY/design.md` §"Apply-path guardrails"). Unchanged for v1, which only stages.
 - **Anti-slop guard:** "if nothing recurred, **create nothing** — that is a valid, successful outcome." Never manufacture an asset to justify the run.
 - **Staged, not auto-applied** (STRAT-IMMUTABLE / `feedback_review_loop_roles`): candidates surface for review in the audit trace, never silently written to the working tree.
 - **Source-of-truth:** raw trajectory authoritative, memory files a cache (matches the sidecar ≠ corpus rule).

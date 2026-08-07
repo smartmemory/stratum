@@ -24,3 +24,28 @@ STRAT-DISTILL-APPLY).
 
 **Dependencies:** STRAT-DISTILL v1 (shipped). Reuse `runner.run_distill`,
 `distill_sidecar_path`, the `[learn.inline_patch]` config + `auto-dream.ts` patterns.
+
+## Requirement: no unattended accumulation without gate 5 (added 2026-08-07)
+
+- [ ] **An automatic trigger MUST NOT be composed with an apply path until the
+  pre-commit admission gate (`../STRAT-DISTILL-APPLY/design.md` §"Apply-path guardrails"
+  gate 5) is satisfied.** Auto-run that only *stages* is in scope as written. Auto-run
+  plus `apply=True`, in any combination or convenience flag, is out of scope for this
+  feature and blocked on gate 5.
+
+**Why the split is drawn there.** This stub's scope is staging-only, and staged
+candidates in the sidecar never enter the runtime decision context — so auto-staging on
+its own does not grow the asset pool and does not start a contamination chain
+(arXiv:2608.05810, summarized in the APPLY design). The risk is compositional: the moment
+an automatic trigger sits upstream of a write, the pool grows with no critic in the loop,
+which is precisely the unconditional-accumulation regime the paper measures degrading past
+a critical pool size. Ordering matters more than either feature alone — if -APPLY lands
+first, this feature becomes the thing that makes it unattended.
+
+**Second-order concern, worth designing against even for staging-only:** a 30-day
+unattended pass raises staged-candidate volume without raising review capacity. Human
+review is v1's de-facto admission critic; high-volume review degrades into
+rubber-stamping ([[feedback_pipeline_intent_specificity]]), which silently converts
+"human-gated" into "ungated" without any code changing. Consider a per-run candidate cap
+and a per-candidate marginal-gain score in the auto path's output, so the reviewer is
+triaging a ranked shortlist rather than a queue.
