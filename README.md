@@ -4,7 +4,11 @@
 
 **State machine dispatch server for AI agent workflows.**
 
+*Your agent proposes the step. Stratum decides whether it actually finished.*
+
 Stratum gives AI coding agents (Claude Code, Codex, etc.) a formal execution model. Instead of improvising a plan and retrying blindly, the agent writes a typed spec, the server tracks state, enforces postconditions, and returns structured failure context on retry. Every step produces an auditable trace record.
+
+**Where it sits.** Stratum is the execution kernel, one layer below the thing most people run day to day. [Compose](https://github.com/smartmemory/compose) drives the product lifecycle (design, blueprint, plan, review gates) and calls Stratum to execute each step. Reach for Stratum directly when you want the state machine and the postconditions without a lifecycle on top of them.
 
 The founding intent behind this machinery is recorded in [docs/VISION.md](docs/VISION.md): a spec language that keeps LLMs on rails invisibly, so the same conversation yields stronger results than freeform execution.
 
