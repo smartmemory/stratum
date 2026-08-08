@@ -1,7 +1,7 @@
 {
   "name": "@smartmemory/stratum",
   "version": "0.3.4",
-  "description": "Stratum engine — typed, resumable, postcondition-enforced workflows for AI agents (TypeScript port)",
+  "description": "Stratum engine: your agent proposes the step, Stratum decides whether it actually finished. Typed, resumable, postcondition-enforced workflows for AI agents.",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {

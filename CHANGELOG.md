@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### docs(readme): state where Stratum sits relative to Compose
+
+The README explained what Stratum does but never said which layer it is, so a
+reader arriving from Compose could not tell whether the two compete. Adds a
+"where it sits" paragraph (Stratum is the execution kernel; Compose drives the
+product lifecycle on top of it and calls Stratum per step) plus a one-line
+tagline, "your agent proposes the step, Stratum decides whether it actually
+finished". The npm `description` in `ts/package.json` now carries the same line
+instead of the trailing "(TypeScript port)", which stopped being meaningful
+once the TS engine became the only engine.
+
 ### chore(license): add the Apache-2.0 LICENSE file the README already claimed
 
 The README has carried an Apache 2.0 badge since early on, but the repo shipped
