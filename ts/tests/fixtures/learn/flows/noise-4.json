@@ -1,0 +1,31 @@
+{
+  "id": "0c141915-f811-488f-b4e8-97c905dfa481",
+  "flowName": "gsd",
+  "status": "completed",
+  "workspaceRoot": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/gsd-stuck-resume-JZCm0T",
+  "revisionDigest": "8e865d091e034d8b062ed785bf1872f40d71082255d0023a8aebf25c8477a7b2",
+  "spec": {},
+  "input": {},
+  "flowSpent": {
+    "dispatches": 4
+  },
+  "steps": {},
+  "events": [
+    {
+      "at": "2026-08-04T22:32:10.154Z",
+      "type": "planned"
+    },
+    {
+      "at": "2026-08-04T22:32:10.982Z",
+      "type": "result",
+      "stepId": "ship_gsd",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"commit\",\n      \"filesChanged\",\n      \"completionWarning\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key(s) in object: 'commit', 'filesChanged', 'completionWarning'\"\n  }\n]"
+        }
+      }
+    }
+  ]
+}

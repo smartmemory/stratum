@@ -1,0 +1,14 @@
+{
+  "id": "drifted",
+  "events": [
+    {
+      "type": "result",
+      "detail": {
+        "failure": "a string, not an object"
+      }
+    },
+    {
+      "nope": 1
+    }
+  ]
+}

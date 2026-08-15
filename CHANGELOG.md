@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### feat(learn): STRAT-TS-LEARN S1-S3 — harvest, classify, and stage lessons from persisted runs
+
+Stratum had no working across-run learning: the Python `STRAT-LEARN-INLINE`
+harvester retired with the Python engine in July and was never ported, and its
+apply half was never built in any engine. This lands the read-only three
+quarters of the replacement — `ts/src/learn/{harvest,classify,candidate}.ts`,
+31 tests, all fixtures extracted from the real persisted corpus rather than
+hand-written.
+
+The design was driven by a census of the 492 local persisted runs, and two of
+its findings inverted the obvious implementation:
+
+- **The expected trigger has never fired.** Zero `judged` events exist across
+  the whole corpus, so a harvester hung off judge verdicts (the Python design)
+  would have been live and permanently silent. The signal that does exist is
+  `result` events carrying `detail.failure`, plus flow-level `budget_exhausted`
+  — 332 records. Harvest reads persisted state offline, so there is no engine
+  change, no judge-contract change, and a harvest crash cannot fail a flow.
+- **The largest cluster in the corpus is test noise.** 155 of 174 step failures
+  land on one step, which reads as a spectacular recurring defect and is in fact
+  one golden test rerun in 155 ephemeral temp workspaces. Grouping is therefore
+  attributed by `workspaceRoot` first: without that, the harvester's most
+  confident output is its worst. A regression test asserts those 155 records
+  produce **zero** durable candidates.
+
+Grouping keys on the violated contract (issue code + path + declared options),
+never on the rejected value and never on the spec revision — both were measured
+to shatter the one real lesson in the corpus (five ways and two ways
+respectively). Clustering explodes each failure into one unit per violated
+constraint, because two records violate an enum and a type in the same response.
+`durable` requires breadth rather than volume: ≥2 distinct runs and ≥3 distinct
+run/step pairs.
+
+Against the live corpus this yields exactly one lesson: four steps in one flow
+return `success`/`done`/`pass`/`revised`/`approved` where the contract declares
+`complete|skipped|failed`, 14 times across 2 runs, every one recovered on retry
+and therefore never visible. Candidates carry rendered note text (not just an
+intent), an evidence-backed breadth count, and dual identity — a stable
+`clusterId` plus a content-addressed `revisionId`.
+
+Staging only: nothing is applied. S4 (admission critics, journalled apply,
+compare-and-swap revert) is not in this commit, and the apply path stays
+default-OFF when it lands. Design and the three-round review trail:
+`docs/features/STRAT-TS-LEARN/design.md`.
+
+### docs(STRAT-ADMIT): design the pre-commit admission gate for skill-class assets
+
+Specifies the gate that guardrail 5 of the apply path has always named but never
+defined: three critics that intercept disjoint classes of harm (structural
+validity, behavioral harmlessness, semantic consistency with claimed evidence),
+subset-level marginal-gain admission over the existing pool, and lineage capture
+at authoring time with a revert that walks descendants instead of reporting only
+the asset it removed. Design only — no implementation.
+
+The review falsified the original claim that memory-class notes could skip this
+gate for being "declarative": this repository's own memory format carries
+`**How to apply:**` sections, so notes are instructions a future agent acts on.
+Memory-class applies now run the critics and subset admission; only lineage is
+exempt, and only because candidate authoring does not read the memory pool — a
+falsifier recorded as a test, not a note. `docs/features/STRAT-ADMIT/design.md`.
+
 ### docs(readme): state where Stratum sits relative to Compose
 
 The README explained what Stratum does but never said which layer it is, so a
