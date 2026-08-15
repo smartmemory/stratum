@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { readdir, symlink } from "node:fs/promises";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
+import { guardTransition } from "../../src/guard/transition.js";
 import { harvest } from "../../src/learn/harvest.js";
 import { classify } from "../../src/learn/classify.js";
 import { authorCandidate, type PatchCandidate } from "../../src/learn/candidate.js";
@@ -44,13 +46,33 @@ async function candidateIn(root: string): Promise<PatchCandidate> {
 
 const ON = { enabled: true };
 
+/** Path components from the guards dir down to the single ledger file. */
+async function findLedger(dir: string): Promise<string[]> {
+  for (const name of await readdir(dir)) {
+    if (name === "ledger.jsonl") return [name];
+    try {
+      return [name, ...(await findLedger(join(dir, name)))];
+    } catch {
+      // not a directory, or no ledger under it
+    }
+  }
+  throw new Error("no ledger found");
+}
+
 /** Recompute a candidate's content-addressed identity after editing its bytes. */
 function reid(candidate: PatchCandidate): PatchCandidate {
   return {
     ...candidate,
     revisionId: createHash("sha256")
       .update(
-        [candidate.clusterId, candidate.rendered.templateVersion, candidate.rendered.content].join("\u0000"),
+        [
+          candidate.clusterId,
+          candidate.rendered.templateVersion,
+          candidate.rendered.content,
+          candidate.targetPath,
+          candidate.rendered.insertion.mode,
+          candidate.rendered.insertion.section,
+        ].join("\u0000"),
       )
       .digest("hex"),
   };
@@ -303,6 +325,81 @@ describe("review regressions", () => {
     const otherHeading = content.indexOf("## Something else");
     expect(noteIndex).toBeGreaterThan(0);
     expect(noteIndex).toBeLessThan(otherHeading);
+  });
+});
+
+describe("round-2 review regressions", () => {
+  it("finishes a revert the ledger committed but whose bytes never moved", async () => {
+    const root = await workspace();
+    const candidate = await candidateIn(root);
+    await mkdir(dirname(candidate.targetPath), { recursive: true });
+    await writeFile(candidate.targetPath, "# Notes\n\noriginal\n", "utf8");
+    const applied = await applyCandidate(candidate, ON);
+
+    // Crash between the revert receipt and the restore: journal still says applied.
+    const journalled = (await readJournal(root))[0]!;
+    await guardTransition(`learn-apply-${applied.applyId}`, "applied", "reverted", {
+      artifacts: { reverted_to: journalled.beforeDigest },
+      modifiedFiles: [journalled.targetPath],
+      idempotencyKey: `${applied.applyId}:reverted`,
+    });
+
+    const report = await reconcile(root, ON);
+    expect(report.reverted).toBe(1);
+    expect(await readFile(candidate.targetPath, "utf8")).toBe("# Notes\n\noriginal\n");
+  });
+
+  it("diverges instead of rolling back when the ledger is unreadable", async () => {
+    const root = await workspace();
+    const candidate = await candidateIn(root);
+    const applied = await applyCandidate(candidate, ON);
+    const after = await readFile(candidate.targetPath, "utf8");
+
+    // Corrupt the ledger, then present a non-terminal journal. "Unreadable" must not be
+    // read as "nothing committed" — that answer authorizes a destructive rollback.
+    const ledger = join(root, "guards", ...(await findLedger(join(root, "guards"))));
+    await writeFile(ledger, "{not json at all}\n", "utf8");
+    const path = journalPath(root, applied.applyId);
+    const entry = JSON.parse(await readFile(path, "utf8"));
+    entry.state = "applying";
+    await writeFile(path, JSON.stringify(entry), "utf8");
+
+    const report = await reconcile(root, ON);
+    expect(report.diverged).toBe(1);
+    expect(report.rolledBack).toBe(0);
+    expect(await readFile(candidate.targetPath, "utf8")).toBe(after);
+  });
+
+  it("lets the same revision be applied again after a revert", async () => {
+    const root = await workspace();
+    const candidate = await candidateIn(root);
+    const first = await applyCandidate(candidate, ON);
+    await revertApply(first.applyId, root, ON);
+    // A deterministic apply id would collide with the first attempt's terminal guard.
+    const second = await applyCandidate(candidate, ON);
+    expect(second.applyId).not.toBe(first.applyId);
+    expect(await readFile(candidate.targetPath, "utf8")).toContain(candidate.rendered.content);
+  });
+
+  it("refuses a target whose learn directory is a symlink out of the workspace", async () => {
+    const root = await workspace();
+    const outside = await mkdtemp(join(tmpdir(), "learn-outside-"));
+    temporaries.push(outside);
+    const candidate = await candidateIn(root);
+    await mkdir(join(root, ".stratum"), { recursive: true });
+    await symlink(outside, join(root, ".stratum", "learn"));
+    await expect(applyCandidate(candidate, ON)).rejects.toThrow(ApplyError);
+  });
+
+  it("binds identity to the insertion mode, not just the bytes", async () => {
+    const root = await workspace();
+    const base = await candidateIn(root);
+    // `create` discards the existing file, so it must not share an identity with append.
+    const swapped = {
+      ...base,
+      rendered: { ...base.rendered, insertion: { ...base.rendered.insertion, mode: "create" as const } },
+    };
+    await expect(applyCandidate(swapped, ON)).rejects.toThrow(ApplyError);
   });
 });
 

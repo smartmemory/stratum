@@ -101,7 +101,19 @@ export function authorCandidate(cluster: Cluster): PatchCandidate {
   const clusterId = sha(cluster.key);
   return {
     clusterId,
-    revisionId: sha([clusterId, rendered.templateVersion, rendered.content].join("\u0000")),
+    // Binds the whole WRITE, not just the bytes: target path and insertion mode change
+    // what gets written (mode "create" discards the existing file), so an identity that
+    // omits them lets an edited sidecar row apply different effects under the same id.
+    revisionId: sha(
+      [
+        clusterId,
+        rendered.templateVersion,
+        rendered.content,
+        targetPathFor(workspaceRoot),
+        rendered.insertion.mode,
+        rendered.insertion.section,
+      ].join("\u0000"),
+    ),
     schemaVersion: SCHEMA_VERSION,
     targetKind: "memory",
     targetPath: targetPathFor(workspaceRoot),
