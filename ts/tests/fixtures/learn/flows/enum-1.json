@@ -1,0 +1,167 @@
+{
+  "id": "b0a68e21-48bc-410b-a2d8-0345522a16fd",
+  "flowName": "build",
+  "status": "failed",
+  "workspaceRoot": "/Users/ruze/reg/my/forge/stratum",
+  "revisionDigest": "8fe2e1168b8e8ea77c57195ad568c47daf9b20090d19379d92595080eb1c573a",
+  "spec": {},
+  "input": {},
+  "flowSpent": {
+    "dispatches": 26
+  },
+  "steps": {},
+  "failure": {
+    "attempt": 0,
+    "reason": "gate revision rounds exhausted"
+  },
+  "events": [
+    {
+      "at": "2026-07-18T11:03:42.791Z",
+      "type": "planned"
+    },
+    {
+      "at": "2026-07-18T11:06:36.649Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:17:45.935Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"revised\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'revised'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:28:40.522Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:40:42.535Z",
+      "type": "result",
+      "stepId": "explore_design",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:47:43.488Z",
+      "type": "result",
+      "stepId": "blueprint",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"done\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'done'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T11:50:13.440Z",
+      "type": "result",
+      "stepId": "verification",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"pass\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'pass'\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"null\",\n    \"path\": [\n      \"commit_hash\"\n    ],\n    \"message\": \"Expected string, received null\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:04:43.199Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:11:08.250Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"revised\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'revised'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:19:38.786Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"revised\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'revised'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:24:55.096Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:37:28.789Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"done\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'done'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:44:26.844Z",
+      "type": "result",
+      "stepId": "plan",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  }\n]"
+        }
+      }
+    }
+  ]
+}

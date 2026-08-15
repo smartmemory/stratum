@@ -1,0 +1,46 @@
+{
+  "id": "edb560c4-d391-4cbb-8f5e-72d6e1e25c23",
+  "flowName": "build",
+  "status": "running",
+  "workspaceRoot": "/Users/ruze/reg/my/forge/stratum",
+  "revisionDigest": "909f357f87bcc7785b3b007e811a51c8da52af40410885a90cac54bd12e7b618",
+  "spec": {},
+  "input": {},
+  "flowSpent": {
+    "dispatches": 29,
+    "usd": 46.35476774999999,
+    "tokens": 624635,
+    "ms": 12302168
+  },
+  "steps": {},
+  "events": [
+    {
+      "at": "2026-07-18T12:48:21.908Z",
+      "type": "planned"
+    },
+    {
+      "at": "2026-07-18T12:52:07.578Z",
+      "type": "result",
+      "stepId": "blueprint",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"approved\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'approved'\"\n  }\n]"
+        }
+      }
+    },
+    {
+      "at": "2026-07-18T12:55:46.796Z",
+      "type": "result",
+      "stepId": "verification",
+      "detail": {
+        "attempt": 1,
+        "failure": {
+          "attempt": 1,
+          "reason": "[\n  {\n    \"received\": \"success\",\n    \"code\": \"invalid_enum_value\",\n    \"options\": [\n      \"complete\",\n      \"skipped\",\n      \"failed\"\n    ],\n    \"path\": [\n      \"outcome\"\n    ],\n    \"message\": \"Invalid enum value. Expected 'complete' | 'skipped' | 'failed', received 'success'\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"null\",\n    \"path\": [\n      \"commit_hash\"\n    ],\n    \"message\": \"Expected string, received null\"\n  }\n]"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "id": "0964e35b-fefd-43e6-9e21-16e6194fa731",
+  "flowName": "gsd",
+  "status": "budget_exhausted",
+  "workspaceRoot": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/gsd-budget-terminal-fy9P68",
+  "revisionDigest": "6591bf526a4b31bb873f5c33b08c9fefe8a1a7155f5f72723883619763c83fc0",
+  "spec": {},
+  "input": {},
+  "flowSpent": {
+    "dispatches": 2,
+    "usd": 0.03,
+    "tokens": 50
+  },
+  "steps": {},
+  "failure": {
+    "attempt": 1,
+    "reason": "flow budget exhausted"
+  },
+  "events": [
+    {
+      "at": "2026-08-12T00:51:29.570Z",
+      "type": "planned"
+    },
+    {
+      "at": "2026-08-12T00:51:29.802Z",
+      "type": "budget_exhausted",
+      "detail": {
+        "attempt": 1,
+        "reason": "flow budget exhausted"
+      }
+    }
+  ]
+}
