@@ -93,10 +93,9 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
   const specDigest = str(run.revisionDigest);
   const events = Array.isArray(run.events) ? (run.events as RawEvent[]) : [];
 
-  const succeededLater = successfulSteps(events);
   let dropped = 0;
 
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     const type = str(event.type);
     const detail = isRecord(event.detail) ? event.detail : undefined;
     if (detail === undefined) continue;
@@ -119,7 +118,7 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
         shape: shapeOf(reason),
         ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
         at: str(event.at) ?? "",
-        recovered: stepId !== null && succeededLater.has(stepId),
+        recovered: stepId !== null && succeededAfter(events, stepId, index),
       });
       continue;
     }
@@ -145,17 +144,20 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
   return dropped;
 }
 
-/** Steps with a later non-failing result — used to mark self-healing failures. */
-function successfulSteps(events: RawEvent[]): Set<string> {
-  const ok = new Set<string>();
-  for (const event of events) {
-    if (str(event.type) !== "result") continue;
+/**
+ * Did this step succeed AFTER this failure? Position matters: a success recorded
+ * earlier in the run says nothing about whether this failure was recovered, and
+ * treating it as recovery overstates what the evidence shows.
+ */
+function succeededAfter(events: RawEvent[], stepId: string, afterIndex: number): boolean {
+  for (let i = afterIndex + 1; i < events.length; i += 1) {
+    const event = events[i];
+    if (event === undefined || str(event.type) !== "result") continue;
+    if (str(event.stepId) !== stepId) continue;
     const detail = isRecord(event.detail) ? event.detail : undefined;
-    if (detail === undefined || isRecord(detail.failure)) continue;
-    const stepId = str(event.stepId);
-    if (stepId !== undefined) ok.add(stepId);
+    if (detail !== undefined && !isRecord(detail.failure)) return true;
   }
-  return ok;
+  return false;
 }
 
 function shapeOf(reason: string): FailureShape {

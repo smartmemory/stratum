@@ -119,13 +119,22 @@ async function applyCommandLine(args: string[]): Promise<number> {
     process.stderr.write("Usage: stratum learn apply <revision-id> [--root <dir>]\n");
     return 2;
   }
-  const candidate = (await readCandidates(sidecarDir(root))).find((row) =>
+  const matches = (await readCandidates(sidecarDir(root))).filter((row) =>
     row.revisionId.startsWith(revision),
   );
-  if (candidate === undefined) {
+  if (matches.length === 0) {
     process.stderr.write(`no staged candidate matching ${revision}\n`);
     return 1;
   }
+  if (matches.length > 1) {
+    // Applying "one of them" is how the wrong lesson gets written.
+    process.stderr.write(
+      `ambiguous revision ${revision} matches ${matches.length} candidates: ` +
+        `${matches.map((m) => m.revisionId.slice(0, 12)).join(", ")}\n`,
+    );
+    return 2;
+  }
+  const candidate = matches[0]!;
   try {
     const applied = await applyCandidate(candidate, {});
     process.stdout.write(`applied ${applied.applyId} -> ${applied.targetPath}\n`);

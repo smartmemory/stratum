@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { registerGuard, guardTransition } from "../guard/transition.js";
+import { currentStateFromLedger, readLedger } from "../guard/store.js";
+import { resourceLock } from "../guard/lock.js";
 import type { FailureRecord } from "./harvest.js";
 import type { PatchCandidate } from "./candidate.js";
 
@@ -127,7 +129,51 @@ function subsetMarginalGain(candidate: PatchCandidate, pool: string): Verdict {
   const marker = `learn:${candidate.clusterId.slice(0, 12)}`;
   if (pool.includes(marker)) findings.push("pool already carries this lesson");
   else if (pool.includes(candidate.rendered.content.trim())) findings.push("pool already carries this text");
+  else {
+    // Overlap beyond identical text: a note about the same field of the same flow is
+    // covered by, or contradicts, what is already there. Either way it is not a
+    // marginal gain and a human should decide which one is right.
+    const subject = noteSubject(candidate.rendered.content);
+    if (subject !== null) {
+      for (const line of pool.split("\n")) {
+        if (line.includes(marker)) continue;
+        if (noteSubject(line) === subject) {
+          findings.push(`pool already carries a note about ${subject}; resolve which is right`);
+          break;
+        }
+      }
+    }
+  }
   return { critic: "subset-marginal-gain", passes: findings.length === 0, findings };
+}
+
+/**
+ * `<flow>/<field>` — the thing a note is about. Deliberately coarse: it catches
+ * overlap and same-subject contradiction, and it does NOT catch two notes that conflict
+ * while naming different subjects. Genuine semantic conflict detection is specified in
+ * ../STRAT-ADMIT and is not implemented here.
+ */
+function noteSubject(line: string): string | null {
+  const match = /recurring \w+ failure on ([\w.]+)\*\* — In flow `([^`]+)`/.exec(line);
+  return match === null ? null : `${match[2]}/${match[1]}`;
+}
+
+/** The bytes must be the bytes the revision id names. */
+export function verifyIdentity(candidate: PatchCandidate): void {
+  const expected = sha(
+    [candidate.clusterId, candidate.rendered.templateVersion, candidate.rendered.content].join("\u0000"),
+  );
+  if (expected !== candidate.revisionId) {
+    throw new ApplyError(
+      "candidate identity does not match its content; the sidecar row was edited after staging",
+    );
+  }
+  const runs = new Set(candidate.evidence.map((record) => record.runId)).size;
+  if (runs !== candidate.recurrence.distinctRuns) {
+    throw new ApplyError(
+      `candidate claims ${candidate.recurrence.distinctRuns} distinct runs but carries ${runs}`,
+    );
+  }
 }
 
 export async function admit(candidate: PatchCandidate, pool: string): Promise<AdmissionResult> {
@@ -149,7 +195,7 @@ export async function admit(candidate: PatchCandidate, pool: string): Promise<Ad
 // Journal
 // ---------------------------------------------------------------------------
 
-export type JournalState = "prepared" | "applying" | "applied" | "aborted";
+export type JournalState = "prepared" | "applying" | "applied" | "aborted" | "reverted";
 
 export interface JournalEntry {
   applyId: string;
@@ -206,16 +252,32 @@ async function writeJournal(workspaceRoot: string, entry: JournalEntry): Promise
 // Apply
 // ---------------------------------------------------------------------------
 
-/** G4: the resolved target must sit inside the project's own learn directory. */
-function assertAllowlisted(candidate: PatchCandidate): string {
-  const root = resolve(candidate.scope.workspaceRoot);
-  const allowed = resolve(join(root, ".stratum", "learn"));
-  const target = resolve(candidate.targetPath);
-  if (target !== allowed && !target.startsWith(allowed + sep)) {
-    throw new ApplyError(`target is outside the memory allowlist: ${target}`);
-  }
+/**
+ * G4: the target must sit inside the project's own learn directory — checked against the
+ * REAL path, not the lexical one. `resolve()` alone collapses `..` but follows no
+ * symlinks, so a symlinked `.stratum/learn` would place the write outside the allowlist
+ * while passing a purely lexical check.
+ */
+async function assertAllowlisted(workspaceRoot: string, targetPath: string): Promise<string> {
+  const target = resolve(targetPath);
   if (!target.endsWith(".md")) throw new ApplyError(`target is not a note file: ${target}`);
-  return target;
+
+  const allowed = await realpathOrSelf(resolve(join(resolve(workspaceRoot), ".stratum", "learn")));
+  // The file itself may not exist yet, so resolve its PARENT and re-attach the basename.
+  const parent = await realpathOrSelf(dirname(target));
+  const real = join(parent, target.slice(dirname(target).length + 1));
+  if (real !== allowed && !real.startsWith(allowed + sep)) {
+    throw new ApplyError(`target is outside the memory allowlist: ${real}`);
+  }
+  return real;
+}
+
+async function realpathOrSelf(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return path;
+  }
 }
 
 /** `after` is a pure function of before + rendered content + insertion. */
@@ -227,7 +289,17 @@ export function renderAfter(before: string, candidate: PatchCandidate): string {
   if (!before.includes(insertion.section)) {
     return `${before.replace(/\n*$/, "\n")}\n${insertion.section}\n\n${content}\n`;
   }
-  return `${before.replace(/\n*$/, "\n")}${content}\n`;
+  // Append INSIDE the section: appending at end-of-document drops the note under
+  // whatever heading happens to come last.
+  const lines = before.replace(/\n*$/, "\n").split("\n");
+  const start = lines.findIndex((line) => line.trim() === insertion.section.trim());
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^#{1,6}\s/.test(lines[i] ?? "")) { end = i; break; }
+  }
+  while (end > start + 1 && (lines[end - 1] ?? "").trim() === "") end -= 1;
+  lines.splice(end, 0, content);
+  return lines.join("\n").replace(/\n*$/, "\n");
 }
 
 export interface AppliedResult {
@@ -245,80 +317,106 @@ export async function applyCandidate(
       "learn apply is disabled; enable it explicitly (STRATUM_LEARN_APPLY_ENABLED=1)",
     );
   }
+  verifyIdentity(candidate);
   const workspaceRoot = candidate.scope.workspaceRoot;
-  const target = assertAllowlisted(candidate);
+  const target = await assertAllowlisted(workspaceRoot, candidate.targetPath);
 
-  // An unreconciled journal for this target means we do not know the target's true
-  // state; another apply on top would bury the ambiguity.
-  for (const entry of await readJournal(workspaceRoot)) {
-    if (entry.targetPath === target && (entry.state === "prepared" || entry.state === "applying")) {
-      throw new ApplyError(`target has an unreconciled apply (${entry.applyId}); reconcile first`);
+  // Serialize on the TARGET, not the apply: two candidates racing on one file could
+  // otherwise both snapshot the same `before`, both pass the digest check, overwrite
+  // each other, and both commit — leaving one ledger entry describing bytes that are
+  // no longer on disk.
+  return resourceLock(`learn-target-${sha(target).slice(0, 32)}`, async () => {
+    // An unreconciled journal means the target's true state is unknown; applying on top
+    // would bury the ambiguity.
+    for (const entry of await readJournal(workspaceRoot)) {
+      if (entry.targetPath === target && (entry.state === "prepared" || entry.state === "applying")) {
+        throw new ApplyError(`target has an unreconciled apply (${entry.applyId}); reconcile first`);
+      }
     }
-  }
 
-  const { content: before, existed } = await readTarget(target);
-  const admission = await admit(candidate, before);
-  if (!admission.admitted) {
-    const failed = admission.verdicts.filter((v) => !v.passes);
-    throw new ApplyRefused(
-      `admission refused: ${failed.map((v) => `${v.critic} (${v.findings.join("; ")})`).join(", ")}`,
+    const { content: before, existed } = await readTarget(target);
+    const admission = await admit(candidate, before);
+    if (!admission.admitted) {
+      const failed = admission.verdicts.filter((v) => !v.passes);
+      throw new ApplyRefused(
+        `admission refused: ${failed.map((v) => `${v.critic} (${v.findings.join("; ")})`).join(", ")}`,
+      );
+    }
+
+    const after = renderAfter(before, candidate);
+    const applyId = sha([candidate.revisionId, target, sha(before)].join("\u0000")).slice(0, 32);
+
+    // 1. Prepare.
+    const entry: JournalEntry = {
+      applyId,
+      state: "prepared",
+      clusterId: candidate.clusterId,
+      revisionId: candidate.revisionId,
+      targetPath: target,
+      before,
+      beforeDigest: sha(before),
+      after,
+      afterDigest: sha(after),
+      existedBefore: existed,
+      evidence: candidate.evidence,
+      verdicts: admission.verdicts,
+      at: new Date().toISOString(),
+    };
+    await writeJournal(workspaceRoot, entry);
+
+    // 2. Transition to `applying`, committing the ledger to this journal record.
+    const resourceId = guardResource(applyId);
+    await registerGuard(
+      resourceId,
+      // `applied` is NOT terminal: revert is a legal, ledger-recorded edge out of it.
+      // Registering it terminal made every revert an illegal transition that threw and
+      // was swallowed, leaving the ledger claiming `applied` over reverted bytes.
+      { staged: ["applying"], applying: ["applied", "aborted"], applied: ["reverted"], aborted: [], reverted: [] },
+      {},
+      "staged",
+      ["aborted", "reverted"],
     );
-  }
+    await guardTransition(resourceId, "staged", "applying", {
+      artifacts: { journal_digest: sha(JSON.stringify(entry)), revision_id: candidate.revisionId },
+      idempotencyKey: `${applyId}:applying`,
+    });
+    await writeJournal(workspaceRoot, { ...entry, state: "applying" });
 
-  const after = renderAfter(before, candidate);
-  const applyId = sha([candidate.revisionId, target, sha(before)].join(" ")).slice(0, 32);
+    // 3. Write, only if the target still holds what we snapshotted.
+    const current = await readTarget(target);
+    if (sha(current.content) !== entry.beforeDigest) {
+      throw new ApplyError("target changed between snapshot and write; aborting");
+    }
+    await atomicWriteFile(target, after);
 
-  // 1. Prepare.
-  const entry: JournalEntry = {
-    applyId,
-    state: "prepared",
-    clusterId: candidate.clusterId,
-    revisionId: candidate.revisionId,
-    targetPath: target,
-    before,
-    beforeDigest: sha(before),
-    after,
-    afterDigest: sha(after),
-    existedBefore: existed,
-    evidence: candidate.evidence,
-    verdicts: admission.verdicts,
-    at: new Date().toISOString(),
-  };
-  await writeJournal(workspaceRoot, entry);
+    // 4. Commit. This ledger append is the moment the apply becomes real.
+    const committed = await guardTransition(resourceId, "applying", "applied", {
+      artifacts: { after_digest: entry.afterDigest },
+      modifiedFiles: [target],
+      idempotencyKey: `${applyId}:applied`,
+    });
 
-  // 2. Transition to `applying`, committing the ledger to this journal record.
-  const resourceId = guardResource(applyId);
-  await registerGuard(
-    resourceId,
-    { staged: ["applying"], applying: ["applied", "aborted"], applied: [], aborted: [] },
-    {},
-    "staged",
-    ["applied", "aborted"],
-  );
-  await guardTransition(resourceId, "staged", "applying", {
-    artifacts: { journal_digest: sha(JSON.stringify(entry)), revision_id: candidate.revisionId },
-    idempotencyKey: `${applyId}:applying`,
+    // 5. Finish. Bookkeeping; its loss is not a correctness problem, because recovery
+    //    reads the LEDGER rather than this field.
+    await writeJournal(workspaceRoot, { ...entry, state: "applied", ledgerRef: committed.ledger_ref });
+
+    return { applyId, ledgerRef: committed.ledger_ref, targetPath: target };
   });
-  await writeJournal(workspaceRoot, { ...entry, state: "applying" });
+}
 
-  // 3. Write, only if the target still holds what we snapshotted.
-  const current = await readTarget(target);
-  if (sha(current.content) !== entry.beforeDigest) {
-    throw new ApplyError("target changed between snapshot and write; aborting");
+/**
+ * What the LEDGER says about an apply — the only authority on whether it committed.
+ * `journal.ledgerRef` is written after the commit, so a crash in that window leaves a
+ * committed apply looking uncommitted; trusting the field would roll back real work.
+ */
+function ledgerState(applyId: string): string | null {
+  try {
+    const entries = readLedger(guardResource(applyId));
+    if (entries.length === 0) return null;
+    return currentStateFromLedger(entries, "staged");
+  } catch {
+    return null;
   }
-  await atomicWriteFile(target, after);
-
-  // 4. Commit. This ledger append is the moment the apply becomes real.
-  const committed = await guardTransition(resourceId, "applying", "applied", {
-    artifacts: { after_digest: entry.afterDigest },
-    modifiedFiles: [target],
-    idempotencyKey: `${applyId}:applied`,
-  });
-
-  // 5. Finish. Bookkeeping; its loss is not a correctness problem.
-  await writeJournal(workspaceRoot, { ...entry, state: "applied", ledgerRef: committed.ledger_ref });
-
-  return { applyId, ledgerRef: committed.ledger_ref, targetPath: target };
 }
 
 // ---------------------------------------------------------------------------
@@ -335,25 +433,40 @@ export async function revertApply(
   if (entry === undefined) throw new ApplyError(`no apply journal for ${applyId}`);
   if (entry.state !== "applied") throw new ApplyError(`apply ${applyId} is ${entry.state}, not applied`);
 
-  const current = await readTarget(entry.targetPath);
-  // Compare-and-swap. Restoring a snapshot over content we did not write destroys
-  // whatever landed after this apply — a data-loss bug dressed as a safety feature.
-  if (sha(current.content) !== entry.afterDigest) {
-    throw new ApplyError(
-      `target has changed since apply ${applyId} (out-of-band edit or a stacked apply); ` +
-        "revert refused — resolve explicitly or revert the newer apply first",
-    );
-  }
-  await atomicWriteFile(entry.targetPath, entry.before);
-  await guardTransition(guardResource(applyId), "applied", "aborted", {
-    artifacts: { reverted_to: entry.beforeDigest },
-    modifiedFiles: [entry.targetPath],
-    idempotencyKey: `${applyId}:reverted`,
-  }).catch(() => {
-    // The bytes are already restored; a ledger hiccup must not leave the caller
-    // believing the revert failed. Reconciliation will re-derive state from the ledger.
+  // Revalidate the journalled path: a journal is a plain file, and revert writes to
+  // whatever it names.
+  const target = await assertAllowlisted(workspaceRoot, entry.targetPath);
+
+  await resourceLock(`learn-target-${sha(target).slice(0, 32)}`, async () => {
+    const current = await readTarget(target);
+    // Compare-and-swap. Restoring a snapshot over content we did not write destroys
+    // whatever landed after this apply — a data-loss bug dressed as a safety feature.
+    if (sha(current.content) !== entry.afterDigest) {
+      throw new ApplyError(
+        `target has changed since apply ${applyId} (out-of-band edit or a stacked apply); ` +
+          "revert refused — resolve explicitly or revert the newer apply first",
+      );
+    }
+    // The ledger records the revert BEFORE the bytes move, so a crash in between leaves
+    // a recorded intent that reconciliation can finish, not a silent divergence.
+    await guardTransition(guardResource(applyId), "applied", "reverted", {
+      artifacts: { reverted_to: entry.beforeDigest },
+      modifiedFiles: [target],
+      idempotencyKey: `${applyId}:reverted`,
+    });
+    await restore(target, entry);
+    await writeJournal(workspaceRoot, { ...entry, state: "reverted" });
   });
-  await writeJournal(workspaceRoot, { ...entry, state: "aborted" });
+}
+
+/** Restore the target to its pre-apply state — including not existing at all. */
+async function restore(target: string, entry: JournalEntry): Promise<void> {
+  if (!entry.existedBefore) {
+    // The apply created this file. Leaving an empty one behind is not a restore.
+    await rm(target, { force: true });
+    return;
+  }
+  await atomicWriteFile(target, entry.before);
 }
 
 // ---------------------------------------------------------------------------
@@ -374,10 +487,21 @@ export async function reconcile(
   const report: ReconcileReport = { completed: 0, rolledBack: 0, diverged: 0 };
 
   for (const entry of await readJournal(workspaceRoot)) {
-    if (entry.state === "applied" || entry.state === "aborted") continue;
-    const current = await readTarget(entry.targetPath);
+    if (entry.state === "applied" || entry.state === "aborted" || entry.state === "reverted") continue;
+
+    let target: string;
+    try {
+      target = await assertAllowlisted(workspaceRoot, entry.targetPath);
+    } catch {
+      report.diverged += 1;
+      continue;
+    }
+
+    const current = await readTarget(target);
     const digest = sha(current.content);
-    const committed = entry.ledgerRef !== undefined;
+    // The LEDGER decides, not the journal's ledgerRef field.
+    const state = ledgerState(entry.applyId);
+    const committed = state === "applied" || state === "reverted";
 
     if (committed) {
       if (digest === entry.afterDigest) {
@@ -385,7 +509,7 @@ export async function reconcile(
         report.completed += 1;
       } else if (digest === entry.beforeDigest) {
         // The commit happened; the write did not survive. Redo it.
-        await atomicWriteFile(entry.targetPath, entry.after);
+        await atomicWriteFile(target, entry.after);
         await writeJournal(workspaceRoot, { ...entry, state: "applied" });
         report.completed += 1;
       } else {
@@ -395,7 +519,7 @@ export async function reconcile(
     }
 
     if (digest === entry.afterDigest) {
-      await atomicWriteFile(entry.targetPath, entry.before);
+      await restore(target, entry);
       await abort(workspaceRoot, entry);
       report.rolledBack += 1;
     } else if (digest === entry.beforeDigest) {

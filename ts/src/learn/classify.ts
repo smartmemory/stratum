@@ -187,7 +187,12 @@ export function classify(
       ) {
         continue;
       }
-      if (cluster.class === "durable") for (const unit of bucket) claimed.add(identity(unit));
+      // Only an APPLY-ELIGIBLE aggregate subsumes its per-step view. A mixed-provenance
+      // or unattributed aggregate is discarded downstream, so letting it claim these
+      // units would silently drop clean per-step lessons with it.
+      if (cluster.class === "durable" && cluster.applyEligible) {
+        for (const unit of bucket) claimed.add(identity(unit));
+      }
       clusters.push(cluster);
     }
   }
