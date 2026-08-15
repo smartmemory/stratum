@@ -108,8 +108,11 @@ describe("classify", () => {
     // Two unrelated contracts that happen to share a fingerprint, flow and project.
     const a = [0, 1, 2].map((i) => ({ ...base, runId: `a${i}`, stepId: "alpha", specDigest: "aaa" }));
     const b = [0, 1, 2].map((i) => ({ ...base, runId: `b${i}`, stepId: "beta", specDigest: "bbb" }));
-    const cluster = classify([...a, ...b]).find((c) => c.class === "durable");
+    const cluster = classify([...a, ...b]).find(
+      (c) => c.class === "durable" && c.groupingKey === "step-agnostic",
+    );
     expect(cluster?.mixedProvenance).toBe(true);
+    expect(cluster?.applyEligible).toBe(false);
   });
 
   it("segregates unattributed records and never merges them with attributed ones", async () => {

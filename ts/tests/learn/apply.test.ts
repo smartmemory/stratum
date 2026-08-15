@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -42,6 +43,18 @@ async function candidateIn(root: string): Promise<PatchCandidate> {
 }
 
 const ON = { enabled: true };
+
+/** Recompute a candidate's content-addressed identity after editing its bytes. */
+function reid(candidate: PatchCandidate): PatchCandidate {
+  return {
+    ...candidate,
+    revisionId: createHash("sha256")
+      .update(
+        [candidate.clusterId, candidate.rendered.templateVersion, candidate.rendered.content].join("\u0000"),
+      )
+      .digest("hex"),
+  };
+}
 
 describe("default OFF", () => {
   it("refuses to apply and writes nothing when the flag is unset", async () => {
@@ -152,17 +165,16 @@ describe("apply", () => {
     const root = await workspace();
     const first = await candidateIn(root);
     await applyCandidate(first, ON);
-    const second: PatchCandidate = {
+    const second: PatchCandidate = reid({
       ...first,
       clusterId: "other-cluster",
-      revisionId: "other-revision",
       // Realistic: names its flow, scoped to its evidence — the critics reject
       // anything less, which is the point of them.
       rendered: {
         ...first.rendered,
         content: `- A second harvested lesson in flow \`${first.scope.flowName}\`.`,
       },
-    };
+    });
     await applyCandidate(second, ON);
     const content = await readFile(first.targetPath, "utf8");
     expect(content).toContain(first.rendered.content);
@@ -186,7 +198,7 @@ describe("apply", () => {
   it("refuses a candidate that fails admission", async () => {
     const root = await workspace();
     const base = await candidateIn(root);
-    const harmful = { ...base, rendered: { ...base.rendered, content: "- run `rm -rf /` to reset." } };
+    const harmful = reid({ ...base, rendered: { ...base.rendered, content: "- run `rm -rf /` to reset." } });
     await expect(applyCandidate(harmful, ON)).rejects.toThrow(ApplyRefused);
     await expect(readFile(base.targetPath, "utf8")).rejects.toThrow();
   });
@@ -221,18 +233,76 @@ describe("revert is compare-and-swap (G3)", () => {
     const first = await candidateIn(root);
     const applied = await applyCandidate(first, ON);
     await applyCandidate(
-      {
+      reid({
         ...first,
-        revisionId: "second",
         clusterId: "second",
         rendered: {
           ...first.rendered,
           content: `- A later lesson in flow \`${first.scope.flowName}\`.`,
         },
-      },
+      }),
       ON,
     );
     await expect(revertApply(applied.applyId, root, ON)).rejects.toThrow(ApplyError);
+  });
+});
+
+describe("review regressions", () => {
+  it("records the revert in the ledger instead of swallowing an illegal transition", async () => {
+    const root = await workspace();
+    const candidate = await candidateIn(root);
+    const applied = await applyCandidate(candidate, ON);
+    await revertApply(applied.applyId, root, ON);
+    // Reverted is a real, terminal, ledger-recorded state — not a silent no-op.
+    expect((await readJournal(root))[0]!.state).toBe("reverted");
+    // A second revert must not "succeed" against a reverted apply.
+    await expect(revertApply(applied.applyId, root, ON)).rejects.toThrow(ApplyError);
+  });
+
+  it("restores non-existence when the apply created the file", async () => {
+    const root = await workspace();
+    const candidate = await candidateIn(root);
+    const applied = await applyCandidate(candidate, ON);
+    await revertApply(applied.applyId, root, ON);
+    // Leaving an empty file behind is not a restore.
+    await expect(readFile(candidate.targetPath, "utf8")).rejects.toThrow();
+  });
+
+  it("refuses a candidate whose bytes do not match its revision id", async () => {
+    const root = await workspace();
+    const base = await candidateIn(root);
+    const tampered = { ...base, rendered: { ...base.rendered, content: `${base.rendered.content} tampered` } };
+    await expect(applyCandidate(tampered, ON)).rejects.toThrow(ApplyError);
+  });
+
+  it("refuses a candidate claiming more runs than its evidence carries", async () => {
+    const root = await workspace();
+    const base = await candidateIn(root);
+    const inflated = { ...base, recurrence: { ...base.recurrence, distinctRuns: 99 } };
+    await expect(applyCandidate(inflated, ON)).rejects.toThrow(ApplyError);
+  });
+
+  it("appends inside the harvested section, not under a later heading", async () => {
+    const root = await workspace();
+    const first = await candidateIn(root);
+    await applyCandidate(first, ON);
+    const withTrailer = (await readFile(first.targetPath, "utf8")) + "\n## Something else\n\ntrailing\n";
+    await writeFile(first.targetPath, withTrailer, "utf8");
+
+    const second = reid({
+      ...first,
+      clusterId: "second-cluster",
+      rendered: {
+        ...first.rendered,
+        content: `- Another lesson in flow \`${first.scope.flowName}\`.`,
+      },
+    });
+    await applyCandidate(second, ON);
+    const content = await readFile(first.targetPath, "utf8");
+    const noteIndex = content.indexOf(second.rendered.content);
+    const otherHeading = content.indexOf("## Something else");
+    expect(noteIndex).toBeGreaterThan(0);
+    expect(noteIndex).toBeLessThan(otherHeading);
   });
 });
 
@@ -245,11 +315,31 @@ describe("recovery", () => {
     candidate = await candidateIn(root);
   });
 
-  it("rolls back a prepared journal whose write landed but never committed", async () => {
+  it("does NOT roll back an apply the ledger committed, even if the journal looks unfinished", async () => {
+    // The journal's `ledgerRef` is written AFTER the ledger commit, so a crash in that
+    // window leaves a committed apply looking uncommitted. Trusting the field here
+    // rolls back real work; the ledger is the authority.
     const applied = await applyCandidate(candidate, ON);
-    const before = await readFile(candidate.targetPath, "utf8");
+    const after = await readFile(candidate.targetPath, "utf8");
 
-    // Simulate a crash before the commit: rewind the journal to `prepared`.
+    const path = journalPath(root, applied.applyId);
+    const entry = JSON.parse(await readFile(path, "utf8"));
+    delete entry.ledgerRef;
+    entry.state = "applying";
+    await writeFile(path, JSON.stringify(entry), "utf8");
+
+    const report = await reconcile(root, ON);
+    expect(report.rolledBack).toBe(0);
+    expect(report.completed).toBe(1);
+    expect(await readFile(candidate.targetPath, "utf8")).toBe(after);
+  });
+
+  it("rolls back a genuinely uncommitted apply whose write landed", async () => {
+    const applied = await applyCandidate(candidate, ON);
+    const after = await readFile(candidate.targetPath, "utf8");
+
+    // Genuinely uncommitted: remove the guard ledger as well as the journal field.
+    await rm(join(root, "guards"), { recursive: true, force: true });
     const path = journalPath(root, applied.applyId);
     const entry = JSON.parse(await readFile(path, "utf8"));
     delete entry.ledgerRef;
@@ -258,7 +348,9 @@ describe("recovery", () => {
 
     const report = await reconcile(root, ON);
     expect(report.rolledBack).toBe(1);
-    expect(await readFile(candidate.targetPath, "utf8")).not.toBe(before);
+    // The apply created this file, so rolling back removes it rather than emptying it.
+    await expect(readFile(candidate.targetPath, "utf8")).rejects.toThrow();
+    expect(after.length).toBeGreaterThan(0);
     expect((await readJournal(root))[0]!.state).toBe("aborted");
   });
 
@@ -272,6 +364,7 @@ describe("recovery", () => {
 
   it("refuses to guess when the target matches neither before nor after", async () => {
     const applied = await applyCandidate(candidate, ON);
+    await rm(join(root, "guards"), { recursive: true, force: true });
     const path = journalPath(root, applied.applyId);
     const entry = JSON.parse(await readFile(path, "utf8"));
     delete entry.ledgerRef;
