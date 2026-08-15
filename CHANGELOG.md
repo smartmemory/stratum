@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### feat(learn): STRAT-TS-LEARN — across-run learning, closed end to end
+
+S4 lands the write half: four admission critics, a journalled apply whose single
+commit point is the guard ledger, compare-and-swap revert, and reconciliation
+that refuses to guess when the evidence is ambiguous. Default OFF. CLI:
+`stratum learn harvest|list|apply|revert|reconcile`.
+
+Two adversarial implementation rounds produced 18 findings, **all of them in the
+S4 crash-recovery protocol** — S1-S3 drew zero across both. Among them: recovery
+could undo a ledger-committed apply (the journal's `ledgerRef` is written after
+the commit, so a crash in that window made a committed apply look uncommitted,
+and a test of mine asserted that buggy behavior); every revert was an illegal
+guard transition that threw and was swallowed, leaving the ledger claiming
+`applied` over reverted bytes; the path allowlist was symlink-bypassable; and
+ledger corruption failed open into destructive rollback, made worse by
+`readLedger` truncating at a malformed trailing line rather than throwing.
+
+All are fixed and regression-tested. The honest caveat: the apply path is
+default-OFF and has never run outside tests. Treat the read-only three quarters
+as solid and the apply path as unproven until exercised.
+`docs/features/STRAT-TS-LEARN/report.md`.
+
 ### feat(learn): STRAT-TS-LEARN S1-S3 — harvest, classify, and stage lessons from persisted runs
 
 Stratum had no working across-run learning: the Python `STRAT-LEARN-INLINE`
