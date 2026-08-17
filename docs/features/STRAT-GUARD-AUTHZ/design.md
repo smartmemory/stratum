@@ -125,12 +125,63 @@ could mint was worse than no stamp, because it made the audit trail lie.
 
 ## The honest ceiling
 
-An agent with a shell and write access to `~/.stratum/guards/` can still edit
-registry and ledger files directly. The guard is **tamper-evident, not
-tamper-proof** — the policy checksum and hash-chained ledger make interference
-detectable, not impossible. Signing closes the *sanctioned* path completely and
-makes the audit trail truthful; it does not build a sandbox, and nothing local
-can.
+Adversarial review named two boundaries precisely, and they are worth stating in
+full rather than summarising away.
+
+**1. Anything that can run code in the verifying process wins, and there are
+several ways in.** Both shipped entrypoints honour `NODE_OPTIONS` before any
+Stratum code runs, so a caller that controls the environment of the process can
+inject a module and patch the verifier, the trust root, or `node:crypto` itself.
+The same caller could equally import the guard modules directly, or rewrite
+`~/.stratum/guards/**` without going through any API at all.
+
+This is not a defect that can be fixed in-process; it is the definition of the
+boundary. What matters is *which* process:
+
+| Surface | Whose environment | Guarantee |
+|---|---|---|
+| MCP server | the operator who launched it | **Real.** A later caller cannot inject into a running server. |
+| CLI | the caller's | **None, and none is claimed.** The process belongs to whoever starts it. |
+
+That table is the same conclusion `STRAT-GUARD-DESCRIPTOR` Decision 6 reached, and
+it is why the privileged descriptor apply is MCP-only. The signature still buys
+something real on the CLI surface, though, and it is worth being precise about
+what: a CLI caller cannot forge an authorization for a *server* to accept later,
+and it cannot produce a ledger entry naming a signer it does not control. It can
+only lie to itself, in a process it already owned.
+
+**2. The trust-root test seam was exported unconditionally.**
+`setGuardTrustRootForTests` now refuses unless `NODE_ENV=test`, matching the
+treatment the fixture judge backend already gets. To be clear about what that
+buys: it does **not** stop a hostile in-process caller, who sets `NODE_ENV` just
+as easily. It stops the production API surface from advertising "replace the
+trust root" as a supported call, so reaching it becomes an unmistakably
+deliberate act rather than an ordinary one.
+
+**3. What signing actually changed.** Before, the cheapest bypass was setting an
+environment variable — silent, trace-free, and available on every surface. Now
+the cheapest bypasses are editing a committed file (`git status` visible),
+injecting code into the process (only possible where the caller already owns the
+process), or tampering with guard state directly (detected by the checksum and
+the hash chain). None of those is invisible, and that is the whole difference.
+
+The guard remains **tamper-evident, not tamper-proof**. Signing closes the
+sanctioned path completely and makes the audit trail truthful. It does not build
+a sandbox, and nothing local can.
+
+### On the empty ledger head
+
+An untouched resource has no ledger entries, so `ledger_head` is `""` until its
+first transition. Two consequences, both examined and neither a bypass:
+
+- **Pre-authorization is possible.** An operator can sign for a resource that does
+  not exist yet, and that signature is spendable at its registration moment. That
+  is a human authorizing an exact action on an exact resource before it exists —
+  unusual, not unsound. `resource_id` is in the payload, so it cannot drift to
+  some other new resource.
+- **Returning to `""` would revive a spent authorization**, but only by deleting
+  or truncating the ledger, which is direct state tampering — the ceiling above,
+  and detectable by the chain.
 
 ## Acceptance criteria
 
@@ -143,5 +194,6 @@ can.
       policy is refused
 - [x] A signature made under another namespace is refused
 - [x] Empty or missing trust root refuses rather than degrades
+- [x] `setGuardTrustRootForTests` refuses outside `NODE_ENV=test` (verified against the built package)
 - [x] The happy path works end to end through the real CLI with a real
       `ssh-keygen` signature, and the ledger names the signer

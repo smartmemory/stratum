@@ -23,8 +23,23 @@ export type { AllowedSigner };
 const DEFAULT_TRUST_ROOT = new URL("../../contracts/guard-signers.allowed", import.meta.url);
 let trustRoot: URL | string = DEFAULT_TRUST_ROOT;
 
-/** Isolated-test seam. Deliberately NOT an environment variable. */
+/**
+ * Isolated-test seam. Deliberately NOT an environment variable, and refused
+ * outside `NODE_ENV=test` — the same treatment the fixture judge backend gets.
+ *
+ * Be clear about what this does and does not buy. It does NOT stop a hostile
+ * caller that can already run code in this process: such a caller sets
+ * `NODE_ENV` too, or skips this function and patches the verifier directly, or
+ * injects via `NODE_OPTIONS` before any of our code runs. Nothing in-process can
+ * defend against that, which is why the guard is documented as tamper-EVIDENT
+ * rather than tamper-proof. What it does buy is that the production API surface
+ * no longer advertises "replace the trust root" as a supported call, so reaching
+ * it is an unmistakably deliberate act rather than an ordinary one.
+ */
 export function setGuardTrustRootForTests(path: string | null): () => void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new GuardTrustRootError('setGuardTrustRootForTests is only allowed when NODE_ENV="test"');
+  }
   const previous = trustRoot;
   trustRoot = path ?? DEFAULT_TRUST_ROOT;
   return () => { trustRoot = previous; };

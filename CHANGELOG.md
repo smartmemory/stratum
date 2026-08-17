@@ -50,6 +50,19 @@ refused. And the recorded attack now fails twice over — `override_token` is
 rejected as an unknown argument, and a self-signed authorization is refused
 because the key is not enrolled.
 
+Adversarial review named two boundaries, both now documented in full rather than
+summarised away. `setGuardTrustRootForTests` is fixed: it refuses outside
+`NODE_ENV=test`, matching the fixture judge backend, so the production API no
+longer advertises "replace the trust root" as a supported call. The other is not
+fixable in-process and is not claimed to be — both entrypoints honour
+`NODE_OPTIONS`, so anything that controls a process's environment can patch the
+verifier inside it. That is exactly why the guarantee is scoped to the MCP
+server, whose environment belongs to the operator who launched it, and why the
+privileged descriptor apply is MCP-only. What signing changed is the cost of the
+cheapest bypass: from "set an environment variable" — silent and available
+everywhere — to "edit a committed file", "inject code into a process you already
+own", or "tamper with guard state and be caught by the hash chain".
+
 `docs/features/STRAT-GUARD-AUTHZ/design.md`.
 
 ### feat(guard): signed authorization for upgrade descriptors
