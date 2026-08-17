@@ -3,15 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
 import { guardCommand } from "../../src/cli/guard.js";
+import { AUTHORIZATION_NAMESPACES } from "../../src/guard/authorization.js";
 import { GUARDS_DIR, ResourceLockManager, setGuardsDir } from "../../src/guard/store.js";
 import { setGuardLockingForTests } from "../../src/guard/transition.js";
+import { setGuardTrustRootForTests } from "../../src/guard/trust.js";
+import { createTestSigner, type TestSigner } from "../helpers/sshsig-sign.js";
 
 const resourceId = "compose:acceptance:STRAT-TS-GUARD-E2";
 const originalGuardsDir = GUARDS_DIR;
-const originalOverrideToken = process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
 let guardsRoot = "";
 let resetLocking: (() => void) | undefined;
+let resetTrustRoot: (() => void) | undefined;
+let operator: TestSigner;
 
 type CliResult = { code: number; stdout: string; stderr: string; json: Record<string, unknown> };
 
@@ -38,7 +43,10 @@ async function run(action: string, kwargs: Record<string, unknown>): Promise<Cli
 beforeAll(async () => {
   guardsRoot = await mkdtemp(join(tmpdir(), "stratum-compose-guard-wire-"));
   setGuardsDir(guardsRoot);
-  process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "compose-acceptance-token";
+  operator = createTestSigner();
+  const trustRoot = join(guardsRoot, "guard-signers.allowed");
+  await writeFile(trustRoot, `compose-operator ${operator.publicKeyLine}\n`, "utf8");
+  resetTrustRoot = setGuardTrustRootForTests(trustRoot);
   const locks = new ResourceLockManager({ processIdentity: async (pid) => ({ alive: true, startTime: `compose-wire-${pid}` }) });
   resetLocking = setGuardLockingForTests(
     (guardResourceId, action, options) => locks.resourceLock(guardResourceId, action, options),
@@ -48,9 +56,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   resetLocking?.();
+  resetTrustRoot?.();
   setGuardsDir(originalGuardsDir);
-  if (originalOverrideToken === undefined) delete process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
-  else process.env.STRATUM_GUARD_OVERRIDE_TOKEN = originalOverrideToken;
   await rm(guardsRoot, { recursive: true, force: true });
 });
 
@@ -101,11 +108,22 @@ describe.sequential("Compose guard adapter wire shapes against the real TS CLI",
   });
 
   it("accepts guardOverride's kwargs and guardHistory's minimal request", async () => {
+    // The real operator flow, end to end over the CLI seam: ask the server what
+    // to sign, sign it, spend it.
+    const authorized = await run("authorize", {
+      kind: "override",
+      resource_id: resourceId,
+      from_state: "review",
+      to_state: "done",
+      rationale: "acceptance validation",
+    });
+    expect(authorized).toMatchObject({ code: 0, json: { status: "ok", namespace: AUTHORIZATION_NAMESPACES.override } });
+
     const overridden = await run("override", {
       resource_id: resourceId,
       from_state: "review",
       to_state: "done",
-      override_token: "compose-acceptance-token",
+      authorization: operator.sign(String(authorized.json.payload), AUTHORIZATION_NAMESPACES.override),
       rationale: "acceptance validation",
       resolved_by: "human",
     });

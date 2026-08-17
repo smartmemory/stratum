@@ -26,48 +26,15 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { UpgradeDescriptorUnavailable } from "./errors.js";
-import { SshsigError, parseAllowedSigners, sshFingerprint, verifySshsig, type AllowedSigner } from "./sshsig.js";
+import { SshsigError, sshFingerprint, verifySshsig } from "./sshsig.js";
+import { loadAllowedSigners, trustRootPath, type AllowedSigner } from "./trust.js";
 import type { EdgePredicates, GuardGraph } from "./store.js";
 
 export const DESCRIPTOR_PATH_ENV = "STRATUM_GUARD_UPGRADE_DESCRIPTORS";
 /** sshsig namespace for descriptor-file signatures; distinct per authorization purpose. */
 export const DESCRIPTOR_NAMESPACE = "stratum-guard-descriptors";
 
-// Resolved from the installed source tree, never from the environment. Same
-// convention as the frozen MCP surface contract, so it works in both the dev
-// tree (src/guard/) and the published tree (dist/guard/).
-const DEFAULT_TRUST_ROOT = new URL("../../contracts/guard-signers.allowed", import.meta.url);
-let trustRoot: URL | string = DEFAULT_TRUST_ROOT;
-
-/** Isolated-test seam for the trust root. Deliberately NOT an environment variable. */
-export function setGuardTrustRootForTests(path: string | null): () => void {
-  const previous = trustRoot;
-  trustRoot = path ?? DEFAULT_TRUST_ROOT;
-  return () => { trustRoot = previous; };
-}
-
-/** Signers permitted to authorize guard policy changes. */
-export function loadAllowedSigners(): AllowedSigner[] {
-  let contents: string;
-  try {
-    contents = readFileSync(trustRoot, "utf8");
-  } catch {
-    unavailable(`guard signer trust root is unreadable: ${String(trustRoot)}`);
-  }
-  let signers: AllowedSigner[];
-  try {
-    signers = parseAllowedSigners(contents);
-  } catch (error) {
-    unavailable(`guard signer trust root is malformed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (signers.length === 0) {
-    unavailable(
-      `no allowed signers configured in ${String(trustRoot)} `
-      + "(add the PUBLIC half of an operator signing key; there is no default trust)",
-    );
-  }
-  return signers;
-}
+export { setGuardTrustRootForTests } from "./trust.js";
 
 const DESCRIPTOR_ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const DESCRIPTOR_KEYS = new Set(["id", "rationale", "from_checksum", "to_policy"]);
@@ -165,6 +132,15 @@ export function descriptorFileDigest(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+/** Trust-root failures are "you do not have this capability" at this surface. */
+function allowedSignersOrUnavailable(): AllowedSigner[] {
+  try {
+    return loadAllowedSigners();
+  } catch (error) {
+    unavailable(error instanceof Error ? error.message : String(error));
+  }
+}
+
 function descriptorPath(env: NodeJS.ProcessEnv): string {
   const path = env[DESCRIPTOR_PATH_ENV];
   if (!path) unavailable(`upgrade descriptors unavailable: ${DESCRIPTOR_PATH_ENV} not set in server env`);
@@ -216,7 +192,7 @@ function parseDescriptorFile(bytes: Buffer): UpgradeDescriptor[] {
  */
 export function loadDescriptorFile(env: NodeJS.ProcessEnv = process.env): DescriptorFile {
   const path = descriptorPath(env);
-  const signers = loadAllowedSigners();
+  const signers = allowedSignersOrUnavailable();
   const { bytes, groupOrWorldWritable } = readDescriptorBytes(path);
   // Defence in depth now rather than load-bearing: the signature already covers
   // the content, so tampering is detected regardless. A world-writable
@@ -275,7 +251,7 @@ export function inspectDescriptorFile(env: NodeJS.ProcessEnv = process.env): {
   let signers: AllowedSigner[] = [];
   let signature: string;
   try {
-    signers = loadAllowedSigners();
+    signers = allowedSignersOrUnavailable();
     const armored = readFileSync(signaturePath, "utf8");
     const key = verifySshsig(bytes, armored, DESCRIPTOR_NAMESPACE, signers.map((entry) => entry.publicKey));
     const fingerprint = sshFingerprint(key);

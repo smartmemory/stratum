@@ -27,7 +27,7 @@ for (const entry of entries) {
 // adding a contract reader without listing it here fails the build rather than
 // shipping a package whose contract file cannot be found at runtime.
 const sourceContractPath = "../../contracts/";
-for (const relative of ["../dist/mcp/contracts.js", "../dist/guard/descriptors.js"]) {
+for (const relative of ["../dist/mcp/contracts.js", "../dist/guard/trust.js"]) {
   const compiled = new URL(relative, import.meta.url);
   const compiledSource = await readFile(compiled, "utf8");
   if (!compiledSource.includes(sourceContractPath)) {

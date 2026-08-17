@@ -17,8 +17,11 @@ import {
   ParanoidEdgeNeedsTrustedEvidence,
   StaleFromState,
 } from "../../src/guard/errors.js";
+import { AUTHORIZATION_NAMESPACES, authorizationPayload } from "../../src/guard/authorization.js";
+import { setGuardTrustRootForTests } from "../../src/guard/trust.js";
 import { guardChecksum } from "../../src/guard/fingerprint.js";
 import {
+  _ledgerHead,
   guardHistory,
   guardMigrate,
   guardOverride,
@@ -39,14 +42,42 @@ import {
   resourceDir,
   setGuardsDir,
 } from "../../src/guard/store.js";
+import { createTestSigner, type TestSigner } from "../helpers/sshsig-sign.js";
 
 const originalGuardsDir = GUARDS_DIR;
-const originalOverrideToken = process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
 const originalAllowCommands = process.env.STRATUM_GUARD_ALLOW_COMMANDS;
 const roots: string[] = [];
 let guardsRoot: string;
 let workspace: string;
 let resetLocking: (() => void) | undefined;
+let resetTrustRoot: (() => void) | undefined;
+let operator: TestSigner;
+
+/** Sign an override authorization bound to the resource's current ledger head. */
+function authorizeOverride(resourceId: string, fromState: string, toState: string, rationale: string, signer = operator): string {
+  return signer.sign(
+    authorizationPayload("override", { resource_id: resourceId, from_state: fromState, to_state: toState, rationale, ledger_head: _ledgerHead(resourceId) }),
+    AUTHORIZATION_NAMESPACES.override,
+  );
+}
+
+/** Sign a migrate authorization naming the RESULTING policy checksum. */
+function authorizeMigrate(
+  resourceId: string,
+  rationale: string,
+  policy: { graph: Record<string, string[]>; edgePredicates: Record<string, Array<Record<string, unknown>>>; terminal?: string[]; stakes?: Record<string, string> },
+  signer = operator,
+): string {
+  return signer.sign(
+    authorizationPayload("migrate", {
+      resource_id: resourceId,
+      policy_checksum: guardChecksum(policy.graph, policy.edgePredicates, policy.terminal ?? [], policy.stakes ?? {}),
+      rationale,
+      ledger_head: _ledgerHead(resourceId),
+    }),
+    AUTHORIZATION_NAMESPACES.migrate,
+  );
+}
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
@@ -58,6 +89,10 @@ beforeEach(async () => {
   guardsRoot = await temporaryDirectory("stratum-guard-transition-");
   workspace = await temporaryDirectory("stratum-guard-workspace-");
   setGuardsDir(guardsRoot);
+  operator = createTestSigner();
+  const trustRootPath = join(workspace, "guard-signers.allowed");
+  await writeFile(trustRootPath, `operator ${operator.publicKeyLine}\n`, "utf8");
+  resetTrustRoot = setGuardTrustRootForTests(trustRootPath);
   const locks = new ResourceLockManager({
     processIdentity: async (pid) => ({ alive: true, startTime: `test-${pid}` }),
   });
@@ -65,16 +100,15 @@ beforeEach(async () => {
     (resourceId, action, options) => locks.resourceLock(resourceId, action, options),
     (resourceId, token) => locks.assertStillHeld(resourceId, token),
   );
-  delete process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
   delete process.env.STRATUM_GUARD_ALLOW_COMMANDS;
 });
 
 afterEach(async () => {
   resetLocking?.();
   resetLocking = undefined;
+  resetTrustRoot?.();
+  resetTrustRoot = undefined;
   setGuardsDir(originalGuardsDir);
-  if (originalOverrideToken === undefined) delete process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
-  else process.env.STRATUM_GUARD_OVERRIDE_TOKEN = originalOverrideToken;
   if (originalAllowCommands === undefined) delete process.env.STRATUM_GUARD_ALLOW_COMMANDS;
   else process.env.STRATUM_GUARD_ALLOW_COMMANDS = originalAllowCommands;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })));
@@ -171,7 +205,6 @@ describe("guardChecksum", () => {
 
 describe("guard transition orchestration", () => {
   it("refuses every mutation on an un-handed-over guard while allowing reads", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     for (const resourceId of ["python-transition", "python-override", "python-migrate", "python-upgrade", "python-register"]) {
       seedUnmarkedGuard(resourceId);
     }
@@ -179,9 +212,9 @@ describe("guard transition orchestration", () => {
     expect(loadRegistry("python-transition")).toMatchObject({ resource_id: "python-transition", current_state: "a" });
     expect(guardHistory("python-transition")).toMatchObject({ resource_id: "python-transition", current_state: "a" });
     await expect(guardTransition("python-transition", "a", "b")).rejects.toBeInstanceOf(GuardEngineOwned);
-    await expect(guardOverride("python-override", "a", "b", "secret", "manual move"))
+    await expect(guardOverride("python-override", "a", "b", authorizeOverride("python-override", "a", "b", "manual move"), "manual move"))
       .rejects.toBeInstanceOf(GuardEngineOwned);
-    await expect(guardMigrate("python-migrate", { a: ["b"], b: [] }, {}, "secret", "same graph", ["b"]))
+    await expect(guardMigrate("python-migrate", { a: ["b"], b: [] }, {}, authorizeMigrate("python-migrate", "same graph", { graph: { a: ["b"], b: [] }, edgePredicates: {}, terminal: ["b"] }), "same graph", ["b"]))
       .rejects.toBeInstanceOf(GuardEngineOwned);
     await expect(guardUpgrade("python-upgrade", { a: ["b"], b: [] }, {}, "same graph", ["b"]))
       .rejects.toBeInstanceOf(GuardEngineOwned);
@@ -280,7 +313,6 @@ describe("guard transition orchestration", () => {
   });
 
   it("re-checks current state after evaluation outside the lock", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await registerGuard("r", { a: ["b", "c"], b: [], c: [] }, {
       "a->b": [{ id: "j", type: "judged", statement: "slow check" }],
     }, "a", ["b", "c"]);
@@ -296,14 +328,13 @@ describe("guard transition orchestration", () => {
       },
     });
     await started;
-    await expect(guardOverride("r", "a", "c", "secret", "concurrent human move")).resolves.toMatchObject({ status: "deviation" });
+    await expect(guardOverride("r", "a", "c", authorizeOverride("r", "a", "c", "concurrent human move"), "concurrent human move")).resolves.toMatchObject({ status: "deviation" });
     releaseJudge();
     await expect(transitioning).rejects.toBeInstanceOf(StaleFromState);
     expect(guardHistory("r")).toMatchObject({ current_state: "c", ledger: [{ outcome: "deviation" }] });
   });
 
   it("refuses at commit when a concurrent migration removes the evaluated edge", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await registerGuard("r", { a: ["b", "c"], b: [], c: [] }, {
       "a->b": [{ id: "j", type: "judged", statement: "slow check" }],
     }, "a", ["b", "c"]);
@@ -319,7 +350,8 @@ describe("guard transition orchestration", () => {
       },
     });
     await started;
-    await guardMigrate("r", { a: ["c"], b: [], c: [] }, {}, "secret", "remove a->b", ["b", "c"]);
+    await guardMigrate("r", { a: ["c"], b: [], c: [] }, {},
+      authorizeMigrate("r", "remove a->b", { graph: { a: ["c"], b: [], c: [] }, edgePredicates: {}, terminal: ["b", "c"] }), "remove a->b", ["b", "c"]);
     releaseJudge();
 
     await expect(transitioning).rejects.toBeInstanceOf(IllegalEdge);
@@ -353,50 +385,82 @@ describe("guard transition orchestration", () => {
 
 describe("override and migrate", () => {
   it("applies a human token-gated deviation while still enforcing graph legality", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await registerSimple();
-    await expect(guardOverride("r", "draft", "shipped", "secret", "manual ship"))
-      .resolves.toMatchObject({ status: "deviation", current_state: "shipped", rationale: "manual ship" });
-    expect(guardHistory("r").ledger.at(-1)).toMatchObject({ kind: "deviation", rationale: "manual ship" });
+    await expect(guardOverride("r", "draft", "shipped", authorizeOverride("r", "draft", "shipped", "manual ship"), "manual ship"))
+      .resolves.toMatchObject({ status: "deviation", current_state: "shipped", rationale: "manual ship", authorized_by: expect.stringContaining("operator") });
+    expect(guardHistory("r").ledger.at(-1)).toMatchObject({
+      kind: "deviation",
+      rationale: expect.stringContaining("authorized by operator (SHA256:"),
+    });
 
     await registerSimple("r2");
-    await expect(guardOverride("r2", "draft", "draft", "secret", "manual"))
+    await expect(guardOverride("r2", "draft", "draft", authorizeOverride("r2", "draft", "draft", "manual"), "manual"))
       .rejects.toBeInstanceOf(IllegalEdge);
   });
 
   it.each([
-    ["non-human", () => guardOverride("r", "draft", "shipped", "secret", "why", "agent")],
-    ["missing rationale", () => guardOverride("r", "draft", "shipped", "secret", "  ")],
-    ["bad token", () => guardOverride("r", "draft", "shipped", "bad", "why")],
+    ["resolved_by is not human", () => guardOverride("r", "draft", "shipped", authorizeOverride("r", "draft", "shipped", "why"), "why", "agent")],
+    ["the rationale is blank", () => guardOverride("r", "draft", "shipped", authorizeOverride("r", "draft", "shipped", "  "), "  ")],
+    ["the authorization is empty", () => guardOverride("r", "draft", "shipped", "", "why")],
+    ["the authorization is not a signature", () => guardOverride("r", "draft", "shipped", "trust me", "why")],
+    ["the authorization is signed by a stranger", () => guardOverride("r", "draft", "shipped", authorizeOverride("r", "draft", "shipped", "why", createTestSigner()), "why")],
+    ["the authorization names a different rationale", () => guardOverride("r", "draft", "shipped", authorizeOverride("r", "draft", "shipped", "some other reason"), "why")],
+    ["the authorization names a different edge", () => guardOverride("r", "draft", "shipped", authorizeOverride("r", "shipped", "draft", "why"), "why")],
+    ["the authorization is for the migrate namespace", () => guardOverride("r", "draft", "shipped", operator.sign(authorizationPayload("override", { resource_id: "r", from_state: "draft", to_state: "shipped", rationale: "why", ledger_head: "" }), AUTHORIZATION_NAMESPACES.migrate), "why")],
   ])("rejects override when %s", async (_label, action) => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await registerSimple();
     await expect(action()).rejects.toBeInstanceOf(OverrideUnavailable);
+    expect(guardHistory("r")).toMatchObject({ current_state: "draft" });
+  });
+
+  it("cannot replay an authorization once the ledger has moved", async () => {
+    // The ledger head is signed into the payload, so an authorization is valid at
+    // exactly one point in the resource's history.
+    await registerGuard("replay", { a: ["b"], b: ["c"], c: [] }, {}, "a", ["c"], {}, workspace);
+    const authorization = authorizeOverride("replay", "a", "b", "step");
+    await expect(guardOverride("replay", "a", "b", authorization, "step"))
+      .resolves.toMatchObject({ status: "deviation", current_state: "b" });
+
+    // Same signature, same edge, but the history advanced.
+    await expect(guardOverride("replay", "a", "b", authorization, "step"))
+      .rejects.toBeInstanceOf(OverrideUnavailable);
+  });
+
+  it("refuses to authorize anything when no signer is enrolled", async () => {
+    await registerSimple();
+    const authorization = authorizeOverride("r", "draft", "shipped", "manual ship");
+    const empty = join(workspace, "empty-signers.allowed");
+    await writeFile(empty, "# nobody\n", "utf8");
+    const restore = setGuardTrustRootForTests(empty);
+    try {
+      await expect(guardOverride("r", "draft", "shipped", authorization, "manual ship"))
+        .rejects.toThrow(/no allowed signers configured/);
+    } finally {
+      restore();
+    }
   });
 
   it("migrates a full valid policy and bumps graph_version", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await registerSimple();
+    const graph = { draft: ["review", "shipped"], review: ["shipped"], shipped: [] };
+    const edgePredicates = { "draft->shipped": [{ id: "p1", statement: "server_file_exists('design.md')" }] };
     const result = await guardMigrate(
-      "r",
-      { draft: ["review", "shipped"], review: ["shipped"], shipped: [] },
-      { "draft->shipped": [{ id: "p1", statement: "server_file_exists('design.md')" }] },
-      "secret",
+      "r", graph, edgePredicates,
+      authorizeMigrate("r", "add review", { graph, edgePredicates, terminal: ["shipped"] }),
       "add review",
       ["shipped"],
     );
-    expect(result).toMatchObject({ status: "migrated", graph_version: 2, rationale: "add review" });
+    expect(result).toMatchObject({ status: "migrated", graph_version: 2, rationale: "add review", authorized_by: expect.stringContaining("operator") });
     expect(guardHistory("r")).toMatchObject({ graph_version: 2, ledger: [{ outcome: "graph_version" }] });
   });
 
   it("re-validates the entire migrated policy", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await registerSimple();
+    const graph = { draft: ["shipped"], shipped: [] };
+    const edgePredicates = { "draft->shipped": [{ type: "bogus", statement: "anything" }] };
     await expect(guardMigrate(
-      "r",
-      { draft: ["shipped"], shipped: [] },
-      { "draft->shipped": [{ type: "bogus", statement: "anything" }] },
-      "secret",
+      "r", graph, edgePredicates,
+      authorizeMigrate("r", "invalid weakening", { graph, edgePredicates, terminal: ["shipped"] }),
       "invalid weakening",
       ["shipped"],
     )).rejects.toBeInstanceOf(EvidenceParseError);
@@ -404,13 +468,13 @@ describe("override and migrate", () => {
   });
 
   it("refuses a migration that strands the current state", async () => {
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await writeFile(join(workspace, "design.md"), "design", "utf8");
     await registerGuard("r", { a: ["b"], b: ["c"], c: [] }, {
       "a->b": [{ statement: "server_file_exists('design.md')" }],
     }, "a", ["c"], {}, workspace);
     await guardTransition("r", "a", "b");
-    await expect(guardMigrate("r", { a: ["c"], c: [] }, {}, "secret", "remove b", ["c"]))
+    await expect(guardMigrate("r", { a: ["c"], c: [] }, {},
+      authorizeMigrate("r", "remove b", { graph: { a: ["c"], c: [] }, edgePredicates: {}, terminal: ["c"] }), "remove b", ["c"]))
       .rejects.toBeInstanceOf(InvalidStateName);
     expect(guardHistory("r")).toMatchObject({ graph_version: 1, current_state: "b" });
   });
@@ -578,9 +642,9 @@ describe("guard upgrade (routine, token-free)", () => {
     // was never registered reads as un-handed-over rather than not-found. This
     // is guardMigrate's existing behaviour, asserted here as parity, not as a
     // new quirk of the upgrade path.
-    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
     await expect(guardUpgrade("missing", { a: [] }, {}, "why")).rejects.toBeInstanceOf(GuardEngineOwned);
-    await expect(guardMigrate("missing", { a: [] }, {}, "secret", "why")).rejects.toBeInstanceOf(GuardEngineOwned);
+    await expect(guardMigrate("missing", { a: [] }, {},
+      authorizeMigrate("missing", "why", { graph: { a: [] }, edgePredicates: {} }), "why")).rejects.toBeInstanceOf(GuardEngineOwned);
   });
 });
 

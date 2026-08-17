@@ -1,16 +1,21 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AUTHORIZATION_NAMESPACES, authorizationPayload } from "../../src/guard/authorization.js";
+import { guardChecksum } from "../../src/guard/fingerprint.js";
 import { GUARDS_DIR, ResourceLockManager, setGuardsDir } from "../../src/guard/store.js";
-import { setGuardLockingForTests, type GuardJudge } from "../../src/guard/transition.js";
+import { _ledgerHead, setGuardLockingForTests, type GuardJudge } from "../../src/guard/transition.js";
+import { setGuardTrustRootForTests } from "../../src/guard/trust.js";
+import { createTestSigner, type TestSigner } from "../helpers/sshsig-sign.js";
 import { assertToolResponse, mcpSurface } from "../../src/mcp/contracts.js";
 import { createToolDispatcher } from "../../src/mcp/server.js";
 
 const originalGuardsDir = GUARDS_DIR;
-const originalOverrideToken = process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
 const roots: string[] = [];
 let resetLocking: (() => void) | undefined;
+let resetTrustRoot: (() => void) | undefined;
+let operator: TestSigner;
 
 beforeEach(async () => {
   const root = await mkdtemp(join(tmpdir(), "stratum-guard-mcp-"));
@@ -21,15 +26,18 @@ beforeEach(async () => {
     (resourceId, action, options) => locks.resourceLock(resourceId, action, options),
     (resourceId, token) => locks.assertStillHeld(resourceId, token),
   );
-  process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "override-test-token";
+  operator = createTestSigner();
+  const trustRoot = join(root, "guard-signers.allowed");
+  await writeFile(trustRoot, `operator ${operator.publicKeyLine}\n`, "utf8");
+  resetTrustRoot = setGuardTrustRootForTests(trustRoot);
 });
 
 afterEach(async () => {
   setGuardsDir(originalGuardsDir);
   resetLocking?.();
   resetLocking = undefined;
-  if (originalOverrideToken === undefined) delete process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
-  else process.env.STRATUM_GUARD_OVERRIDE_TOKEN = originalOverrideToken;
+  resetTrustRoot?.();
+  resetTrustRoot = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -61,7 +69,13 @@ describe.sequential("guard MCP boundary", () => {
 
     const migrated = await subject.call("stratum_guard_migrate", {
       resource_id: "mcp", new_graph: policy("mcp").graph, new_edge_predicates: policy("mcp").edge_predicates,
-      override_token: "override-test-token", rationale: "update policy", new_terminal: ["shipped"], new_stakes: {},
+      authorization: operator.sign(authorizationPayload("migrate", {
+        resource_id: "mcp",
+        policy_checksum: guardChecksum(policy("mcp").graph, policy("mcp").edge_predicates, ["shipped"], {}),
+        rationale: "update policy",
+        ledger_head: _ledgerHead("mcp"),
+      }), AUTHORIZATION_NAMESPACES.migrate),
+      rationale: "update policy", new_terminal: ["shipped"], new_stakes: {},
     });
     expect(migrated).toMatchObject({ status: "migrated", graph_version: 2 });
 
@@ -81,7 +95,10 @@ describe.sequential("guard MCP boundary", () => {
     expect(upgraded).toMatchObject({ status: "migrated", graph_version: 3 });
 
     const overridden = await subject.call("stratum_guard_override", {
-      resource_id: "mcp", from_state: "review", to_state: "shipped", override_token: "override-test-token", rationale: "human decision",
+      resource_id: "mcp", from_state: "review", to_state: "shipped", rationale: "human decision",
+      authorization: operator.sign(authorizationPayload("override", {
+        resource_id: "mcp", from_state: "review", to_state: "shipped", rationale: "human decision", ledger_head: _ledgerHead("mcp"),
+      }), AUTHORIZATION_NAMESPACES.override),
     });
     expect(overridden).toMatchObject({ status: "deviation", current_state: "shipped" });
 

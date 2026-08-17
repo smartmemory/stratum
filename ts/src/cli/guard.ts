@@ -1,8 +1,11 @@
 /** CLI boundary for the guarded state-machine API. */
 
+import { AUTHORIZATION_NAMESPACES, authorizationPayload, type AuthorizationKind } from "../guard/authorization.js";
 import { inspectDescriptorFile } from "../guard/descriptors.js";
+import { guardChecksum } from "../guard/fingerprint.js";
 import { GuardError } from "../guard/errors.js";
 import {
+  _ledgerHead,
   guardHistory,
   guardMigrate,
   guardOverride,
@@ -13,7 +16,7 @@ import {
   type GuardJudge,
 } from "../guard/transition.js";
 
-const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "descriptors", "history"]);
+const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "authorize", "descriptors", "history"]);
 
 let testJudge: GuardJudge | undefined;
 
@@ -83,16 +86,16 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
         ...(testJudge ? { judge: testJudge } : {}),
       });
     case "override":
-      assertOnlyKeys(payload, ["resource_id", "from_state", "to_state", "override_token", "rationale", "resolved_by"]);
+      assertOnlyKeys(payload, ["resource_id", "from_state", "to_state", "authorization", "rationale", "resolved_by"]);
       return guardOverride(
         required<string>(payload, "resource_id"), required<string>(payload, "from_state"), required<string>(payload, "to_state"),
-        required<string>(payload, "override_token"), required<string>(payload, "rationale"), optional<string>(payload, "resolved_by", "human"),
+        required<string>(payload, "authorization"), required<string>(payload, "rationale"), optional<string>(payload, "resolved_by", "human"),
       );
     case "migrate":
-      assertOnlyKeys(payload, ["resource_id", "new_graph", "new_edge_predicates", "override_token", "rationale", "new_terminal", "new_stakes"]);
+      assertOnlyKeys(payload, ["resource_id", "new_graph", "new_edge_predicates", "authorization", "rationale", "new_terminal", "new_stakes"]);
       return guardMigrate(
         required<string>(payload, "resource_id"), required<Record<string, string[]>>(payload, "new_graph"),
-        required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"), required<string>(payload, "override_token"),
+        required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"), required<string>(payload, "authorization"),
         required<string>(payload, "rationale"), optional<string[]>(payload, "new_terminal", []), optional<Record<string, string>>(payload, "new_stakes", {}),
       );
     case "upgrade":
@@ -108,6 +111,48 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
     // would stamp it `resolved_by: "human"`. The privileged apply exists only on
     // the MCP surface, inside the server that owns the pinned environment.
     // See docs/features/STRAT-GUARD-DESCRIPTOR/design.md, "Decision 6".
+    case "authorize": {
+      // Prints the exact bytes to sign for an override or migrate. Grants
+      // nothing: it reads the resource's ledger head, which is not a secret, and
+      // produces a payload that is worthless without the operator's signature.
+      assertOnlyKeys(payload, ["kind", "resource_id", "from_state", "to_state", "rationale", "new_graph", "new_edge_predicates", "new_terminal", "new_stakes"]);
+      const kind = required<AuthorizationKind>(payload, "kind");
+      if (kind !== "override" && kind !== "migrate") throw new TypeError('guard authorize kind must be "override" or "migrate"');
+      const resourceId = required<string>(payload, "resource_id");
+      const rationale = required<string>(payload, "rationale");
+      const ledgerHead = _ledgerHead(resourceId);
+      const fields = kind === "override"
+        ? {
+          resource_id: resourceId,
+          from_state: required<string>(payload, "from_state"),
+          to_state: required<string>(payload, "to_state"),
+          rationale,
+          ledger_head: ledgerHead,
+        }
+        : {
+          resource_id: resourceId,
+          policy_checksum: guardChecksum(
+            required<Record<string, string[]>>(payload, "new_graph"),
+            required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"),
+            optional<string[]>(payload, "new_terminal", []),
+            optional<Record<string, string>>(payload, "new_stakes", {}),
+          ),
+          rationale,
+          ledger_head: ledgerHead,
+        };
+      const body = authorizationPayload(kind, fields);
+      return {
+        status: "ok",
+        namespace: AUTHORIZATION_NAMESPACES[kind],
+        payload: body,
+        instructions: [
+          `printf '%s' ${JSON.stringify(body)} > /tmp/guard-authz`,
+          `ssh-keygen -Y sign -f <your signing key> -n ${AUTHORIZATION_NAMESPACES[kind]} /tmp/guard-authz`,
+          "pass the contents of /tmp/guard-authz.sig as the \"authorization\" argument",
+        ],
+        note: "valid only while this resource's ledger head is unchanged — re-run this after any further transition",
+      };
+    }
     case "descriptors": {
       // Operator-facing, deliberately NOT on the MCP surface: an agent has no
       // reason to enumerate what it may ask for, and the digest this prints is
