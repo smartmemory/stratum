@@ -46,10 +46,10 @@ const policy = (resourceId: string) => ({
 });
 
 describe.sequential("guard MCP boundary", () => {
-  it("declares and dispatches all five Python-parity guard tools", async () => {
+  it("declares and dispatches every guard tool", async () => {
     const surface = await mcpSurface();
     expect(Object.keys(surface.tools)).toEqual(expect.arrayContaining([
-      "stratum_guard_register", "stratum_guard_transition", "stratum_guard_override", "stratum_guard_migrate", "stratum_guard_history",
+      "stratum_guard_register", "stratum_guard_transition", "stratum_guard_override", "stratum_guard_migrate", "stratum_guard_upgrade", "stratum_guard_history",
     ]));
 
     const subject = createToolDispatcher({ guardJudge: judge(true) });
@@ -64,6 +64,21 @@ describe.sequential("guard MCP boundary", () => {
       override_token: "override-test-token", rationale: "update policy", new_terminal: ["shipped"], new_stakes: {},
     });
     expect(migrated).toMatchObject({ status: "migrated", graph_version: 2 });
+
+    // STRAT-GUARD-UPGRADE: the routine path carries no override_token at all.
+    const unchanged = await subject.call("stratum_guard_upgrade", {
+      resource_id: "mcp", new_graph: policy("mcp").graph, new_edge_predicates: policy("mcp").edge_predicates,
+      rationale: "lazy re-apply", new_terminal: ["shipped"], new_stakes: {},
+    });
+    expect(unchanged).toMatchObject({ status: "unchanged", graph_version: 2 });
+
+    const upgraded = await subject.call("stratum_guard_upgrade", {
+      resource_id: "mcp",
+      new_graph: { ...policy("mcp").graph, draft: ["review", "audited"], audited: [] },
+      new_edge_predicates: policy("mcp").edge_predicates,
+      rationale: "graft audited", new_terminal: ["shipped"], new_stakes: {},
+    });
+    expect(upgraded).toMatchObject({ status: "migrated", graph_version: 3 });
 
     const overridden = await subject.call("stratum_guard_override", {
       resource_id: "mcp", from_state: "review", to_state: "shipped", override_token: "override-test-token", rationale: "human decision",
