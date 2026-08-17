@@ -9,12 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  DESCRIPTOR_NAMESPACE,
   DESCRIPTOR_PATH_ENV,
-  DESCRIPTOR_PIN_ENV,
-  descriptorFileDigest,
   inspectDescriptorFile,
   loadDescriptorFile,
+  setGuardTrustRootForTests,
 } from "../../src/guard/descriptors.js";
+import { createTestSigner, type TestSigner } from "../helpers/sshsig-sign.js";
 import {
   GuardEngineOwned,
   GuardTampered,
@@ -47,6 +48,8 @@ const roots: string[] = [];
 let guardsRoot: string;
 let fileRoot: string;
 let resetLocking: (() => void) | undefined;
+let resetTrustRoot: (() => void) | undefined;
+let operator: TestSigner;
 
 // The registered policy every test starts from.
 const BASE_GRAPH = { draft: ["shipped"], shipped: [] };
@@ -85,20 +88,25 @@ function descriptorPayload(overrides: Record<string, unknown> = {}): Record<stri
   };
 }
 
-/** Write a descriptor file and return an env that correctly points at and pins it. */
+/**
+ * Write a descriptor file plus a detached signature over its exact bytes, and
+ * return an env pointing at it. `signer` defaults to the trusted operator key;
+ * pass another to simulate an attacker who signs with a key nobody enrolled.
+ */
 async function installDescriptors(
   payload: unknown = descriptorPayload(),
-  options: { pin?: string | null; mode?: number; name?: string } = {},
+  options: { signer?: TestSigner | null; mode?: number; name?: string; namespace?: string; signBytes?: string } = {},
 ): Promise<NodeJS.ProcessEnv> {
   const path = join(fileRoot, options.name ?? "guard-upgrades.json");
   const body = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
   await writeFile(path, body, "utf8");
   await chmod(path, options.mode ?? 0o600);
-  const pin = options.pin === undefined ? descriptorFileDigest(body) : options.pin;
-  return {
-    [DESCRIPTOR_PATH_ENV]: path,
-    ...(pin === null ? {} : { [DESCRIPTOR_PIN_ENV]: pin }),
-  };
+  const signer = options.signer === undefined ? operator : options.signer;
+  if (signer !== null) {
+    const signed = options.signBytes ?? body;
+    await writeFile(`${path}.sig`, signer.sign(signed, options.namespace ?? DESCRIPTOR_NAMESPACE), "utf8");
+  }
+  return { [DESCRIPTOR_PATH_ENV]: path };
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
@@ -115,6 +123,12 @@ beforeEach(async () => {
   guardsRoot = await temporaryDirectory("stratum-guard-descriptors-");
   fileRoot = await temporaryDirectory("stratum-descriptor-files-");
   setGuardsDir(guardsRoot);
+  // A trust root holding exactly one enrolled operator key, standing in for the
+  // committed contracts/guard-signers.allowed.
+  operator = createTestSigner();
+  const trustRoot = join(fileRoot, "guard-signers.allowed");
+  await writeFile(trustRoot, `operator ${operator.publicKeyLine}\n`, "utf8");
+  resetTrustRoot = setGuardTrustRootForTests(trustRoot);
   const locks = new ResourceLockManager({
     processIdentity: async (pid) => ({ alive: true, startTime: `test-${pid}` }),
   });
@@ -127,13 +141,15 @@ beforeEach(async () => {
 afterEach(async () => {
   resetLocking?.();
   resetLocking = undefined;
+  resetTrustRoot?.();
+  resetTrustRoot = undefined;
   setGuardsDir(originalGuardsDir);
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })));
 });
 
-describe("descriptor file authentication", () => {
+describe("descriptor file authorization", () => {
   it("refuses when nothing is configured", () => {
-    expect(() => loadDescriptorFile({})).toThrow(UpgradeDescriptorUnavailable);
+    expect(() => loadDescriptorFile({})).toThrow(/not set in server env/);
   });
 
   it("refuses a relative path", async () => {
@@ -142,24 +158,51 @@ describe("descriptor file authentication", () => {
       .toThrow(UpgradeDescriptorUnavailable);
   });
 
-  it("refuses a configured path with NO pin, because an unpinned file authorizes nothing", async () => {
-    const env = await installDescriptors(descriptorPayload(), { pin: null });
-    expect(() => loadDescriptorFile(env)).toThrow(/not set in server env/);
+  it("refuses an UNSIGNED descriptor file", async () => {
+    const env = await installDescriptors(descriptorPayload(), { signer: null });
+    expect(() => loadDescriptorFile(env)).toThrow(/is not signed/);
   });
 
-  it("refuses a pin that does not match the file's bytes", async () => {
+  it("refuses a signature over different bytes than the file now holds", async () => {
+    const env = await installDescriptors(descriptorPayload(), { signBytes: "something else entirely" });
+    expect(() => loadDescriptorFile(env)).toThrow(/signature rejected/);
+  });
+
+  it("refuses a valid signature from a key nobody enrolled", async () => {
+    // The attack the digest pin could not stop: an attacker-authored file, its
+    // own perfectly good signature, and no way to get on the trust root.
+    const env = await installDescriptors(descriptorPayload(), { signer: createTestSigner() });
+    expect(() => loadDescriptorFile(env)).toThrow(/not an allowed signer/);
+  });
+
+  it("refuses a signature made under another namespace", async () => {
+    const env = await installDescriptors(descriptorPayload(), { namespace: "stratum-guard-override" });
+    expect(() => loadDescriptorFile(env)).toThrow(/namespace/);
+  });
+
+  it("refuses everything when the trust root has no enrolled signers", async () => {
     const env = await installDescriptors();
-    expect(() => loadDescriptorFile({ ...env, [DESCRIPTOR_PIN_ENV]: "0".repeat(64) }))
-      .toThrow(/does not match the pinned/);
+    const empty = join(fileRoot, "empty-signers.allowed");
+    await writeFile(empty, "# nobody\n", "utf8");
+    const restore = setGuardTrustRootForTests(empty);
+    try {
+      expect(() => loadDescriptorFile(env)).toThrow(/no allowed signers configured/);
+    } finally {
+      restore();
+    }
   });
 
-  it("refuses a pin that is not a sha256 digest", async () => {
+  it("refuses a missing trust root rather than trusting everything", async () => {
     const env = await installDescriptors();
-    expect(() => loadDescriptorFile({ ...env, [DESCRIPTOR_PIN_ENV]: "not-a-digest" }))
-      .toThrow(UpgradeDescriptorUnavailable);
+    const restore = setGuardTrustRootForTests(join(fileRoot, "absent-signers.allowed"));
+    try {
+      expect(() => loadDescriptorFile(env)).toThrow(/trust root is unreadable/);
+    } finally {
+      restore();
+    }
   });
 
-  it("refuses a group- or world-writable file even when the pin matches", async () => {
+  it("refuses a group- or world-writable file even when the signature is good", async () => {
     const env = await installDescriptors(descriptorPayload(), { mode: 0o666 });
     expect(() => loadDescriptorFile(env)).toThrow(/group- or world-writable/);
   });
@@ -170,10 +213,10 @@ describe("descriptor file authentication", () => {
       .toThrow(UpgradeDescriptorUnavailable);
   });
 
-  it("accepts a correctly installed file", async () => {
+  it("accepts a correctly signed file and reports who authorized it", async () => {
     const env = await installDescriptors();
     const file = loadDescriptorFile(env);
-    expect(file.digest).toBe(env[DESCRIPTOR_PIN_ENV]);
+    expect(file.signedBy).toMatchObject({ principal: "operator", fingerprint: expect.stringMatching(/^SHA256:/) });
     expect(file.descriptors.map((entry) => entry.id)).toEqual(["backfill"]);
   });
 });
@@ -211,23 +254,28 @@ describe("descriptor file schema", () => {
 });
 
 describe("operator inspection", () => {
-  it("reports the digest even with no pin set, so the pin can be installed the first time", async () => {
-    const env = await installDescriptors(descriptorPayload(), { pin: null });
+  it("reports a verified signature and the enrolled signers", async () => {
+    const env = await installDescriptors();
     const report = inspectDescriptorFile(env);
-    expect(report).toMatchObject({ pinned: false, pin_matches: false, group_or_world_writable: false });
-    expect(report.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(report.signature).toMatch(/^verified: signed by operator \(SHA256:/);
+    expect(report.allowed_signers).toEqual([{ principal: "operator", fingerprint: expect.stringMatching(/^SHA256:/) }]);
     expect(report.descriptors).toEqual([{
       id: "backfill",
       rationale: expect.stringContaining("COMP-LIFECYCLE-BACKFILL"),
       from_checksum: BASE_CHECKSUM,
     }]);
-    // And the digest it printed is exactly what makes the load succeed.
-    expect(loadDescriptorFile({ ...env, [DESCRIPTOR_PIN_ENV]: report.sha256 }).digest).toBe(report.sha256);
+  });
+
+  it("reports an unverifiable signature as NOT VERIFIED instead of failing shut", async () => {
+    // Inspection is a diagnostic: the operator most needs it when something is
+    // wrong, so it must describe the failure rather than throw it.
+    const env = await installDescriptors(descriptorPayload(), { signer: null });
+    expect(inspectDescriptorFile(env).signature).toMatch(/^NOT VERIFIED: /);
   });
 
   it("flags an insecure mode instead of hiding it", async () => {
     const env = await installDescriptors(descriptorPayload(), { mode: 0o666 });
-    expect(inspectDescriptorFile(env)).toMatchObject({ group_or_world_writable: true, pin_matches: true });
+    expect(inspectDescriptorFile(env)).toMatchObject({ group_or_world_writable: true });
   });
 });
 
@@ -247,7 +295,7 @@ describe("guardApplyUpgrade", () => {
       kind: "graph_version",
       outcome: "graph_version",
       resolved_by: "human",
-      rationale: expect.stringContaining(`descriptor backfill (file sha256 ${env[DESCRIPTOR_PIN_ENV]})`),
+      rationale: expect.stringContaining("descriptor backfill signed by operator (SHA256:"),
     })]);
   });
 

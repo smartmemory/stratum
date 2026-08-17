@@ -1,6 +1,6 @@
 # STRAT-GUARD-DESCRIPTOR — server-owned upgrade descriptors
 
-**Status:** PARTIAL — the mechanism ships MCP-only. Its consumer cannot reach it over the CLI transport, and the recommended completion is signed descriptors (Decision 6).
+**Status:** COMPLETE — signed descriptors shipped; the env digest pin they replaced is gone. Consumer wiring (compose) and the same treatment for `guardOverride`/`guardMigrate` are tracked separately.
 **Owner:** stratum
 **Filed:** 2026-08-17
 **Requested by:** owner ruling 2026-08-17 ("the best solution not the easiest one"), after `STRAT-GUARD-UPGRADE` shipped the provably-safe subset and left the requesting use case still needing the break-glass token.
@@ -66,53 +66,55 @@ is different — including a resource someone migrated in between. Authorization
 for a *transition between two named policies*, not for a destination in the
 abstract. A mismatch is refused, loudly, with both checksums in the message.
 
-## Decision 2 — the trust anchor: an env path plus a REQUIRED digest pin
+## Decision 2 — the trust anchor: a signature, not a value in the environment
 
-Two environment variables, read from the **server process** environment exactly
-as `STRATUM_GUARD_OVERRIDE_TOKEN` is:
+**Superseded the digest pin, 2026-08-17, same day.** The pin was the right idea
+against the wrong adversary. Its reasoning was "an agent cannot alter the
+environment of an already-running server" — true, but the guard is also reachable
+from processes the agent launches itself, and there the agent supplies the
+environment. Decision 6 records the proof. An env-anchored digest is only as
+strong as the weakest process that reads it.
 
-```
-STRATUM_GUARD_UPGRADE_DESCRIPTORS=/abs/path/to/guard-upgrades.json
-STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256=<sha256 of that file's bytes>
-```
+A signature has no such dependence. Authorization is now:
 
-Both required. Neither is agent-mintable: an agent cannot alter the environment
-of an already-running MCP server, and that is the same anchor the override token
-already relies on.
+- the descriptor file carries a detached **sshsig** (`ssh-keygen -Y sign`) at
+  `<path>.sig`, under the namespace `stratum-guard-descriptors`;
+- the signing key must appear in **`contracts/guard-signers.allowed`**, read from
+  the installed source tree — never from an environment variable;
+- the private half lives wherever the operator keeps it, protected by a
+  passphrase that exists only in the operator's head, and is **never added to
+  ssh-agent** (an agent that can reach the agent socket can use the key without
+  knowing the passphrase).
 
-**Why the pin is required and not optional.** The env var alone only names a
-path. On a single-user development machine the agent under guard usually *can
-write that path*, so an unpinned descriptor file authorizes nothing — the caller
-would be reviewing its own homework. An optional pin would mean the default
-deployment has the appearance of authorization and none of the substance, which
-is worse than not having the feature: it converts "no capability" into "a
-capability everyone believes is safe". With the pin required, the digest lives in
-the server's environment, so changing what is authorized requires touching the
-environment — a deliberate operator act, exactly like rotating the token. The
-capability is therefore either real or absent, never theatre.
+The descriptor file's *path* still comes from
+`STRATUM_GUARD_UPGRADE_DESCRIPTORS`. Locating an artifact is not authorizing it:
+point it anywhere, the signature still has to verify.
 
-Additionally the file must not be group- or world-writable (`0o022`), the same
-check `ssh` applies to a private key. Cheap, and it catches the common
-misconfiguration where the digest is right but anyone on the box can race it.
+**What the adversary must now do.** Not "set two variables" — forge Ed25519
+(infeasible), or edit `contracts/guard-signers.allowed` in the checked-out source.
+The second is possible for anything with a shell, but it is a categorically
+different act: it shows up in `git status` and in review, rather than leaving no
+trace at all. That is the honest ceiling of any local mechanism, and it applies
+equally to every check in the codebase rather than to this one specifically.
 
-**Honest limits of the anchor.** It is worth stating plainly what this does and
-does not buy:
+**Verification is native, not a shell-out.** `ts/src/guard/sshsig.ts` parses and
+verifies the sshsig format directly with `node:crypto`. Calling
+`ssh-keygen -Y verify` would have re-introduced the same class of hole from a new
+angle: `ssh-keygen` is resolved through `PATH`, and the adversary controls `PATH`.
+An authorization decision must not be delegated to a binary the caller can
+shadow. Ed25519 only; other key types are refused rather than ignored.
 
-- It does **not** defend against an attacker who can set the server's
-  environment or restart the server with their own values. Nothing short of a
-  separate trust domain (a signing key held off-box, a remote authorization
-  service) would, and the override token has exactly the same ceiling.
-- It **does** defend against the realistic threat this whole subsystem exists
-  for: an agent, running with the user's filesystem privileges, talking its way
-  into a policy change nobody authorized. It cannot forge the digest, cannot
-  edit the pinned file without detection, and cannot invent a descriptor.
-- The trust boundary is **whoever controls the process environment**. Under the
-  MCP server that is the operator who launched it. Under the **CLI** it is the
-  caller, which is why there is deliberately no CLI apply action — see
-  Decision 6.
-- A descriptor file is **not a secret**. It can be committed, reviewed in a pull
-  request, and diffed. That is a feature: unlike a token, the thing being
-  authorized is legible.
+The verifier is tested against a signature produced by real `ssh-keygen`
+(committed under `ts/tests/fixtures/sshsig/`), so a misreading of
+PROTOCOL.sshsig cannot hide behind a round-trip with our own test signer.
+
+**There is no default trust.** `contracts/guard-signers.allowed` ships empty, and
+an empty or missing trust root makes the signed paths report themselves
+unavailable rather than degrading to something weaker.
+
+Two defence-in-depth checks remain, no longer load-bearing: the descriptor file
+must not be group- or world-writable, and `initial`/`workspace_root` are still
+read from the stored registry rather than the artifact.
 
 ## Decision 3 — file format
 
@@ -250,17 +252,16 @@ actually authorized. Closing this properly needs one of:
 - **(a) A trusted transport.** Compose calls stratum over MCP for privileged
   guard operations instead of spawning the CLI. The environment then belongs to a
   server the agent did not launch.
-- **(b) Signed descriptors.** Authorization stops being "a value in the
-  environment" and becomes "a signature this process cannot produce": descriptors
-  signed with a key held off-box, verified against a public key checked into
-  stratum's source. A caller must then either forge Ed25519 or edit stratum's
-  committed source — the latter is possible with a shell, but it is loud,
-  `git status`-visible, and defeats every check in the codebase equally rather
-  than defeating this one silently. The same treatment retroactively fixes the
-  override token.
+- **(b) Signed descriptors — CHOSEN and implemented (see Decision 2).**
+  Authorization is a signature the calling process cannot produce, verified
+  against a trust root checked into stratum's source. Transport-independent, so
+  it does not matter which surface a consumer uses.
 
-(b) is the stronger answer and the one this design recommends, because it does
-not depend on which transport a consumer happens to use.
+(b) shipped. It also means the CLI restriction in this decision is no longer what
+holds the property together — a CLI caller can point the path anywhere it likes
+and still cannot produce a signature. The privileged apply nonetheless stays
+MCP-only for now: the narrower surface costs nothing, and re-opening it should be
+a deliberate act with its own review rather than a side effect of this change.
 
 ### The honest ceiling
 
@@ -298,8 +299,12 @@ between the guard and vision-state, reader changes).
 ## Acceptance criteria
 
 - [ ] Env unset → `upgrade_descriptor_unavailable`
-- [ ] Path set but pin unset → `upgrade_descriptor_unavailable`
-- [ ] Pin set but wrong → `upgrade_descriptor_unavailable`
+- [ ] Unsigned descriptor file → `upgrade_descriptor_unavailable`
+- [ ] Signature over different bytes → refused
+- [ ] Valid signature from a key nobody enrolled → refused
+- [ ] Signature made under another namespace → refused
+- [ ] Empty or missing trust root → refused (no default trust)
+- [ ] Verifier agrees with real `ssh-keygen` on a committed golden artifact
 - [ ] Group- or world-writable descriptor file → `upgrade_descriptor_unavailable`
 - [ ] Malformed file, unknown key, duplicate id, blank rationale → `upgrade_descriptor_unavailable`
 - [ ] Unknown descriptor id → `upgrade_descriptor_unavailable`

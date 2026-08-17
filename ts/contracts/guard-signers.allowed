@@ -1,0 +1,36 @@
+# Guard authorization trust root.
+#
+# Public keys permitted to sign guard authorization artifacts (upgrade
+# descriptors, and any future signed authorization). OpenSSH `allowed_signers`
+# format, restricted to a strict subset:
+#
+#     <principal[,principal...]> ssh-ed25519 <base64>  [comment]
+#
+# Option lists (cert-authority, namespaces=, valid-before=) are REFUSED, not
+# ignored — a restriction written here must never be silently dropped.
+#
+# THIS FILE IS THE TRUST ROOT. It is read from the installed source tree, never
+# from an environment variable, so changing who may authorize a guard policy
+# change requires editing a committed file. That is deliberate: an environment
+# variable can be set silently by whatever process happens to be running, while
+# a change here shows up in `git status` and in review.
+#
+# Empty by default. There is no default trust: until a key is added, the signed
+# authorization paths report themselves unavailable rather than falling back to
+# something weaker.
+#
+# To enrol a signer:
+#   1. On the operator's machine, create a signing key whose passphrase exists
+#      only in the operator's head, and never add it to ssh-agent (an agent that
+#      can reach the agent socket can use the key without knowing the passphrase):
+#        ssh-keygen -t ed25519 -f ~/.stratum/guard-signing -C "<who>"
+#   2. Append the PUBLIC half here with a principal name:
+#        echo "<who> $(cat ~/.stratum/guard-signing.pub)" >> ts/contracts/guard-signers.allowed
+#   3. Commit it. The private half never leaves the operator's machine and is
+#      useless to anything that does not know the passphrase.
+#
+# To sign a descriptor file:
+#   ssh-keygen -Y sign -f ~/.stratum/guard-signing \
+#     -n stratum-guard-descriptors /path/to/guard-upgrades.json
+#   (writes /path/to/guard-upgrades.json.sig; you will be prompted for the
+#    passphrase, which is the point)

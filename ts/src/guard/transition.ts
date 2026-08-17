@@ -931,9 +931,10 @@ export async function guardApplyUpgrade(
       // A human authorized this exact policy, so the ledger says so — and names
       // which authorization, pinned by the descriptor file's digest.
       resolved_by: "human",
-      // The digest of the file verified ABOVE, not a re-read: re-reading would
-      // let the ledger name a digest other than the one actually authorized.
-      rationale: `descriptor ${descriptor.id} (file sha256 ${descriptorFile.digest}): ${descriptor.rationale}`,
+      // Names WHO authorized it and WHICH artifact, from the file verified
+      // ABOVE — a re-read could name a digest other than the one authorized.
+      rationale: `descriptor ${descriptor.id} signed by ${descriptorFile.signedBy.principal} `
+        + `(${descriptorFile.signedBy.fingerprint}, file sha256 ${descriptorFile.digest}): ${descriptor.rationale}`,
     });
     await fenceResourceLock(resourceId, token);
     const ledgerRef = appendLedger(resourceId, entry);

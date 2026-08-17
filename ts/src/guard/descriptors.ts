@@ -3,22 +3,71 @@
  * lets a pre-reviewed policy change be applied without the break-glass override
  * token. See `docs/features/STRAT-GUARD-DESCRIPTOR/design.md`.
  *
- * The whole security property rests on two server-environment variables that an
- * agent cannot alter (the same anchor `STRATUM_GUARD_OVERRIDE_TOKEN` uses): the
- * descriptor file's path, and a REQUIRED sha256 pin of its bytes. The pin is
- * required rather than optional because the file usually sits somewhere the
- * agent under guard can write, so an unpinned file authorizes nothing while
- * looking like it authorizes something.
+ * Authorization is a SIGNATURE, not a value in the environment. The descriptor
+ * file must carry an sshsig (`ssh-keygen -Y sign`) from a key listed in the
+ * in-source trust root `contracts/guard-signers.allowed`, under the namespace
+ * `stratum-guard-descriptors`.
+ *
+ * Why a signature and not the digest pin this replaced: the threat model is an
+ * agent with a shell and the operator's filesystem privileges. Such an agent can
+ * set any environment variable, so an env-anchored digest is only as strong as
+ * the process that reads it — over a CLI, the caller sets both the file and the
+ * pin and they agree. It cannot, however, produce an Ed25519 signature without
+ * the private key, whose passphrase lives only in the operator's head. The
+ * remaining move is to edit the committed trust root, which is loud and shows up
+ * in review rather than being invisible.
+ *
+ * The descriptor file's PATH still comes from the environment. Locating an
+ * artifact is not authorizing it: point this anywhere, the signature still has
+ * to verify.
  */
 
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { UpgradeDescriptorUnavailable } from "./errors.js";
+import { SshsigError, parseAllowedSigners, sshFingerprint, verifySshsig, type AllowedSigner } from "./sshsig.js";
 import type { EdgePredicates, GuardGraph } from "./store.js";
 
 export const DESCRIPTOR_PATH_ENV = "STRATUM_GUARD_UPGRADE_DESCRIPTORS";
-export const DESCRIPTOR_PIN_ENV = "STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256";
+/** sshsig namespace for descriptor-file signatures; distinct per authorization purpose. */
+export const DESCRIPTOR_NAMESPACE = "stratum-guard-descriptors";
+
+// Resolved from the installed source tree, never from the environment. Same
+// convention as the frozen MCP surface contract, so it works in both the dev
+// tree (src/guard/) and the published tree (dist/guard/).
+const DEFAULT_TRUST_ROOT = new URL("../../contracts/guard-signers.allowed", import.meta.url);
+let trustRoot: URL | string = DEFAULT_TRUST_ROOT;
+
+/** Isolated-test seam for the trust root. Deliberately NOT an environment variable. */
+export function setGuardTrustRootForTests(path: string | null): () => void {
+  const previous = trustRoot;
+  trustRoot = path ?? DEFAULT_TRUST_ROOT;
+  return () => { trustRoot = previous; };
+}
+
+/** Signers permitted to authorize guard policy changes. */
+export function loadAllowedSigners(): AllowedSigner[] {
+  let contents: string;
+  try {
+    contents = readFileSync(trustRoot, "utf8");
+  } catch {
+    unavailable(`guard signer trust root is unreadable: ${String(trustRoot)}`);
+  }
+  let signers: AllowedSigner[];
+  try {
+    signers = parseAllowedSigners(contents);
+  } catch (error) {
+    unavailable(`guard signer trust root is malformed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (signers.length === 0) {
+    unavailable(
+      `no allowed signers configured in ${String(trustRoot)} `
+      + "(add the PUBLIC half of an operator signing key; there is no default trust)",
+    );
+  }
+  return signers;
+}
 
 const DESCRIPTOR_ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const DESCRIPTOR_KEYS = new Set(["id", "rationale", "from_checksum", "to_policy"]);
@@ -43,8 +92,15 @@ export type UpgradeDescriptor = {
 export type DescriptorFile = {
   path: string;
   digest: string;
+  /** Who authorized this artifact — recorded in the guard ledger. */
+  signedBy: { principal: string; fingerprint: string };
   descriptors: UpgradeDescriptor[];
 };
+
+/** Path of the detached signature for a descriptor file. */
+export function signaturePathFor(descriptorPathValue: string): string {
+  return `${descriptorPathValue}.sig`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -160,53 +216,81 @@ function parseDescriptorFile(bytes: Buffer): UpgradeDescriptor[] {
  */
 export function loadDescriptorFile(env: NodeJS.ProcessEnv = process.env): DescriptorFile {
   const path = descriptorPath(env);
-  const pin = env[DESCRIPTOR_PIN_ENV];
-  if (!pin) {
-    unavailable(
-      `upgrade descriptors unavailable: ${DESCRIPTOR_PIN_ENV} not set in server env `
-      + `(required — an unpinned descriptor file authorizes nothing; run "stratum guard descriptors" to compute it)`,
-    );
-  }
-  if (!CHECKSUM_PATTERN.test(pin)) unavailable(`${DESCRIPTOR_PIN_ENV} must be a lowercase sha256 hex digest`);
-
+  const signers = loadAllowedSigners();
   const { bytes, groupOrWorldWritable } = readDescriptorBytes(path);
-  // Same rule ssh applies to a private key: a correct digest is worthless if
-  // anyone on the box can race the file between verification and the next read.
+  // Defence in depth now rather than load-bearing: the signature already covers
+  // the content, so tampering is detected regardless. A world-writable
+  // authorization artifact is still a smell worth refusing.
   if (groupOrWorldWritable) {
     unavailable(`upgrade descriptor file must not be group- or world-writable: ${JSON.stringify(path)}`);
   }
-  const digest = descriptorFileDigest(bytes);
-  if (digest !== pin) {
-    unavailable(`upgrade descriptor file digest ${digest} does not match the pinned ${DESCRIPTOR_PIN_ENV}`);
+
+  const signaturePath = signaturePathFor(path);
+  let armored: string;
+  try {
+    armored = readFileSync(signaturePath, "utf8");
+  } catch {
+    unavailable(
+      `upgrade descriptor file is not signed: expected ${JSON.stringify(signaturePath)} `
+      + `(sign it with: ssh-keygen -Y sign -f <key> -n ${DESCRIPTOR_NAMESPACE} ${path})`,
+    );
   }
-  return { path, digest, descriptors: parseDescriptorFile(bytes) };
+  let signerKey: Buffer;
+  try {
+    signerKey = verifySshsig(bytes, armored, DESCRIPTOR_NAMESPACE, signers.map((signer) => signer.publicKey));
+  } catch (error) {
+    unavailable(
+      `upgrade descriptor signature rejected: ${error instanceof SshsigError ? error.message : String(error)}`,
+    );
+  }
+  const fingerprint = sshFingerprint(signerKey);
+  const signer = signers.find((entry) => entry.fingerprint === fingerprint)!;
+
+  return {
+    path,
+    digest: descriptorFileDigest(bytes),
+    signedBy: { principal: signer.principal, fingerprint },
+    descriptors: parseDescriptorFile(bytes),
+  };
 }
 
 /**
- * Operator-facing inspection. Reports the digest even when the pin is absent or
- * wrong, because the operator needs it in order to SET the pin the first time —
- * `loadDescriptorFile` cannot answer that question by construction. Read-only,
- * never consulted by the apply path, and it grants nothing: it prints a digest
- * of a file the operator already chose to point at.
+ * Operator-facing inspection. Reports what is installed and whether it verifies,
+ * without being able to grant anything: it reads the same trust root the apply
+ * path does and reports failures as text rather than treating them as success.
  */
 export function inspectDescriptorFile(env: NodeJS.ProcessEnv = process.env): {
   path: string;
   sha256: string;
   group_or_world_writable: boolean;
-  pinned: boolean;
-  pin_matches: boolean;
+  signature_path: string;
+  signature: string;
+  allowed_signers: Array<{ principal: string; fingerprint: string }>;
   descriptors: Array<{ id: string; rationale: string; from_checksum: string }>;
 } {
   const path = descriptorPath(env);
   const { bytes, groupOrWorldWritable } = readDescriptorBytes(path);
-  const digest = descriptorFileDigest(bytes);
-  const pin = env[DESCRIPTOR_PIN_ENV];
+  const signaturePath = signaturePathFor(path);
+
+  let signers: AllowedSigner[] = [];
+  let signature: string;
+  try {
+    signers = loadAllowedSigners();
+    const armored = readFileSync(signaturePath, "utf8");
+    const key = verifySshsig(bytes, armored, DESCRIPTOR_NAMESPACE, signers.map((entry) => entry.publicKey));
+    const fingerprint = sshFingerprint(key);
+    signature = `verified: signed by ${signers.find((entry) => entry.fingerprint === fingerprint)!.principal} (${fingerprint})`;
+  } catch (error) {
+    signature = `NOT VERIFIED: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
   return {
     path,
-    sha256: digest,
+    sha256: descriptorFileDigest(bytes),
     group_or_world_writable: groupOrWorldWritable,
-    pinned: Boolean(pin),
-    pin_matches: pin === digest,
+    signature_path: signaturePath,
+    signature,
+    allowed_signers: signers.map(({ principal, fingerprint }) => ({ principal, fingerprint })),
     descriptors: parseDescriptorFile(bytes).map(({ id, rationale, from_checksum: fromChecksum }) => ({
       id, rationale, from_checksum: fromChecksum,
     })),
