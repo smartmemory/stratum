@@ -2,6 +2,73 @@
 
 ## [Unreleased]
 
+### feat(guard): STRAT-GUARD-DESCRIPTOR — server-owned upgrade descriptors
+
+`STRAT-GUARD-UPGRADE` shipped the provably-safe subset of policy evolution and,
+in doing so, proved that the interesting case cannot be made safe by inspecting
+the policy: granting a guard a new terminal state is granting a new way to be
+complete, and a caller that can do that token-free simply declares its own
+success state. So it froze `terminal`, and the requesting use case
+(`COMP-LIFECYCLE-BACKFILL`'s `complete_backfilled` node) was left on the
+break-glass token.
+
+This is the general form of the answer. A **descriptor** is a policy change the
+*server* holds: `{id, rationale, from_checksum, to_policy}`, carrying the full
+target policy rather than a transformation, bound to the exact policy checksum it
+was authorized against. A caller may only ask for one **by name**, via the new
+`stratum_guard_apply_upgrade` / `stratum guard apply-upgrade` /
+`guardApplyUpgrade`. No additive-only classifier runs — this path can grant a
+terminal state, remove an edge, retighten a predicate — because a human read that
+exact resulting policy before installing it.
+
+Authorization is anchored in two required server-environment variables:
+`STRATUM_GUARD_UPGRADE_DESCRIPTORS` (absolute path) and
+`STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256` (a pin of the file's bytes). **The pin
+is required, not optional**, and that is the load-bearing decision: the
+descriptor file usually sits where the agent under guard can write, so an
+unpinned file authorizes nothing — an optional pin would convert "no capability"
+into "a capability everyone believes is safe". The file must also not be group-
+or world-writable. `stratum guard descriptors` (CLI-only, operator-facing) prints
+the parsed set and the digest to pin, and reports it even when no pin is
+installed yet, because otherwise the pin could never be set the first time.
+
+Idempotent like its sibling: a resource already at the target policy answers
+`unchanged` and writes nothing, and the destination check deliberately precedes
+the `from_checksum` check so a partially-failed fleet batch is safe to re-run. A
+resource whose current policy is not the one the descriptor was authorized
+against is refused with the new `upgrade_descriptor_mismatch`, naming both
+checksums. `guardMigrate` is deliberately not retired: a mechanism that requires
+a reviewed artifact cannot be what you reach for when the reviewed artifact is
+what is broken.
+
+Also hardened, found while adversarially reviewing this: `__proto__`,
+`constructor` and `prototype` are now rejected as state names. They pass the
+`[A-Za-z0-9_.-]` character class but are not ordinary object keys, so a policy
+carrying one would not mean exactly one thing — the same reservation the IR
+schema already applies to contract field names.
+
+**Ships MCP-only, and its consumer cannot use it yet.** Adversarial review
+showed that a CLI apply action would destroy the whole property: a CLI process
+inherits the caller's environment, so a caller writes its own descriptor file,
+computes its digest, points both variables at them, and mints its own
+authorization — with the ledger stamping `resolved_by: "human"` over it. There is
+therefore no CLI apply action. Compose reaches stratum's guard by spawning the
+CLI, so compose cannot call this until either it talks to stratum over MCP or
+descriptors are signed against a key checked into stratum's source. The design
+recommends signing.
+
+**Related defect found while proving that, in the EXISTING system:**
+`_checkOverrideToken` compares the caller-supplied token against
+`process.env.STRATUM_GUARD_OVERRIDE_TOKEN` in whatever process is running — so
+over the CLI a caller sets both sides. Verified against a guard whose only
+predicate could never be satisfied: an honest transition was `refused`, and the
+same walk with a self-invented token returned `deviation` and moved the state.
+`STRAT-TS-GUARD` invariant 8 ("not agent-mintable") holds on MCP and does not
+hold on the CLI, which is the only surface compose uses. Not fixed here.
+
+MCP surface 12 → 13 (22 → 23 tools).
+`docs/features/STRAT-GUARD-DESCRIPTOR/design.md`.
+
 ### feat(guard): STRAT-GUARD-UPGRADE — idempotent, non-emergency guard upgrade
 
 `guardMigrate` was the only way to evolve a registered policy, and it required

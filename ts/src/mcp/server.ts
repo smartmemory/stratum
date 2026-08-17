@@ -46,7 +46,7 @@ export type ToolName =
   | "stratum_commit" | "stratum_revert"
   | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg"
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
-  | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_upgrade" | "stratum_guard_history";
+  | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_upgrade" | "stratum_guard_apply_upgrade" | "stratum_guard_history";
 
 interface ToolCallContext { onAgentEvent?: ConnectorEventHandler }
 
@@ -192,6 +192,11 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         case "stratum_guard_upgrade": {
           const { guardUpgrade } = await import("../guard/transition.js");
           response = await guardUpgrade(string(request, "resource_id"), record(request, "new_graph") as Record<string, string[]>, record(request, "new_edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "rationale"), optionalArray(request, "new_terminal"), optionalRecord(request, "new_stakes"));
+          break;
+        }
+        case "stratum_guard_apply_upgrade": {
+          const { guardApplyUpgrade } = await import("../guard/transition.js");
+          response = await guardApplyUpgrade(string(request, "resource_id"), string(request, "descriptor_id"));
           break;
         }
         case "stratum_guard_history": {

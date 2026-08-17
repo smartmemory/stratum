@@ -26,7 +26,9 @@ import {
   OverrideUnavailable,
   ParanoidEdgeNeedsTrustedEvidence,
   StaleFromState,
+  UpgradeDescriptorMismatch,
 } from "./errors.js";
+import { findDescriptor, loadDescriptorFile } from "./descriptors.js";
 import { guardChecksum } from "./fingerprint.js";
 import {
   GuardRegistry,
@@ -57,6 +59,7 @@ import {
 import { judgeBackend } from "../mcp/server.js";
 
 const TRUSTED_TYPE = "deterministic";
+const RESERVED_STATE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const LLM_TYPES = new Set(["verified", "judged"]);
 
 type Predicate = Record<string, unknown> & { id?: unknown; type?: unknown; statement?: unknown };
@@ -282,6 +285,14 @@ export function _validatePolicy(
   for (const name of names) {
     if (!isValidStateName(name)) {
       throw new InvalidStateName(`invalid state name ${JSON.stringify(name)} (allowed: [A-Za-z0-9_.-])`);
+    }
+    // `__proto__` and friends pass the character class but are not ordinary
+    // object keys: a policy carrying one behaves differently depending on
+    // whether it is read as an own property or through the prototype chain, and
+    // a guard policy must mean exactly one thing. Same reservation the IR schema
+    // applies to contract field names.
+    if (RESERVED_STATE_NAMES.has(name)) {
+      throw new InvalidStateName(`reserved state name ${JSON.stringify(name)}`);
     }
   }
   if (!Object.hasOwn(graph, initial) && !terminal.includes(initial)) {
@@ -852,6 +863,88 @@ export async function guardUpgrade(
     registry.graph_version = graphVersion;
     persistRegistry(registry);
     return { status: "migrated", checksum, graph_version: graphVersion, ledger_ref: ledgerRef, rationale };
+  });
+}
+
+export type GuardApplyUpgradeResult =
+  | { status: "unchanged"; checksum: string; graph_version: number; descriptor_id: string }
+  | { status: "applied"; checksum: string; graph_version: number; ledger_ref: string; descriptor_id: string };
+
+/**
+ * Apply a server-owned, digest-pinned, human-reviewed upgrade descriptor.
+ *
+ * The middle of the three policy-change capabilities. `guardUpgrade` needs no
+ * authorization because it is provably non-weakening; `guardMigrate` needs the
+ * break-glass token because it can do anything. This path can do anything the
+ * descriptor spells out — including granting a terminal state, which
+ * `guardUpgrade` refuses precisely because it is a completability grant — and it
+ * is safe because a human read that exact resulting policy before installing it
+ * and pinned the file's digest into the server environment.
+ *
+ * No additive-only classifier runs here, deliberately. See
+ * `docs/features/STRAT-GUARD-DESCRIPTOR/design.md`.
+ */
+export async function guardApplyUpgrade(
+  resourceId: string,
+  descriptorId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<GuardApplyUpgradeResult> {
+  // Authorization first, outside the lock: a caller with no descriptor set
+  // configured must not even be able to probe which resources exist.
+  const descriptorFile = loadDescriptorFile(env);
+  const descriptor = findDescriptor(descriptorFile, descriptorId);
+  const { graph, edge_predicates: edgePredicates, terminal, stakes } = descriptor.to_policy;
+
+  return acquireResourceLock(resourceId, async ({ token }) => {
+    assertTsOwnedForMutation(resourceId);
+    const registry = loadRegistry(resourceId);
+    if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
+    if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
+      throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch`);
+    }
+    const checksum = guardChecksum(graph, edgePredicates, terminal, stakes);
+    // Destination check BEFORE the from_checksum check: a resource already at the
+    // target is a success, not a mismatch. That is what makes a fleet batch
+    // re-runnable after a partial failure.
+    if (checksum === registry.checksum) {
+      return { status: "unchanged", checksum, graph_version: registry.graph_version, descriptor_id: descriptor.id };
+    }
+    if (registry.checksum !== descriptor.from_checksum) {
+      throw new UpgradeDescriptorMismatch(
+        `descriptor ${JSON.stringify(descriptor.id)} is authorized for policy ${descriptor.from_checksum}, `
+        + `but ${JSON.stringify(resourceId)} currently holds ${registry.checksum}`,
+      );
+    }
+    // Authorized is not the same as well-formed.
+    _validatePolicy(graph, edgePredicates, registry.initial, terminal, stakes, registry.workspace_root);
+    if (!Object.hasOwn(graph, registry.current_state) && !terminal.includes(registry.current_state)) {
+      throw new InvalidStateName(`current_state ${JSON.stringify(registry.current_state)} is not a node in the new graph`);
+    }
+
+    const graphVersion = registry.graph_version + 1;
+    const entry = new LedgerEntry({
+      ts_ms: _nowMs(),
+      from_state: registry.current_state,
+      to_state: registry.current_state,
+      outcome: "graph_version",
+      kind: "graph_version",
+      // A human authorized this exact policy, so the ledger says so — and names
+      // which authorization, pinned by the descriptor file's digest.
+      resolved_by: "human",
+      // The digest of the file verified ABOVE, not a re-read: re-reading would
+      // let the ledger name a digest other than the one actually authorized.
+      rationale: `descriptor ${descriptor.id} (file sha256 ${descriptorFile.digest}): ${descriptor.rationale}`,
+    });
+    await fenceResourceLock(resourceId, token);
+    const ledgerRef = appendLedger(resourceId, entry);
+    registry.graph = graph;
+    registry.edge_predicates = edgePredicates;
+    registry.terminal = terminal;
+    registry.stakes = stakes;
+    registry.checksum = checksum;
+    registry.graph_version = graphVersion;
+    persistRegistry(registry);
+    return { status: "applied", checksum, graph_version: graphVersion, ledger_ref: ledgerRef, descriptor_id: descriptor.id };
   });
 }
 

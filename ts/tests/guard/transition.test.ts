@@ -560,6 +560,13 @@ describe("guard upgrade (routine, token-free)", () => {
       .rejects.toBeInstanceOf(InvalidStateName);
   });
 
+  it.each(["__proto__", "constructor", "prototype"])("refuses %s as a state name", async (name) => {
+    // These pass the [A-Za-z0-9_.-] character class but are not ordinary object
+    // keys, so a policy carrying one would not mean exactly one thing.
+    await expect(registerGuard(`reserved-${name}`, { a: [name], [name]: [] }, {}, "a", [name]))
+      .rejects.toBeInstanceOf(InvalidStateName);
+  });
+
   it("requires a non-empty rationale", async () => {
     await registerSimple();
     await expect(guardUpgrade("r", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, "   ", ["shipped"]))
