@@ -1,17 +1,19 @@
 /** CLI boundary for the guarded state-machine API. */
 
+import { inspectDescriptorFile } from "../guard/descriptors.js";
 import { GuardError } from "../guard/errors.js";
 import {
   guardHistory,
   guardMigrate,
   guardOverride,
+  guardApplyUpgrade,
   guardTransition,
   guardUpgrade,
   registerGuard,
   type GuardJudge,
 } from "../guard/transition.js";
 
-const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "history"]);
+const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "descriptors", "history"]);
 
 let testJudge: GuardJudge | undefined;
 
@@ -100,6 +102,19 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
         required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"),
         required<string>(payload, "rationale"), optional<string[]>(payload, "new_terminal", []), optional<Record<string, string>>(payload, "new_stakes", {}),
       );
+    // NO `apply-upgrade` action, deliberately. A CLI process inherits the
+    // CALLER's environment, so a caller could point both descriptor variables
+    // at a file it wrote itself and mint its own authorization — and the ledger
+    // would stamp it `resolved_by: "human"`. The privileged apply exists only on
+    // the MCP surface, inside the server that owns the pinned environment.
+    // See docs/features/STRAT-GUARD-DESCRIPTOR/design.md, "Decision 6".
+    case "descriptors": {
+      // Operator-facing, deliberately NOT on the MCP surface: an agent has no
+      // reason to enumerate what it may ask for, and the digest this prints is
+      // what the operator pins into the server env.
+      assertOnlyKeys(payload, []);
+      return { status: "ok", ...inspectDescriptorFile() };
+    }
     case "history":
       assertOnlyKeys(payload, ["resource_id"]);
       return guardHistory(required<string>(payload, "resource_id"));

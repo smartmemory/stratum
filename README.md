@@ -445,7 +445,9 @@ Attempt `from_state -> to_state`. Trusted predicates are verified server-side; a
 
 ### `stratum_guard_override`
 
-The single sanctioned bypass of predicate verification. Requires an out-of-band `override_token` (server env `STRATUM_GUARD_OVERRIDE_TOKEN`, not agent-mintable), a human resolver, and a rationale. Moves a **legal** edge without verifying predicates and records a `deviation` ledger entry. Replaces a `force` flag.
+The single sanctioned bypass of predicate verification. Requires an out-of-band `override_token` (server env `STRATUM_GUARD_OVERRIDE_TOKEN`).
+
+> **Known defect (2026-08-17):** the token is only unforgeable on the **MCP** surface. `_checkOverrideToken` compares the supplied token against the environment of *whatever process is running*, so over the `stratum guard override` **CLI** a caller sets both sides and they match. Verified empirically. Treat CLI-surface token gating as advisory until this is fixed; the tamper-evident ledger, not the token, is the real property there., a human resolver, and a rationale. Moves a **legal** edge without verifying predicates and records a `deviation` ledger entry. Replaces a `force` flag.
 
 **Inputs:** `resource_id`, `from_state`, `to_state`, `override_token`, `rationale`, `resolved_by` (`"human"`).
 
@@ -460,6 +462,18 @@ Evolve a registered policy. Token-gated, bumps `graph_version`, writes a `graph_
 Routine policy evolution, with **no** override token. Idempotent: a policy whose checksum already matches returns `unchanged` and writes nothing — no ledger entry, no `graph_version` bump — so a lazy per-resource migration is safe to re-run over hundreds of guards. Any other change must be **additive-only**: no node or edge removed, existing edges byte-identical in predicates and stakes, new edges may only terminate at states that did not exist before, and `terminal` frozen exactly as registered with no new edge entering or leaving a terminal state. It can therefore neither grant a new way to be complete nor walk a completed resource back out — those stay authorization decisions on `stratum_guard_migrate`. Anything else is refused with `incompatible_policy_upgrade`. Ledger entries are the same `graph_version` kind migrate writes, distinguished by `resolved_by: "agent"`.
 
 **Inputs:** `resource_id`, `new_graph`, `new_edge_predicates`, `rationale`, `new_terminal`, `new_stakes`. **Returns:** `{status: "migrated"|"unchanged", checksum, graph_version, ledger_ref?, rationale}`.
+
+### `stratum_guard_apply_upgrade`
+
+Apply a **server-owned upgrade descriptor**: a policy change a human reviewed and installed, named by id. No override token. This is the middle of three capabilities — it can do what `stratum_guard_upgrade` refuses (grant a terminal state, remove an edge, retighten predicates) because the exact resulting policy was authorized in advance, not supplied by the caller.
+
+Authorization comes from two variables in the **server** environment, both required: `STRATUM_GUARD_UPGRADE_DESCRIPTORS` (absolute path to the descriptor file) and `STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256` (a pin of that file's bytes). The pin is required, not optional: the file usually lives where the agent under guard can write, so an unpinned file authorizes nothing while looking like it does. The file must also not be group- or world-writable. Run `stratum guard descriptors` to print the parsed set and the digest to pin.
+
+Each descriptor is `{id, rationale, from_checksum, to_policy}` and applies only to a resource whose current policy checksum is exactly `from_checksum` — authorization is for a transition between two named policies, not a destination in the abstract. Idempotent: a resource already at the target answers `unchanged` and writes nothing, so a fleet-wide batch is safe to re-run. The ledger entry names the descriptor id and the file digest.
+
+**MCP only, deliberately** — there is no `stratum guard apply-upgrade` CLI action. A CLI process inherits the *caller's* environment, so a caller could point both variables at a descriptor file it wrote itself and mint its own authorization. The privileged apply runs only inside the server that owns the pinned environment. (The read-only `stratum guard descriptors` inspection stays on the CLI: it grants nothing.)
+
+**Inputs:** `resource_id`, `descriptor_id`. **Returns:** `{status: "applied"|"unchanged", checksum, graph_version, ledger_ref?, descriptor_id}`.
 
 ### `stratum_guard_history`
 

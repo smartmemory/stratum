@@ -17,6 +17,8 @@ export const GUARD_ERROR_TYPES = [
   "resource_id_mismatch",
   "guard_engine_owned",
   "incompatible_policy_upgrade",
+  "upgrade_descriptor_unavailable",
+  "upgrade_descriptor_mismatch",
 ] as const;
 
 export type GuardErrorType = (typeof GUARD_ERROR_TYPES)[number];
@@ -69,6 +71,10 @@ export class OverrideUnavailable extends namedGuardError("OverrideUnavailable", 
 export class GuardEngineOwned extends namedGuardError("GuardEngineOwned", "guard_engine_owned") {}
 /** A `guardUpgrade` policy that is not additive-only; `guardMigrate` + token is the path for it. */
 export class IncompatiblePolicyUpgrade extends namedGuardError("IncompatiblePolicyUpgrade", "incompatible_policy_upgrade") {}
+/** The server-owned descriptor set is absent, unpinned, tampered, malformed, or lacks the requested id. */
+export class UpgradeDescriptorUnavailable extends namedGuardError("UpgradeDescriptorUnavailable", "upgrade_descriptor_unavailable") {}
+/** The resource's current policy is not the one the descriptor was authorized against. */
+export class UpgradeDescriptorMismatch extends namedGuardError("UpgradeDescriptorMismatch", "upgrade_descriptor_mismatch") {}
 
 export class LedgerCorrupt extends GuardError {
   constructor(message: string) {
