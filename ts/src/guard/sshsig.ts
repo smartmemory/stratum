@@ -23,6 +23,45 @@ const ARMOR_END = "-----END SSH SIGNATURE-----";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HASHES = new Map([["sha256", "sha256"], ["sha512", "sha512"]]);
 
+/**
+ * Ed25519 encodings that are not usable public keys: the identity and the other
+ * canonical small-order points, plus their non-canonical spellings.
+ *
+ * A small-order key is a universal-forgery key — with the identity point,
+ * `R = identity, S = 0` verifies ANY message with no private key, and both this
+ * verifier and OpenSSH 10.3 accept it. Exploiting that requires getting such a
+ * key into the trust root, and anyone who can do that could enrol a real key of
+ * their own instead, so the security value is small. The value is in the other
+ * direction: a corrupted or truncated line in a hand-edited trust root must not
+ * silently become an anchor that authorizes everything.
+ *
+ * Rejected at ENROLMENT, which is where a key becomes trusted.
+ */
+const SMALL_ORDER_KEYS = new Set([
+  "0000000000000000000000000000000000000000000000000000000000000000",
+  "0100000000000000000000000000000000000000000000000000000000000000",
+  "0000000000000000000000000000000000000000000000000000000000000080",
+  "0100000000000000000000000000000000000000000000000000000000000080",
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+  "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+  "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+]);
+
+/** Base64 that survives a decode/re-encode round trip — no redundant padding. */
+function decodeCanonicalBase64(text: string, what: string): Buffer {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text)) throw new SshsigError(`${what} is not valid base64`);
+  const decoded = Buffer.from(text, "base64");
+  if (decoded.toString("base64") !== text) throw new SshsigError(`${what} is not canonically encoded base64`);
+  return decoded;
+}
+
 export class SshsigError extends Error {
   constructor(message: string) {
     super(message);
@@ -57,8 +96,18 @@ class Reader {
     return this.bytes(this.uint32());
   }
 
+  /**
+   * Strict: OpenSSH compares these as exact byte strings, so decoding with
+   * U+FFFD replacement would let two different wire encodings compare equal
+   * here while OpenSSH rejects one of them. Anything not clean ASCII is refused
+   * rather than silently normalised.
+   */
   text(): string {
-    return this.string().toString("utf8");
+    const raw = this.string();
+    for (const byte of raw) {
+      if (byte < 0x20 || byte > 0x7e) throw new SshsigError("sshsig strings must be printable ASCII");
+    }
+    return raw.toString("latin1");
   }
 
   get done(): boolean {
@@ -81,6 +130,9 @@ export function parseEd25519PublicKeyBlob(blob: Buffer): Buffer {
   const raw = reader.string();
   if (raw.length !== 32) throw new SshsigError("ed25519 public key must be 32 bytes");
   if (!reader.done) throw new SshsigError("trailing bytes in public key blob");
+  if (SMALL_ORDER_KEYS.has(raw.toString("hex"))) {
+    throw new SshsigError("ed25519 public key has small order and would verify any message");
+  }
   return Buffer.from(raw);
 }
 
@@ -102,12 +154,17 @@ export type SshsigSignature = {
 
 /** Decode the armored `-----BEGIN SSH SIGNATURE-----` envelope and its inner blob. */
 export function parseSshsig(armored: string): SshsigSignature {
-  const begin = armored.indexOf(ARMOR_BEGIN);
+  // OpenSSH requires the header at byte zero followed by a newline, and rejects
+  // anything else. Accepting junk around the armor would mean a human auditing
+  // with `ssh-keygen -Y verify` could reach a different conclusion than we do,
+  // which is the one divergence this file exists to avoid.
+  if (!armored.startsWith(`${ARMOR_BEGIN}\n`)) throw new SshsigError("signature must begin with the armor header and a newline");
   const end = armored.indexOf(ARMOR_END);
-  if (begin === -1 || end === -1 || end < begin) throw new SshsigError("not an armored SSH signature");
-  const base64 = armored.slice(begin + ARMOR_BEGIN.length, end).replace(/\s+/g, "");
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) throw new SshsigError("signature armor is not valid base64");
-  const blob = Buffer.from(base64, "base64");
+  if (end === -1) throw new SshsigError("signature is missing its armor footer");
+  if (armored.slice(end + ARMOR_END.length).trim() !== "") throw new SshsigError("trailing content after the armor footer");
+  const body = armored.slice(ARMOR_BEGIN.length + 1, end);
+  if (/[^A-Za-z0-9+/=\n]/.test(body)) throw new SshsigError("signature armor contains unexpected characters");
+  const blob = decodeCanonicalBase64(body.replace(/\n/g, ""), "signature armor");
 
   if (!blob.subarray(0, MAGIC.length).equals(MAGIC)) throw new SshsigError("missing SSHSIG preamble");
   const reader = new Reader(blob.subarray(MAGIC.length));
@@ -122,6 +179,7 @@ export function parseSshsig(armored: string): SshsigSignature {
   const signatureType = signatureBlob.text();
   if (signatureType !== ED25519) throw new SshsigError(`unsupported signature type ${JSON.stringify(signatureType)}`);
   const signature = Buffer.from(signatureBlob.string());
+  if (signature.length !== 64) throw new SshsigError("ed25519 signature must be 64 bytes");
   if (!signatureBlob.done) throw new SshsigError("trailing bytes in signature blob");
   if (!reader.done) throw new SshsigError("trailing bytes in sshsig structure");
 
@@ -140,10 +198,12 @@ export function verifySshsig(
   namespace: string,
   allowedKeys: Iterable<Buffer>,
 ): Buffer {
+  if (!namespace) throw new SshsigError("a signature namespace is required");
   const parsed = parseSshsig(armored);
-  // Namespace is checked BEFORE the cryptographic verify so a signature made for
-  // one purpose can never be replayed as authorization for another.
-  if (parsed.namespace !== namespace) {
+  // Byte-exact, and BEFORE the cryptographic verify, so a signature made for one
+  // purpose can never be replayed as authorization for another. Comparing
+  // decoded strings would let distinct wire encodings compare equal.
+  if (!Buffer.from(parsed.namespace, "latin1").equals(Buffer.from(namespace, "utf8"))) {
     throw new SshsigError(`signature namespace ${JSON.stringify(parsed.namespace)} does not match ${JSON.stringify(namespace)}`);
   }
   const hash = HASHES.get(parsed.hashAlgorithm);
@@ -187,18 +247,27 @@ export function parseAllowedSigners(contents: string): AllowedSigner[] {
   const signers: AllowedSigner[] = [];
   const lines = contents.split(/\r?\n/);
   for (const [index, raw] of lines.entries()) {
-    const line = raw.trim();
+    // ASCII space and tab only. OpenSSH's parser skips exactly those, so a BOM
+    // or a non-breaking space here would produce a principal OpenSSH does not
+    // match — a key we trust and `ssh-keygen` does not.
+    if (/[^\x09\x20-\x7e]/.test(raw)) {
+      throw new SshsigError(`allowed_signers line ${index + 1}: only printable ASCII is permitted`);
+    }
+    const line = raw.replace(/^[\x09\x20]+|[\x09\x20]+$/g, "");
     if (!line || line.startsWith("#")) continue;
-    const fields = line.split(/\s+/);
+    const fields = line.split(/[\x09\x20]+/);
     if (fields.length < 3) throw new SshsigError(`allowed_signers line ${index + 1}: expected "<principals> ssh-ed25519 <base64>"`);
     const [principals, keyType, base64] = fields as [string, string, string];
     if (keyType !== ED25519) {
       throw new SshsigError(`allowed_signers line ${index + 1}: unsupported key type ${JSON.stringify(keyType)} (only ${ED25519})`);
     }
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
-      throw new SshsigError(`allowed_signers line ${index + 1}: key is not valid base64 (option lists are not supported)`);
+    let blob: Buffer;
+    try {
+      blob = decodeCanonicalBase64(base64, "key");
+    } catch (error) {
+      throw new SshsigError(`allowed_signers line ${index + 1}: ${error instanceof Error ? error.message : String(error)} (option lists are not supported)`);
     }
-    const publicKey = parseEd25519PublicKeyBlob(Buffer.from(base64, "base64"));
+    const publicKey = parseEd25519PublicKeyBlob(blob);
     for (const principal of principals.split(",")) {
       if (!principal) throw new SshsigError(`allowed_signers line ${index + 1}: empty principal`);
       signers.push({ principal, publicKey, fingerprint: sshFingerprint(publicKey) });
