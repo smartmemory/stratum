@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### feat(guard)!: STRAT-GUARD-AUTHZ — signed authorization, retiring the override token
+
+**Breaking:** `guardOverride` and `guardMigrate` take an `authorization` (a
+detached sshsig) instead of an `override_token`, and
+`STRATUM_GUARD_OVERRIDE_TOKEN` is gone. MCP surface 13 -> 14. No in-tree consumer
+called either operation, so nothing needed migrating.
+
+The token was a shared secret compared against `process.env` of *whatever process
+is running*. Over the MCP server that environment is the operator's; over the CLI
+it is the caller's, so the caller set both sides of the comparison. Verified
+before removal against a guard whose only predicate could never be satisfied: an
+honest transition was `refused`, and the same walk with a self-invented token
+returned `deviation` and moved the state. `STRAT-TS-GUARD` invariant 8 called the
+token "not agent-mintable"; it was mintable by anything with a shell, and the CLI
+is the only surface compose uses.
+
+Authorization is now a signature over a payload the **server reconstructs**, so
+nothing travels except the signature itself:
+
+- override: `{action, resource_id, from_state, to_state, rationale, ledger_head}`
+- migrate: `{action, resource_id, policy_checksum, rationale, ledger_head}`
+
+Three properties fall out rather than being separately enforced. It cannot be
+**redirected** (a signature naming one resource/edge/rationale/resulting policy
+will not verify against another). It cannot be **replayed**: `ledger_head` is the
+resource's last ledger digest, so an authorization is valid at exactly one point
+in that resource's history — spending it moves the head and kills the signature,
+with no clock, nonce store, or expiry to tune. And it cannot **cross purposes**:
+one sshsig namespace per operation, checked before the cryptographic verify. The
+head is read inside the resource lock, so a concurrent mutation invalidates the
+authorization rather than letting it apply to a history nobody signed for.
+
+`stratum guard authorize` prints the exact canonical payload, namespace and
+`ssh-keygen` invocation, since a ledger head cannot be guessed by hand. It is
+read-only and grants nothing. Rejections echo the expected payload back, because
+the common honest failure is a stale head.
+
+The ledger now records **who** authorized: every deviation and policy change
+carries the signer's principal and key fingerprint, and the responses add
+`authorized_by`. A `resolved_by: "human"` stamp any process could mint was worse
+than no stamp, because it made the audit trail lie.
+
+Verified end to end through the real CLI with a real `ssh-keygen` signature:
+authorize -> sign -> apply (`deviation`, ledger naming the signer) -> replay
+refused. And the recorded attack now fails twice over — `override_token` is
+rejected as an unknown argument, and a self-signed authorization is refused
+because the key is not enrolled.
+
+`docs/features/STRAT-GUARD-AUTHZ/design.md`.
+
 ### feat(guard): signed authorization for upgrade descriptors
 
 Replaces the env digest pin that `STRAT-GUARD-DESCRIPTOR` shipped hours earlier.

@@ -977,7 +977,7 @@ describe("P4 frozen contracts", () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
     expect(eventsContract.events).toBe(1);
-    expect(surface.surface).toBe(13);
+    expect(surface.surface).toBe(14);
     expect(Object.keys(surface.tools)).toHaveLength(23);
 
     const allEvents: AuditEvent[] = [];

@@ -221,7 +221,11 @@ MCP surface, executing inside the already-running server that owns the pinned
 environment. The read-only `stratum guard descriptors` inspection stays: it
 grants nothing.
 
-### The same hole already exists for the override token, and it is worse
+### The same hole already existed for the override token, and it was worse
+
+**FIXED 2026-08-17 by `STRAT-GUARD-AUTHZ`** — the token is retired in favour of
+signed one-shot authorizations. The account below is preserved as the record of
+what was wrong.
 
 This is not a property of descriptors. `_checkOverrideToken`
 (`transition.ts:560`) compares the caller-supplied token against
@@ -252,7 +256,8 @@ actually authorized. Closing this properly needs one of:
 - **(a) A trusted transport.** Compose calls stratum over MCP for privileged
   guard operations instead of spawning the CLI. The environment then belongs to a
   server the agent did not launch.
-- **(b) Signed descriptors — CHOSEN and implemented (see Decision 2).**
+- **(b) Signed descriptors — CHOSEN and implemented (see Decision 2), and extended
+  to the override token itself in `docs/features/STRAT-GUARD-AUTHZ/design.md`.**
   Authorization is a signature the calling process cannot produce, verified
   against a trust root checked into stratum's source. Transport-independent, so
   it does not matter which surface a consumer uses.

@@ -181,12 +181,12 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         }
         case "stratum_guard_override": {
           const { guardOverride } = await import("../guard/transition.js");
-          response = await guardOverride(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), string(request, "override_token"), string(request, "rationale"), optionalString(request, "resolved_by") ?? "human");
+          response = await guardOverride(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), string(request, "authorization"), string(request, "rationale"), optionalString(request, "resolved_by") ?? "human");
           break;
         }
         case "stratum_guard_migrate": {
           const { guardMigrate } = await import("../guard/transition.js");
-          response = await guardMigrate(string(request, "resource_id"), record(request, "new_graph") as Record<string, string[]>, record(request, "new_edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "override_token"), string(request, "rationale"), optionalArray(request, "new_terminal"), optionalRecord(request, "new_stakes"));
+          response = await guardMigrate(string(request, "resource_id"), record(request, "new_graph") as Record<string, string[]>, record(request, "new_edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "authorization"), string(request, "rationale"), optionalArray(request, "new_terminal"), optionalRecord(request, "new_stakes"));
           break;
         }
         case "stratum_guard_upgrade": {

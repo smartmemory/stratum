@@ -423,6 +423,16 @@ Dispatch an agent (Claude, Codex, opencode) as part of a flow step, synchronousl
 
 ## STRAT-GUARD — guarded transitions outside a flow
 
+> **Authorization model.** Three policy-change capabilities of increasing power:
+> `stratum_guard_upgrade` needs no authorization because it is provably
+> non-weakening; `stratum_guard_apply_upgrade` applies a signed, pre-reviewed
+> descriptor; `stratum_guard_migrate` does anything, under a signed one-shot
+> authorization. Plus `stratum_guard_override`, which bypasses predicate
+> verification on one legal edge, also under a signed one-shot authorization. All
+> signing keys are enrolled in `contracts/guard-signers.allowed`, read from the
+> installed source tree and never from the environment. It ships empty: there is
+> no default trust.
+
 `stratum_judge`/`stratum_gate_resolve` enforce guarantees **only inside a flow**. STRAT-GUARD exposes the same independent-verification engine (`run_judge`) as a standalone, resource-agnostic, tamper-evident state machine for clients that manage a resource lifecycle **outside** a stratum flow (e.g. compose's feature tracker). A client registers a transition graph with per-edge evidence predicates; stratum then permits a transition only if the edge is legal and its predicates verify against **trusted, server-read evidence** (not caller-staged claims). Every attempt — applied or refused — is appended to a hash-chained ledger. See `docs/features/STRAT-GUARD/`.
 
 ### `stratum_guard_register`
@@ -445,17 +455,29 @@ Attempt `from_state -> to_state`. Trusted predicates are verified server-side; a
 
 ### `stratum_guard_override`
 
-The single sanctioned bypass of predicate verification. Requires an out-of-band `override_token` (server env `STRATUM_GUARD_OVERRIDE_TOKEN`).
+The single sanctioned bypass of predicate verification. Requires a **signed authorization**, a human resolver, and a rationale. Moves a **legal** edge without verifying predicates and records a `deviation` ledger entry naming the signer. Replaces a `force` flag.
 
-> **Known defect (2026-08-17):** the token is only unforgeable on the **MCP** surface. `_checkOverrideToken` compares the supplied token against the environment of *whatever process is running*, so over the `stratum guard override` **CLI** a caller sets both sides and they match. Verified empirically. Treat CLI-surface token gating as advisory until this is fixed; the tamper-evident ledger, not the token, is the real property there., a human resolver, and a rationale. Moves a **legal** edge without verifying predicates and records a `deviation` ledger entry. Replaces a `force` flag.
+The signature covers `{action, resource_id, from_state, to_state, rationale, ledger_head}` as canonical JSON, under namespace `stratum-guard-override`. The server rebuilds that payload itself, so nothing but the signature travels — and because it includes the resource's current **ledger head**, an authorization is valid at exactly one point in that resource's history. Spending it moves the head and kills the signature, so there is nothing to replay and no expiry to tune.
 
-**Inputs:** `resource_id`, `from_state`, `to_state`, `override_token`, `rationale`, `resolved_by` (`"human"`).
+`stratum guard authorize` prints the exact payload to sign:
+
+```bash
+echo '{"kind":"override","resource_id":"…","from_state":"…","to_state":"…","rationale":"…"}' \
+  | stratum guard authorize
+# then: ssh-keygen -Y sign -f <key> -n stratum-guard-override <payload file>
+```
+
+> **Replaced `STRATUM_GUARD_OVERRIDE_TOKEN` (2026-08-17).** The token was compared against the environment of *whatever process was running*, so over the CLI a caller set both sides of the comparison and they matched — verified empirically against a guard whose predicate could never be satisfied. A signature has no such dependence on which process asks. See `docs/features/STRAT-GUARD-AUTHZ/design.md`.
+
+**Inputs:** `resource_id`, `from_state`, `to_state`, `authorization`, `rationale`, `resolved_by` (`"human"`). **Returns:** adds `authorized_by`.
 
 ### `stratum_guard_migrate`
 
-Evolve a registered policy. Token-gated, bumps `graph_version`, writes a `graph_version` ledger entry, and never silently relaxes an in-flight resource's policy. The current state must remain a node in the new graph.
+Evolve a registered policy arbitrarily — the emergency path. Requires a **signed authorization** whose payload names the *resulting* policy checksum, so it cannot be spent on a different migration: `{action, resource_id, policy_checksum, rationale, ledger_head}` under namespace `stratum-guard-migrate`. Bumps `graph_version`, writes a `graph_version` ledger entry naming the signer, and never silently relaxes an in-flight resource's policy. The current state must remain a node in the new graph.
 
-**Inputs:** `resource_id`, `new_graph`, `new_edge_predicates`, `override_token`, `rationale`, `new_terminal`, `new_stakes`.
+Deliberately not retired in favour of signed descriptors: a mechanism that requires a reviewed artifact cannot be what you reach for when the reviewed artifact is what is broken.
+
+**Inputs:** `resource_id`, `new_graph`, `new_edge_predicates`, `authorization`, `rationale`, `new_terminal`, `new_stakes`. **Returns:** adds `authorized_by`.
 
 ### `stratum_guard_upgrade`
 

@@ -28,6 +28,7 @@ import {
   StaleFromState,
   UpgradeDescriptorMismatch,
 } from "./errors.js";
+import { verifyAuthorization } from "./authorization.js";
 import { findDescriptor, loadDescriptorFile } from "./descriptors.js";
 import { guardChecksum } from "./fingerprint.js";
 import {
@@ -557,23 +558,24 @@ export async function guardTransition(
   });
 }
 
-export function _checkOverrideToken(token: string): void {
-  const expected = process.env.STRATUM_GUARD_OVERRIDE_TOKEN;
-  if (!expected) {
-    throw new OverrideUnavailable("override unavailable: STRATUM_GUARD_OVERRIDE_TOKEN not set in server env");
-  }
-  if (token !== expected) throw new OverrideUnavailable("override token mismatch");
+/**
+ * The resource's current ledger head, or `""` for an untouched resource. Signed
+ * into every one-shot authorization so it is valid at exactly one point in this
+ * resource's history and cannot be replayed afterwards.
+ */
+export function _ledgerHead(resourceId: string): string {
+  const ledger = readLedger(resourceId);
+  return ledger.length === 0 ? "" : ledger[ledger.length - 1]!.entry_digest;
 }
 
 export async function guardOverride(
   resourceId: string,
   fromState: string,
   toState: string,
-  overrideToken: string,
+  authorization: string,
   rationale: string,
   resolvedBy = "human",
-): Promise<{ status: "deviation"; ledger_ref: string; current_state: string; rationale: string }> {
-  _checkOverrideToken(overrideToken);
+): Promise<{ status: "deviation"; ledger_ref: string; current_state: string; rationale: string; authorized_by: string }> {
   if (resolvedBy !== "human") throw new OverrideUnavailable("override requires resolved_by='human'");
   if (!rationale || !rationale.trim()) throw new OverrideUnavailable("override requires a non-empty rationale");
 
@@ -581,6 +583,16 @@ export async function guardOverride(
     assertTsOwnedForMutation(resourceId);
     const registry = loadRegistry(resourceId);
     if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
+    // Inside the lock: the ledger head must be the one this call will append to,
+    // so a concurrent mutation invalidates the authorization rather than letting
+    // it apply to a history the operator did not sign for.
+    const authorizedBy = verifyAuthorization("override", {
+      resource_id: resourceId,
+      from_state: fromState,
+      to_state: toState,
+      rationale,
+      ledger_head: _ledgerHead(resourceId),
+    }, authorization);
     if (fromState !== registry.current_state) {
       throw new StaleFromState(`from_state ${JSON.stringify(fromState)} != current_state ${JSON.stringify(registry.current_state)}`);
     }
@@ -594,13 +606,16 @@ export async function guardOverride(
       outcome: "deviation",
       kind: "deviation",
       resolved_by: resolvedBy,
-      rationale,
+      rationale: `authorized by ${authorizedBy.principal} (${authorizedBy.fingerprint}): ${rationale}`,
     });
     await fenceResourceLock(resourceId, token);
     const ledgerRef = appendLedger(resourceId, entry);
     registry.current_state = toState;
     persistRegistry(registry);
-    return { status: "deviation", ledger_ref: ledgerRef, current_state: registry.current_state, rationale };
+    return {
+      status: "deviation", ledger_ref: ledgerRef, current_state: registry.current_state, rationale,
+      authorized_by: `${authorizedBy.principal} (${authorizedBy.fingerprint})`,
+    };
   });
 }
 
@@ -608,18 +623,25 @@ export async function guardMigrate(
   resourceId: string,
   newGraph: GuardGraph,
   newEdgePredicates: EdgePredicates,
-  overrideToken: string,
+  authorization: string,
   rationale: string,
   newTerminal: string[] = [],
   newStakes: Record<string, string> = {},
-): Promise<{ status: "migrated"; checksum: string; graph_version: number; ledger_ref: string; rationale: string }> {
-  _checkOverrideToken(overrideToken);
+): Promise<{ status: "migrated"; checksum: string; graph_version: number; ledger_ref: string; rationale: string; authorized_by: string }> {
   if (!rationale || !rationale.trim()) throw new OverrideUnavailable("migrate requires a non-empty rationale");
 
   return acquireResourceLock(resourceId, async ({ token }) => {
     assertTsOwnedForMutation(resourceId);
     const registry = loadRegistry(resourceId);
     if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
+    // The authorization names the RESULTING policy, so a signature for one
+    // migration cannot be spent on a different one.
+    const authorizedBy = verifyAuthorization("migrate", {
+      resource_id: resourceId,
+      policy_checksum: guardChecksum(newGraph, newEdgePredicates, newTerminal, newStakes),
+      rationale,
+      ledger_head: _ledgerHead(resourceId),
+    }, authorization);
     _validatePolicy(
       newGraph,
       newEdgePredicates,
@@ -640,7 +662,7 @@ export async function guardMigrate(
       outcome: "graph_version",
       kind: "graph_version",
       resolved_by: "human",
-      rationale,
+      rationale: `authorized by ${authorizedBy.principal} (${authorizedBy.fingerprint}): ${rationale}`,
     });
     await fenceResourceLock(resourceId, token);
     const ledgerRef = appendLedger(resourceId, entry);
@@ -651,7 +673,10 @@ export async function guardMigrate(
     registry.checksum = checksum;
     registry.graph_version = graphVersion;
     persistRegistry(registry);
-    return { status: "migrated", checksum, graph_version: graphVersion, ledger_ref: ledgerRef, rationale };
+    return {
+      status: "migrated", checksum, graph_version: graphVersion, ledger_ref: ledgerRef, rationale,
+      authorized_by: `${authorizedBy.principal} (${authorizedBy.fingerprint})`,
+    };
   });
 }
 
@@ -832,7 +857,7 @@ export async function guardUpgrade(
     const reasons = _upgradeIncompatibilities(registry, newGraph, newEdgePredicates, newTerminal, newStakes);
     if (reasons.length > 0) {
       throw new IncompatiblePolicyUpgrade(
-        `policy upgrade is not additive-only (${reasons.join("; ")}); use guard migrate with STRATUM_GUARD_OVERRIDE_TOKEN`,
+        `policy upgrade is not additive-only (${reasons.join("; ")}); use a signed upgrade descriptor, or guard migrate with a signed authorization`,
       );
     }
     // Unreachable under an additive-only policy (old nodes all survive), kept

@@ -1,5 +1,5 @@
 {
-  "surface": 13,
+  "surface": 14,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -203,16 +203,16 @@
       }
     },
     "stratum_guard_override": {
-      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "override_token": "string", "rationale": "string", "resolved_by?": "string" },
+      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "authorization": "string", "rationale": "string", "resolved_by?": "string" },
       "responses": {
-        "deviation": { "ledger_ref": "string", "current_state": "string", "rationale": "string" },
+        "deviation": { "ledger_ref": "string", "current_state": "string", "rationale": "string", "authorized_by": "string" },
         "error": { "error_type": "string", "message": "string" }
       }
     },
     "stratum_guard_migrate": {
-      "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "override_token": "string", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
+      "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "authorization": "string", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
       "responses": {
-        "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string" },
+        "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string", "authorized_by": "string" },
         "error": { "error_type": "string", "message": "string" }
       }
     },
