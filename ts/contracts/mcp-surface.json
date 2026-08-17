@@ -1,5 +1,5 @@
 {
-  "surface": 11,
+  "surface": 12,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -213,6 +213,14 @@
       "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "override_token": "string", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
       "responses": {
         "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string" },
+        "error": { "error_type": "string", "message": "string" }
+      }
+    },
+    "stratum_guard_upgrade": {
+      "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
+      "responses": {
+        "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string" },
+        "unchanged": { "checksum": "string", "graph_version": "number", "rationale": "string" },
         "error": { "error_type": "string", "message": "string" }
       }
     },

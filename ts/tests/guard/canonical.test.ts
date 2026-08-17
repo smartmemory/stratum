@@ -87,6 +87,7 @@ describe("guard error vocabulary", () => {
       "override_unavailable",
       "resource_id_mismatch",
       "guard_engine_owned",
+      "incompatible_policy_upgrade",
     ]);
     expect(guardErrorEnvelope("guard_not_found", "missing")).toEqual({
       status: "error", error_type: "guard_not_found", message: "missing",

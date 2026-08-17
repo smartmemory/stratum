@@ -20,6 +20,7 @@ import {
   GuardTampered,
   IdempotencyConflict,
   IllegalEdge,
+  IncompatiblePolicyUpgrade,
   InvalidStateName,
   InvalidWorkspaceRoot,
   OverrideUnavailable,
@@ -246,6 +247,36 @@ export function _validatePolicy(
   stakes: Record<string, string>,
   workspaceRoot: string | null,
 ): void {
+  // Shape before names. The MCP contract types graph/terminal as "object" and
+  // "array", so an adjacency value can arrive as a bare string — and a string
+  // is iterable (its chars pass the name check) while
+  // `String.prototype.includes` matches SUBSTRINGS, so a string adjacency
+  // would make the edge-legality check accept states nobody declared.
+  // Rejecting the shape here covers register, migrate and upgrade at once.
+  if (!Array.isArray(terminal) || terminal.some((name) => typeof name !== "string")) {
+    throw new InvalidStateName("terminal must be an array of state names");
+  }
+  // Duplicates would make `terminal` a multiset, so "frozen exactly" could not
+  // be checked by set equality (`["shipped"]` vs `["shipped","shipped"]` is a
+  // token-free change that set comparison waves through).
+  if (new Set(terminal).size !== terminal.length) {
+    throw new InvalidStateName("terminal must not contain duplicate state names");
+  }
+  for (const [state, targets] of Object.entries(graph)) {
+    if (!Array.isArray(targets) || targets.some((target) => typeof target !== "string")) {
+      throw new InvalidStateName(`graph[${JSON.stringify(state)}] must be an array of state names`);
+    }
+  }
+  for (const [edge, predicates] of Object.entries(edgePredicates)) {
+    if (!Array.isArray(predicates)
+      || predicates.some((predicate) => typeof predicate !== "object" || predicate === null || Array.isArray(predicate))) {
+      throw new EvidenceParseError(`edge_predicates[${JSON.stringify(edge)}] must be an array of predicate objects`);
+    }
+  }
+  for (const [edge, stake] of Object.entries(stakes)) {
+    if (typeof stake !== "string") throw new InvalidStateName(`stakes[${JSON.stringify(edge)}] must be a string`);
+  }
+
   const names = new Set([...Object.keys(graph), ...terminal, initial]);
   for (const targets of Object.values(graph)) for (const target of targets) names.add(target);
   for (const name of names) {
@@ -436,7 +467,7 @@ export async function guardTransition(
     if (fromState !== registry.current_state) {
       throw new StaleFromState(`from_state ${JSON.stringify(fromState)} != current_state ${JSON.stringify(registry.current_state)}`);
     }
-    if (!(registry.graph[fromState] ?? []).includes(toState)) {
+    if (!_declaresEdge(registry.graph, fromState, toState)) {
       throw new IllegalEdge(`${_edgeKey(fromState, toState)} is not a legal edge`);
     }
     const edge = _edgeKey(fromState, toState);
@@ -489,7 +520,7 @@ export async function guardTransition(
     if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
       throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch during commit`);
     }
-    if (!(registry.graph[fromState] ?? []).includes(toState)) {
+    if (!_declaresEdge(registry.graph, fromState, toState)) {
       // Python has the same latent eval-outside-lock race; Slice E should add this re-check there too.
       throw new IllegalEdge(`${_edgeKey(fromState, toState)} is no longer a legal edge after evaluation`);
     }
@@ -542,7 +573,7 @@ export async function guardOverride(
     if (fromState !== registry.current_state) {
       throw new StaleFromState(`from_state ${JSON.stringify(fromState)} != current_state ${JSON.stringify(registry.current_state)}`);
     }
-    if (!(registry.graph[fromState] ?? []).includes(toState)) {
+    if (!_declaresEdge(registry.graph, fromState, toState)) {
       throw new IllegalEdge(`${_edgeKey(fromState, toState)} is not a legal edge (override bypasses predicates, not the graph)`);
     }
     const entry = new LedgerEntry({
@@ -598,6 +629,217 @@ export async function guardMigrate(
       outcome: "graph_version",
       kind: "graph_version",
       resolved_by: "human",
+      rationale,
+    });
+    await fenceResourceLock(resourceId, token);
+    const ledgerRef = appendLedger(resourceId, entry);
+    registry.graph = newGraph;
+    registry.edge_predicates = newEdgePredicates;
+    registry.terminal = newTerminal;
+    registry.stakes = newStakes;
+    registry.checksum = checksum;
+    registry.graph_version = graphVersion;
+    persistRegistry(registry);
+    return { status: "migrated", checksum, graph_version: graphVersion, ledger_ref: ledgerRef, rationale };
+  });
+}
+
+/**
+ * Edge legality, robust to a malformed stored adjacency. `_validatePolicy`
+ * rejects a non-array adjacency on the way in, but registries are long-lived
+ * and load through unchecked casts, so one written before that check exists
+ * must still fail closed here: `["b"].includes("x")` is membership, but
+ * `"bxyz".includes("xyz")` is a SUBSTRING match and would legalize an
+ * undeclared, unguarded state.
+ */
+function _declaresEdge(graph: GuardGraph, fromState: string, toState: string): boolean {
+  const targets = graph[fromState];
+  return Array.isArray(targets) && targets.includes(toState);
+}
+
+function _graphEdgeKeys(graph: GuardGraph): Set<string> {
+  const keys = new Set<string>();
+  for (const [fromState, targets] of Object.entries(graph)) {
+    for (const toState of targets) keys.add(_edgeKey(fromState, toState));
+  }
+  return keys;
+}
+
+function _policyNodes(graph: GuardGraph, terminal: string[], initial: string): Set<string> {
+  const names = new Set([...Object.keys(graph), ...terminal, initial]);
+  for (const targets of Object.values(graph)) for (const target of targets) names.add(target);
+  return names;
+}
+
+/**
+ * Every way the submitted policy is NOT an additive-only extension of the
+ * stored one, as human-readable reasons (empty = compatible).
+ *
+ * Deliberately stricter than strictly necessary, because this classifier is
+ * the only thing standing between a token-free call and a policy change:
+ * existing edges must be byte-identical (even ADDING a predicate to one is
+ * refused — "strengthening" is an ordering this code declines to reason
+ * about), and `terminal` is frozen in both directions — no state may be added
+ * to it or removed from it, and no new edge may enter OR leave a terminal
+ * state. Anything it refuses remains reachable through `guardMigrate` with the
+ * override token.
+ */
+export function _upgradeIncompatibilities(
+  registry: GuardRegistry,
+  newGraph: GuardGraph,
+  newEdgePredicates: EdgePredicates,
+  newTerminal: string[],
+  newStakes: Record<string, string>,
+): string[] {
+  const reasons: string[] = [];
+
+  for (const [fromState, targets] of Object.entries(registry.graph)) {
+    if (!Object.hasOwn(newGraph, fromState)) {
+      reasons.push(`node ${JSON.stringify(fromState)} is missing from the new graph`);
+      continue;
+    }
+    const newTargets = new Set(newGraph[fromState] ?? []);
+    for (const toState of targets) {
+      if (!newTargets.has(toState)) reasons.push(`edge ${_edgeKey(fromState, toState)} was removed`);
+    }
+  }
+
+  // Keys of the OLD policy only: predicates/stakes on brand-new edges are the
+  // point of an upgrade, while any pre-existing key must survive untouched —
+  // including "absent stays absent", so a new entry on an old edge is refused.
+  const existingKeys = new Set([
+    ..._graphEdgeKeys(registry.graph),
+    ...Object.keys(registry.edge_predicates),
+    ...Object.keys(registry.stakes),
+  ]);
+  // Own-property reads only: a caller-supplied object still inherits
+  // Object.prototype, so `newEdgePredicates["constructor"]` would otherwise
+  // resolve to an inherited value instead of "absent".
+  const own = <T>(source: Record<string, T>, key: string): T | null => (Object.hasOwn(source, key) ? source[key]! : null);
+  for (const key of existingKeys) {
+    if (canonicalJson(own(registry.edge_predicates, key)) !== canonicalJson(own(newEdgePredicates, key))) {
+      reasons.push(`predicates changed on existing edge ${key}`);
+    }
+    if (own(registry.stakes, key) !== own(newStakes, key)) {
+      reasons.push(`stakes changed on existing edge ${key}`);
+    }
+  }
+
+  // Additive-only does NOT mean harmless: an added edge that lands on a state
+  // the old policy already had is a new ROUTE to it, and routes around the
+  // predicates on the old route. `draft -> shipped` guarded by evidence is
+  // worthless if a token-free call can add `draft -> rubber_stamp -> shipped`.
+  // So new edges may only terminate at states that did not exist before —
+  // which keeps the reachability of every pre-existing state exactly as
+  // registered, and still allows grafting a new subgraph (the requesting case).
+  const oldEdges = _graphEdgeKeys(registry.graph);
+  const oldNodes = _policyNodes(registry.graph, registry.terminal, registry.initial);
+  const oldTerminal = new Set(registry.terminal);
+  for (const [fromState, targets] of Object.entries(newGraph)) {
+    for (const toState of targets) {
+      if (oldEdges.has(_edgeKey(fromState, toState))) continue;
+      if (oldNodes.has(toState)) {
+        reasons.push(`new edge ${_edgeKey(fromState, toState)} adds a route into pre-existing state ${JSON.stringify(toState)}`);
+      }
+      // Terminal EGRESS, not just membership. Freezing the terminal set stops a
+      // caller inventing a new way to be done; it does not stop `shipped ->
+      // reopened` with a brand-new `reopened`, which walks a completed resource
+      // back OUT of its terminal state — token-free, over an edge whose
+      // predicates the caller also chose. A terminal state has no outgoing
+      // edges by contract, so growing one is a policy change either way.
+      if (oldTerminal.has(fromState)) {
+        reasons.push(`new edge ${_edgeKey(fromState, toState)} leaves terminal state ${JSON.stringify(fromState)}`);
+      }
+    }
+  }
+
+  // `terminal` is frozen — not "grows only with new nodes". Stratum never reads
+  // it for edge legality, but consumers read it as COMPLETABILITY, so adding a
+  // terminal state is granting a new way to be done. A token-free caller who
+  // could add one would simply declare its own success state, reach it over a
+  // new edge whose predicates it also chose (an empty predicate list evaluates
+  // as met), and be complete without passing any gate that existed at
+  // registration. Rule 4 does not help there: the bypass never touches an old
+  // state. Granting completability is an authorization decision, so it stays
+  // on the token-gated `guardMigrate`.
+  const newTerminalSet = new Set(newTerminal);
+  for (const name of oldTerminal) {
+    if (!newTerminalSet.has(name)) reasons.push(`terminal state ${JSON.stringify(name)} was removed`);
+  }
+  for (const name of newTerminalSet) {
+    if (!oldTerminal.has(name)) reasons.push(`terminal state ${JSON.stringify(name)} was added`);
+  }
+
+  return reasons;
+}
+
+export type GuardUpgradeResult =
+  | { status: "unchanged"; checksum: string; graph_version: number; rationale: string }
+  | { status: "migrated"; checksum: string; graph_version: number; ledger_ref: string; rationale: string };
+
+/**
+ * Routine, token-free policy upgrade: idempotent on an identical policy and
+ * additive-only otherwise. The complement of `guardMigrate`, which keeps the
+ * override token for everything this refuses. See
+ * `docs/features/STRAT-GUARD-UPGRADE/design.md`.
+ */
+export async function guardUpgrade(
+  resourceId: string,
+  newGraph: GuardGraph,
+  newEdgePredicates: EdgePredicates,
+  rationale: string,
+  newTerminal: string[] = [],
+  newStakes: Record<string, string> = {},
+): Promise<GuardUpgradeResult> {
+  if (!rationale || !rationale.trim()) throw new OverrideUnavailable("upgrade requires a non-empty rationale");
+
+  return acquireResourceLock(resourceId, async ({ token }) => {
+    assertTsOwnedForMutation(resourceId);
+    const registry = loadRegistry(resourceId);
+    if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
+    // Before ANY comparison: a tampered registry whose stored checksum happened
+    // to match the submitted policy would otherwise return "unchanged" and
+    // silently bless the tampering.
+    if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
+      throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch`);
+    }
+    _validatePolicy(
+      newGraph,
+      newEdgePredicates,
+      registry.initial,
+      newTerminal,
+      newStakes,
+      registry.workspace_root,
+    );
+    const checksum = guardChecksum(newGraph, newEdgePredicates, newTerminal, newStakes);
+    if (checksum === registry.checksum) {
+      // No ledger entry and no version bump: compose re-runs this per resource
+      // on every cold-server touch, and the steady state must write nothing.
+      return { status: "unchanged", checksum, graph_version: registry.graph_version, rationale };
+    }
+
+    const reasons = _upgradeIncompatibilities(registry, newGraph, newEdgePredicates, newTerminal, newStakes);
+    if (reasons.length > 0) {
+      throw new IncompatiblePolicyUpgrade(
+        `policy upgrade is not additive-only (${reasons.join("; ")}); use guard migrate with STRATUM_GUARD_OVERRIDE_TOKEN`,
+      );
+    }
+    // Unreachable under an additive-only policy (old nodes all survive), kept
+    // as defence in depth against a classifier gap.
+    if (!Object.hasOwn(newGraph, registry.current_state) && !newTerminal.includes(registry.current_state)) {
+      throw new InvalidStateName(`current_state ${JSON.stringify(registry.current_state)} is not a node in the new graph`);
+    }
+
+    const graphVersion = registry.graph_version + 1;
+    const entry = new LedgerEntry({
+      ts_ms: _nowMs(),
+      from_state: registry.current_state,
+      to_state: registry.current_state,
+      outcome: "graph_version",
+      kind: "graph_version",
+      // The one ledger-visible difference from guardMigrate, which writes
+      // "human": that call means a person held the override token.
+      resolved_by: "agent",
       rationale,
     });
     await fenceResourceLock(resourceId, token);

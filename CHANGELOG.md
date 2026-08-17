@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+### feat(guard): STRAT-GUARD-UPGRADE — idempotent, non-emergency guard upgrade
+
+`guardMigrate` was the only way to evolve a registered policy, and it required
+the break-glass `STRATUM_GUARD_OVERRIDE_TOKEN` and bumped `graph_version`
+unconditionally. That made routine policy evolution depend on the emergency
+mechanism it should replace, and it blocked compose's `COMP-LIFECYCLE-BACKFILL`,
+which needs to graft one node onto ~350 already-registered guards lazily.
+
+New `stratum_guard_upgrade` / `stratum guard upgrade` / `guardUpgrade`: no
+token, idempotent, additive-only. An identical policy returns `unchanged` and
+writes nothing at all — no ledger entry, no version bump — so the lazy migration
+is free in the steady state and safe to re-run after a partial failure. Real
+changes must be additive: nothing removed, existing edges byte-identical in
+predicates and stakes, **new edges may only terminate at states that did not
+exist before** (an edge into an existing state is a new route that bypasses the
+predicates on the old one), and **`terminal` is frozen in both directions** — no
+membership change, and no new edge entering or leaving a terminal state. Everything
+else is refused with the new `incompatible_policy_upgrade` slug and still
+belongs on the token-gated `guardMigrate`, which is unchanged.
+
+The frozen `terminal` is a scope cut adversarial review forced, and it costs the
+requesting use case. Letting `terminal` grow would let a token-free caller
+declare its own success state, reach it over a new edge whose predicates it also
+chose (an empty predicate list evaluates as met), and be *complete* without
+passing any gate that existed at registration — a completion bypass that never
+touches an existing edge, so the additive classifier waves it through. Granting
+completability is an authorization decision and stays on the token. Terminal
+*egress* is the mirror of that hole and closed the same way: `shipped →
+reopened` with a brand-new `reopened` would walk an already-complete resource
+back out of its terminal state, so a new edge may not leave a terminal state
+either. So
+`COMP-LIFECYCLE-BACKFILL`'s terminal `complete_backfilled` node still needs one
+token-gated migrate per resource; what it gains here is the free, token-free,
+idempotent steady state and a batch that is safe to re-run.
+
+Adversarial review of the classifier surfaced a **pre-existing, unrelated
+hole** that this ships a fix for: `_validatePolicy` never checked that a graph
+adjacency is an array. `{"draft": "shipped"}` passed every check (a string
+iterates as characters, and characters are valid state names) and, once stored,
+turned the edge-legality test into `String.prototype.includes` — a substring
+match, so a `"bxyz"` adjacency legalized a transition to the undeclared,
+unguarded state `"xyz"`. `guardRegister` needs no token, so this was reachable
+with no credential at all. `_validatePolicy` now validates the shape of graph,
+terminal, edge_predicates and stakes, which covers register, migrate and
+upgrade at one chokepoint — and because a registry written before that check
+still loads through an unchecked cast, edge legality itself now requires a real
+array before testing membership.
+
+MCP surface 11 → 12 (21 → 22 tools).
+`docs/features/STRAT-GUARD-UPGRADE/design.md`.
+
 ### feat(learn): STRAT-TS-LEARN — across-run learning, closed end to end
 
 S4 lands the write half: four admission critics, a journalled apply whose single

@@ -16,6 +16,7 @@ export const GUARD_ERROR_TYPES = [
   "override_unavailable",
   "resource_id_mismatch",
   "guard_engine_owned",
+  "incompatible_policy_upgrade",
 ] as const;
 
 export type GuardErrorType = (typeof GUARD_ERROR_TYPES)[number];
@@ -66,6 +67,8 @@ export class ParanoidEdgeNeedsTrustedEvidence extends namedGuardError("ParanoidE
 export class EvidenceParseError extends namedGuardError("EvidenceParseError", "evidence_parse_error") {}
 export class OverrideUnavailable extends namedGuardError("OverrideUnavailable", "override_unavailable") {}
 export class GuardEngineOwned extends namedGuardError("GuardEngineOwned", "guard_engine_owned") {}
+/** A `guardUpgrade` policy that is not additive-only; `guardMigrate` + token is the path for it. */
+export class IncompatiblePolicyUpgrade extends namedGuardError("IncompatiblePolicyUpgrade", "incompatible_policy_upgrade") {}
 
 export class LedgerCorrupt extends GuardError {
   constructor(message: string) {

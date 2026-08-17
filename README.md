@@ -427,7 +427,7 @@ Dispatch an agent (Claude, Codex, opencode) as part of a flow step, synchronousl
 
 ### `stratum_guard_register`
 
-Register a guarded resource. The `(graph, edge_predicates, terminal, stakes)` policy is checksummed and immutable — re-registering an identical policy is a no-op; a different policy is rejected (use `stratum_guard_migrate`).
+Register a guarded resource. The `(graph, edge_predicates, terminal, stakes)` policy is checksummed and immutable — re-registering an identical policy is a no-op; a different policy is rejected (use `stratum_guard_upgrade` for an additive change, `stratum_guard_migrate` for anything else).
 
 **Inputs:** `resource_id` (str, client-namespaced e.g. `"compose:FEAT-1"`), `graph` (`dict[from -> list[to]]`), `edge_predicates` (`dict["from->to" -> list of {id,type,statement}]`), `initial` (str), `terminal` (list[str]), `stakes` (`dict["from->to" -> "cheap"|"default"|"paranoid"]`), `workspace_root` (abs dir, for file/git/command evidence).
 
@@ -454,6 +454,12 @@ The single sanctioned bypass of predicate verification. Requires an out-of-band 
 Evolve a registered policy. Token-gated, bumps `graph_version`, writes a `graph_version` ledger entry, and never silently relaxes an in-flight resource's policy. The current state must remain a node in the new graph.
 
 **Inputs:** `resource_id`, `new_graph`, `new_edge_predicates`, `override_token`, `rationale`, `new_terminal`, `new_stakes`.
+
+### `stratum_guard_upgrade`
+
+Routine policy evolution, with **no** override token. Idempotent: a policy whose checksum already matches returns `unchanged` and writes nothing — no ledger entry, no `graph_version` bump — so a lazy per-resource migration is safe to re-run over hundreds of guards. Any other change must be **additive-only**: no node or edge removed, existing edges byte-identical in predicates and stakes, new edges may only terminate at states that did not exist before, and `terminal` frozen exactly as registered with no new edge entering or leaving a terminal state. It can therefore neither grant a new way to be complete nor walk a completed resource back out — those stay authorization decisions on `stratum_guard_migrate`. Anything else is refused with `incompatible_policy_upgrade`. Ledger entries are the same `graph_version` kind migrate writes, distinguished by `resolved_by: "agent"`.
+
+**Inputs:** `resource_id`, `new_graph`, `new_edge_predicates`, `rationale`, `new_terminal`, `new_stakes`. **Returns:** `{status: "migrated"|"unchanged", checksum, graph_version, ledger_ref?, rationale}`.
 
 ### `stratum_guard_history`
 

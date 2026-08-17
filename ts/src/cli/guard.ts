@@ -6,11 +6,12 @@ import {
   guardMigrate,
   guardOverride,
   guardTransition,
+  guardUpgrade,
   registerGuard,
   type GuardJudge,
 } from "../guard/transition.js";
 
-const ACTIONS = new Set(["register", "transition", "override", "migrate", "history"]);
+const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "history"]);
 
 let testJudge: GuardJudge | undefined;
 
@@ -90,6 +91,13 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
       return guardMigrate(
         required<string>(payload, "resource_id"), required<Record<string, string[]>>(payload, "new_graph"),
         required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"), required<string>(payload, "override_token"),
+        required<string>(payload, "rationale"), optional<string[]>(payload, "new_terminal", []), optional<Record<string, string>>(payload, "new_stakes", {}),
+      );
+    case "upgrade":
+      assertOnlyKeys(payload, ["resource_id", "new_graph", "new_edge_predicates", "rationale", "new_terminal", "new_stakes"]);
+      return guardUpgrade(
+        required<string>(payload, "resource_id"), required<Record<string, string[]>>(payload, "new_graph"),
+        required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"),
         required<string>(payload, "rationale"), optional<string[]>(payload, "new_terminal", []), optional<Record<string, string>>(payload, "new_stakes", {}),
       );
     case "history":

@@ -10,6 +10,7 @@ import {
   GuardTampered,
   IdempotencyConflict,
   IllegalEdge,
+  IncompatiblePolicyUpgrade,
   InvalidStateName,
   InvalidWorkspaceRoot,
   OverrideUnavailable,
@@ -22,6 +23,7 @@ import {
   guardMigrate,
   guardOverride,
   guardTransition,
+  guardUpgrade,
   registerGuard,
   setGuardLockingForTests,
   type GuardJudge,
@@ -170,7 +172,7 @@ describe("guardChecksum", () => {
 describe("guard transition orchestration", () => {
   it("refuses every mutation on an un-handed-over guard while allowing reads", async () => {
     process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
-    for (const resourceId of ["python-transition", "python-override", "python-migrate", "python-register"]) {
+    for (const resourceId of ["python-transition", "python-override", "python-migrate", "python-upgrade", "python-register"]) {
       seedUnmarkedGuard(resourceId);
     }
 
@@ -180,6 +182,8 @@ describe("guard transition orchestration", () => {
     await expect(guardOverride("python-override", "a", "b", "secret", "manual move"))
       .rejects.toBeInstanceOf(GuardEngineOwned);
     await expect(guardMigrate("python-migrate", { a: ["b"], b: [] }, {}, "secret", "same graph", ["b"]))
+      .rejects.toBeInstanceOf(GuardEngineOwned);
+    await expect(guardUpgrade("python-upgrade", { a: ["b"], b: [] }, {}, "same graph", ["b"]))
       .rejects.toBeInstanceOf(GuardEngineOwned);
     await expect(registerGuard("python-register", { a: ["b"], b: [] }, {}, "a", ["b"]))
       .rejects.toBeInstanceOf(GuardEngineOwned);
@@ -409,6 +413,167 @@ describe("override and migrate", () => {
     await expect(guardMigrate("r", { a: ["c"], c: [] }, {}, "secret", "remove b", ["c"]))
       .rejects.toBeInstanceOf(InvalidStateName);
     expect(guardHistory("r")).toMatchObject({ graph_version: 1, current_state: "b" });
+  });
+});
+
+// STRAT-GUARD-UPGRADE. Every test here runs with STRATUM_GUARD_OVERRIDE_TOKEN
+// deleted (beforeEach), so the whole block is also the assertion that the
+// routine path is token-free.
+const SIMPLE_PREDICATES = { "draft->shipped": [{ id: "p1", type: "deterministic", statement: "server_file_exists('design.md')" }] };
+// A graft: one new non-terminal state reached by one new edge. `terminal` is
+// unchanged, because guardUpgrade may never grant a new way to be complete.
+const GRAFT_GRAPH = { draft: ["shipped", "audited"], shipped: [], audited: [] };
+const GRAFT_PREDICATES = {
+  ...SIMPLE_PREDICATES,
+  "draft->audited": [{ id: "b1", type: "deterministic", statement: "git_commit_exists('HEAD')" }],
+};
+const GRAFT_TERMINAL = ["shipped"];
+
+describe("guard upgrade (routine, token-free)", () => {
+  it("no-ops on an identical policy without touching the ledger or the version", async () => {
+    const registered = await registerSimple();
+    const result = await guardUpgrade("r", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, "lazy re-apply", ["shipped"]);
+    expect(result).toEqual({ status: "unchanged", checksum: registered.checksum, graph_version: 1, rationale: "lazy re-apply" });
+    expect(guardHistory("r")).toMatchObject({ graph_version: 1, ledger: [], current_state: "draft" });
+  });
+
+  it("applies an additive upgrade once and is idempotent on re-application", async () => {
+    await registerSimple();
+    const first = await guardUpgrade("r", GRAFT_GRAPH, GRAFT_PREDICATES, "graft audited", GRAFT_TERMINAL, {
+      "draft->audited": "paranoid",
+    });
+    expect(first).toMatchObject({ status: "migrated", graph_version: 2, rationale: "graft audited" });
+    expect(guardHistory("r")).toMatchObject({
+      graph_version: 2,
+      current_state: "draft",
+      // Same ledger kind guardMigrate writes; resolved_by is what separates a
+      // routine upgrade from a token-held emergency migration.
+      ledger: [{ kind: "graph_version", outcome: "graph_version", resolved_by: "agent", rationale: "graft audited" }],
+    });
+
+    const second = await guardUpgrade("r", GRAFT_GRAPH, GRAFT_PREDICATES, "graft audited", GRAFT_TERMINAL, {
+      "draft->audited": "paranoid",
+    });
+    expect(second).toMatchObject({ status: "unchanged", graph_version: 2 });
+    expect(guardHistory("r").ledger).toHaveLength(1);
+  });
+
+  it("makes the new edge immediately transitionable", async () => {
+    await registerSimple();
+    await guardUpgrade("r", GRAFT_GRAPH, { ...SIMPLE_PREDICATES, "draft->audited": [] }, "graft audited", GRAFT_TERMINAL);
+    await expect(guardTransition("r", "draft", "audited"))
+      .resolves.toMatchObject({ status: "applied", current_state: "audited" });
+  });
+
+  it.each([
+    ["an edge is removed", { draft: [], shipped: [] }, SIMPLE_PREDICATES, ["shipped"], {}],
+    ["a node is removed", { draft: ["shipped"] }, SIMPLE_PREDICATES, ["shipped"], {}],
+    ["an existing edge's predicates are edited", { draft: ["shipped"], shipped: [] },
+      { "draft->shipped": [{ id: "p1", type: "deterministic", statement: "server_file_exists('other.md')" }] }, ["shipped"], {}],
+    ["an existing edge gains a stake", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, ["shipped"], { "draft->shipped": "paranoid" }],
+    ["a new edge routes around an existing gate", { draft: ["shipped", "stamp"], stamp: ["shipped"], shipped: [] },
+      SIMPLE_PREDICATES, ["shipped"], {}],
+    ["a new edge duplicates an existing route", { draft: ["shipped"], review: ["shipped"], shipped: [] },
+      SIMPLE_PREDICATES, ["shipped"], {}],
+    ["a terminal state is removed", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, [], {}],
+    ["an existing node is flipped to terminal", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, ["shipped", "draft"], {}],
+    ["a NEW terminal state is granted", { draft: ["shipped", "rubber_stamp"], shipped: [], rubber_stamp: [] },
+      SIMPLE_PREDICATES, ["shipped", "rubber_stamp"], {}],
+    ["a new edge LEAVES a terminal state", { draft: ["shipped"], shipped: ["reopened"], reopened: [] },
+      SIMPLE_PREDICATES, ["shipped"], {}],
+  ])("refuses the upgrade when %s", async (_label, graph, predicates, terminal, stakes) => {
+    await registerSimple();
+    await expect(guardUpgrade("r", graph, predicates, "not additive", terminal, stakes))
+      .rejects.toBeInstanceOf(IncompatiblePolicyUpgrade);
+    expect(guardHistory("r")).toMatchObject({ graph_version: 1, ledger: [] });
+  });
+
+  it("refuses predicates newly added to an edge that had none", async () => {
+    await registerGuard("bare", { a: ["b"], b: [] }, {}, "a", ["b"], {}, workspace);
+    await expect(guardUpgrade("bare", { a: ["b"], b: [] }, {
+      "a->b": [{ id: "p1", type: "deterministic", statement: "server_file_exists('design.md')" }],
+    }, "strengthen a->b", ["b"])).rejects.toBeInstanceOf(IncompatiblePolicyUpgrade);
+    expect(guardHistory("bare")).toMatchObject({ graph_version: 1, ledger: [] });
+  });
+
+  it("re-validates the submitted policy before comparing it", async () => {
+    await registerSimple();
+    await expect(guardUpgrade("r", GRAFT_GRAPH, {
+      ...SIMPLE_PREDICATES,
+      "draft->audited": [{ type: "bogus", statement: "anything" }],
+    }, "invalid", GRAFT_TERMINAL)).rejects.toBeInstanceOf(EvidenceParseError);
+    expect(guardHistory("r")).toMatchObject({ graph_version: 1, ledger: [] });
+  });
+
+  it("refuses a tampered registry even when the submitted policy would be a no-op", async () => {
+    await registerSimple();
+    const registry = loadRegistry("r")!;
+    registry.graph = { draft: ["shipped", "sneaky"], shipped: [], sneaky: [] };
+    persistRegistry(registry); // checksum left stale on purpose
+    await expect(guardUpgrade("r", registry.graph, SIMPLE_PREDICATES, "no-op over tampered state", ["shipped"]))
+      .rejects.toBeInstanceOf(GuardTampered);
+  });
+
+  it("refuses a string adjacency, which would make edge legality match substrings", async () => {
+    // `["b"]` and `"b"` both survive the state-name check (a string iterates as
+    // chars), but a stored string adjacency makes the transition path's
+    // `.includes(toState)` a SUBSTRING test. Refused at registration and on
+    // every policy-changing path.
+    const stringGraph = { a: "bxyz", bxyz: [] } as unknown as Record<string, string[]>;
+    await expect(registerGuard("shape", stringGraph, {}, "a", ["bxyz"])).rejects.toBeInstanceOf(InvalidStateName);
+
+    await registerGuard("shape", { a: ["b"], b: [] }, {}, "a", ["b"]);
+    await expect(guardUpgrade("shape", stringGraph, {}, "string adjacency", ["b", "bxyz"]))
+      .rejects.toBeInstanceOf(InvalidStateName);
+    expect(guardHistory("shape")).toMatchObject({ graph_version: 1, ledger: [] });
+  });
+
+  it.each([
+    ["terminal is not an array", { a: ["b"], b: [] }, {}, "b" as unknown as string[], InvalidStateName],
+    ["a predicate list is not an array", { a: ["b"], b: [] },
+      { "a->b": "server_file_exists('x')" } as unknown as Record<string, Array<Record<string, unknown>>>, ["b"], EvidenceParseError],
+    ["a stake is not a string", { a: ["b"], b: [] }, {}, ["b"], InvalidStateName],
+  ])("refuses a malformed policy when %s", async (label, graph, predicates, terminal, expected) => {
+    await registerGuard("shape2", { a: ["b"], b: [] }, {}, "a", ["b"]);
+    const stakes = label === "a stake is not a string"
+      ? ({ "a->b": 1 } as unknown as Record<string, string>)
+      : {};
+    await expect(guardUpgrade("shape2", graph, predicates, "malformed", terminal, stakes))
+      .rejects.toBeInstanceOf(expected);
+  });
+
+  it("fails closed on a registry that already holds a string adjacency", async () => {
+    // The shape check guards the way IN. A registry persisted before it existed
+    // still loads through an unchecked cast, so edge legality itself must not
+    // fall back to String.prototype.includes (a substring match).
+    await registerGuard("legacy", { a: ["b"], b: [] }, {}, "a", ["b"]);
+    const registry = loadRegistry("legacy")!;
+    registry.graph = { a: "bxyz", b: [] } as unknown as Record<string, string[]>;
+    registry.checksum = guardChecksum(registry.graph, {}, ["b"], {});
+    persistRegistry(registry);
+    await expect(guardTransition("legacy", "a", "xyz")).rejects.toBeInstanceOf(IllegalEdge);
+  });
+
+  it("refuses a duplicated terminal entry, so the freeze cannot be gamed by set equality", async () => {
+    await registerSimple();
+    await expect(guardUpgrade("r", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, "dup terminal", ["shipped", "shipped"]))
+      .rejects.toBeInstanceOf(InvalidStateName);
+  });
+
+  it("requires a non-empty rationale", async () => {
+    await registerSimple();
+    await expect(guardUpgrade("r", { draft: ["shipped"], shipped: [] }, SIMPLE_PREDICATES, "   ", ["shipped"]))
+      .rejects.toBeInstanceOf(OverrideUnavailable);
+  });
+
+  it("refuses an unregistered resource exactly as migrate does", async () => {
+    // Ownership is asserted before the registry is loaded, so a resource that
+    // was never registered reads as un-handed-over rather than not-found. This
+    // is guardMigrate's existing behaviour, asserted here as parity, not as a
+    // new quirk of the upgrade path.
+    process.env.STRATUM_GUARD_OVERRIDE_TOKEN = "secret";
+    await expect(guardUpgrade("missing", { a: [] }, {}, "why")).rejects.toBeInstanceOf(GuardEngineOwned);
+    await expect(guardMigrate("missing", { a: [] }, {}, "secret", "why")).rejects.toBeInstanceOf(GuardEngineOwned);
   });
 });
 
