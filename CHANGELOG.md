@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### feat(guard): signed authorization for upgrade descriptors
+
+Replaces the env digest pin that `STRAT-GUARD-DESCRIPTOR` shipped hours earlier.
+The pin was aimed at the wrong adversary: its premise was "an agent cannot alter
+the environment of an already-running server", which is true and irrelevant,
+because the guard is also reachable from processes the agent launches itself —
+and there the agent supplies the environment. Proven by the same defect that made
+the override token forgeable.
+
+Authorization is now a **signature**. A descriptor file must carry a detached
+sshsig (`ssh-keygen -Y sign`) at `<path>.sig` under the namespace
+`stratum-guard-descriptors`, from a key enrolled in the new in-source trust root
+`contracts/guard-signers.allowed`. `STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256` is
+gone. The path env var stays: locating an artifact is not authorizing it.
+
+The adversary's cheapest move is no longer "set two variables" but "forge
+Ed25519" or "edit a committed file" — the latter possible with a shell, but
+`git status`-visible instead of invisible, and it defeats every check in the
+codebase equally rather than this one specifically. That is the honest ceiling of
+any local mechanism.
+
+**Verification is native** (`ts/src/guard/sshsig.ts`, `node:crypto`), not a
+shell-out to `ssh-keygen -Y verify`. Shelling out would have re-opened the same
+hole from a new angle: `ssh-keygen` resolves through `PATH`, which the adversary
+controls. Ed25519 only; other key types and `allowed_signers` option lists are
+refused rather than ignored. The verifier is tested against a signature produced
+by real `ssh-keygen`, committed under `ts/tests/fixtures/sshsig/`, so a misreading
+of PROTOCOL.sshsig cannot hide behind a round-trip with our own test signer.
+
+No default trust: the trust root ships empty, and an empty or missing one makes
+the signed paths report themselves unavailable rather than degrade. The dist
+packaging step now asserts and rewrites the contract path for every compiled
+module that reads a shipped contract, so a contract reader added without being
+listed fails the build instead of shipping a package that cannot find its trust
+root at runtime.
+
 ### feat(guard): STRAT-GUARD-DESCRIPTOR — server-owned upgrade descriptors
 
 `STRAT-GUARD-UPGRADE` shipped the provably-safe subset of policy evolution and,

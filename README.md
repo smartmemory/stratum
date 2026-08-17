@@ -467,7 +467,15 @@ Routine policy evolution, with **no** override token. Idempotent: a policy whose
 
 Apply a **server-owned upgrade descriptor**: a policy change a human reviewed and installed, named by id. No override token. This is the middle of three capabilities — it can do what `stratum_guard_upgrade` refuses (grant a terminal state, remove an edge, retighten predicates) because the exact resulting policy was authorized in advance, not supplied by the caller.
 
-Authorization comes from two variables in the **server** environment, both required: `STRATUM_GUARD_UPGRADE_DESCRIPTORS` (absolute path to the descriptor file) and `STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256` (a pin of that file's bytes). The pin is required, not optional: the file usually lives where the agent under guard can write, so an unpinned file authorizes nothing while looking like it does. The file must also not be group- or world-writable. Run `stratum guard descriptors` to print the parsed set and the digest to pin.
+Authorization is a **signature**, not a value in the environment. The descriptor file must carry a detached sshsig at `<path>.sig` under the namespace `stratum-guard-descriptors`, from a key enrolled in `contracts/guard-signers.allowed` — which is read from the installed source tree, never from an env var. `STRATUM_GUARD_UPGRADE_DESCRIPTORS` still names the file's path, because locating an artifact is not authorizing it.
+
+Keep the private half protected by a passphrase that exists only in your head, and **never `ssh-add` it** — anything that can reach your agent socket could then use it without knowing the passphrase. Sign with:
+
+```bash
+ssh-keygen -Y sign -f ~/.stratum/guard-signing -n stratum-guard-descriptors /path/to/guard-upgrades.json
+```
+
+`contracts/guard-signers.allowed` ships empty: there is no default trust, and an empty or missing trust root makes these paths report themselves unavailable rather than degrading. Verification is native (`node:crypto`), not a shell-out to `ssh-keygen` — that binary is resolved through `PATH`, and an authorization decision must not be delegated to something the caller can shadow. Run `stratum guard descriptors` to see what is installed, who signed it, and whether it verifies.
 
 Each descriptor is `{id, rationale, from_checksum, to_policy}` and applies only to a resource whose current policy checksum is exactly `from_checksum` — authorization is for a transition between two named policies, not a destination in the abstract. Idempotent: a resource already at the target answers `unchanged` and writes nothing, so a fleet-wide batch is safe to re-run. The ledger entry names the descriptor id and the file digest.
 

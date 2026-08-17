@@ -21,16 +21,23 @@ for (const entry of entries) {
   await chmod(entry, 0o755);
 }
 
-const compiledContracts = new URL("../dist/mcp/contracts.js", import.meta.url);
-const compiledSource = await readFile(compiledContracts, "utf8");
+// Every compiled module that reads a shipped contract: in the source tree the
+// path is `../../contracts/` (src/<dir>/ -> ts/contracts/), and in dist it is
+// `../contracts/` (dist/<dir>/ -> dist/contracts/). Each entry is asserted, so
+// adding a contract reader without listing it here fails the build rather than
+// shipping a package whose contract file cannot be found at runtime.
 const sourceContractPath = "../../contracts/";
-if (!compiledSource.includes(sourceContractPath)) {
-  throw new Error(`Unexpected compiled contract path: ${compiledContracts.pathname}`);
+for (const relative of ["../dist/mcp/contracts.js", "../dist/guard/descriptors.js"]) {
+  const compiled = new URL(relative, import.meta.url);
+  const compiledSource = await readFile(compiled, "utf8");
+  if (!compiledSource.includes(sourceContractPath)) {
+    throw new Error(`Unexpected compiled contract path: ${compiled.pathname}`);
+  }
+  await writeFile(compiled, compiledSource.replaceAll(sourceContractPath, "../contracts/"));
 }
-await writeFile(compiledContracts, compiledSource.replace(sourceContractPath, "../contracts/"));
 
 const distContracts = new URL("../dist/contracts/", import.meta.url);
 await mkdir(distContracts, { recursive: true });
-for (const name of ["events.json", "mcp-surface.json"]) {
+for (const name of ["events.json", "mcp-surface.json", "guard-signers.allowed"]) {
   await copyFile(new URL(`../contracts/${name}`, import.meta.url), new URL(name, distContracts));
 }
