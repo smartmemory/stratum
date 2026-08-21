@@ -1,5 +1,5 @@
 /**
- * Server-side evaluator for the four trusted guard-evidence builtins.
+ * Server-side evaluator for the trusted guard-evidence builtins.
  *
  * This module intentionally handles only trusted predicates. Callers route
  * `verified` and `judged` predicates to the judge backend before/after this
@@ -7,19 +7,20 @@
  */
 
 import { spawn } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { EvidenceParseError } from "./errors.js";
 export { EvidenceParseError } from "./errors.js";
 
 export const TRUSTED_BUILTINS = new Set([
   "server_file_exists",
+  "server_file_contains",
   "git_commit_exists",
   "command_exit_zero",
   "verdict_receipt_clean",
 ] as const);
 
-export type TrustedBuiltin = "server_file_exists" | "git_commit_exists" | "command_exit_zero" | "verdict_receipt_clean";
+export type TrustedBuiltin = "server_file_exists" | "server_file_contains" | "git_commit_exists" | "command_exit_zero" | "verdict_receipt_clean";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 120;
 const NO_WORKSPACE_ROOT_REASON = "no workspace_root registered for trusted file/command/git evidence";
@@ -368,6 +369,22 @@ async function evaluateServerFileExists(workspaceRoot: string, args: unknown[]):
   }
 }
 
+async function evaluateServerFileContains(workspaceRoot: string, args: unknown[]): Promise<[boolean, string]> {
+  if (args.length !== 2 || typeof args[0] !== "string" || typeof args[1] !== "string") {
+    return [false, "server_file_contains expects a string path and text"];
+  }
+  const [rel, text] = args as [string, string];
+  const target = await resolveUnder(workspaceRoot, rel);
+  if (target === undefined) return [false, `path escapes workspace_root: ${pythonStringRepr(rel)}`];
+  try {
+    const contents = await readFile(target, "utf8");
+    const contains = contents.includes(text);
+    return [contains, `${rel} ${contains ? "contains" : "does not contain"} requested text`];
+  } catch {
+    return [false, `${rel} missing or unreadable`];
+  }
+}
+
 type CommandOutcome =
   | { kind: "exit"; code: number | null }
   | { kind: "error"; error: string }
@@ -477,10 +494,12 @@ export async function evaluateEvidence(
 
     let predicateMet: boolean;
     let evidence: string;
-    if ((name === "server_file_exists" || name === "git_commit_exists" || name === "command_exit_zero") && !workspaceRoot) {
+    if ((name === "server_file_exists" || name === "server_file_contains" || name === "git_commit_exists" || name === "command_exit_zero") && !workspaceRoot) {
       [predicateMet, evidence] = [false, NO_WORKSPACE_ROOT_REASON];
     } else if (name === "server_file_exists") {
       [predicateMet, evidence] = await evaluateServerFileExists(workspaceRoot!, args);
+    } else if (name === "server_file_contains") {
+      [predicateMet, evidence] = await evaluateServerFileContains(workspaceRoot!, args);
     } else if (name === "git_commit_exists") {
       [predicateMet, evidence] = await evaluateGitCommitExists(workspaceRoot!, args);
     } else if (name === "command_exit_zero") {

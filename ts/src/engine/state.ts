@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { PolicyRuleMap, RuleVerdict } from "../policy/types.js";
 import type { Budget } from "./ledger.js";
 
 export type StepStatus = "pending" | "ready" | "running" | "waiting_gate" | "succeeded" | "failed" | "skipped";
@@ -162,7 +163,7 @@ export interface AuditEvent {
 
 export type CheckpointSnapshot = Pick<PersistedRun,
   | "status" | "output" | "failure" | "flowSpent" | "rounds"
-  | "steps" | "events" | "cancelRequested" | "parallel"
+  | "steps" | "events" | "policy_verdicts" | "cancelRequested" | "parallel"
 >;
 
 /** One named checkpoint. An ORDERED ARRAY (not a keyed map) so label order is true
@@ -190,6 +191,12 @@ export interface PersistedRun {
   rounds?: number;
   steps: Record<string, StepState>;
   events: AuditEvent[];
+  /** Policy-bundle identity and ensure correlation remain additive for old-run compatibility. */
+  bundle_id?: string;
+  policy_rules?: PolicyRuleMap;
+  /** 2 means policy rule keys are scoped as flow/step; absent is legacy. */
+  policy_rules_version?: 2;
+  policy_verdicts?: RuleVerdict[];
   /** Cooperative cancel: set by flowCancelBg, observed by the detached driver and
    * in-flight fanout workers so neither dispatches further work after a cancel. */
   cancelRequested?: boolean;
@@ -221,7 +228,9 @@ export class StateStore {
   }
 
   async load(runId: string): Promise<PersistedRun> {
-    return JSON.parse(await readFile(this.path(runId), "utf8")) as PersistedRun;
+    const run = JSON.parse(await readFile(this.path(runId), "utf8")) as PersistedRun;
+    migrateLegacyPolicyRules(run);
+    return run;
   }
 
   async list(): Promise<string[]> {
@@ -239,6 +248,50 @@ export class StateStore {
     if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error("invalid run id");
     return join(this.root, `${runId}.json`);
   }
+}
+
+function migrateLegacyPolicyRules(run: PersistedRun): void {
+  if (run.policy_rules === undefined || run.policy_rules_version === 2) return;
+  const scoped = new Map<string, string>();
+  const flows = specificationFlows(run.spec);
+  for (const [flowName, stepIds] of flows) {
+    for (const stepId of stepIds) scoped.set(`${flowName}/${stepId}`, `${flowName}/${stepId}`);
+  }
+
+  const migrated: PolicyRuleMap = {};
+  for (const [legacyKey, bindings] of Object.entries(run.policy_rules)) {
+    let target = scoped.get(legacyKey);
+    if (target === undefined) {
+      const matches = flows.filter(([, stepIds]) => stepIds.has(legacyKey)).map(([flowName]) => flowName);
+      if (matches.length !== 1) {
+        const detail = matches.length === 0
+          ? "does not exist in any flow"
+          : `is ambiguous across flows ${matches.map((name) => JSON.stringify(name)).join(", ")}`;
+        throw new Error(`run ${run.id}: legacy policy_rules step ${JSON.stringify(legacyKey)} ${detail}; re-plan required`);
+      }
+      target = `${matches[0]!}/${legacyKey}`;
+    }
+    (migrated[target] ??= []).push(...bindings);
+  }
+  run.policy_rules = migrated;
+  run.policy_rules_version = 2;
+}
+
+function specificationFlows(spec: unknown): Array<[string, Set<string>]> {
+  if (spec === null || typeof spec !== "object" || Array.isArray(spec)) return [];
+  const flows = (spec as { flows?: unknown }).flows;
+  if (flows === null || typeof flows !== "object" || Array.isArray(flows)) return [];
+  return Object.entries(flows).flatMap(([flowName, flow]): Array<[string, Set<string>]> => {
+    if (flowName === "entry" || flow === null || typeof flow !== "object" || Array.isArray(flow)) return [];
+    const steps = (flow as { steps?: unknown }).steps;
+    if (!Array.isArray(steps)) return [];
+    const ids = steps.flatMap((step) => {
+      if (step === null || typeof step !== "object" || Array.isArray(step)) return [];
+      const id = (step as { id?: unknown }).id;
+      return typeof id === "string" ? [id] : [];
+    });
+    return [[flowName, new Set(ids)]];
+  });
 }
 
 function isNotFound(error: unknown): boolean {

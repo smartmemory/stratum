@@ -32,6 +32,7 @@ export type GuardRegistryFields = {
   graph_version?: number;
   workspace_root?: string | null;
   current_state?: string;
+  bundle_id?: string;
 };
 
 export type LedgerEntryFields = {
@@ -43,6 +44,8 @@ export type LedgerEntryFields = {
   resolved_by?: string;
   idempotency_key?: string | null;
   payload_digest?: string | null;
+  /** 1 (or absent on disk) is the legacy payload; 2 binds the policy checksum. */
+  payload_digest_version?: 1 | 2;
   rationale?: string | null;
   verdict?: Record<string, unknown> | null;
   prev_digest?: string;
@@ -104,6 +107,7 @@ export class GuardRegistry {
   graph_version: number;
   workspace_root: string | null;
   current_state: string;
+  bundle_id?: string;
 
   constructor(fields: GuardRegistryFields) {
     this.resource_id = fields.resource_id;
@@ -116,9 +120,10 @@ export class GuardRegistry {
     this.graph_version = fields.graph_version ?? 1;
     this.workspace_root = fields.workspace_root ?? null;
     this.current_state = fields.current_state ?? "";
+    if (fields.bundle_id !== undefined) this.bundle_id = fields.bundle_id;
   }
 
-  toDict(): Required<GuardRegistryFields> {
+  toDict(): Omit<Required<GuardRegistryFields>, "bundle_id"> & { bundle_id?: string } {
     return {
       resource_id: this.resource_id,
       graph: this.graph,
@@ -130,6 +135,7 @@ export class GuardRegistry {
       graph_version: this.graph_version,
       workspace_root: this.workspace_root,
       current_state: this.current_state,
+      ...(this.bundle_id !== undefined ? { bundle_id: this.bundle_id } : {}),
     };
   }
 
@@ -146,6 +152,7 @@ export class GuardRegistry {
       ...(Object.hasOwn(record, "graph_version") ? { graph_version: record.graph_version as number } : {}),
       ...(Object.hasOwn(record, "workspace_root") ? { workspace_root: record.workspace_root as string | null } : {}),
       ...(Object.hasOwn(record, "current_state") ? { current_state: record.current_state as string } : {}),
+      ...(Object.hasOwn(record, "bundle_id") ? { bundle_id: record.bundle_id as string } : {}),
     });
   }
 }
@@ -159,6 +166,7 @@ export class LedgerEntry {
   resolved_by: string;
   idempotency_key: string | null;
   payload_digest: string | null;
+  payload_digest_version: 1 | 2;
   rationale: string | null;
   verdict: Record<string, unknown> | null;
   prev_digest: string;
@@ -173,6 +181,7 @@ export class LedgerEntry {
     this.resolved_by = fields.resolved_by ?? "agent";
     this.idempotency_key = fields.idempotency_key ?? null;
     this.payload_digest = fields.payload_digest ?? null;
+    this.payload_digest_version = fields.payload_digest_version ?? 2;
     this.rationale = fields.rationale ?? null;
     this.verdict = fields.verdict ?? null;
     this.prev_digest = fields.prev_digest ?? "";
@@ -194,6 +203,7 @@ export class LedgerEntry {
       resolved_by: this.resolved_by,
       idempotency_key: this.idempotency_key,
       payload_digest: this.payload_digest,
+      payload_digest_version: this.payload_digest_version,
       rationale: this.rationale,
       verdict: this.verdict,
       prev_digest: this.prev_digest,
@@ -203,6 +213,10 @@ export class LedgerEntry {
 
   static fromDict(value: unknown): LedgerEntry {
     const record = asRecord(value);
+    const digestVersion = Object.hasOwn(record, "payload_digest_version") ? record.payload_digest_version : 1;
+    if (digestVersion !== 1 && digestVersion !== 2) {
+      throw new TypeError("payload_digest_version must be 1 or 2");
+    }
     return new LedgerEntry({
       ts_ms: requiredField<number>(record, "ts_ms"),
       from_state: requiredField<string>(record, "from_state"),
@@ -212,6 +226,7 @@ export class LedgerEntry {
       ...(Object.hasOwn(record, "resolved_by") ? { resolved_by: record.resolved_by as string } : {}),
       ...(Object.hasOwn(record, "idempotency_key") ? { idempotency_key: record.idempotency_key as string | null } : {}),
       ...(Object.hasOwn(record, "payload_digest") ? { payload_digest: record.payload_digest as string | null } : {}),
+      payload_digest_version: digestVersion,
       ...(Object.hasOwn(record, "rationale") ? { rationale: record.rationale as string | null } : {}),
       ...(Object.hasOwn(record, "verdict") ? { verdict: record.verdict as Record<string, unknown> | null } : {}),
       ...(Object.hasOwn(record, "prev_digest") ? { prev_digest: record.prev_digest as string } : {}),

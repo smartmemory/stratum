@@ -28,6 +28,7 @@ afterEach(async () => {
 describe("trusted evidence parser", () => {
   it("accepts every builtin with supported literal arguments", () => {
     expect(parsePredicateStatement("server_file_exists('proof.txt')")).toEqual({ name: "server_file_exists", args: ["proof.txt"] });
+    expect(parsePredicateStatement("server_file_contains('proof.txt', 'ready')")).toEqual({ name: "server_file_contains", args: ["proof.txt", "ready"] });
     expect(parsePredicateStatement('git_commit_exists("deadbeef")')).toEqual({ name: "git_commit_exists", args: ["deadbeef"] });
     expect(parsePredicateStatement("command_exit_zero(['true', '--quiet'])")).toEqual({ name: "command_exit_zero", args: [["true", "--quiet"]] });
     expect(parsePredicateStatement("verdict_receipt_clean('digest')")).toEqual({ name: "verdict_receipt_clean", args: ["digest"] });
@@ -81,6 +82,19 @@ describe("server_file_exists", () => {
       { id: "absolute", met: false, evidence: expect.stringContaining("path escapes workspace_root") },
       { id: "symlink", met: false, evidence: expect.stringContaining("path escapes workspace_root") },
     ]);
+  });
+});
+
+describe("server_file_contains", () => {
+  it("checks file content within the workspace jail", async () => {
+    const root = await tempRoot("stratum-guard-evidence-contains-");
+    await writeFile(join(root, "proof.txt"), "ready to ship", "utf8");
+    expect(await evaluateEvidence([{ statement: "server_file_contains('proof.txt', 'ready')" }], root, []))
+      .toMatchObject({ met: true, perPredicate: [{ met: true, evidence: "proof.txt contains requested text" }] });
+    expect(await evaluateEvidence([{ statement: "server_file_contains('proof.txt', 'missing')" }], root, []))
+      .toMatchObject({ met: false, perPredicate: [{ met: false, evidence: "proof.txt does not contain requested text" }] });
+    expect(await evaluateEvidence([{ statement: "server_file_contains('../proof.txt', 'ready')" }], root, []))
+      .toMatchObject({ met: false, perPredicate: [{ met: false, evidence: expect.stringContaining("path escapes workspace_root") }] });
   });
 });
 

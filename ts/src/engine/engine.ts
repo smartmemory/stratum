@@ -9,6 +9,10 @@ import { runAgent } from "../connectors/runner.js";
 import { extractReferences, type ExtractedReference, type PathSegment, type Reference } from "../ir/refs.js";
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
+import { mergeBundleIntoSpec, policyRuleKey, predicateType, validateBundle } from "../policy/bundle.js";
+import { buildFlowTerminalEvent, buildGateResolutionEvent } from "../policy/events.js";
+import { emitPolicyEvent as postPolicyEvent } from "../policy/smartmemory_client.js";
+import type { EnforcementEvent, PolicyBundle, RuleVerdict } from "../policy/types.js";
 import { BudgetLedger, type Budget, validUsage } from "./ledger.js";
 import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
 import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, StateStore, type StepState } from "./state.js";
@@ -112,6 +116,7 @@ interface ExecutionScope {
   input: unknown;
   steps: Record<string, StepState>;
   flow: Flow;
+  flowName: string;
   prefix?: string;
   parent?: { step: Step; state: StepState };
 }
@@ -228,6 +233,9 @@ export interface StratumEngineOptions {
 export interface PlanOptions {
   /** Root directory that file predicates (file_exists / file_contains) are jailed to. */
   workspaceRoot?: string;
+  policyBundle?: PolicyBundle;
+  /** Optional caller-side narrowing glob for policy ensure-rule bindings. */
+  policyStepSelector?: string;
 }
 
 export interface CommitResponse {
@@ -322,21 +330,38 @@ export class StratumEngine {
   async plan(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<RevisionedEngineResponse> {
     const validation = validateSpec(specInput);
     if (!validation.ok) throw new SpecValidationError(validation.errors);
-    const flowName = validation.value.flows.entry;
-    const flow = validation.value.flows[flowName];
+    let effectiveSpec = validation.value;
+    let policyFields: Pick<PersistedRun, "bundle_id" | "policy_rules" | "policy_rules_version" | "policy_verdicts"> = {};
+    if (options.policyBundle !== undefined) {
+      const bundle = validateBundle(options.policyBundle);
+      const merged = mergeBundleIntoSpec(effectiveSpec, bundle, options.policyStepSelector);
+      effectiveSpec = merged.spec;
+      policyFields = { bundle_id: merged.bundle_id, policy_rules: merged.policy_rules, policy_rules_version: 2, policy_verdicts: [] };
+      const policyBindings = Object.values(merged.policy_rules).flat();
+      const ruleCount = new Set(policyBindings.map((binding) => binding.rule_id)).size;
+      console.info(`policy bundle ${merged.bundle_id}: ${ruleCount} rules bound to ${policyBindings.length} step-predicate pairs`);
+      if (bundle.rules.some((rule) => rule.bind.kind === "ensure" && rule.on_fail === "gate")) {
+        console.warn("ensure policy rule on_fail=gate is enforced as refuse in P1; gate routing is deferred to P3");
+      }
+    }
+    const flowName = effectiveSpec.flows.entry;
+    const flow = effectiveSpec.flows[flowName];
     if (!flow) throw new Error("entry flow missing after validation");
     const steps: Record<string, StepState> = Object.create(null);
     for (const step of flow.steps) steps[step.id] = { status: "pending", attempts: [], spent: {} };
     const run: PersistedRun = {
-      id: randomUUID(), spec: validation.value, revisionDigest: digest(validation.value), generationCounter: 0,
+      id: randomUUID(), spec: effectiveSpec, revisionDigest: digest(effectiveSpec), generationCounter: 0,
       input, flowName, status: "running", flowSpent: {}, steps,
       events: [{ at: now(), type: "planned" }],
+      ...policyFields,
       // Canonicalize at plan time: a relative root must never re-resolve against a
       // different process cwd after restart.
       ...(options.workspaceRoot !== undefined ? { workspaceRoot: resolve(options.workspaceRoot) } : {}),
     };
     await this.persist(run);
-    return this.withRevisionDigest(await this.advance(run, validation.value, validation.contracts), run);
+    const effectiveValidation = validateSpec(effectiveSpec);
+    if (!effectiveValidation.ok) throw new SpecValidationError(effectiveValidation.errors);
+    return this.withRevisionDigest(await this.advance(run, effectiveValidation.value, effectiveValidation.contracts), run);
   }
 
   async flowRunBg(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<{ runId: string; status: "running" }> {
@@ -682,8 +707,20 @@ export class StratumEngine {
     return { status: bg.status };
   }
 
-  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken: string): Promise<EngineResponse> {
+  async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken: string, userId?: string): Promise<EngineResponse> {
     const response = await this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision, gateToken));
+    const resolvedRun = await this.loadRun(runId);
+    if (resolvedRun.bundle_id !== undefined) {
+      const round = resolvedRun.events.filter((event) => event.type === "gate_resolved" && event.stepId === stepId).length;
+      this.firePolicyEvent(buildGateResolutionEvent({
+        runId,
+        bundleId: resolvedRun.bundle_id,
+        stepId,
+        round,
+        outcome: decision,
+        ...(userId !== undefined ? { resolvedByUserId: userId } : {}),
+      }));
+    }
     const bg = this.bgFlows.get(runId);
     if (bg?.status === "paused_gate" && response.status !== "ready" && response.status !== "running") {
       bg.status = response.status;
@@ -773,13 +810,14 @@ export class StratumEngine {
   }
 
   private async completeTerminalGate(run: PersistedRun, flow: Flow, contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>): Promise<EngineResponse> {
-    const output = this.resolveFlowOutput({ input: run.input, steps: run.steps, flow });
+    const output = this.resolveFlowOutput({ input: run.input, steps: run.steps, flow, flowName: run.flowName });
     const parsed = contracts[flow.output.contract]?.safeParse(output);
     if (!parsed?.success) return this.terminalFailure(run, { attempt: 0, reason: parsed?.error.message ?? "flow output contract missing" });
     run.output = output;
     run.status = "completed";
     this.event(run, "completed", undefined, { output });
     await this.persist(run);
+    this.emitFlowTerminal(run);
     return this.response(run);
   }
 
@@ -935,6 +973,7 @@ export class StratumEngine {
       run.status = "completed";
       this.event(run, "completed", undefined, { output });
       await this.persist(run);
+      this.emitFlowTerminal(run);
       return this.response(run);
     }
     return this.failScope(run, spec, contracts, scope, "no runnable steps remain");
@@ -1764,7 +1803,7 @@ export class StratumEngine {
 
   /** Evaluates a step's ensure list in order; the first failing predicate wins. */
   private async runEnsures(run: PersistedRun, step: Step, state: StepState, output: unknown, scope: ExecutionScope = this.rootScope(run, this.validationFor(run).value), fanoutItem?: FanoutEnsureContext): Promise<EnsureOutcome> {
-    for (const predicate of step.ensure ?? []) {
+    for (const [ensureIndex, predicate] of (step.ensure ?? []).entries()) {
       if ("judged" in predicate) {
         const { statement, stakes } = predicate.judged;
         // The runner is an injected seam — validate its outcome; a malformed shape
@@ -1821,6 +1860,7 @@ export class StratumEngine {
           usage: { tokens: usage.tokens ?? 0, usd: usage.usd ?? 0 },
           ...(fanoutItem ? { itemIndex: fanoutItem.itemIndex, stage: fanoutItem.stage } : {}),
         });
+        this.recordPolicyVerdict(run, scope.flowName, step.id, ensureIndex, failureReason === undefined && outcome?.holds === true, "judged");
         if (budgetFailure === "flow") return { kind: "flow_budget" };
         if (budgetFailure === "subflow") return { kind: "subflow_budget", reason: "subflow budget exhausted (judged predicate)" };
         if (budgetFailure === "task") return { kind: "fail", reason: "task budget exhausted (judged predicate)" };
@@ -1836,6 +1876,7 @@ export class StratumEngine {
           ? `file_exists(${JSON.stringify(predicate.file_exists)})`
           : `file_contains(${JSON.stringify(predicate.file_contains.path)}, ${JSON.stringify(predicate.file_contains.text)})`;
       const verdict = this.ensurePredicate(expression, run, output, scope, fanoutItem);
+      this.recordPolicyVerdict(run, scope.flowName, step.id, ensureIndex, verdict.holds, predicateType(predicate));
       if (!verdict.holds) return { kind: "fail", reason: `ensure ${JSON.stringify(expression)} failed: ${verdict.reason}` };
     }
     return undefined;
@@ -2121,7 +2162,7 @@ export class StratumEngine {
   }
 
   private rootScope(run: PersistedRun, spec: Specification): ExecutionScope {
-    return { input: run.input, steps: run.steps, flow: this.flowFor(run, spec) };
+    return { input: run.input, steps: run.steps, flow: this.flowFor(run, spec), flowName: run.flowName };
   }
 
   private childScope(spec: Specification, parentStep: Step, parentState: StepState): ExecutionScope {
@@ -2132,6 +2173,7 @@ export class StratumEngine {
       input: parentState.sub.input,
       steps: parentState.sub.steps,
       flow,
+      flowName: parentStep.run,
       prefix: parentStep.id,
       parent: { step: parentStep, state: parentState },
     };
@@ -2318,7 +2360,8 @@ export class StratumEngine {
     // flow_not_found.
     try {
       return await this.loadRun(runId);
-    } catch {
+    } catch (error) {
+      if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error;
       throw new CheckpointOperationError("flow_not_found", `No active flow with id '${runId}'`);
     }
   }
@@ -2422,6 +2465,7 @@ export class StratumEngine {
     run.failure = failure;
     this.event(run, "budget_exhausted", undefined, failure);
     await this.persist(run);
+    this.emitFlowTerminal(run);
     return this.response(run);
   }
 
@@ -2430,7 +2474,42 @@ export class StratumEngine {
     run.failure = failure;
     this.event(run, "failed", undefined, failure);
     await this.persist(run);
+    this.emitFlowTerminal(run);
     return this.response(run);
+  }
+
+  private recordPolicyVerdict(
+    run: PersistedRun,
+    flowName: string,
+    stepId: string,
+    ensureIndex: number,
+    met: boolean,
+    predicateTypeValue: RuleVerdict["predicate_type"],
+  ): void {
+    const binding = run.policy_rules?.[policyRuleKey(flowName, stepId)]?.find((candidate) => candidate.ensure_index === ensureIndex);
+    if (binding === undefined) return;
+    (run.policy_verdicts ??= []).push({
+      rule_id: binding.rule_id,
+      source: structuredClone(binding.source),
+      met,
+      predicate_type: predicateTypeValue,
+    });
+  }
+
+  private emitFlowTerminal(run: PersistedRun): void {
+    if (run.bundle_id === undefined) return;
+    this.firePolicyEvent(buildFlowTerminalEvent({
+      runId: run.id,
+      bundleId: run.bundle_id,
+      outcome: run.status,
+      rulesEvaluated: run.policy_verdicts ?? [],
+    }));
+  }
+
+  private firePolicyEvent(event: EnforcementEvent): void {
+    void postPolicyEvent(event).catch((error) => {
+      console.warn(`policy event ${event.event_id} delivery failed: ${message(error)}`);
+    });
   }
 
   private response(run: PersistedRun): EngineResponse {

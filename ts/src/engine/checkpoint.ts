@@ -10,7 +10,7 @@ import type { CheckpointSnapshot, PersistedRun } from "./state.js";
  * detached/fanout mutable state -> cancelRequested / parallel
  */
 export const CHECKPOINT_FIELDS = [
-  "status", "output", "failure", "flowSpent", "rounds", "steps", "events", "cancelRequested", "parallel",
+  "status", "output", "failure", "flowSpent", "rounds", "steps", "events", "policy_verdicts", "cancelRequested", "parallel",
 ] as const satisfies readonly (keyof PersistedRun)[];
 
 export type CheckpointField = (typeof CHECKPOINT_FIELDS)[number];
@@ -24,6 +24,9 @@ export const CHECKPOINT_EXCLUDED = {
   input: "immutable flow input",
   flowName: "immutable flow selection",
   workspaceRoot: "immutable execution configuration",
+  bundle_id: "immutable policy bundle identity",
+  policy_rules: "immutable rule to ensure correlation",
+  policy_rules_version: "immutable scoped policy-rule format version",
   bgDriven: "ownership metadata set by background-run setup, not flow advancement",
   checkpoints: "checkpoint maps are not nested inside snapshots",
 } as const satisfies Record<Exclude<keyof PersistedRun, CheckpointField>, string>;
@@ -46,6 +49,7 @@ export function revertCheckpoint(run: PersistedRun, label: string): boolean {
   const mutableRun = run as unknown as Record<CheckpointField, unknown>;
   for (const field of CHECKPOINT_FIELDS) {
     if (Object.hasOwn(restored, field)) mutableRun[field] = restored[field];
+    else if (field === "policy_verdicts") continue;
     else delete mutableRun[field];
   }
   return true;
