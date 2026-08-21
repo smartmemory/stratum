@@ -14,6 +14,7 @@ import { evaluateJudgedViaCodex } from "../judge/codex_judged.js";
 import { createFixtureJudge } from "../judge/fixture_judged.js";
 import { evaluateJudged } from "../judge/judged.js";
 import type { GuardJudge } from "../guard/transition.js";
+import type { PolicyBundle } from "../policy/types.js";
 import { compileSpeckit, SpeckitCompileError } from "../speckit/compiler.js";
 import { assertEvent, assertShape, assertToolRequest, assertToolResponse, mcpSurface, validateShape, type OneOfShape, type Shape } from "./contracts.js";
 
@@ -123,13 +124,21 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           response = validation.ok ? { status: "valid" } : { status: "invalid", errors: validation.errors };
           break;
         }
-        case "stratum_plan": response = await engine.plan(request.spec, request.input, option(request, "workspaceRoot")); break;
+        case "stratum_plan": {
+          const policyStepSelector = optionalString(request, "policy_step_selector");
+          response = await engine.plan(request.spec, request.input, {
+            ...option(request, "workspaceRoot"),
+            ...(request.policy_bundle !== undefined ? { policyBundle: record(request, "policy_bundle") as unknown as PolicyBundle } : {}),
+            ...(policyStepSelector !== undefined ? { policyStepSelector } : {}),
+          });
+          break;
+        }
         case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result"), string(request, "dispatchToken")); break;
         case "stratum_commit": response = { ...await engine.commit(string(request, "flow_id"), string(request, "label")) }; break;
         case "stratum_revert": response = await engine.revert(string(request, "flow_id"), string(request, "label")); break;
         case "stratum_resume": response = await engine.resume(string(request, "runId")); break;
         case "stratum_audit": response = auditResponse(await engine.audit(string(request, "runId"))); break;
-        case "stratum_gate_resolve": response = await engine.gateResolve(string(request, "runId"), string(request, "stepId"), string(request, "decision") as "approve" | "revise" | "kill", string(request, "gateToken")); break;
+        case "stratum_gate_resolve": response = await engine.gateResolve(string(request, "runId"), string(request, "stepId"), string(request, "decision") as "approve" | "revise" | "kill", string(request, "gateToken"), optionalString(request, "user_id")); break;
         case "stratum_flow_poll": response = flowPollResponse(await engine.flowPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
         case "stratum_flow_run_bg": response = await engine.flowRunBg(request.spec, request.input, option(request, "workspaceRoot")); break;
         case "stratum_flow_bg_poll": response = bgFlowPollResponse(await engine.flowBgPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
@@ -168,20 +177,22 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         case "stratum_cancel_agent_run": response = await agentCancel(string(request, "runId")); break;
         case "stratum_guard_register": {
           const { registerGuard } = await import("../guard/transition.js");
-          response = await registerGuard(string(request, "resource_id"), record(request, "graph") as Record<string, string[]>, record(request, "edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "initial"), optionalArray(request, "terminal"), optionalRecord(request, "stakes"), optionalString(request, "workspace_root") ?? null);
+          response = await registerGuard(string(request, "resource_id"), record(request, "graph") as Record<string, string[]>, record(request, "edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "initial"), optionalArray(request, "terminal"), optionalRecord(request, "stakes"), optionalString(request, "workspace_root") ?? null, request.policy_bundle !== undefined ? record(request, "policy_bundle") as unknown as PolicyBundle : undefined);
           break;
         }
         case "stratum_guard_transition": {
           const { guardTransition } = await import("../guard/transition.js");
+          const runId = optionalString(request, "run_id");
           response = await guardTransition(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), {
             artifacts: record(request, "artifacts") as Record<string, string>, modifiedFiles: optionalArray(request, "modified_files"), idempotencyKey: optionalString(request, "idempotency_key") ?? null, resolvedBy: optionalString(request, "resolved_by") ?? "agent",
+            ...(runId !== undefined ? { runId } : {}),
             ...(dependencies.guardJudge !== undefined ? { judge: dependencies.guardJudge } : {}),
           });
           break;
         }
         case "stratum_guard_override": {
           const { guardOverride } = await import("../guard/transition.js");
-          response = await guardOverride(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), string(request, "authorization"), string(request, "rationale"), optionalString(request, "resolved_by") ?? "human");
+          response = await guardOverride(string(request, "resource_id"), string(request, "from_state"), string(request, "to_state"), string(request, "authorization"), string(request, "rationale"), optionalString(request, "resolved_by") ?? "human", optionalString(request, "user_id"), optionalString(request, "run_id"));
           break;
         }
         case "stratum_guard_migrate": {

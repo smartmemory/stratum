@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { registerGuard, guardTransition, _payloadDigest } from "../guard/transition.js";
-import { readLedger, resourceDir } from "../guard/store.js";
+import { guardTransition, noteLegacyDigestMatch, payloadDigestForVersion, registerGuard } from "../guard/transition.js";
+import { loadRegistry, readLedger, resourceDir } from "../guard/store.js";
 import { resourceLock } from "../guard/lock.js";
 import type { FailureRecord } from "./harvest.js";
 import type { PatchCandidate } from "./candidate.js";
@@ -448,7 +448,7 @@ export async function applyCandidate(
 }
 
 /** A ledger receipt, or why we could not read one. */
-type Receipt =
+export type Receipt =
   | { kind: "committed"; state: "applied" | "reverted" }
   | { kind: "absent" }
   | { kind: "unreadable" };
@@ -461,7 +461,7 @@ type Receipt =
  * target, under it. So the receipt must match the transition payload we would have
  * committed for exactly this entry.
  */
-function ledgerReceipt(entry: JournalEntry): Receipt {
+export function ledgerReceipt(entry: JournalEntry): Receipt {
   const resource = guardResource(entry.applyId);
   let entries;
   try {
@@ -487,28 +487,32 @@ function ledgerReceipt(entry: JournalEntry): Receipt {
   if (rawLines > entries.length) return { kind: "unreadable" };
   if (entries.length === 0) return { kind: "absent" };
 
-  const appliedDigest = _payloadDigest(
-    "applying",
-    "applied",
-    { after_digest: entry.afterDigest },
-    [entry.targetPath],
-    "agent",
-  );
-  const revertedDigest = _payloadDigest(
-    "applied",
-    "reverted",
-    { reverted_to: entry.beforeDigest },
-    [entry.targetPath],
-    "agent",
-  );
+  let policyChecksum: string;
+  try {
+    const registry = loadRegistry(resource);
+    if (registry === null) return { kind: "unreadable" };
+    policyChecksum = registry.checksum;
+  } catch {
+    return { kind: "unreadable" };
+  }
 
   let receipt: Receipt = { kind: "absent" };
   for (const row of entries) {
     const dict = row.toDict();
+    const appliedDigest = payloadDigestForVersion(
+      "applying", "applied", { after_digest: entry.afterDigest }, [entry.targetPath], "agent", policyChecksum,
+      row.payload_digest_version,
+    );
+    const revertedDigest = payloadDigestForVersion(
+      "applied", "reverted", { reverted_to: entry.beforeDigest }, [entry.targetPath], "agent", policyChecksum,
+      row.payload_digest_version,
+    );
     if (dict.to_state === "applied" && dict.payload_digest === appliedDigest) {
+      if (row.payload_digest_version === 1) noteLegacyDigestMatch(resource);
       receipt = { kind: "committed", state: "applied" };
     }
     if (dict.to_state === "reverted" && dict.payload_digest === revertedDigest) {
+      if (row.payload_digest_version === 1) noteLegacyDigestMatch(resource);
       // A revert receipt wins: it is strictly later in this resource's lifecycle.
       return { kind: "committed", state: "reverted" };
     }

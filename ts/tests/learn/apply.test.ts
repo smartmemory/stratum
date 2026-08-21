@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
+import { GUARDS_DIR, GuardRegistry, computeEntryDigest, persistRegistry, resourceDir, setGuardsDir } from "../../src/guard/store.js";
+import { canonicalJson } from "../../src/guard/canonical.js";
 import { guardTransition } from "../../src/guard/transition.js";
 import { harvest } from "../../src/learn/harvest.js";
 import { classify } from "../../src/learn/classify.js";
@@ -16,9 +17,11 @@ import {
   admit,
   applyCandidate,
   journalPath,
+  ledgerReceipt,
   readJournal,
   reconcile,
   revertApply,
+  type JournalEntry,
 } from "../../src/learn/apply.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,6 +79,21 @@ function reid(candidate: PatchCandidate): PatchCandidate {
       )
       .digest("hex"),
   };
+}
+
+function legacyPayloadDigest(
+  fromState: string,
+  toState: string,
+  artifacts: Record<string, string>,
+  modifiedFiles: string[],
+): string {
+  return createHash("sha256").update(canonicalJson({
+    from_state: fromState,
+    to_state: toState,
+    artifacts,
+    modified_files: [...modifiedFiles].sort(),
+    resolved_by: "agent",
+  }), "utf8").digest("hex");
 }
 
 describe("default OFF", () => {
@@ -429,6 +447,54 @@ describe("recovery", () => {
     expect(report.rolledBack).toBe(0);
     expect(report.completed).toBe(1);
     expect(await readFile(candidate.targetPath, "utf8")).toBe(after);
+  });
+
+  it("finds a pre-version legacy ledger receipt for apply recovery", async () => {
+    const entry: JournalEntry = {
+      applyId: "legacy-receipt",
+      state: "applying",
+      clusterId: "cluster",
+      revisionId: "revision",
+      targetPath: join(root, ".stratum", "learn", "notes.md"),
+      before: "before",
+      beforeDigest: createHash("sha256").update("before").digest("hex"),
+      after: "after",
+      afterDigest: createHash("sha256").update("after").digest("hex"),
+      existedBefore: true,
+      evidence: [],
+      verdicts: [],
+      at: "2026-08-22T00:00:00.000Z",
+    };
+    const resource = `learn-apply-${entry.applyId}`;
+    persistRegistry(new GuardRegistry({
+      resource_id: resource,
+      graph: { applying: ["applied"], applied: [] },
+      edge_predicates: {},
+      initial: "applying",
+      checksum: "pre-change-checksum",
+    }));
+    const core = {
+      ts_ms: 1,
+      from_state: "applying",
+      to_state: "applied",
+      outcome: "applied",
+      kind: "transition",
+      resolved_by: "agent",
+      idempotency_key: `${entry.applyId}:applied`,
+      payload_digest: legacyPayloadDigest("applying", "applied", { after_digest: entry.afterDigest }, [entry.targetPath]),
+      rationale: null,
+      verdict: { met: true },
+      prev_digest: "",
+    };
+    const entryDigest = computeEntryDigest(core, "");
+    await mkdir(resourceDir(resource), { recursive: true });
+    await writeFile(
+      join(resourceDir(resource), "ledger.jsonl"),
+      `${canonicalJson({ ...core, entry_digest: entryDigest })}\n`,
+      "utf8",
+    );
+
+    expect(ledgerReceipt(entry)).toEqual({ kind: "committed", state: "applied" });
   });
 
   it("rolls back a genuinely uncommitted apply whose write landed", async () => {

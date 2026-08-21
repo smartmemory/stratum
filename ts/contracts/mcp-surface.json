@@ -43,7 +43,7 @@
       }
     },
     "stratum_plan": {
-      "request": { "spec": "object", "input": "object", "workspaceRoot?": "string" },
+      "request": { "spec": "object", "input": "object", "workspaceRoot?": "string", "policy_bundle?": "object", "policy_step_selector?": "string" },
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
@@ -114,7 +114,7 @@
       }
     },
     "stratum_gate_resolve": {
-      "request": { "runId": "string", "stepId": "string", "decision": "string", "gateToken": "string" },
+      "request": { "runId": "string", "stepId": "string", "decision": "string", "gateToken": "string", "user_id?": "string" },
       "responses": {
         "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
           { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
@@ -186,7 +186,7 @@
       }
     },
     "stratum_guard_register": {
-      "request": { "resource_id": "string", "graph": "object", "edge_predicates": "object", "initial": "string", "terminal?": "array|null", "stakes?": "object|null", "workspace_root?": "string|null" },
+      "request": { "resource_id": "string", "graph": "object", "edge_predicates": "object", "initial": "string", "terminal?": "array|null", "stakes?": "object|null", "workspace_root?": "string|null", "policy_bundle?": "object" },
       "responses": {
         "registered": { "guard_id": "string", "checksum": "string" },
         "exists": { "guard_id": "string", "checksum": "string" },
@@ -194,18 +194,18 @@
       }
     },
     "stratum_guard_transition": {
-      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "artifacts": "object", "modified_files?": "array|null", "idempotency_key?": "string|null", "resolved_by?": "string" },
+      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "artifacts": "object", "modified_files?": "array|null", "idempotency_key?": "string|null", "resolved_by?": "string", "run_id?": "string" },
       "responses": {
-        "applied": { "verdict": "object", "ledger_ref": "string", "current_state": "string" },
-        "refused": { "verdict": "object", "ledger_ref": "string", "current_state": "string" },
-        "replayed": { "verdict": "object", "ledger_ref": "string", "current_state": "string" },
+        "applied": { "verdict": "object", "ledger_ref": "string", "current_state": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
+        "refused": { "verdict": "object", "ledger_ref": "string", "current_state": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
+        "replayed": { "verdict": "object", "ledger_ref": "string", "current_state": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
         "error": { "error_type": "string", "message": "string" }
       }
     },
     "stratum_guard_override": {
-      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "authorization": "string", "rationale": "string", "resolved_by?": "string" },
+      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "authorization": "string", "rationale": "string", "resolved_by?": "string", "user_id?": "string", "run_id?": "string" },
       "responses": {
-        "deviation": { "ledger_ref": "string", "current_state": "string", "rationale": "string", "authorized_by": "string" },
+        "deviation": { "ledger_ref": "string", "current_state": "string", "rationale": "string", "authorized_by": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
         "error": { "error_type": "string", "message": "string" }
       }
     },

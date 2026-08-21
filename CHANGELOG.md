@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### feat(policy): GOV-STRATUM-SEAM-1 P1 — SmartMemory policy source (local runner)
+
+Stratum can now consume a SmartMemory **policy bundle** at plan time and report
+every enforcement decision back. Contract:
+`smart-memory-docs/docs/features/GOV-STRATUM-SEAM-1/predicate-exchange-contract.json`;
+decision record `docs/decisions/2026-08-21-enforcement-seam.md` (D2, D3).
+
+- `stratum_plan` accepts `policy_bundle` and an optional `policy_step_selector`
+  (narrows, never widens). Ensure rules are merged into matching `do` steps; the
+  rule ↔ predicate mapping lives in a persisted `policy_rules` side-channel keyed
+  by `flow/step` (`policy_rules_version: 2`; versionless maps migrate when the
+  step id is unambiguous, otherwise resume/revert refuse and ask for a re-plan).
+- `stratum_guard_register` accepts `policy_bundle`; guard-edge rules carry their
+  SmartMemory `source` (record id, version, `content_hash`, `chain_hash`) inside
+  the registered predicate, so it is covered by `guardChecksum`. Rule-level
+  `judged.stakes` raise the effective edge stake; paranoid edges still require a
+  deterministic predicate. Guard-edge `expr` and `on_fail: "gate"` are refused in
+  P1 (not evaluable / routing deferred to P3).
+- Ledger entries gain `payload_digest_version` (absent/1 legacy, 2 checksum-bound):
+  new transitions bind the registry checksum into `payload_digest`, replay and
+  learn/apply recovery recompute legacy entries with legacy material, mixed
+  chains verify.
+- `stratum_guard_transition` / `stratum_guard_override` return `entry_digest`,
+  `prev_digest`, `payload_digest`; both accept `run_id`; override and
+  `stratum_gate_resolve` accept `user_id` for human attribution.
+- `ts/src/policy/smartmemory_client.ts`: posts `enforcement_event`s for
+  `guard_transition`, `gate_resolution`, `flow_terminal` to
+  `POST /memory/policy/events` (`SMARTMEMORY_API_URL`, `SMARTMEMORY_API_KEY`,
+  `SMARTMEMORY_WORKSPACE_ID`; disabled mode warns once). Fire-and-forget;
+  failures queue in `~/.stratum/policy-outbox/` (0700/0600, sha256 filenames,
+  1000 files / 50 MB cap, jittered backoff, fenced single-flight drain via a
+  token-bound lock with atomic tombstone takeover/release).
+- `server_file_contains` trusted evaluator added so `file_contains` guard rules
+  are enforceable.
+- MCP surface contract (`ts/contracts/mcp-surface.json`) updated for the new args
+  and response fields.
+
 ### feat(guard)!: STRAT-GUARD-AUTHZ — signed authorization, retiring the override token
 
 **Breaking:** `guardOverride` and `guardMigrate` take an `authorization` (a

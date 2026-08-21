@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CommandExecutionDisabled,
   EvidenceParseError,
@@ -20,6 +21,7 @@ import {
 import { AUTHORIZATION_NAMESPACES, authorizationPayload } from "../../src/guard/authorization.js";
 import { setGuardTrustRootForTests } from "../../src/guard/trust.js";
 import { guardChecksum } from "../../src/guard/fingerprint.js";
+import { canonicalJson } from "../../src/guard/canonical.js";
 import {
   _ledgerHead,
   guardHistory,
@@ -37,6 +39,7 @@ import {
   LedgerEntry,
   ResourceLockManager,
   appendLedger,
+  computeEntryDigest,
   loadRegistry,
   persistRegistry,
   resourceDir,
@@ -278,10 +281,52 @@ describe("guard transition orchestration", () => {
     await registerSimple();
     const first = await guardTransition("r", "draft", "shipped", { idempotencyKey: "k" });
     const replay = await guardTransition("r", "draft", "shipped", { idempotencyKey: "k" });
-    expect(replay).toEqual({ status: "replayed", verdict: first.verdict, ledger_ref: first.ledger_ref, current_state: "shipped" });
+    expect(replay).toEqual({
+      status: "replayed", verdict: first.verdict, ledger_ref: first.ledger_ref, current_state: "shipped",
+      entry_digest: first.entry_digest, prev_digest: first.prev_digest, payload_digest: first.payload_digest,
+    });
     await expect(guardTransition("r", "draft", "shipped", { idempotencyKey: "k", artifacts: { x: "different" } }))
       .rejects.toBeInstanceOf(IdempotencyConflict);
     expect(guardHistory("r").ledger).toHaveLength(1);
+  });
+
+  it("replays a pre-version legacy payload digest, logs once, and still conflicts on changed inputs", async () => {
+    await registerGuard("legacy-replay", { draft: ["shipped"], shipped: [] }, {}, "draft", ["shipped"]);
+    const material = canonicalJson({
+      from_state: "draft", to_state: "shipped", artifacts: { proof: "same" }, modified_files: ["a", "z"], resolved_by: "agent",
+    });
+    const core = {
+      ts_ms: 1_735_689_600_123,
+      from_state: "draft",
+      to_state: "shipped",
+      outcome: "applied",
+      kind: "transition",
+      resolved_by: "agent",
+      idempotency_key: "legacy-key",
+      payload_digest: createHash("sha256").update(material, "utf8").digest("hex"),
+      rationale: null,
+      verdict: { clean: true, met: true },
+      prev_digest: "",
+    };
+    const entryDigest = computeEntryDigest(core, "");
+    await writeFile(
+      join(resourceDir("legacy-replay"), "ledger.jsonl"),
+      `${canonicalJson({ ...core, entry_digest: entryDigest })}\n`,
+      "utf8",
+    );
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    await expect(guardTransition("legacy-replay", "draft", "shipped", {
+      idempotencyKey: "legacy-key", artifacts: { proof: "same" }, modifiedFiles: ["z", "a"],
+    })).resolves.toMatchObject({ status: "replayed", ledger_ref: entryDigest, payload_digest: core.payload_digest });
+    await expect(guardTransition("legacy-replay", "draft", "shipped", {
+      idempotencyKey: "legacy-key", artifacts: { proof: "same" }, modifiedFiles: ["a", "z"],
+    })).resolves.toMatchObject({ status: "replayed" });
+    await expect(guardTransition("legacy-replay", "draft", "shipped", {
+      idempotencyKey: "legacy-key", artifacts: { proof: "changed" }, modifiedFiles: ["a", "z"],
+    })).rejects.toBeInstanceOf(IdempotencyConflict);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("guard legacy-replay: matched legacy payload digest version 1");
   });
 
   it("routes LLM predicates at edge stakes and ANDs their verdict with deterministic evidence", async () => {
@@ -378,7 +423,10 @@ describe("guard transition orchestration", () => {
     expect(first).toMatchObject({ status: "applied", verdict: { meta: { judge_results: [{ usage: { tokens: 1 } }] } } });
     expectCanonicalSafeNumbers(first.verdict);
     const replay = await guardTransition("r", "a", "b", { idempotencyKey: "fractional" });
-    expect(replay).toEqual({ status: "replayed", verdict: first.verdict, ledger_ref: first.ledger_ref, current_state: "b" });
+    expect(replay).toEqual({
+      status: "replayed", verdict: first.verdict, ledger_ref: first.ledger_ref, current_state: "b",
+      entry_digest: first.entry_digest, prev_digest: first.prev_digest, payload_digest: first.payload_digest,
+    });
     expectCanonicalSafeNumbers(replay.verdict);
   });
 });

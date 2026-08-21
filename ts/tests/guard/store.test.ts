@@ -241,4 +241,35 @@ describe("guard ledger recovery and lookup", () => {
     expect(findByIdempotencyKey("idem", "missing")).toBeNull();
     expect(findByIdempotencyKey("idem", null)).toBeNull();
   });
+
+  it("verifies a mixed pre-version legacy and payload-digest-version-2 chain", async () => {
+    await tempGuardsRoot();
+    const legacyCore = {
+      ts_ms: 1,
+      from_state: "draft",
+      to_state: "review",
+      outcome: "applied",
+      kind: "transition",
+      resolved_by: "agent",
+      idempotency_key: "legacy",
+      payload_digest: "a".repeat(64),
+      rationale: null,
+      verdict: { met: true },
+      prev_digest: "",
+    };
+    const legacyDigest = computeEntryDigest(legacyCore, "");
+    const path = join(resourceDir("mixed-version"), "ledger.jsonl");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, `${canonicalJson({ ...legacyCore, entry_digest: legacyDigest })}\n`, "utf8");
+
+    appendLedger("mixed-version", entry({
+      ts_ms: 2, from_state: "review", to_state: "done", idempotency_key: "current", payload_digest: "b".repeat(64),
+    }));
+
+    const rawLines = (await readFile(path, "utf8")).trimEnd().split("\n");
+    expect(JSON.parse(rawLines[0]!)).not.toHaveProperty("payload_digest_version");
+    expect(JSON.parse(rawLines[1]!)).toMatchObject({ payload_digest_version: 2, prev_digest: legacyDigest });
+    expect(readLedger("mixed-version").map((ledgerEntry) => ledgerEntry.payload_digest_version)).toEqual([1, 2]);
+    expect(verifyChain(path)).toBe(true);
+  });
 });

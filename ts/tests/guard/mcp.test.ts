@@ -65,7 +65,13 @@ describe.sequential("guard MCP boundary", () => {
     expect(registered).toMatchObject({ guard_id: "mcp", status: "registered" });
 
     const transitioned = await subject.call("stratum_guard_transition", { resource_id: "mcp", from_state: "draft", to_state: "review", artifacts: {} });
-    expect(transitioned).toMatchObject({ status: "applied", current_state: "review" });
+    expect(transitioned).toMatchObject({
+      status: "applied",
+      current_state: "review",
+      entry_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      prev_digest: "",
+      payload_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
 
     const migrated = await subject.call("stratum_guard_migrate", {
       resource_id: "mcp", new_graph: policy("mcp").graph, new_edge_predicates: policy("mcp").edge_predicates,

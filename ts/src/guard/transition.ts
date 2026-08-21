@@ -58,6 +58,10 @@ import {
   type Stakes,
 } from "../judge/judged.js";
 import { judgeBackend } from "../mcp/server.js";
+import { guardEdgePredicatesFor, sourceFromPredicate, validateBundle } from "../policy/bundle.js";
+import { buildGuardTransitionEvent } from "../policy/events.js";
+import { emitPolicyEvent } from "../policy/smartmemory_client.js";
+import type { PolicyBundle, RuleVerdict } from "../policy/types.js";
 
 const TRUSTED_TYPE = "deterministic";
 const RESERVED_STATE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
@@ -73,6 +77,8 @@ type LockFunction = typeof resourceLock;
 type FenceFunction = typeof assertStillHeld;
 let acquireResourceLock: LockFunction = resourceLock;
 let fenceResourceLock: FenceFunction = assertStillHeld;
+let warnedGuardRunIdFallback = false;
+const legacyDigestMatchesLogged = new Set<string>();
 
 /** Replace only the orchestration lock seams in isolated tests. */
 export function setGuardLockingForTests(lock: LockFunction, fence: FenceFunction): () => void {
@@ -91,6 +97,8 @@ export interface GuardTransitionOptions {
   modifiedFiles?: string[];
   idempotencyKey?: string | null;
   resolvedBy?: string;
+  /** Flow correlation ID for policy events; resourceId remains the legacy fallback. */
+  runId?: string;
   /** `undefined` selects the configured production backend; `null` means unavailable. */
   judge?: GuardJudge | null;
 }
@@ -114,15 +122,56 @@ export function _payloadDigest(
   artifacts: Record<string, string>,
   modifiedFiles: string[],
   resolvedBy: string,
+  policyChecksum: string,
 ): string {
-  const canonical = canonicalJson({
+  return payloadDigestForVersion(fromState, toState, artifacts, modifiedFiles, resolvedBy, policyChecksum, 2);
+}
+
+/** Recompute persisted digest material according to the entry that owns it. */
+export function payloadDigestForVersion(
+  fromState: string,
+  toState: string,
+  artifacts: Record<string, string>,
+  modifiedFiles: string[],
+  resolvedBy: string,
+  policyChecksum: string,
+  digestVersion: 1 | 2,
+): string {
+  // The registry checksum covers graph, source-stamped edge predicates,
+  // terminal states, and effective stakes. Signing it into every transition
+  // payload makes the enforced policy replay-stable ledger material.
+  const material: Record<string, unknown> = {
     from_state: fromState,
     to_state: toState,
     artifacts,
     modified_files: [...modifiedFiles].sort(),
     resolved_by: resolvedBy,
-  });
+  };
+  if (digestVersion === 2) material.policy_checksum = policyChecksum;
+  const canonical = canonicalJson(material);
   return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+export function noteLegacyDigestMatch(resourceId: string): void {
+  if (legacyDigestMatchesLogged.has(resourceId)) return;
+  legacyDigestMatchesLogged.add(resourceId);
+  console.info(`guard ${resourceId}: matched legacy payload digest version 1`);
+}
+
+type PayloadDigests = Readonly<{ 1: string; 2: string }>;
+
+function payloadDigests(
+  fromState: string,
+  toState: string,
+  artifacts: Record<string, string>,
+  modifiedFiles: string[],
+  resolvedBy: string,
+  policyChecksum: string,
+): PayloadDigests {
+  return {
+    1: payloadDigestForVersion(fromState, toState, artifacts, modifiedFiles, resolvedBy, policyChecksum, 1),
+    2: payloadDigestForVersion(fromState, toState, artifacts, modifiedFiles, resolvedBy, policyChecksum, 2),
+  };
 }
 
 function assertTsOwnedForMutation(resourceId: string): void {
@@ -221,6 +270,7 @@ type JudgeAggregate = {
   meta: Verdict;
   dollars: number;
   turns: number;
+  evaluations: Array<{ predicate: Predicate; met: boolean }>;
 };
 
 export function _mergeVerdict(evidence: EvidenceResult, judgeResult: JudgeAggregate, stakes: string): [boolean, Verdict] {
@@ -311,7 +361,7 @@ export function _validatePolicy(
     }
     const parsed = parsePredicateStatement(statement);
     if (parsed.name === "command_exit_zero") usesCommand = true;
-    if (["server_file_exists", "git_commit_exists", "command_exit_zero"].includes(parsed.name)) needsWorkspace = true;
+    if (["server_file_exists", "server_file_contains", "git_commit_exists", "command_exit_zero"].includes(parsed.name)) needsWorkspace = true;
   }
 
   if (usesCommand && !commandsAllowed()) {
@@ -348,9 +398,20 @@ export async function registerGuard(
   terminal: string[] = [],
   stakes: Record<string, string> = {},
   workspaceRoot: string | null = null,
+  policyBundle?: PolicyBundle,
 ): Promise<{ guard_id: string; checksum: string; status: "registered" | "exists" }> {
-  _validatePolicy(graph, edgePredicates, initial, terminal, stakes, workspaceRoot);
-  const checksum = guardChecksum(graph, edgePredicates, terminal, stakes);
+  const bundle = policyBundle === undefined ? undefined : validateBundle(policyBundle);
+  let effectivePredicates = edgePredicates;
+  const effectiveStakes = structuredClone(stakes);
+  if (bundle !== undefined) {
+    effectivePredicates = structuredClone(edgePredicates);
+    for (const [fromState, targets] of Object.entries(graph)) {
+      for (const toState of targets) effectivePredicates[`${fromState}->${toState}`] ??= [];
+    }
+    effectivePredicates = guardEdgePredicatesFor(bundle, resourceId, effectivePredicates, effectiveStakes);
+  }
+  _validatePolicy(graph, effectivePredicates, initial, terminal, effectiveStakes, workspaceRoot);
+  const checksum = guardChecksum(graph, effectivePredicates, terminal, effectiveStakes);
   const resourceDirectoryExisted = existsSync(resourceDir(resourceId));
 
   const status = await acquireResourceLock(resourceId, async ({ token }) => {
@@ -361,7 +422,16 @@ export async function registerGuard(
     }
     const existing = loadRegistryRaw(resourceId);
     if (existing !== null) {
-      if (existing.checksum === checksum) return "exists" as const;
+      if (existing.checksum === checksum) {
+        if (bundle !== undefined && existing.bundle_id !== bundle.bundle_id) {
+          const previousBundleId = existing.bundle_id;
+          existing.bundle_id = bundle.bundle_id;
+          await fenceResourceLock(resourceId, token);
+          persistRegistry(existing);
+          console.info(`guard ${resourceId}: refreshed bundle_id from ${previousBundleId ?? "<unset>"} to ${bundle.bundle_id}`);
+        }
+        return "exists" as const;
+      }
       throw new GuardAlreadyRegistered(
         `guard ${JSON.stringify(resourceId)} already registered with a different policy; use migrate`,
       );
@@ -369,14 +439,15 @@ export async function registerGuard(
     const registry = new GuardRegistry({
       resource_id: resourceId,
       graph,
-      edge_predicates: edgePredicates,
+      edge_predicates: effectivePredicates,
       initial,
       terminal,
-      stakes,
+      stakes: effectiveStakes,
       checksum,
       graph_version: 1,
       workspace_root: workspaceRoot,
       current_state: initial,
+      ...(bundle !== undefined ? { bundle_id: bundle.bundle_id } : {}),
     });
     await fenceResourceLock(resourceId, token);
     persistRegistry(registry);
@@ -388,20 +459,29 @@ export async function registerGuard(
 export function _maybeReplay(
   registry: GuardRegistry,
   idempotencyKey: string | null | undefined,
-  payloadDigest: string,
-): { status: "replayed"; verdict: Verdict; ledger_ref: string; current_state: string } | null {
+  digests: PayloadDigests,
+): { status: "replayed"; verdict: Verdict; ledger_ref: string; current_state: string; entry_digest: string; prev_digest: string; payload_digest: string } | null {
   if (!idempotencyKey) return null;
   const prior = findByIdempotencyKey(registry.resource_id, idempotencyKey);
   if (prior === null) return null;
-  if (prior.payload_digest !== payloadDigest) {
+  if (prior.payload_digest !== digests[prior.payload_digest_version]) {
     throw new IdempotencyConflict(`idempotency_key ${JSON.stringify(idempotencyKey)} reused with a different payload`);
   }
+  if (prior.payload_digest_version === 1) noteLegacyDigestMatch(registry.resource_id);
   const verdict = prior.verdict ?? _evidenceToVerdictDict(
     { met: prior.outcome === "applied", perPredicate: [] },
     registry.stakes[_edgeKey(prior.from_state, prior.to_state)] ?? "default",
     "replayed idempotent transition",
   );
-  return { status: "replayed", verdict, ledger_ref: prior.entry_digest, current_state: registry.current_state };
+  return {
+    status: "replayed",
+    verdict,
+    ledger_ref: prior.entry_digest,
+    current_state: registry.current_state,
+    entry_digest: prior.entry_digest,
+    prev_digest: prior.prev_digest,
+    payload_digest: prior.payload_digest ?? "",
+  };
 }
 
 function defaultJudge(): GuardJudge {
@@ -451,6 +531,7 @@ async function evaluateLlmPredicates(
     // estimate remains operational telemetry rather than ledger material.
     dollars: 0,
     turns: results.length,
+    evaluations: results.map(({ predicate, result }) => ({ predicate, met: result.holds })),
   };
 }
 
@@ -459,13 +540,14 @@ export async function guardTransition(
   fromState: string,
   toState: string,
   options: GuardTransitionOptions = {},
-): Promise<{ status: TransitionStatus | "replayed"; verdict: Verdict; ledger_ref: string; current_state: string }> {
+): Promise<{ status: TransitionStatus | "replayed"; verdict: Verdict; ledger_ref: string; current_state: string; entry_digest: string; prev_digest: string; payload_digest: string }> {
   const artifacts = options.artifacts ?? {};
   const modifiedFiles = options.modifiedFiles ?? [];
   const idempotencyKey = options.idempotencyKey ?? null;
   const resolvedBy = options.resolvedBy ?? "agent";
-  const payloadDigest = _payloadDigest(fromState, toState, artifacts, modifiedFiles, resolvedBy);
-
+  if (resolvedBy !== "agent" && resolvedBy !== "human") {
+    throw new EvidenceParseError(`resolved_by must be "agent" or "human", got ${JSON.stringify(resolvedBy)}`);
+  }
   // Phase 1: cheap structural checks while holding the resource lock.
   const snapshot = await acquireResourceLock(resourceId, () => {
     assertTsOwnedForMutation(resourceId);
@@ -474,7 +556,8 @@ export async function guardTransition(
     if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
       throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch`);
     }
-    const replay = _maybeReplay(registry, idempotencyKey, payloadDigest);
+    const digests = payloadDigests(fromState, toState, artifacts, modifiedFiles, resolvedBy, registry.checksum);
+    const replay = _maybeReplay(registry, idempotencyKey, digests);
     if (replay !== null) return { replay } as const;
     if (fromState !== registry.current_state) {
       throw new StaleFromState(`from_state ${JSON.stringify(fromState)} != current_state ${JSON.stringify(registry.current_state)}`);
@@ -490,14 +573,19 @@ export async function guardTransition(
       stakes: registry.stakes[edge] ?? "default",
       workspaceRoot: registry.workspace_root,
       ledgerEntries: readLedger(resourceId),
+      payloadDigests: digests,
     } as const;
   });
   if (snapshot.replay !== null) return snapshot.replay;
+  const digests = snapshot.payloadDigests;
+  const payloadDigest = digests[2];
 
   // Phase 2: evidence and judge evaluation deliberately run outside the lock.
   const trusted = snapshot.predicates.filter((predicate) => _ptype(predicate) === TRUSTED_TYPE);
   const llm = snapshot.predicates.filter((predicate) => LLM_TYPES.has(_ptype(predicate)));
   const evidence = await evaluateEvidence(trusted as EvidencePredicate[], snapshot.workspaceRoot, snapshot.ledgerEntries);
+  const predicateResults = new Map<Predicate, boolean>();
+  trusted.forEach((predicate, index) => predicateResults.set(predicate, evidence.perPredicate[index]?.met ?? false));
 
   let combinedMet: boolean;
   let verdict: Verdict;
@@ -506,6 +594,7 @@ export async function guardTransition(
     verdict = _evidenceToVerdictDict(evidence, snapshot.stakes, "guard transition verdict");
   } else if (options.judge === null) {
     combinedMet = false;
+    for (const predicate of llm) predicateResults.set(predicate, false);
     verdict = _evidenceToVerdictDict(
       { met: false, perPredicate: evidence.perPredicate },
       snapshot.stakes,
@@ -515,16 +604,18 @@ export async function guardTransition(
     const judged = await evaluateLlmPredicates(llm, snapshot.stakes, options.judge ?? defaultJudge(), {
       result: { resource_id: resourceId, edge: snapshot.edge, artifacts, modified_files: modifiedFiles },
     });
+    for (const evaluation of judged.evaluations) predicateResults.set(evaluation.predicate, evaluation.met);
     [combinedMet, verdict] = _mergeVerdict(evidence, judged, snapshot.stakes);
   }
   verdict = normalizeVerdictForLedger(verdict);
+  const ruleVerdicts = ruleVerdictsFor(snapshot.predicates, predicateResults);
 
   // Phase 3: optimistic commit under a newly-acquired lock.
   return acquireResourceLock(resourceId, async ({ token }) => {
     assertTsOwnedForMutation(resourceId);
     const registry = loadRegistry(resourceId);
     if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
-    const replay = _maybeReplay(registry, idempotencyKey, payloadDigest);
+    const replay = _maybeReplay(registry, idempotencyKey, digests);
     if (replay !== null) return replay;
     if (registry.current_state !== fromState) {
       throw new StaleFromState(`current_state advanced to ${JSON.stringify(registry.current_state)} during evaluation`);
@@ -554,8 +645,56 @@ export async function guardTransition(
       registry.current_state = toState;
       persistRegistry(registry);
     }
-    return { status: outcome, verdict, ledger_ref: ledgerRef, current_state: registry.current_state };
+    if (registry.bundle_id !== undefined) {
+      firePolicyEvent(buildGuardTransitionEvent({
+        runId: guardEventRunId(options.runId, resourceId),
+        bundleId: registry.bundle_id,
+        resourceId,
+        entry,
+        rulesEvaluated: ruleVerdicts,
+      }));
+    }
+    return {
+      status: outcome,
+      verdict,
+      ledger_ref: ledgerRef,
+      current_state: registry.current_state,
+      entry_digest: entry.entry_digest,
+      prev_digest: entry.prev_digest,
+      payload_digest: entry.payload_digest ?? "",
+    };
   });
+}
+
+function ruleVerdictsFor(predicates: Predicate[], results: Map<Predicate, boolean>): RuleVerdict[] {
+  const verdicts: RuleVerdict[] = [];
+  for (const predicate of predicates) {
+    const source = sourceFromPredicate(predicate);
+    if (source === undefined) continue;
+    const type = _ptype(predicate);
+    verdicts.push({
+      rule_id: typeof predicate.id === "string" ? predicate.id : source.record_id,
+      source: structuredClone(source),
+      met: results.get(predicate) ?? false,
+      predicate_type: type === "judged" || type === "verified" ? type : "deterministic",
+    });
+  }
+  return verdicts;
+}
+
+function firePolicyEvent(event: ReturnType<typeof buildGuardTransitionEvent>): void {
+  void emitPolicyEvent(event).catch((error) => {
+    console.warn(`policy event ${event.event_id} delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
+function guardEventRunId(runId: string | undefined, resourceId: string): string {
+  if (runId !== undefined) return runId;
+  if (!warnedGuardRunIdFallback) {
+    warnedGuardRunIdFallback = true;
+    console.warn("WARNING: guard events are using resource_id as run_id; pass run_id to preserve flow correlation");
+  }
+  return resourceId;
 }
 
 /**
@@ -575,7 +714,9 @@ export async function guardOverride(
   authorization: string,
   rationale: string,
   resolvedBy = "human",
-): Promise<{ status: "deviation"; ledger_ref: string; current_state: string; rationale: string; authorized_by: string }> {
+  userId?: string,
+  runId?: string,
+): Promise<{ status: "deviation"; ledger_ref: string; current_state: string; rationale: string; authorized_by: string; entry_digest: string; prev_digest: string; payload_digest: string }> {
   if (resolvedBy !== "human") throw new OverrideUnavailable("override requires resolved_by='human'");
   if (!rationale || !rationale.trim()) throw new OverrideUnavailable("override requires a non-empty rationale");
 
@@ -606,15 +747,32 @@ export async function guardOverride(
       outcome: "deviation",
       kind: "deviation",
       resolved_by: resolvedBy,
+      payload_digest: _payloadDigest(fromState, toState, {}, [], resolvedBy, registry.checksum),
       rationale: `authorized by ${authorizedBy.principal} (${authorizedBy.fingerprint}): ${rationale}`,
     });
     await fenceResourceLock(resourceId, token);
     const ledgerRef = appendLedger(resourceId, entry);
     registry.current_state = toState;
     persistRegistry(registry);
+    if (registry.bundle_id !== undefined) {
+      if (userId === undefined) {
+        console.warn("WARNING: guard deviation has no user_id; SmartMemory will reject the enforcement event");
+      }
+      firePolicyEvent(buildGuardTransitionEvent({
+        runId: guardEventRunId(runId, resourceId),
+        bundleId: registry.bundle_id,
+        resourceId,
+        entry,
+        rulesEvaluated: [],
+        ...(userId !== undefined ? { resolvedByUserId: userId } : {}),
+      }));
+    }
     return {
       status: "deviation", ledger_ref: ledgerRef, current_state: registry.current_state, rationale,
       authorized_by: `${authorizedBy.principal} (${authorizedBy.fingerprint})`,
+      entry_digest: entry.entry_digest,
+      prev_digest: entry.prev_digest,
+      payload_digest: entry.payload_digest ?? "",
     };
   });
 }
