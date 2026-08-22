@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### fix(connectors): never hand a SmartMemory credential to a spawned agent
+
+GOV-COMPOSE-SEAM-1 step 0. Compose now injects `SMARTMEMORY_API_KEY` and
+`SMARTMEMORY_WORKSPACE_ID` into the MCP server's env so the policy client can
+deliver enforcement events. The server reads them once at construction, long
+before any agent spawn, so both are added to the scrub lists in `claude.ts` and
+`codex.ts` via a shared `SMARTMEMORY_SCRUB_VARS` in `connectors/base.ts`.
+
+An implementer or reviewer agent has no use for a live memory-write credential,
+and handing one over widens a prompt injection from "edits code" to "rewrites
+the audit trail it is being judged against". Shared rather than duplicated
+because the failure mode of this control is a third connector that forgets it.
+`SMARTMEMORY_API_URL` is not scrubbed — it is not a credential and grants
+nothing on its own.
+
+First tests for the scrub path in either connector (`tests/connectors/
+credential-scrub.test.ts`); the control existed but nothing held it in place.
+Codex's deliberate retention of `OPENAI_API_KEY` is now asserted too, so a
+future tidy-up that "unifies" the two lists cannot silently break Codex auth.
+
+
 ### feat(policy): GOV-STRATUM-SEAM-1 P1 — SmartMemory policy source (local runner)
 
 Stratum can now consume a SmartMemory **policy bundle** at plan time and report

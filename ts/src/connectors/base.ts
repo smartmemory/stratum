@@ -1,3 +1,20 @@
+/**
+ * Credentials that must never reach a spawned agent subprocess.
+ *
+ * GOV-COMPOSE-SEAM-1 step 0: Compose now injects the SmartMemory API key and
+ * workspace id into the Stratum MCP server's env so the policy client can
+ * deliver enforcement events. The MCP server reads them once at construction,
+ * long before any agent spawn — an implementer or reviewer agent has no use for
+ * a live memory-write credential, and handing one over widens the blast radius
+ * of a prompt injection from "edits code" to "rewrites the audit trail".
+ *
+ * Shared rather than duplicated per connector: the failure mode of this control
+ * is a third connector that forgets it. Spread this into each connector's own
+ * scrub list, which keeps its provider-specific entries (Codex, for instance,
+ * legitimately keeps OPENAI_API_KEY).
+ */
+export const SMARTMEMORY_SCRUB_VARS = ["SMARTMEMORY_API_KEY", "SMARTMEMORY_WORKSPACE_ID"] as const;
+
 export type AgentType = "claude" | "codex";
 export type CodexSandboxMode = "read-only" | "workspace-write";
 

@@ -1,6 +1,6 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
-import { finiteNonnegative } from "./base.js";
+import { finiteNonnegative, SMARTMEMORY_SCRUB_VARS } from "./base.js";
 
 interface QueryParams {
   prompt: string;
@@ -23,7 +23,7 @@ export interface ClaudeConnectorOptions {
 }
 
 const defaultQuery: QueryFunction = (params) => sdkQuery(params as Parameters<typeof sdkQuery>[0]);
-const SENSITIVE_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"] as const;
+const SENSITIVE_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE", ...SMARTMEMORY_SCRUB_VARS] as const;
 
 export class ClaudeConnector {
   private readonly options: ClaudeConnectorOptions;
