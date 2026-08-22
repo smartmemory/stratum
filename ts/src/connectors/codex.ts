@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
-import { finiteNonnegative, modelIdentity } from "./base.js";
+import { finiteNonnegative, modelIdentity, SMARTMEMORY_SCRUB_VARS } from "./base.js";
 
 export type SpawnProcess = (
   command: string,
@@ -38,7 +38,7 @@ export interface CodexConnectorOptions {
   onEvent?: ConnectorEventHandler;
 }
 
-const CODEX_SCRUB_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE"] as const;
+const CODEX_SCRUB_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE", ...SMARTMEMORY_SCRUB_VARS] as const;
 
 /** GUI apps cannot start inside the Codex OS sandbox: full Chrome aborts
  * (SIGABRT) during WindowServer registration even with --headless. Agents that
