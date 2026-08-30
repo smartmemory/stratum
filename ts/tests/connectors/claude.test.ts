@@ -77,7 +77,7 @@ describe("ClaudeConnector", () => {
     });
     expect(result).toEqual({
       text: "echo ok",
-      usage: { usd: 0.01, tokens: 7, ms: 42 },
+      usage: { usd: 0.01, usdSource: "reported", tokens: 7, ms: 42 },
       telemetry: { durationMs: 42, model: "claude-sonnet-4-6-20260701" },
     });
     expect(result.usage).not.toHaveProperty("dispatches");

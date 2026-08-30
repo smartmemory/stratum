@@ -21,6 +21,13 @@ export type CodexSandboxMode = "read-only" | "workspace-write";
 /** Post-dispatch usage. Dispatch counts are reserved exclusively by the engine. */
 export interface ConnectorUsage {
   usd?: number;
+  /**
+   * Provenance of `usd`. Surface 15 (`stratum_usage_report`) fails closed on an
+   * unlabelled dollar value, so a connector that reports a provider-priced cost
+   * MUST say so or the receipt silently loses it (2026-08-30 census: every local
+   * Claude receipt carried tokens but no usd).
+   */
+  usdSource?: "reported";
   tokens?: number;
   ms?: number;
 }
