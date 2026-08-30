@@ -77,10 +77,20 @@ describe("ClaudeConnector", () => {
     });
     expect(result).toEqual({
       text: "echo ok",
-      usage: { usd: 0.01, usdSource: "reported", tokens: 7, ms: 42 },
+      usage: { usd: 0.01, tokens: 7, ms: 42 },
+      usdSource: "reported",
       telemetry: { durationMs: 42, model: "claude-sonnet-4-6-20260701" },
     });
     expect(result.usage).not.toHaveProperty("dispatches");
+  });
+
+  it("omits usd and usdSource entirely for a zero-cost result (receipts require provenance whenever usd is present)", async () => {
+    const query: QueryFunction = async function* () {
+      yield { type: "result", subtype: "success", result: "free", duration_ms: 3, total_cost_usd: 0, usage: { input_tokens: 2, output_tokens: 1 } };
+    };
+    const result = await new ClaudeConnector({ query }).run("test");
+    expect(result.usage).toEqual({ tokens: 3, ms: 3 });
+    expect(result).not.toHaveProperty("usdSource");
   });
 
   it("fails on an SDK terminal error result", async () => {

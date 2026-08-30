@@ -129,13 +129,11 @@ export class ClaudeConnector {
     }
     return {
       text: finalText ?? assistantText,
-      usage: {
-        usd: costUsd,
-        // total_cost_usd is the SDK's own price for the call — provider-reported.
-        ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
-        tokens: inputTokens + outputTokens,
-        ms: durationMs,
-      },
+      // total_cost_usd is the SDK's own price for the call — provider-reported.
+      // A zero/absent price is omitted entirely: receipts require provenance
+      // whenever `usd` is present, and there is nothing to attribute.
+      usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens, ms: durationMs },
+      ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
       telemetry: { durationMs, model: resolvedModel },
     };
   }

@@ -290,7 +290,8 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
         context = {
           onAgentEvent: async (event) => {
             const message = JSON.stringify({
-              schema_version: "0.2.7",
+              // 0.2.8: flow_id is OPTIONAL on `_agent_run` envelopes (call-local).
+              schema_version: "0.2.8",
               step_id: "_agent_run",
               seq: eventSeq,
               ts: new Date().toISOString(),

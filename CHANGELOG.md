@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### fix(connectors, engine, mcp): Codex review of 0a497ce (3 rounds, CLEAN)
+
+- `usdSource` moved from `ConnectorUsage` to `ConnectorResult`: the ledger
+  admits only budget keys inside `usage`, so every positively priced Claude
+  result was being rejected as an invalid usage entry (high). Declared as
+  `usdSource?` on the `stratum_agent_run` / `stratum_agent_poll` `complete`
+  responses. The Claude connector omits `usd` entirely for a zero/absent price
+  (receipts require provenance whenever `usd` is present).
+- Engine-owned Claude calls keep `"reported"`: `StepResult.usdSource` is
+  carried by the default adapter and by legacy settlement instead of being
+  downgraded to `"legacy"`.
+- Background Claude runs carry the SDK's cumulative `total_cost_usd` on
+  `turn.completed`; `agent_poll` reconstructs `usd` + `usdSource`.
+- Agent-run progress envelopes are `schema_version` **0.2.8**: identical to
+  0.2.7 except `flow_id` is optional on `_agent_run` events (call-local; the
+  consumer stamps its correlation id). There is no producer-side JSON schema
+  for the envelope in `ts/contracts` (events.json is the audit-event
+  contract); this entry is the declaration.
+
+
 ### fix(mcp, connectors): census follow-ups — agent stream flow_id, usd provenance
 
 - `stratum_agent_run` progress envelopes no longer carry a server-invented
