@@ -29,6 +29,7 @@ export interface ReceiptRecord {
   /** "legacy": dollars arrived on a pre-receipt stepDone envelope; provenance unknown, never counted as reported. */
   usdSource?: "reported" | "estimated" | "legacy";
   reportedAt?: string;
+  detail?: Record<string, unknown>;
   at: string;
   egress: "pending" | "sent" | "dead";
   egressStatus?: number;

@@ -9,6 +9,7 @@ export interface ReceiptInput {
   telemetry?: AttemptTelemetry;
   split?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
   usdSource?: "reported" | "estimated" | "legacy";
+  detail?: Record<string, unknown>;
   at?: string;
 }
 
@@ -38,6 +39,7 @@ export function buildReceipt(run: PersistedRun, input: ReceiptInput): ReceiptRec
   }
   if (input.at !== undefined && typeof input.at !== "string") invalid("at must be a string when present");
   if (input.split !== undefined && !validSplit(input.split)) invalid("split must contain non-negative input/output token counts");
+  if (input.detail !== undefined && !isPlainObject(input.detail)) invalid("detail must be a plain object when present");
 
   const telemetry = input.telemetry ?? { model: "unknown", durationMs: 0 };
   const seq = (run.receiptCounter ?? 0) + 1;
@@ -52,6 +54,7 @@ export function buildReceipt(run: PersistedRun, input: ReceiptInput): ReceiptRec
     ...(input.split !== undefined ? { split: { ...input.split } } : {}),
     ...(input.usdSource !== undefined ? { usdSource: input.usdSource } : {}),
     ...(input.at !== undefined ? { reportedAt: input.at } : {}),
+    ...(input.detail !== undefined ? { detail: { ...input.detail } } : {}),
     at: new Date().toISOString(),
     egress: "pending",
   };
@@ -70,6 +73,12 @@ export function spineSpent(run: PersistedRun): Budget {
     }
   }
   return spent;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function validSplit(value: unknown): value is NonNullable<ReceiptInput["split"]> {

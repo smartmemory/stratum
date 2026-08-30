@@ -9,6 +9,7 @@ import { runAgent } from "../connectors/runner.js";
 import { extractReferences, type ExtractedReference, type PathSegment, type Reference } from "../ir/refs.js";
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
+import { LearnEgress, type LearnEgressDriver, type LearnEgressRuntimeOptions } from "../learn/smartmemory_egress.js";
 import { mergeBundleIntoSpec, policyRuleKey, predicateType, validateBundle } from "../policy/bundle.js";
 import { buildFlowTerminalEvent, buildGateResolutionEvent } from "../policy/events.js";
 import { emitPolicyEvent as postPolicyEvent } from "../policy/smartmemory_client.js";
@@ -240,6 +241,10 @@ export interface StratumEngineOptions {
   evaluateRunner?: EvaluateRunner;
   /** Engine-owned P4 dispatch seam. Defaults to the P3 connector runner. */
   connector?: EngineConnector;
+  /** Test seam for receipt delivery. Production constructs LearnEgress from process.env. */
+  learnEgress?: LearnEgressDriver;
+  /** Runtime seams for the real LearnEgress driver. */
+  learnEgressOptions?: LearnEgressRuntimeOptions;
 }
 
 export interface PlanOptions {
@@ -288,6 +293,8 @@ export class StratumEngine {
   private readonly judge?: JudgeRunner;
   private readonly evaluateRunner?: EvaluateRunner;
   private readonly connector: EngineConnector;
+  private readonly learnEgress: LearnEgressDriver;
+  private readonly learnEgressStartup: Promise<void>;
   // Serializes load-modify-save per run: plan may hand out several ready steps, so
   // stepDone/resume can race in-process. The state root is owned by one engine process in v1.
   private readonly runLocks = new Map<string, Promise<unknown>>();
@@ -307,6 +314,16 @@ export class StratumEngine {
     if (options.judge) this.judge = options.judge;
     if (options.evaluateRunner) this.evaluateRunner = options.evaluateRunner;
     this.connector = options.connector ?? defaultConnector;
+    this.learnEgress = options.learnEgress ?? new LearnEgress({
+      ...options.learnEgressOptions,
+      store: this.store,
+      withReceiptUpdate: (runId, update) => this.withReceiptUpdate(runId, update),
+    });
+    this.learnEgressStartup = this.learnEgress.enabled()
+      ? this.learnEgress.drainAll().catch((error) => {
+        console.warn(`SmartMemory egress startup reconciliation failed: ${message(error)}`);
+      })
+      : Promise.resolve();
   }
 
   private async loadRun(runId: string): Promise<PersistedRun> {
@@ -337,6 +354,23 @@ export class StratumEngine {
       if (this.runLocks.get(runId) === tail) this.runLocks.delete(runId);
     });
     return result;
+  }
+
+  async withReceiptUpdate<T>(
+    runId: string,
+    update: (run: PersistedRun) => T | Promise<T>,
+  ): Promise<T> {
+    return this.withRunLock(runId, async () => {
+      const run = await this.loadRun(runId);
+      const result = await update(run);
+      await this.persist(run);
+      return result;
+    });
+  }
+
+  async closeLearnEgress(): Promise<void> {
+    await this.learnEgressStartup;
+    await this.learnEgress.close();
   }
 
   async plan(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<RevisionedEngineResponse> {
@@ -606,6 +640,9 @@ export class StratumEngine {
       if (candidate.dispatchId.startsWith("legacy:")) {
         throw new ReceiptValidationError('dispatchId prefix "legacy:" is reserved for engine-synthesized receipts');
       }
+      if (candidate.dispatchId.startsWith("engine:")) {
+        throw new ReceiptValidationError('dispatchId prefix "engine:" is reserved for engine-synthesized receipts');
+      }
       const duplicate = findReceipt(run, candidate.dispatchId);
       if (duplicate !== undefined) {
         return { status: "duplicate", runId: run.id, seq: duplicate.seq, ledger: this.ledgerInfo(run) };
@@ -708,12 +745,14 @@ export class StratumEngine {
         if (value !== 0) reconciled[key] = value;
       }
       run.flowSpent = reconciled;
-      this.event(run, "checkpoint_reverted", undefined, { label: normalized, receiptsAtRevert, stepsRestored });
+      const detail = { label: normalized, receiptsAtRevert, stepsRestored };
+      this.event(run, "checkpoint_reverted", undefined, detail);
       const checkpointReceiptSeq = receiptsAtRevert + 1;
       (run.receipts ??= []).push(buildReceipt(run, {
         dispatchId: `engine:checkpoint_reverted:${checkpointReceiptSeq}`,
         source: "engine",
         usage: {},
+        detail,
       }));
       this.rotateRestoredIssuances(run);
       await this.persist(run);
@@ -2092,7 +2131,14 @@ export class StratumEngine {
         ? (located?.item !== undefined ? located.item.attempts.length + 1 : located!.state.attempts.length + 1)
         : undefined);
     const item = located?.item;
-    this.event(run, "usage_debit", canonicalStepId, {
+    const detail = {
+      ...(located?.state.epoch !== undefined ? { epoch: located.state.epoch } : {}),
+      ...(attempt !== undefined ? { attempt } : {}),
+      ...(item?.stage !== undefined ? { item: { itemIndex: item.index, stage: item.stage, generation: item.generation } } : {}),
+    };
+    // One detail object serves both the audit event and the receipt row, so the
+    // SmartMemory mirror carries exactly what the event stream carries.
+    const eventDetail = {
       seq: receipt.seq,
       dispatchId: receipt.dispatchId,
       source: receipt.source,
@@ -2100,13 +2146,13 @@ export class StratumEngine {
       model: receipt.telemetry.model,
       ...(receipt.telemetry.effort !== undefined ? { effort: receipt.telemetry.effort } : {}),
       durationMs: receipt.telemetry.durationMs,
-      ...(located?.state.epoch !== undefined ? { epoch: located.state.epoch } : {}),
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(item?.stage !== undefined ? { item: { itemIndex: item.index, stage: item.stage, generation: item.generation } } : {}),
+      ...detail,
       ...(receipt.split !== undefined ? { split: { ...receipt.split } } : {}),
       ...(receipt.usdSource !== undefined ? { usdSource: receipt.usdSource } : {}),
       ...(receipt.reportedAt !== undefined ? { reportedAt: receipt.reportedAt } : {}),
-    });
+    };
+    receipt.detail = { ...(receipt.detail ?? {}), ...eventDetail };
+    this.event(run, "usage_debit", canonicalStepId, structuredClone(eventDetail));
     return { status: "ok", ...(budget !== undefined ? { budget } : {}) };
   }
 
@@ -2173,12 +2219,14 @@ export class StratumEngine {
     });
     const subflowsDropped = [...descendants].flatMap((id) =>
       steps[id]!.sub === undefined ? [] : [this.scopedId(scope, id)]);
-    this.event(run, "step_reset", this.scopedId(scope, target), { reason: "revise", reset, subflowsDropped });
+    const detail = { reason: "revise", reset, subflowsDropped };
+    this.event(run, "step_reset", this.scopedId(scope, target), detail);
     const resetReceiptSeq = (run.receiptCounter ?? 0) + 1;
     (run.receipts ??= []).push(buildReceipt(run, {
       dispatchId: `engine:step_reset:${resetReceiptSeq}`,
       source: "engine",
       usage: {},
+      detail,
     }));
     const gateIds = new Set(flow.steps.flatMap((step) => step.gate !== undefined ? [step.id] : []));
     for (const id of descendants) {
@@ -2743,6 +2791,13 @@ export class StratumEngine {
     });
   }
 
+  private triggerLearnEgress(runId: string): void {
+    if (!this.learnEgress.enabled()) return;
+    void this.learnEgress.drainRun(runId).catch((error) => {
+      console.warn(`SmartMemory egress drain failed for run ${runId}: ${message(error)}`);
+    });
+  }
+
   private response(run: PersistedRun): EngineResponse {
     const ledger = this.ledgerInfo(run);
     if (run.status === "completed") return { status: "completed", runId: run.id, output: run.output, ledger };
@@ -2766,7 +2821,13 @@ export class StratumEngine {
 
   private persist(run: PersistedRun): Promise<void> {
     const previous = this.persistLocks.get(run.id) ?? Promise.resolve();
-    const result = previous.then(() => this.store.save(run));
+    const result = previous
+      .then(() => this.store.save(run))
+      .then(() => {
+        if (this.learnEgress.enabled() && run.receipts?.some((receipt) => receipt.egress === "pending") === true) {
+          this.triggerLearnEgress(run.id);
+        }
+      });
     const tail = result.catch(() => undefined);
     this.persistLocks.set(run.id, tail);
     void tail.then(() => { if (this.persistLocks.get(run.id) === tail) this.persistLocks.delete(run.id); });

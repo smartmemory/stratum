@@ -992,6 +992,44 @@ stratum help                       # Show usage
 
 Persisted flows are stored in `~/.stratum/flows/{flow_id}.json`. This directory is created automatically.
 
+### SmartMemory Receipt Egress
+
+SmartMemory receipt egress is off by default, even when credentials are present. This
+reverses the earlier "on with credentials" behavior. To opt in, set all four required
+variables:
+
+```bash
+STRATUM_LEARN_EGRESS=1
+SMARTMEMORY_API_URL=https://memory.example
+SMARTMEMORY_API_KEY=...
+SMARTMEMORY_WORKSPACE_ID=...
+```
+
+When enabled, Stratum mirrors its durable usage, step-reset, and checkpoint-revert receipts
+to SmartMemory. The scoped `X-Workspace-Id` header is mandatory; egress refuses to enable
+and warns once when `SMARTMEMORY_WORKSPACE_ID` is absent. Register the three record types in
+the SmartMemory service environment before enabling delivery:
+
+```bash
+SMARTMEMORY_EXTRA_MEMORY_TYPES=stratum_usage_debit:append:false,stratum_step_reset:append:false,stratum_checkpoint_reverted:append:false
+```
+
+Delivery is at least once. Every row carries a stable `metadata.receipt_id` of
+`<run_id>:<sequence>`; consumers must deduplicate on that value because a lost success
+response can cause a retry to create a second SmartMemory item.
+
+```bash
+stratum learn egress drain [--run <id>]
+stratum learn egress verify --run <id>
+stratum learn egress retry-dead --run <id>
+```
+
+Because SmartMemory has no exact list API, `verify` performs one exact search probe per
+local receipt and, only when the expected type is absent, probes the other two types. It is
+therefore O(n) network requests. It reports missing, duplicate, wrong-type, and dead receipt
+counts. `retry-dead` returns rows rejected with a terminal HTTP status to the pending queue
+and drains the run again.
+
 ### Hooks
 
 The python installer's session hooks (`~/.stratum/hooks/`) are retired with it; sources

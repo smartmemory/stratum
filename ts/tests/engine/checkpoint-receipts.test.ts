@@ -99,7 +99,15 @@ describe("receipt spine across corrections", () => {
     expect(after.steps.wrap?.sub).toBeUndefined();
     expect(after.flowSpent.tokens).toBe(5);
     expect(after.receipts?.find((receipt) => receipt.source === "engine" && receipt.dispatchId.startsWith("engine:step_reset:")))
-      .toMatchObject({ amount: {} });
+      .toMatchObject({ amount: {}, detail: {
+        reason: "revise",
+        reset: [
+          { stepId: "build", fromEpoch: 0, toEpoch: 1 },
+          { stepId: "wrap", fromEpoch: 0, toEpoch: 1 },
+          { stepId: "review", fromEpoch: 0, toEpoch: 1 },
+        ],
+        subflowsDropped: ["wrap"],
+      } });
   });
 
   it("keeps receipts monotonic and restores live step spend while reverting a checkpoint", async () => {
@@ -145,7 +153,12 @@ describe("receipt spine across corrections", () => {
     ]);
 
     const engineReceipt = reverted.receipts?.find((receipt) => receipt.source === "engine");
-    expect(engineReceipt).toMatchObject({ seq: 3, dispatchId: "engine:checkpoint_reverted:3", amount: {} });
+    expect(engineReceipt).toMatchObject({
+      seq: 3,
+      dispatchId: "engine:checkpoint_reverted:3",
+      amount: {},
+      detail: { label: "cp", receiptsAtRevert: 2, stepsRestored: ["first", "second"] },
+    });
     expect(usageDebits(reverted.events).some((event) =>
       (event.detail as { seq?: number } | undefined)?.seq === engineReceipt?.seq)).toBe(false);
 
