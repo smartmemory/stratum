@@ -75,7 +75,7 @@ describe("progress heartbeats during tool calls", () => {
       expect(events.map((event) => event.seq)).toEqual([0, 1, 2]);
       for (const event of events) {
         expect(event).toEqual({
-          schema_version: "0.2.7",
+          schema_version: "0.2.8",
           step_id: "_agent_run",
           seq: expect.any(Number),
           ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),

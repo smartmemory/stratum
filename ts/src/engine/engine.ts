@@ -137,6 +137,8 @@ export interface StepResult {
   usage?: Budget;
   /** Connector-owned wall time and resolved execution identity. */
   telemetry?: AttemptTelemetry;
+  /** Provenance of usage.usd when the connector reported a provider price (ConnectorResult.usdSource). */
+  usdSource?: "reported";
 }
 
 export interface ReadyStep {
@@ -552,7 +554,7 @@ export class StratumEngine {
     delete usage.dispatches;
     // "settle": the agent already ran, so over-limit usage is still recorded in both ledgers.
     const budgetFailure = hasBudget(usage)
-      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state })
+      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state }, result.usdSource)
       : undefined;
     if (budgetFailure === "flow") {
       const failure = { attempt, reason: "flow budget exhausted" };
@@ -1814,7 +1816,7 @@ export class StratumEngine {
     const settled = hasBudget(usage)
       ? this.settleLegacyReceipt(run, usage, "fanout", result.telemetry, {
         scope: this.rootScope(run, spec), step, state, item,
-      })
+      }, result.usdSource)
       : undefined;
     if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
     const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
@@ -2162,6 +2164,7 @@ export class StratumEngine {
     source: "step_done" | "fanout" | "judged",
     telemetry: AttemptTelemetry | undefined,
     located: LocatedStep,
+    usdSource?: "reported",
   ): "flow" | "subflow" | "task" | undefined {
     const seq = (run.receiptCounter ?? 0) + 1;
     const receipt = buildReceipt(run, {
@@ -2170,7 +2173,9 @@ export class StratumEngine {
       source,
       usage,
       ...(telemetry !== undefined ? { telemetry } : {}),
-      ...(usage.usd !== undefined ? { usdSource: "legacy" } : {}),
+      // A connector that priced the call itself keeps "reported"; only an
+      // unlabelled usd is engine-synthesized "legacy".
+      ...(usage.usd !== undefined ? { usdSource: usdSource ?? "legacy" } : {}),
     });
     const attempt = (located.item?.attempts.length ?? located.state.attempts.length) + 1;
     const settled = this.settleReceipt(run, receipt, located, attempt);
@@ -2961,11 +2966,12 @@ export const defaultConnector: EngineConnector = async ({ agent, prompt, cwd, pr
     ...(agent === "codex" && sandbox !== undefined ? { sandboxMode: sandbox } : {}),
   });
   if ("status" in result) return { failure: "background connector response is not valid for synchronous fanout" };
-  if (outSchema === undefined) return { output: result.text, usage: result.usage, telemetry: result.telemetry };
+  const provenance = result.usdSource !== undefined ? { usdSource: result.usdSource } : {};
+  if (outSchema === undefined) return { output: result.text, usage: result.usage, telemetry: result.telemetry, ...provenance };
   try {
-    return { output: JSON.parse(stripJsonFences(result.text)), usage: result.usage, telemetry: result.telemetry };
+    return { output: JSON.parse(stripJsonFences(result.text)), usage: result.usage, telemetry: result.telemetry, ...provenance };
   } catch {
-    return { failure: "connector result must be JSON for a contract-enforced fanout stage", usage: result.usage, telemetry: result.telemetry };
+    return { failure: "connector result must be JSON for a contract-enforced fanout stage", usage: result.usage, telemetry: result.telemetry, ...provenance };
   }
 };
 
