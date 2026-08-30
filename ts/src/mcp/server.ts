@@ -1,7 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
@@ -282,13 +281,16 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
     try {
       let context: ToolCallContext | undefined;
       if (request.params.name === "stratum_agent_run" && progressToken !== undefined) {
-        const flowId = randomUUID();
+        // No flow_id: an agent run has no flow, and a server-invented UUID cannot
+        // match any consumer's correlation id — compose dropped EVERY agent event
+        // as "misrouted" while it was stamped (2026-08-30 census). Progress
+        // notifications are already scoped to this call by progressToken; the
+        // consumer stamps its own correlation id on an absent flow_id.
         let eventSeq = 0;
         context = {
           onAgentEvent: async (event) => {
             const message = JSON.stringify({
               schema_version: "0.2.7",
-              flow_id: flowId,
               step_id: "_agent_run",
               seq: eventSeq,
               ts: new Date().toISOString(),

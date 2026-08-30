@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### fix(mcp, connectors): census follow-ups — agent stream flow_id, usd provenance
+
+- `stratum_agent_run` progress envelopes no longer carry a server-invented
+  `flow_id`. Compose's stream consumer accepts only an absent or matching id,
+  so every agent event was being dropped as "misrouted" (seen on every step of
+  the 2026-08-30 census build). Progress is already scoped per call by
+  `progressToken`; the consumer stamps its own correlation id.
+- The Claude connector labels `total_cost_usd` with `usdSource: "reported"`
+  (`ConnectorUsage.usdSource`). Surface 15 fails closed on an unlabelled usd,
+  so local-Claude receipts had tokens but no dollars.
+
+
 ### feat(engine, learn): STRAT-LEARN-COST — a receipt per model call, mirrored to SmartMemory
 
 Cost never reached the learn loop because the data did not exist: 0 of 1,541

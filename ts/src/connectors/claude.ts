@@ -129,7 +129,13 @@ export class ClaudeConnector {
     }
     return {
       text: finalText ?? assistantText,
-      usage: { usd: costUsd, tokens: inputTokens + outputTokens, ms: durationMs },
+      usage: {
+        usd: costUsd,
+        // total_cost_usd is the SDK's own price for the call — provider-reported.
+        ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
+        tokens: inputTokens + outputTokens,
+        ms: durationMs,
+      },
       telemetry: { durationMs, model: resolvedModel },
     };
   }

@@ -76,7 +76,6 @@ describe("progress heartbeats during tool calls", () => {
       for (const event of events) {
         expect(event).toEqual({
           schema_version: "0.2.7",
-          flow_id: expect.any(String),
           step_id: "_agent_run",
           seq: expect.any(Number),
           ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
@@ -85,8 +84,10 @@ describe("progress heartbeats during tool calls", () => {
           reply_required: false,
         });
         expect(event).not.toHaveProperty("task_id");
+        // The consumer stamps its own correlation id; a server-invented one can
+        // never match and gets every event dropped as misrouted.
+        expect(event).not.toHaveProperty("flow_id");
       }
-      expect(new Set(events.map((event) => event.flow_id)).size).toBe(1);
       expect(events[1]?.metadata).toEqual({ text: "visible", role: "assistant" });
     } finally { await pair.close(); }
   });
