@@ -1,0 +1,16 @@
+{
+  "code": "STRAT-LEARN-COST",
+  "description": "Cost-aware learn loop: compose reports per-step usage (S0), stratum harvests + classifies cost waste (retry-waste/outlier/model-mismatch) into templated notes (S1/S2), and mirrors step_usage + cost_candidate events into SmartMemory via the policy outbox (S1b). Egress only — the learn author never reads SmartMemory. Extends STRAT-TS-LEARN.",
+  "status": "IN_PROGRESS",
+  "phase": "Standalone Tickets",
+  "created": "2026-08-29",
+  "updated": "2026-08-29",
+  "complexity": "L",
+  "position": 1,
+  "parent": "STRAT-TS-LEARN",
+  "tags": [
+    "learn",
+    "cost",
+    "smartmemory"
+  ]
+}
