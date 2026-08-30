@@ -10,9 +10,12 @@ import {
   type PatchCandidate,
 } from "../learn/candidate.js";
 import { applyCandidate, reconcile, revertApply } from "../learn/apply.js";
+import { LearnEgress } from "../learn/smartmemory_egress.js";
+import { StateStore } from "../engine/state.js";
 
 const USAGE =
-  "Usage: stratum learn <harvest|list|apply|revert|reconcile> [--root <dir>] [--stage] [--json]";
+  "Usage: stratum learn <harvest|list|apply|revert|reconcile|egress> [--root <dir>] [--stage] [--json]\n" +
+  "       stratum learn egress <drain [--run <id>]|verify --run <id>|retry-dead --run <id>>";
 
 function flag(args: string[], name: string): boolean {
   return args.includes(`--${name}`);
@@ -44,6 +47,8 @@ export async function learnCommand(args: string[]): Promise<number> {
       return revertCommand(rest);
     case "reconcile":
       return reconcileCommand(rest);
+    case "egress":
+      return egressCommand(rest);
     default:
       process.stderr.write(`${USAGE}\n`);
       return 2;
@@ -173,4 +178,69 @@ async function reconcileCommand(args: string[]): Promise<number> {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function egressCommand(args: string[]): Promise<number> {
+  const [action, ...rest] = args;
+  const runId = option(rest, "run");
+  const store = new StateStore(process.env.STRATUM_STATE_ROOT || undefined);
+  const locks = new Map<string, Promise<unknown>>();
+  const withRunLock = <T>(id: string, operation: () => Promise<T>): Promise<T> => {
+    const previous = locks.get(id) ?? Promise.resolve();
+    const result = previous.then(operation);
+    const tail = result.catch(() => undefined);
+    locks.set(id, tail);
+    void tail.then(() => { if (locks.get(id) === tail) locks.delete(id); });
+    return result;
+  };
+  const egress = new LearnEgress({
+    store,
+    withReceiptUpdate: (id, update) => withRunLock(id, async () => {
+      const run = await store.load(id);
+      const result = await update(run);
+      await store.save(run);
+      return result;
+    }),
+  });
+
+  try {
+    switch (action) {
+      case "drain":
+        if (runId === undefined) {
+          await egress.drainAll();
+          process.stdout.write("SmartMemory egress drain complete\n");
+        } else {
+          await egress.drainRun(runId);
+          process.stdout.write(`SmartMemory egress drain complete for ${runId}\n`);
+        }
+        return 0;
+      case "verify": {
+        if (runId === undefined) return egressUsage("verify requires --run <id>");
+        const report = await egress.verifyRun(runId);
+        process.stdout.write(
+          `${runId}: missing ${report.missingCount}, duplicates ${report.duplicateCount}, wrong-type ${report.wrongTypeCount}, dead ${report.deadCount}\n`,
+        );
+        return report.missingCount > 0 ? 1 : 0;
+      }
+      case "retry-dead": {
+        if (runId === undefined) return egressUsage("retry-dead requires --run <id>");
+        const retried = await egress.retryDead(runId);
+        process.stdout.write(`${runId}: retried ${retried} dead receipt(s)\n`);
+        return 0;
+      }
+      default:
+        return egressUsage();
+    }
+  } catch (error) {
+    process.stderr.write(`stratum learn egress: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  } finally {
+    await egress.close();
+  }
+}
+
+function egressUsage(problem?: string): number {
+  if (problem !== undefined) process.stderr.write(`stratum learn egress: ${problem}\n`);
+  process.stderr.write("Usage: stratum learn egress <drain [--run <id>]|verify --run <id>|retry-dead --run <id>>\n");
+  return 2;
 }

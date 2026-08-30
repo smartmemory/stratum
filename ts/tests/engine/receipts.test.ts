@@ -65,10 +65,16 @@ function linearSpec(options: { flowBudget?: Record<string, number>; taskBudget?:
   };
 }
 
-async function waitForTerminal(engine: StratumEngine, runId: string) {
+async function waitForTerminal(engine: StratumEngine, store: StateStore, runId: string) {
   for (let tick = 0; tick < 200; tick += 1) {
     const poll = await engine.flowPoll(runId, 0);
-    if (poll.status !== "running") return poll;
+    if (poll.status !== "running") {
+      for (let persistedTick = 0; persistedTick < 400; persistedTick += 1) {
+        if ((await store.load(runId)).status !== "running") return poll;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("terminal flow was not persisted");
+    }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("flow did not finish");
@@ -95,6 +101,20 @@ describe("receipt builder", () => {
     expect(() => buildReceipt(receiptRun(), {
       dispatchId: "dispatch-1", source: "client", usage: { usd: 0.02 },
     })).toThrow(/usdSource/);
+  });
+
+  it("accepts only plain-object receipt detail", () => {
+    expect(() => buildReceipt(receiptRun(), {
+      dispatchId: "dispatch-1", source: "client", usage: {},
+      detail: [] as unknown as Record<string, unknown>,
+    })).toThrow(/detail must be a plain object/);
+    expect(() => buildReceipt(receiptRun(), {
+      dispatchId: "dispatch-1", source: "client", usage: {},
+      detail: new Date() as unknown as Record<string, unknown>,
+    })).toThrow(/detail must be a plain object/);
+    expect(buildReceipt(receiptRun(), {
+      dispatchId: "dispatch-1", source: "client", usage: {}, detail: { epoch: 2 },
+    })).toMatchObject({ detail: { epoch: 2 } });
   });
 
   it("defaults absent telemetry and allocates strictly increasing receipt sequences", () => {
@@ -258,7 +278,7 @@ describe("StratumEngine usage receipts", () => {
       } },
     };
     const fanoutPlan = await fanout.engine.plan(fanoutSpec, { items: ["a"] });
-    await waitForTerminal(fanout.engine, fanoutPlan.runId);
+    await waitForTerminal(fanout.engine, fanout.store, fanoutPlan.runId);
     const fanoutEvents = usageDebits((await fanout.engine.audit(fanoutPlan.runId)).events);
     expect(fanoutEvents).toHaveLength(1);
     {
@@ -340,7 +360,7 @@ describe("StratumEngine usage receipts", () => {
       } },
     };
     const planned = await judged.engine.plan(spec, { items: ["a"] });
-    await waitForTerminal(judged.engine, planned.runId);
+    await waitForTerminal(judged.engine, judged.store, planned.runId);
     const run = await judged.store.load(planned.runId);
     const judgedItemDebits = run.events.filter((event) => event.type === "fanout_ledger_debit"
       && (event.detail as { source?: string }).source === "judged");

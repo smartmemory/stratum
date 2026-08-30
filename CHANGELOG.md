@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### feat(engine, learn): STRAT-LEARN-COST — a receipt per model call, mirrored to SmartMemory
+
+Cost never reached the learn loop because the data did not exist: 0 of 1,541
+ordinary step attempts in the local corpus carried usage, compose billed model
+calls the engine never saw, a gate revise wiped step ledgers, and a checkpoint
+revert rewrote the event stream. This adds the data half; the classifier is
+parked (`docs/features/STRAT-LEARN-COST/design.md` §7).
+
+- **`stratum_usage_report`** (surface 15): one idempotent receipt per model
+  call, keyed by `(runId, dispatchId)`, any run status, gate/no-step receipts
+  debit flow-only, never `terminalBudget` on a terminal run. Receipts live on
+  an append-only spine `run.receipts` (+ `receiptCounter`), both excluded from
+  checkpoints. Every existing cost debit (stepDone, fanout settle, judged
+  ensure) is routed through the same path with `legacy:<seq>` ids and
+  `usdSource: "legacy"`; `legacy:` and `engine:` prefixes are reserved.
+- **Events** (events 2): `usage_debit` per accepted receipt; `step_reset` from
+  `resetFrom` (reset steps with from/to epochs, dropped subflows);
+  `checkpoint_reverted`. `flowSpent` is monotonic across reverts — the live
+  pre-revert total is kept (spine as floor), correct for receipt-era runs,
+  pre-receipt runs, and runs upgraded mid-run.
+- **SmartMemory egress** (`learn/smartmemory_egress.ts`): the receipt spine
+  *is* the queue (`egress: pending|sent|dead` per row), drained under the
+  engine's authoritative run lock with network I/O outside it, per-run
+  backoff, coalesced triggers, dead-letter on 4xx, at-least-once with
+  `metadata.receipt_id` for consumer dedupe. **Explicit opt-in:**
+  `STRATUM_LEARN_EGRESS=1` plus `SMARTMEMORY_API_URL/API_KEY/WORKSPACE_ID`;
+  register `stratum_usage_debit`, `stratum_step_reset`,
+  `stratum_checkpoint_reverted` via `SMARTMEMORY_EXTRA_MEMORY_TYPES` (README).
+  `stratum learn egress drain|verify|retry-dead`. The policy channel and
+  `~/.stratum/policy-outbox` are untouched.
+- Compose side ships separately (compose `44e54cf`): every dispatch reports a
+  receipt from its accounting funnels; envelopes omit `usage` in receipts mode.
+
+Design gate: 4 Codex sol/xhigh rounds (carrier pivoted at r3 to receipt-per-call).
+Implementation: Codex sol/high per slice, 3 review rounds each.
+
 ### fix(connectors): never hand a SmartMemory credential to a spawned agent
 
 GOV-COMPOSE-SEAM-1 step 0. Compose now injects `SMARTMEMORY_API_KEY` and
