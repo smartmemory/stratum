@@ -65,4 +65,4 @@ Bootstrap: establish the core structure and first working milestone.
 
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
-| 1 | STRAT-LEARN-COST | Cost-aware learn loop: compose reports per-step usage (S0), stratum harvests + classifies cost waste (retry-waste/outlier/model-mismatch) into templated notes (S1/S2), and mirrors step_usage + cost_candidate events into SmartMemory via the policy outbox (S1b). Egress only — the learn author never reads SmartMemory. Extends STRAT-TS-LEARN. | IN_PROGRESS |
+| 1 | STRAT-LEARN-COST | Cost-aware learn loop: compose reports per-step usage (S0), stratum harvests + classifies cost waste (retry-waste/outlier/model-mismatch) into templated notes (S1/S2), and mirrors step_usage + cost_candidate events into SmartMemory via the policy outbox (S1b). Egress only — the learn author never reads SmartMemory. Extends STRAT-TS-LEARN. | COMPLETE |

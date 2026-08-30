@@ -1,10 +1,10 @@
 {
   "code": "STRAT-LEARN-COST",
   "description": "Cost-aware learn loop: compose reports per-step usage (S0), stratum harvests + classifies cost waste (retry-waste/outlier/model-mismatch) into templated notes (S1/S2), and mirrors step_usage + cost_candidate events into SmartMemory via the policy outbox (S1b). Egress only — the learn author never reads SmartMemory. Extends STRAT-TS-LEARN.",
-  "status": "IN_PROGRESS",
+  "status": "COMPLETE",
   "phase": "Standalone Tickets",
   "created": "2026-08-29",
-  "updated": "2026-08-29",
+  "updated": "2026-08-30",
   "complexity": "L",
   "position": 1,
   "parent": "STRAT-TS-LEARN",
@@ -12,5 +12,26 @@
     "learn",
     "cost",
     "smartmemory"
-  ]
+  ],
+  "completions": [
+    {
+      "completion_id": "STRAT-LEARN-COST:28ac8413140cc72b35987ec159ef4fb353e2b486",
+      "feature_code": "STRAT-LEARN-COST",
+      "commit_sha": "28ac8413140cc72b35987ec159ef4fb353e2b486",
+      "commit_sha_short": "28ac8413",
+      "tests_pass": true,
+      "files_changed": [
+        "ts/src/learn/smartmemory_egress.ts",
+        "ts/src/mcp/server.ts",
+        "ts/src/engine",
+        "docs/features/STRAT-LEARN-COST/progress.md",
+        "compose/lib/build.js",
+        "compose/scripts/cost-census.mjs"
+      ],
+      "recorded_at": "2026-08-30T07:04:56.734Z",
+      "recorded_by": "mcp:agent",
+      "notes": "Census gate PASS 2026-08-30 on flow 13fd190e: receipts 36354 == flowSpent 36354 == accumulator 36354, every receipt has model. Slices S01-S05 at d52cdf0/c4b2217/28ac841 (stratum) and 44e54cf (compose)."
+    }
+  ],
+  "commit_sha": "28ac8413140cc72b35987ec159ef4fb353e2b486"
 }
