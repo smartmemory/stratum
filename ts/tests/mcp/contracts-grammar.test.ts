@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertShape, type Shape } from "../../src/mcp/contracts.js";
+import { assertEvent, assertToolRequest, eventContract, mcpSurface, assertShape, type Shape } from "../../src/mcp/contracts.js";
 
 describe("tagged frozen-contract shape grammar", () => {
   it("rejects non-arrays for $array", () => {
@@ -74,5 +74,59 @@ describe("tagged frozen-contract shape grammar", () => {
   ])("rejects malformed shapes containing %s", (_case, malformed) => {
     expect(() => assertShape({}, malformed as unknown as Shape, "payload"))
       .toThrow(/malformed shape at payload/i);
+  });
+});
+
+describe("STRAT-LEARN-COST frozen contract declarations", () => {
+  it("freezes surface 15 and rejects undeclared nested usage-report keys", async () => {
+    const surface = await mcpSurface();
+    expect(surface.surface).toBe(15);
+    expect(surface.tools.stratum_usage_report).toBeDefined();
+    await expect(assertToolRequest("stratum_usage_report", {
+      runId: "run-1",
+      receipt: {
+        dispatchId: "dispatch-1",
+        stepId: "build",
+        source: "client",
+        usage: { tokens: 4 },
+        telemetry: { model: "fixture", durationMs: 2, effort: "low" },
+        split: { input: 2, output: 2 },
+        usdSource: "reported",
+        at: "2026-08-30T00:00:00.000Z",
+      },
+    })).resolves.toBeUndefined();
+    await expect(assertToolRequest("stratum_usage_report", {
+      runId: "run-1",
+      receipt: { dispatchId: "dispatch-1", source: "client", usage: {}, extra: true },
+    })).rejects.toThrow("stratum_usage_report.request.receipt.extra is undeclared");
+  });
+
+  it("freezes events 2 and validates every newly declared event shape strictly", async () => {
+    expect((await eventContract()).events).toBe(2);
+    await expect(assertEvent({
+      at: "2026-08-30T00:00:00.000Z",
+      type: "usage_debit",
+      stepId: "build",
+      detail: {
+        seq: 1, dispatchId: "dispatch-1", source: "client", amount: { tokens: 4 },
+        model: "fixture", durationMs: 2, epoch: 0, attempt: 1,
+      },
+    })).resolves.toBeUndefined();
+    await expect(assertEvent({
+      at: "2026-08-30T00:00:00.000Z",
+      type: "step_reset",
+      stepId: "build",
+      detail: { reason: "revise", reset: [{ stepId: "build", fromEpoch: 0, toEpoch: 1 }], subflowsDropped: [] },
+    })).resolves.toBeUndefined();
+    await expect(assertEvent({
+      at: "2026-08-30T00:00:00.000Z",
+      type: "checkpoint_reverted",
+      detail: { label: "before", receiptsAtRevert: 3, stepsRestored: ["build"] },
+    })).resolves.toBeUndefined();
+    await expect(assertEvent({
+      at: "2026-08-30T00:00:00.000Z",
+      type: "usage_debit",
+      detail: { seq: 1, dispatchId: "dispatch-1", source: "client", amount: {}, model: "fixture", durationMs: 2, extra: true },
+    })).rejects.toThrow("event.detail.extra is undeclared");
   });
 });

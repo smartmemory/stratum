@@ -67,6 +67,7 @@ describe("P4 run subflow execution", () => {
     expect(audit.events.map(({ type, stepId }) => [type, stepId])).toEqual([
       ["planned", undefined],
       ["ready", "wrap/digest"],
+      ["usage_debit", "wrap/digest"],
       ["result", "wrap/digest"],
       ["result", "wrap"],
       ["ready", "finish"],

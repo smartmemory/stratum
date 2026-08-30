@@ -21,6 +21,7 @@ export const CHECKPOINT_EXCLUDED = {
   spec: "immutable validated specification",
   revisionDigest: "immutable digest of the validated effective specification",
   generationCounter: "monotonic issuance identity that must never roll back",
+  receiptCounter: "monotonic receipt identity that must never roll back",
   input: "immutable flow input",
   flowName: "immutable flow selection",
   workspaceRoot: "immutable execution configuration",
@@ -28,6 +29,7 @@ export const CHECKPOINT_EXCLUDED = {
   policy_rules: "immutable rule to ensure correlation",
   policy_rules_version: "immutable scoped policy-rule format version",
   bgDriven: "ownership metadata set by background-run setup, not flow advancement",
+  receipts: "append-only cost receipt spine that must never roll back",
   checkpoints: "checkpoint maps are not nested inside snapshots",
 } as const satisfies Record<Exclude<keyof PersistedRun, CheckpointField>, string>;
 

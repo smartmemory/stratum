@@ -52,7 +52,7 @@ function response(result: unknown): Record<string, unknown> {
 }
 
 describe("P5 frozen MCP surface", () => {
-  it("exposes exactly twenty-one tools with state-only checkpoint descriptions", async () => {
+  it("exposes exactly the frozen tool set with state-only checkpoint descriptions", async () => {
     const pair = await connected({});
     try {
       const listed = await pair.client.listTools();
@@ -118,6 +118,17 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_plan", { spec: setFlow("input.name"), input: { name: "x" } });
       await call("stratum_plan", { spec: setFlow("1"), input: { name: "x" } });
       await call("stratum_plan", { spec: budgetFlow(), input: { name: "x" } });
+
+      // usage_report: an accepted receipt and its idempotent replay cover both
+      // frozen response variants through the real engine and MCP dispatcher.
+      await call("stratum_usage_report", {
+        runId: ready.runId,
+        receipt: { dispatchId: "p5-receipt", source: "contract", usage: { tokens: 1 } },
+      });
+      await call("stratum_usage_report", {
+        runId: ready.runId,
+        receipt: { dispatchId: "p5-receipt", source: "contract", usage: { tokens: 1 } },
+      });
 
       // Checkpoints: commit exposes committed/error; revert exposes ready/running/completed/error.
       const checkpointRun = ready.runId as string;

@@ -75,7 +75,7 @@ interface UsageReceipt {
   usage: Budget;                      // tokens, usd?, ms? — never dispatches (engine-accounted, rejected like stepDone :520)
   telemetry: { model: string; effort?: string; durationMs: number };
   split?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };  // informational, never debited
-  usdSource?: "reported" | "estimated";   // required when usage.usd is present
+  usdSource?: "reported" | "estimated";   // required when usage.usd is present; engine-internal legacy receipts carry "legacy" (provenance unknown) and callers may not send it
   at?: string;                        // dispatcher's completion time; engine stamps receipt time separately
 }
 ```
