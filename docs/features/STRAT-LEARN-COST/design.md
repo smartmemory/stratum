@@ -147,7 +147,7 @@ Supersession is a stream fact: every `usage_debit` for a listed `stepId` (or any
 
 **Wire:** `POST /memory/add` `{ content, memory_type, metadata, use_pipeline: false }`, header `X-Workspace-Id: $SMARTMEMORY_WORKSPACE_ID` (the SmartMemory team id — not the compose project slug, `compose/lib/smartmemory-config.js:58-64`). `content` is a one-line summary; `metadata` carries the full event detail plus `run_id`, `workspace_root`, `flow_name`, `spec_digest`, `event_ordinal`, `receipt_id`, `origin: "cli:stratum"`. Types: `stratum_usage_debit`, `stratum_step_reset`, `stratum_checkpoint_reverted` — registered on the server via `SMARTMEMORY_EXTRA_MEMORY_TYPES=stratum_usage_debit:append:false,stratum_step_reset:append:false,stratum_checkpoint_reverted:append:false` (append, not searchable — telemetry rows, same reasoning as `snapshot`); documented in the stratum README. Unregistered deployment → 422 → dead-letter, never a retry storm.
 
-Kill switch `STRATUM_LEARN_EGRESS=0`; default on when creds are present. Not in scope: any read path.
+**Explicit opt-in (revised at implementation review, 2026-08-30):** egress runs only when `STRATUM_LEARN_EGRESS=1` *and* `SMARTMEMORY_API_URL`/`API_KEY`/`WORKSPACE_ID` are all set. Default is OFF. Reason: the credentials are shared with the policy/enforcement channel, so "on with creds" would make a process configured only for enforcement start shipping receipts, and start background reconciliation in every engine construction, tests included. `X-Workspace-Id` is required; an unset workspace id refuses to enable rather than posting unscoped rows. Not in scope: any read path.
 
 ## 4. Slice plan
 
@@ -179,7 +179,7 @@ Order: S0-eng → S0b → S1b (all stratum, one release) → S0-compose (compose
 - [ ] S1b: a receipt is `egress: "pending"` in the run file the moment `usage_report` returns, before any network call; policy outbox dir receives no learn traffic; policy tests unchanged
 - [ ] S1b: 422 and 403 → `egress: "dead"` with status, drain continues; 503 → stays `pending`, retried with backoff; 2xx → `sent`; `retry-dead` flips `dead` → `pending`
 - [ ] S1b: `learn egress verify --run` reports 0 missing after a drain against a real backend; a forced double-send is reported as 1 duplicate by `receipt_id` (at-least-once is the stated guarantee)
-- [ ] S1b: `STRATUM_LEARN_EGRESS=0` or creds unset → no outbox file written
+- [ ] S1b: `STRATUM_LEARN_EGRESS` unset/`0`, or any of URL/key/workspace unset → no fetch, no row transition
 - [ ] `git diff --stat stratum/ts/src/learn/{harvest,classify,candidate,apply}.ts stratum/ts/src/policy/` empty at merge
 
 ## 6. Open questions for the gate
@@ -188,7 +188,7 @@ Order: S0-eng → S0b → S1b (all stratum, one release) → S0-compose (compose
 2. `stepId` on a receipt is *scoped*; compose knows only the plain step id for root steps. Recommendation: accept a plain id when it resolves uniquely at root scope, require scoped ids only for subflow children (the engine already has `scopedId`).
 3. ~~Claude pricing~~ **Decided:** send compose's estimate, labelled `estimated`.
 4. ~~`flowSpent` vs step `spent` gap~~ **Resolved:** `resetFrom`; §2 finding 4.
-5. ~~Egress default~~ **Decided:** on with creds, `STRATUM_LEARN_EGRESS=0` kill switch.
+5. ~~Egress default~~ **Decided, then reversed 2026-08-30:** explicit opt-in `STRATUM_LEARN_EGRESS=1`, default OFF (§3.1b). Shared credentials with the policy channel made "on with creds" unsafe.
 6. ~~Extract the policy outbox~~ **Decided:** copy, don't refactor; dedup follow-up filed.
 7. ~~Carrier~~ **Decided at round 3:** receipt-per-call primitive; `stepDone`/`gateResolve` unchanged.
 8. **Decided at round 4 (guarantees, explicitly weaker than round 3 claimed):** producer → engine is best-effort with a measured loss rate (no compose WAL in v1); engine → SmartMemory is at-least-once with consumer dedupe on `receipt_id` (server upsert is a SmartMemory follow-up); gates are charged flow-only; late receipts on terminal runs never change status. Each is a scope choice a reviewer can disagree with, not a claim the code contradicts.
