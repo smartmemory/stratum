@@ -1532,6 +1532,27 @@ The combined-suite CI (`test.yml`, added in 4d55522) ran the whole corpus agains
 
 ### stratum — feat(STRAT-JUDGE-POSTMORTEM-v2.2): corpus-quality fixes + replay harness
 
+> **RETIRED 2026-07-18.** STRAT-JUDGE-POSTMORTEM (v1.5 → v2.2, the whole
+> 13-module `judge/postmortem/` subsystem) was retired with the Python engine by
+> STRAT-PY-RETIRE. It was dropped, not ported: TS `learn` (`ts/src/learn/harvest.ts`)
+> reads engine run records from `~/.stratum/ts/flows/*.json` and never reads
+> conversation transcripts, so it targets a different corpus rather than replacing
+> this one. The transcript-reading capability now lives in SmartMemory —
+> `smartmemory/provenance/reader.py` (which superseded Stratum's
+> `transcript_reader.py` on 2026-06-23) and `smartmemory/importers/agent_transcript.py`
+> (Claude Code + Codex ingestion, shipped 2026-08-20).
+>
+> Final source is archived on the [`python-legacy`](../../tree/python-legacy) branch
+> (tip `642dda3`); on `main` the engine tree `src/` tracks zero files and no
+> `postmortem` module remains, so every command in the entries below is dead here.
+> The orphaned corpus data under `.stratum/postmortem/` (`candidates.jsonl`,
+> `candidates.v1.0.jsonl`, `replay-scorecard.json`, untouched since 2026-05-17)
+> was deleted 2026-08-30.
+>
+> Kept for history — the calibration finding still stands: the corpus was
+> high-precision but too sparse to calibrate a judge (n_scored=1), and growing
+> usable volume needs more work-oriented transcripts, not more harness code.
+
 - **#2 acceptance/topic-shift discrimination** (`signals.py`): `_is_genuine_acceptance` gates the acceptance signal behind `_FORWARD_PIVOT_PATTERNS` + a symmetric `_token_overlap` check — "thanks, now let's Y" is a pivot, not acknowledgement. Conservative: only softens `true_met→ambiguous`, never flips a label.
 - **#3 predicate decomposition** (`decompose.py`, new): `LiteLLMDecomposer` back-decomposes `request_text` into `result.Predicate` lists in the kernel's real `deterministic|verified|judged` taxonomy. Mirrors the `llm_gate` seam — litellm-routed, pydantic-validated, fail-open = empty list (never fabricates predicates). CLI `--decompose`; schema **1.1 → 1.2** additive `predicates` key.
 - **#4 replay harness** (`replay.py`, new + `replay` CLI subcommand): runs a faithful judge subset over the corpus at moment-of-claim, scoring per-tier false-met/false-not-met vs ground truth. Taxonomy-faithful routing (deterministic→T1 only if transcript-decidable & not a result/output claim; verified→T2 only with a post-claim `tool_result`; else `unreplayable`); moment-of-claim respected (T1 reads work-span tools only); empty/all-unreplayable → explicit unscorable (never `all([])→true_met`); abstention + coverage first-class; sha1 20% holdout with smoke-only caveat; schema-versioned scorecard JSON.
