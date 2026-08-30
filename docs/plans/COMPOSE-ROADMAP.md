@@ -58,3 +58,11 @@ Bootstrap: establish the core structure and first working milestone.
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
 | 1 | STRAT-AGENT-BG-WRITE-1 | Workspace-write background agent mode (run/poll/cancel) + claude tool allowlists on the agent surface. Closes the two E3-probed capability gaps (gh #18): (1) bg agent runs are codex-only + read-only-only (background.ts:65/:68) and sync agent_run returns no runId so in-flight write items cannot be interrupted — GSD worktree consumer items fail post-hoc on timeout but the agent keeps mutating the worktree; (2) claude-family tool allowlists cannot be carried over the wire (availability restriction, not permission auto-approve), forcing compose's local-claude-connector workaround. Ask: agent_run background mode for workspace-write runs with runId + event streaming + death-confirmed cancellation, and tool allowlist/denylist params for claude agents. Compose-side wiring is a follow-on slice in the compose repo. | COMPLETE |
+
+---
+
+## Standalone Tickets — IN_PROGRESS
+
+| # | Feature | Description | Status |
+|---|---------|-------------|--------|
+| 1 | STRAT-LEARN-COST | Cost-aware learn loop: compose reports per-step usage (S0), stratum harvests + classifies cost waste (retry-waste/outlier/model-mismatch) into templated notes (S1/S2), and mirrors step_usage + cost_candidate events into SmartMemory via the policy outbox (S1b). Egress only — the learn author never reads SmartMemory. Extends STRAT-TS-LEARN. | IN_PROGRESS |
