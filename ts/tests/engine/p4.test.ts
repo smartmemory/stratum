@@ -976,12 +976,12 @@ describe("P4 frozen contracts", () => {
   it("every emitted event and engine response validates against the frozen contract payload shapes", async () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
-    expect(eventsContract.events).toBe(1);
-    expect(surface.surface).toBe(14);
-    expect(Object.keys(surface.tools)).toHaveLength(23);
+    expect(eventsContract.events).toBe(2);
+    expect(surface.surface).toBe(15);
+    expect(Object.keys(surface.tools)).toHaveLength(24);
 
     const allEvents: AuditEvent[] = [];
-    const responses: { tool: "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_gate_resolve"; value: Record<string, unknown> }[] = [];
+    const responses: { tool: "stratum_plan" | "stratum_step_done" | "stratum_usage_report" | "stratum_resume" | "stratum_gate_resolve"; value: Record<string, unknown> }[] = [];
     const polls: Record<string, unknown>[] = [];
     const audits: Record<string, unknown>[] = [];
     const runIds: { engine: StratumEngine; runId: string }[] = [];
@@ -992,6 +992,14 @@ describe("P4 frozen contracts", () => {
     const aPlanned = await a.plan(gateFlow("approve"), { name: "x" });
     responses.push({ tool: "stratum_plan", value: aPlanned as unknown as Record<string, unknown> });
     if (aPlanned.status !== "ready") throw new Error("expected build ready");
+    responses.push({
+      tool: "stratum_usage_report",
+      value: await a.usageReport(aPlanned.runId, { dispatchId: "p4-receipt", source: "contract", usage: { tokens: 1 } }) as unknown as Record<string, unknown>,
+    });
+    responses.push({
+      tool: "stratum_usage_report",
+      value: await a.usageReport(aPlanned.runId, { dispatchId: "p4-receipt", source: "contract", usage: { tokens: 1 } }) as unknown as Record<string, unknown>,
+    });
     responses.push({ tool: "stratum_step_done", value: await a.stepDone(aPlanned.runId, "build", { output: { value: "built" } }) as unknown as Record<string, unknown> });
     polls.push(await a.flowPoll(aPlanned.runId, 0) as unknown as Record<string, unknown>); // running while waiting_gate
     audits.push(await a.audit(aPlanned.runId) as unknown as Record<string, unknown>);
@@ -1120,9 +1128,29 @@ describe("P4 frozen contracts", () => {
 
     for (const { engine: source, runId } of runIds) allEvents.push(...(await source.audit(runId)).events);
 
+    // S02 emits these two kinds. S01 declares their exact strict shapes now, so
+    // keep full-vocabulary coverage without pretending the current engine emitted them.
+    const declaredAheadOfEmission: AuditEvent[] = [
+      {
+        at: "2026-08-30T00:00:00.000Z", type: "step_reset", stepId: "build",
+        detail: { reason: "revise", reset: [{ stepId: "build", fromEpoch: 0, toEpoch: 1 }], subflowsDropped: [] },
+      },
+      {
+        at: "2026-08-30T00:00:00.000Z", type: "checkpoint_reverted",
+        detail: { label: "before", receiptsAtRevert: 1, stepsRestored: ["build"] },
+      },
+    ];
+
     // Every emitted event validates against its frozen payload shape (default-deny).
     const observedKinds = new Set<string>();
     for (const event of allEvents) {
+      observedKinds.add(event.type);
+      const kindShape = eventsContract.kinds[event.type];
+      expect(kindShape, `event kind ${event.type} missing from events.json`).toBeDefined();
+      const shape = { at: "string", type: "string", ...(kindShape as Record<string, Shape>) };
+      expect(checkShape(event, shape, event.type)).toEqual([]);
+    }
+    for (const event of declaredAheadOfEmission) {
       observedKinds.add(event.type);
       const kindShape = eventsContract.kinds[event.type];
       expect(kindShape, `event kind ${event.type} missing from events.json`).toBeDefined();
@@ -1142,7 +1170,7 @@ describe("P4 frozen contracts", () => {
       const { status: _, ...rest } = value;
       expect(checkShape(rest, declared!, `${tool}:${status}`)).toEqual([]);
     }
-    expect([...observedStatuses].sort()).toEqual(["budget_exhausted", "completed", "failed", "ready", "running"]);
+    expect([...observedStatuses].sort()).toEqual(["budget_exhausted", "completed", "duplicate", "failed", "ok", "ready", "running"]);
     for (const poll of polls) {
       const declared = surface.tools.stratum_flow_poll?.responses[poll.status as string];
       expect(declared, `flow_poll status ${String(poll.status)} missing from contract`).toBeDefined();

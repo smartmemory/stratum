@@ -81,3 +81,28 @@ describe("spec/input tool parameters advertise a JSON-schema type", () => {
     }
   });
 });
+
+describe("STRAT-LEARN-COST JSON-schema surface", () => {
+  it("advertises a strict nested schema for stratum_usage_report", async () => {
+    const surface = await mcpSurface();
+    expect(surface.surface).toBe(15);
+    const schema = schemaFor(surface.tools.stratum_usage_report!.request);
+    expect(schema).toMatchObject({
+      type: "object",
+      required: ["runId", "receipt"],
+      additionalProperties: false,
+      properties: {
+        runId: { type: "string" },
+        receipt: {
+          type: "object",
+          required: ["dispatchId", "source", "usage"],
+          additionalProperties: false,
+          properties: {
+            telemetry: { type: "object", required: ["durationMs", "model"], additionalProperties: false },
+            split: { type: "object", required: ["input", "output"], additionalProperties: false },
+          },
+        },
+      },
+    });
+  });
+});

@@ -1,3 +1,5 @@
+import type { AttemptTelemetry } from "./state.js";
+
 export const BUDGET_KEYS = ["usd", "tokens", "dispatches", "ms"] as const;
 export type BudgetKey = (typeof BUDGET_KEYS)[number];
 export type Budget = Partial<Record<BudgetKey, number | undefined>>;
@@ -45,4 +47,14 @@ export function validUsage(value: unknown): value is Budget {
   return Object.entries(value).every(([key, amount]) =>
     (BUDGET_KEYS as readonly string[]).includes(key) && typeof amount === "number" && Number.isFinite(amount) && amount >= 0,
   );
+}
+
+export function validConnectorTelemetry(value: unknown): value is AttemptTelemetry | undefined {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const telemetry = value as Record<string, unknown>;
+  if (Object.keys(telemetry).some((key) => !["durationMs", "model", "effort"].includes(key))) return false;
+  return typeof telemetry.durationMs === "number" && Number.isFinite(telemetry.durationMs) && telemetry.durationMs >= 0
+    && typeof telemetry.model === "string" && telemetry.model.length > 0
+    && (telemetry.effort === undefined || (typeof telemetry.effort === "string" && telemetry.effort.length > 0));
 }

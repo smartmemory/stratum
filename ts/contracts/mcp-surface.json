@@ -1,5 +1,5 @@
 {
-  "surface": 14,
+  "surface": 15,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -66,6 +66,25 @@
         "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" } },
         "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } },
         "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } }
+      }
+    },
+    "stratum_usage_report": {
+      "request": {
+        "runId": "string",
+        "receipt": {
+          "dispatchId": "string",
+          "stepId?": "string",
+          "source": "string",
+          "usage": "object",
+          "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" },
+          "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" },
+          "usdSource?": "string",
+          "at?": "string"
+        }
+      },
+      "responses": {
+        "ok": { "runId": "string", "seq": "number", "budget?": "string", "ledger": { "spent": "object", "budget?": "object" } },
+        "duplicate": { "runId": "string", "seq": "number", "ledger": { "spent": "object", "budget?": "object" } }
       }
     },
     "stratum_commit": {

@@ -1,5 +1,5 @@
 {
-  "events": 1,
+  "events": 2,
   "shapeLanguage": "Each kind maps to the full event payload shape minus the implicit {at: string, type: string}. Leaf types: number|string|boolean|object|array|null|any, unions with '|', optional keys end in '?', nested objects are declared inline. Undeclared keys are contract violations.",
   "kinds": {
     "planned": {},
@@ -60,6 +60,39 @@
     "fanout_merge": {
       "stepId": "string",
       "detail": { "itemIndex": "number", "success": "boolean", "reason?": "string" }
+    },
+    "usage_debit": {
+      "stepId?": "string",
+      "detail": {
+        "seq": "number",
+        "dispatchId": "string",
+        "source": "string",
+        "amount": "object",
+        "model": "string",
+        "effort?": "string",
+        "durationMs": "number",
+        "epoch?": "number",
+        "attempt?": "number",
+        "item?": { "itemIndex": "number", "stage": "number", "generation": "number" },
+        "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" },
+        "usdSource?": "string",
+        "reportedAt?": "string"
+      }
+    },
+    "step_reset": {
+      "stepId": "string",
+      "detail": {
+        "reason": "string",
+        "reset": { "$array": { "stepId": "string", "fromEpoch": "number", "toEpoch": "number" } },
+        "subflowsDropped": { "$array": "string" }
+      }
+    },
+    "checkpoint_reverted": {
+      "detail": {
+        "label": "string",
+        "receiptsAtRevert": "number",
+        "stepsRestored": { "$array": "string" }
+      }
     }
   }
 }

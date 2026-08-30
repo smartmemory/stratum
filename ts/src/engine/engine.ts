@@ -13,9 +13,10 @@ import { mergeBundleIntoSpec, policyRuleKey, predicateType, validateBundle } fro
 import { buildFlowTerminalEvent, buildGateResolutionEvent } from "../policy/events.js";
 import { emitPolicyEvent as postPolicyEvent } from "../policy/smartmemory_client.js";
 import type { EnforcementEvent, PolicyBundle, RuleVerdict } from "../policy/types.js";
-import { BudgetLedger, type Budget, validUsage } from "./ledger.js";
+import { BudgetLedger, type Budget, validConnectorTelemetry, validUsage } from "./ledger.js";
 import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
-import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, StateStore, type StepState } from "./state.js";
+import { buildReceipt, findReceipt, ReceiptValidationError, type ReceiptInput } from "./receipts.js";
+import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, StateStore, type StepState } from "./state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -121,6 +122,13 @@ interface ExecutionScope {
   parent?: { step: Step; state: StepState };
 }
 
+interface LocatedStep {
+  scope: ExecutionScope;
+  step: Step;
+  state: StepState;
+  item?: FanoutItemState;
+}
+
 export interface StepResult {
   output?: unknown;
   failure?: string;
@@ -177,6 +185,10 @@ export interface LedgerInfo {
   spent: Budget;
   budget?: Budget;
 }
+
+export type UsageReportResponse =
+  | { status: "ok"; runId: string; seq: number; budget?: "flow_exhausted" | "flow_exhausted_after_terminal" | "subflow_exhausted" | "task_exhausted"; ledger: LedgerInfo }
+  | { status: "duplicate"; runId: string; seq: number; ledger: LedgerInfo };
 
 export type EngineResponse =
   | { status: "ready"; runId: string; ready: ReadyEntry[]; ledger: LedgerInfo }
@@ -505,7 +517,9 @@ export class StratumEngine {
     const usage = { ...reported };
     delete usage.dispatches;
     // "settle": the agent already ran, so over-limit usage is still recorded in both ledgers.
-    const budgetFailure = this.debit(run, step, state, usage, "settle", scope);
+    const budgetFailure = hasBudget(usage)
+      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state })
+      : undefined;
     if (budgetFailure === "flow") {
       const failure = { attempt, reason: "flow budget exhausted" };
       state.attempts.push({ attempt, at: now(), failure, ...telemetryFields(telemetry), ...(hasBudget(usage) ? { usage } : {}) });
@@ -576,6 +590,67 @@ export class StratumEngine {
     delete state.dispatchToken;
     await this.persist(run);
     return this.advance(run, validated.value, validated.contracts, scope);
+  }
+
+  async usageReport(runId: string, input: unknown): Promise<UsageReportResponse> {
+    return this.withRunLock(runId, async () => {
+      if (typeof input === "object" && input !== null && (input as { usdSource?: unknown }).usdSource === "legacy") {
+        throw new ReceiptValidationError('usdSource "legacy" is reserved for engine-synthesized receipts');
+      }
+      const run = await this.loadRun(runId);
+      const candidate = input as Partial<ReceiptInput> | null;
+      if (typeof input !== "object" || input === null || Array.isArray(input)
+        || typeof candidate?.dispatchId !== "string" || candidate.dispatchId.length === 0) {
+        throw new ReceiptValidationError("dispatchId must be a non-empty string");
+      }
+      if (candidate.dispatchId.startsWith("legacy:")) {
+        throw new ReceiptValidationError('dispatchId prefix "legacy:" is reserved for engine-synthesized receipts');
+      }
+      const duplicate = findReceipt(run, candidate.dispatchId);
+      if (duplicate !== undefined) {
+        return { status: "duplicate", runId: run.id, seq: duplicate.seq, ledger: this.ledgerInfo(run) };
+      }
+
+      // Validate and allocate against a staging copy so a rejected receipt cannot
+      // advance the live counter (important while an active fanout pins the run object).
+      const staged = { ...run };
+      const receipt = buildReceipt(staged, input as ReceiptInput);
+      const located = receipt.stepId === undefined
+        ? undefined
+        : this.locateReceiptStep(run, this.validationFor(run).value, receipt.stepId);
+      if (receipt.stepId !== undefined && located === undefined) {
+        throw new ReceiptValidationError(`receipt step ${JSON.stringify(receipt.stepId)} does not exist`, "invalid_step");
+      }
+      run.receiptCounter = receipt.seq;
+
+      const wasRunning = run.status === "running";
+      const settled = this.settleReceipt(run, receipt, located);
+      if (settled.status === "duplicate") {
+        return { status: "duplicate", runId: run.id, seq: settled.receipt.seq, ledger: this.ledgerInfo(run) };
+      }
+
+      let budget: "flow_exhausted" | "flow_exhausted_after_terminal" | "subflow_exhausted" | "task_exhausted" | undefined;
+      if (settled.budget === "flow") {
+        budget = wasRunning ? "flow_exhausted" : "flow_exhausted_after_terminal";
+        if (wasRunning) {
+          const attempt = located?.item?.attempts.length ?? located?.state.attempts.length ?? 0;
+          await this.terminalBudget(run, { attempt: attempt + 1, reason: "flow budget exhausted" });
+        } else {
+          await this.persist(run);
+        }
+      } else {
+        if (settled.budget === "subflow") budget = "subflow_exhausted";
+        if (settled.budget === "task") budget = "task_exhausted";
+        await this.persist(run);
+      }
+      return {
+        status: "ok",
+        runId: run.id,
+        seq: receipt.seq,
+        ...(budget !== undefined ? { budget } : {}),
+        ledger: this.ledgerInfo(run),
+      };
+    });
   }
 
   async commit(runId: string, label: string): Promise<CommitResponse> {
@@ -1673,7 +1748,11 @@ export class StratumEngine {
     const usage = { ...(result.usage ?? {}) };
     const reportedDispatches = usage.dispatches !== undefined;
     delete usage.dispatches;
-    const settled = this.debit(run, step, state, usage, "settle");
+    const settled = hasBudget(usage)
+      ? this.settleLegacyReceipt(run, usage, "fanout", result.telemetry, {
+        scope: this.rootScope(run, spec), step, state, item,
+      })
+      : undefined;
     if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
     const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
     const contractFailure = this.contractError(stageStep, result.output, contracts);
@@ -1842,12 +1921,24 @@ export class StratumEngine {
             failureReason = `judged predicate failed: ${message(error)}`;
           }
         }
-        const usage = outcome?.usage ?? {};
-        const budgetFailure = hasBudget(usage) ? this.debit(run, step, state, usage, "settle", scope) : undefined;
+        const usage = { ...(outcome?.usage ?? {}) };
+        const judgedUsageAsReported = { ...usage };
+        // A judge may report `dispatches`; that key is ledger-only (never a receipt)
+        // and keeps its pre-receipt settle semantics.
+        const judgedDispatches = usage.dispatches !== undefined ? { dispatches: usage.dispatches } : undefined;
+        delete usage.dispatches;
+        const receiptItem = fanoutItem === undefined ? undefined : state.fanout?.items[fanoutItem.itemIndex];
+        const dispatchFailure = judgedDispatches !== undefined ? this.debit(run, step, state, judgedDispatches, "settle", scope) : undefined;
+        const costFailure = hasBudget(usage)
+          ? this.settleLegacyReceipt(run, usage, "judged", outcome?.model === undefined ? undefined : {
+            model: outcome.model.length > 0 ? outcome.model : "unknown", durationMs: 0,
+          }, { scope, step, state, ...(receiptItem !== undefined ? { item: receiptItem } : {}) })
+          : undefined;
+        const budgetFailure = worstBudget(dispatchFailure, costFailure);
         // A judged debit inside a fanout item must stay visible per item — the
         // observability contract forbids anonymous ledger movement.
-        if (fanoutItem && hasBudget(usage)) {
-          this.event(run, "fanout_ledger_debit", step.id, { itemIndex: fanoutItem.itemIndex, amount: usage, source: "judged" });
+        if (fanoutItem && hasBudget(judgedUsageAsReported)) {
+          this.event(run, "fanout_ledger_debit", step.id, { itemIndex: fanoutItem.itemIndex, amount: judgedUsageAsReported, source: "judged" });
         }
         // Fixed audit payload — every judged evaluation events, failures included.
         this.event(run, "judged", this.scopedId(scope, step.id), {
@@ -1936,6 +2027,85 @@ export class StratumEngine {
     if (!subflowOk) return "subflow";
     if (!taskOk) return "task";
     return undefined;
+  }
+
+  private settleReceipt(run: PersistedRun, receipt: ReceiptRecord, located?: LocatedStep, explicitAttempt?: number):
+    | { status: "duplicate"; receipt: ReceiptRecord }
+    | { status: "ok"; budget?: "flow" | "subflow" | "task" } {
+    const duplicate = findReceipt(run, receipt.dispatchId);
+    if (duplicate !== undefined) return { status: "duplicate", receipt: duplicate };
+
+    const canonicalStepId = located === undefined ? undefined : this.scopedId(located.scope, located.step.id);
+    if (canonicalStepId !== undefined) receipt.stepId = canonicalStepId;
+    let budget: "flow" | "subflow" | "task" | undefined;
+    const executable = located !== undefined && (located.step.do !== undefined || located.step.fanout !== undefined);
+    if (executable) {
+      budget = this.debit(run, located.step, located.state, receipt.amount, "settle", located.scope);
+    } else {
+      const flowLedger = new BudgetLedger(this.flowFor(run, this.validationFor(run).value).budget, run.flowSpent);
+      const subflowLedger = located?.scope.parent
+        ? new BudgetLedger(located.scope.parent.step.budget, located.scope.parent.state.spent)
+        : undefined;
+      const flowOk = flowLedger.canDebit(receipt.amount);
+      const subflowOk = subflowLedger?.canDebit(receipt.amount) ?? true;
+      flowLedger.debit(receipt.amount);
+      subflowLedger?.debit(receipt.amount);
+      Object.assign(run.flowSpent, flowLedger.spent);
+      if (subflowLedger && located?.scope.parent) Object.assign(located.scope.parent.state.spent, subflowLedger.spent);
+      if (!flowOk) budget = "flow";
+      else if (!subflowOk) budget = "subflow";
+    }
+
+    (run.receipts ??= []).push(receipt);
+    // `attempt` names the attempt the call belongs to. Legacy settles pass it (the
+    // attempt record is pushed after settlement, so length+1 is that attempt);
+    // external receipts get it only while the step is awaiting a result. Gates
+    // and finished steps have no attempt to name.
+    const attempt = explicitAttempt
+      ?? (executable && (located?.item !== undefined
+        ? (located.item.status === "ready" || located.item.status === "running")
+        : located?.state.status === "ready")
+        ? (located?.item !== undefined ? located.item.attempts.length + 1 : located!.state.attempts.length + 1)
+        : undefined);
+    const item = located?.item;
+    this.event(run, "usage_debit", canonicalStepId, {
+      seq: receipt.seq,
+      dispatchId: receipt.dispatchId,
+      source: receipt.source,
+      amount: { ...receipt.amount },
+      model: receipt.telemetry.model,
+      ...(receipt.telemetry.effort !== undefined ? { effort: receipt.telemetry.effort } : {}),
+      durationMs: receipt.telemetry.durationMs,
+      ...(located?.state.epoch !== undefined ? { epoch: located.state.epoch } : {}),
+      ...(attempt !== undefined ? { attempt } : {}),
+      ...(item?.stage !== undefined ? { item: { itemIndex: item.index, stage: item.stage, generation: item.generation } } : {}),
+      ...(receipt.split !== undefined ? { split: { ...receipt.split } } : {}),
+      ...(receipt.usdSource !== undefined ? { usdSource: receipt.usdSource } : {}),
+      ...(receipt.reportedAt !== undefined ? { reportedAt: receipt.reportedAt } : {}),
+    });
+    return { status: "ok", ...(budget !== undefined ? { budget } : {}) };
+  }
+
+  private settleLegacyReceipt(
+    run: PersistedRun,
+    usage: Budget,
+    source: "step_done" | "fanout" | "judged",
+    telemetry: AttemptTelemetry | undefined,
+    located: LocatedStep,
+  ): "flow" | "subflow" | "task" | undefined {
+    const seq = (run.receiptCounter ?? 0) + 1;
+    const receipt = buildReceipt(run, {
+      dispatchId: `legacy:${seq}`,
+      stepId: this.scopedId(located.scope, located.step.id),
+      source,
+      usage,
+      ...(telemetry !== undefined ? { telemetry } : {}),
+      ...(usage.usd !== undefined ? { usdSource: "legacy" } : {}),
+    });
+    const attempt = (located.item?.attempts.length ?? located.state.attempts.length) + 1;
+    const settled = this.settleReceipt(run, receipt, located, attempt);
+    if (settled.status === "duplicate") throw new Error(`legacy receipt sequence ${seq} collided`);
+    return settled.budget;
   }
 
   private unreachableOnFailTarget(step: Step, scope: ExecutionScope): boolean {
@@ -2179,7 +2349,7 @@ export class StratumEngine {
     };
   }
 
-  private locateStep(run: PersistedRun, spec: Specification, id: string): { scope: ExecutionScope; step: Step; state: StepState; item?: FanoutItemState } | undefined {
+  private locateStep(run: PersistedRun, spec: Specification, id: string): LocatedStep | undefined {
     const root = this.rootScope(run, spec);
     if (!id.includes("/")) {
       const step = root.flow.steps.find((candidate) => candidate.id === id);
@@ -2197,6 +2367,29 @@ export class StratumEngine {
       return item && item.index === Number(childId) ? { scope: root, step: parentStep, state: parentState, item } : undefined;
     }
     if (!parentStep || parentStep.run === undefined || !parentState?.sub || parentState.status !== "running") return undefined;
+    const scope = this.childScope(spec, parentStep, parentState);
+    const step = scope.flow.steps.find((candidate) => candidate.id === childId);
+    const state = scope.steps[childId];
+    return step && state ? { scope, step, state } : undefined;
+  }
+
+  /** Receipt attribution may arrive after a step or run terminalizes, when the
+   * execution lookup intentionally hides inactive subflow/fanout state. */
+  private locateReceiptStep(run: PersistedRun, spec: Specification, id: string): LocatedStep | undefined {
+    const active = this.locateStep(run, spec, id);
+    if (active !== undefined || !id.includes("/")) return active;
+    const parts = id.split("/");
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+    const [parentId, childId] = parts;
+    const root = this.rootScope(run, spec);
+    const parentStep = root.flow.steps.find((candidate) => candidate.id === parentId);
+    const parentState = root.steps[parentId];
+    if (!parentStep || !parentState) return undefined;
+    if (parentStep.fanout?.dispatch === "consumer" && parentState.fanout && /^(0|[1-9][0-9]*)$/.test(childId)) {
+      const item = parentState.fanout.items[Number(childId)];
+      return item && item.index === Number(childId) ? { scope: root, step: parentStep, state: parentState, item } : undefined;
+    }
+    if (parentStep.run === undefined || parentState.sub === undefined) return undefined;
     const scope = this.childScope(spec, parentStep, parentState);
     const step = scope.flow.steps.find((candidate) => candidate.id === childId);
     const state = scope.steps[childId];
@@ -2636,13 +2829,10 @@ function message(error: unknown): string {
   }
 }
 function hasBudget(usage: Budget): boolean { return Object.keys(usage).length > 0; }
-function validConnectorTelemetry(value: AttemptTelemetry | undefined): boolean {
-  if (value === undefined) return true;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  if (Object.keys(value).some((key) => !["durationMs", "model", "effort"].includes(key))) return false;
-  return typeof value.durationMs === "number" && Number.isFinite(value.durationMs) && value.durationMs >= 0
-    && typeof value.model === "string" && value.model.length > 0
-    && (value.effort === undefined || (typeof value.effort === "string" && value.effort.length > 0));
+/** Two settle results from one attempt collapse to the most severe ledger breach. */
+function worstBudget(...results: Array<"flow" | "subflow" | "task" | undefined>): "flow" | "subflow" | "task" | undefined {
+  for (const level of ["flow", "subflow", "task"] as const) if (results.includes(level)) return level;
+  return undefined;
 }
 function telemetryFields(value: AttemptTelemetry | undefined): Partial<AttemptTelemetry> {
   return value === undefined ? {} : { durationMs: value.durationMs, model: value.model, ...(value.effort !== undefined ? { effort: value.effort } : {}) };

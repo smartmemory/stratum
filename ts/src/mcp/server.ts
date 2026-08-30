@@ -27,7 +27,7 @@ const SERVER_VERSION: string = JSON.parse(
 ).version;
 
 export interface McpDependencies {
-  engine?: Pick<StratumEngine, "plan" | "stepDone" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
+  engine?: Pick<StratumEngine, "plan" | "stepDone" | "usageReport" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
   runAgent?: typeof runAgent;
   pollBackgroundRun?: typeof pollBackgroundRun;
   cancelBackgroundRun?: typeof cancelBackgroundRun;
@@ -43,7 +43,7 @@ export interface McpDependencies {
 }
 
 export type ToolName =
-  | "stratum_validate" | "stratum_compile_speckit" | "stratum_plan" | "stratum_step_done" | "stratum_resume" | "stratum_audit"
+  | "stratum_validate" | "stratum_compile_speckit" | "stratum_plan" | "stratum_step_done" | "stratum_usage_report" | "stratum_resume" | "stratum_audit"
   | "stratum_commit" | "stratum_revert"
   | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg"
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
@@ -134,6 +134,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           break;
         }
         case "stratum_step_done": response = await engine.stepDone(string(request, "runId"), string(request, "stepId"), record(request, "result"), string(request, "dispatchToken")); break;
+        case "stratum_usage_report": response = await engine.usageReport(string(request, "runId"), record(request, "receipt")); break;
         case "stratum_commit": response = { ...await engine.commit(string(request, "flow_id"), string(request, "label")) }; break;
         case "stratum_revert": response = await engine.revert(string(request, "flow_id"), string(request, "label")); break;
         case "stratum_resume": response = await engine.resume(string(request, "runId")); break;

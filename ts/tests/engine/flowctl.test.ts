@@ -51,7 +51,7 @@ describe("checkpoint state", () => {
     const classified = [...CHECKPOINT_FIELDS, ...Object.keys(CHECKPOINT_EXCLUDED)].sort();
     expect(classified).toEqual([
       "bgDriven", "bundle_id", "cancelRequested", "checkpoints", "events", "failure", "flowName", "flowSpent", "generationCounter", "id", "input",
-      "output", "parallel", "policy_rules", "policy_rules_version", "policy_verdicts", "revisionDigest", "rounds", "spec", "status", "steps", "workspaceRoot",
+      "output", "parallel", "policy_rules", "policy_rules_version", "policy_verdicts", "receiptCounter", "receipts", "revisionDigest", "rounds", "spec", "status", "steps", "workspaceRoot",
     ]);
     expect(Object.values(CHECKPOINT_EXCLUDED).every((reason) => reason.length > 0)).toBe(true);
   });

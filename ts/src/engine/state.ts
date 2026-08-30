@@ -18,6 +18,22 @@ export interface AttemptTelemetry {
   effort?: string;
 }
 
+export interface ReceiptRecord {
+  seq: number;
+  dispatchId: string;
+  stepId?: string;
+  source: string;
+  amount: Budget;
+  telemetry: AttemptTelemetry;
+  split?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
+  /** "legacy": dollars arrived on a pre-receipt stepDone envelope; provenance unknown, never counted as reported. */
+  usdSource?: "reported" | "estimated" | "legacy";
+  reportedAt?: string;
+  at: string;
+  egress: "pending" | "sent" | "dead";
+  egressStatus?: number;
+}
+
 export interface AttemptRecord extends Partial<AttemptTelemetry> {
   attempt: number;
   at: string;
@@ -156,7 +172,8 @@ export interface AuditEvent {
   at: string;
   type: "planned" | "ready" | "result" | "judged" | "routed" | "skipped" | "resumed" | "completed" | "failed" | "budget_exhausted"
     | "gate_waiting" | "gate_resolved" | "fanout_item_ready" | "fanout_item_dispatched" | "fanout_attempt_result"
-    | "fanout_item_skipped" | "fanout_ledger_debit" | "fanout_merge";
+    | "fanout_item_skipped" | "fanout_ledger_debit" | "fanout_merge"
+    | "usage_debit" | "step_reset" | "checkpoint_reverted";
   stepId?: string;
   detail?: unknown;
 }
@@ -181,6 +198,8 @@ export interface PersistedRun {
   revisionDigest?: string;
   /** Monotonic fanout enumeration counter. Deliberately excluded from checkpoints. */
   generationCounter?: number;
+  /** Monotonic receipt identity. Deliberately excluded from checkpoints. */
+  receiptCounter?: number;
   input: unknown;
   flowName: string;
   workspaceRoot?: string;
@@ -191,6 +210,8 @@ export interface PersistedRun {
   rounds?: number;
   steps: Record<string, StepState>;
   events: AuditEvent[];
+  /** Append-only model-call accounting spine. Deliberately excluded from checkpoints. */
+  receipts?: ReceiptRecord[];
   /** Policy-bundle identity and ensure correlation remain additive for old-run compatibility. */
   bundle_id?: string;
   policy_rules?: PolicyRuleMap;
