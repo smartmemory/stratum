@@ -13,9 +13,9 @@ import { mergeBundleIntoSpec, policyRuleKey, predicateType, validateBundle } fro
 import { buildFlowTerminalEvent, buildGateResolutionEvent } from "../policy/events.js";
 import { emitPolicyEvent as postPolicyEvent } from "../policy/smartmemory_client.js";
 import type { EnforcementEvent, PolicyBundle, RuleVerdict } from "../policy/types.js";
-import { BudgetLedger, type Budget, validConnectorTelemetry, validUsage } from "./ledger.js";
+import { BUDGET_KEYS, BudgetLedger, type Budget, validConnectorTelemetry, validUsage } from "./ledger.js";
 import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
-import { buildReceipt, findReceipt, ReceiptValidationError, type ReceiptInput } from "./receipts.js";
+import { buildReceipt, findReceipt, ReceiptValidationError, spineSpent, type ReceiptInput } from "./receipts.js";
 import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, StateStore, type StepState } from "./state.js";
 
 const execFileAsync = promisify(execFile);
@@ -681,6 +681,9 @@ export class StratumEngine {
       const run = await this.loadCheckpointRun(runId);
       this.assertNoForegroundFanout(run, "revert");
       const normalized = label.trim();
+      // Money spent is spent: a revert restores state, never spend. Capture the live
+      // cumulative total before the snapshot overwrites it.
+      const liveSpentBeforeRevert: Budget = { ...run.flowSpent };
       if (!revertCheckpoint(run, normalized)) {
         // Insertion order, matching Python (list(state.checkpoints.keys())) and the commit
         // envelope's `checkpoints` — not sorted, and robust to numeric labels (array, not object).
@@ -691,6 +694,27 @@ export class StratumEngine {
           available,
         );
       }
+      const receiptsAtRevert = run.receiptCounter ?? 0;
+      const stepsRestored = Object.keys(run.steps);
+      // flowSpent is monotonic across reverts: the live pre-revert total already
+      // includes every receipt (spine) plus any pre-receipt legacy spend, so it is
+      // the correct value in both the receipt-era and the upgraded-mid-run case.
+      // The spine is kept as a floor (defense against a corrupted live total); the
+      // restored snapshot is never consulted for spend.
+      const spine = spineSpent(run);
+      const reconciled: Budget = {};
+      for (const key of BUDGET_KEYS) {
+        const value = Math.max(liveSpentBeforeRevert[key] ?? 0, spine[key] ?? 0);
+        if (value !== 0) reconciled[key] = value;
+      }
+      run.flowSpent = reconciled;
+      this.event(run, "checkpoint_reverted", undefined, { label: normalized, receiptsAtRevert, stepsRestored });
+      const checkpointReceiptSeq = receiptsAtRevert + 1;
+      (run.receipts ??= []).push(buildReceipt(run, {
+        dispatchId: `engine:checkpoint_reverted:${checkpointReceiptSeq}`,
+        source: "engine",
+        usage: {},
+      }));
       this.rotateRestoredIssuances(run);
       await this.persist(run);
       return { ...await this.reAdvanceLocked(runId), reverted_to: normalized };
@@ -860,7 +884,7 @@ export class StratumEngine {
       }
       if (scope.parent) scope.parent.state.sub!.rounds = total;
       else run.rounds = total;
-      this.resetFrom(scope.flow, scope.steps, target);
+      this.resetFrom(run, scope, target);
       // The target's descendants include this gate; retain its local revision counter.
       scope.steps[step.id]!.iterations = gateRounds + 1;
       await this.persist(run);
@@ -2122,7 +2146,8 @@ export class StratumEngine {
   }
 
   /** Reset a revise target and its ordinary descendants; static validation proved target ancestry. */
-  private resetFrom(flow: Flow, steps: Record<string, StepState>, target: string): void {
+  private resetFrom(run: PersistedRun, scope: ExecutionScope, target: string): void {
+    const { flow, steps } = scope;
     const descendants = new Set<string>([target]);
     let changed = true;
     while (changed) {
@@ -2142,6 +2167,19 @@ export class StratumEngine {
         }
       }
     }
+    const reset = [...descendants].map((id) => {
+      const fromEpoch = steps[id]!.epoch ?? 0;
+      return { stepId: this.scopedId(scope, id), fromEpoch, toEpoch: fromEpoch + 1 };
+    });
+    const subflowsDropped = [...descendants].flatMap((id) =>
+      steps[id]!.sub === undefined ? [] : [this.scopedId(scope, id)]);
+    this.event(run, "step_reset", this.scopedId(scope, target), { reason: "revise", reset, subflowsDropped });
+    const resetReceiptSeq = (run.receiptCounter ?? 0) + 1;
+    (run.receipts ??= []).push(buildReceipt(run, {
+      dispatchId: `engine:step_reset:${resetReceiptSeq}`,
+      source: "engine",
+      usage: {},
+    }));
     const gateIds = new Set(flow.steps.flatMap((step) => step.gate !== undefined ? [step.id] : []));
     for (const id of descendants) {
       const state = steps[id]!;

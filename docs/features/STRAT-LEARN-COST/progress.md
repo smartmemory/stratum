@@ -15,3 +15,6 @@ Stratum flow run: `63047068-c50e-4ef3-8314-4cbe30e72a95` (step `implement` open,
 | 2026-08-30 | S05 compose producer dispatched to Codex sol/high (6020c008c4d5) in parallel | pending |
 | 2026-08-30 | S01 review r2 dispatched (targets the fixes) | pending |
 | 2026-08-30 | S01 review r2 (ea73fcabc3b1): 1 must-fix + 2 should-fix (judged per-item event lost dispatches; consumer item `ready`; empty judge model) — fixed, 105 green; r3 (cb882a468e9f): REVIEW CLEAN | see commit below |
+| 2026-08-30 | S01 committed | `d52cdf0` |
+| 2026-08-30 | S02 implemented by Codex (4114ad983416); review r1 (ef204e30ba41) 1 must-fix: revert zeroed legacy spend → controller fix max(snapshot,spine); r2 (00302468bfe2) 1 must-fix: hybrid upgraded-mid-run undercount → flowSpent monotonic (live pre-revert, spine floor); r3 (a49b2f647895) CLEAN | see commit below |
+| 2026-08-30 | S05 compose producer implemented (6020c008c4d5); controller local run 51/51; review r1 (acf4192bf765) 2 must-fix (raw-shape timeout usage lost receipt; tests bypass runBuild) → fix dispatched (7107d1ef2f9f) | pending |
