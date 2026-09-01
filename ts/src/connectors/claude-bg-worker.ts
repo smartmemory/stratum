@@ -60,6 +60,8 @@ async function run(): Promise<void> {
 
   let inputTokens = 0;
   let outputTokens = 0;
+    let cacheRead = 0;
+    let cacheCreation = 0;
   let costUsd = 0;
 
   // Inject a query seam that intercepts SDK events and writes normalized JSONL
@@ -82,10 +84,12 @@ async function run(): Promise<void> {
         if (r.type === "result" && isRecord(r.usage)) {
           inputTokens += Number(r.usage.input_tokens) || 0;
           outputTokens += Number(r.usage.output_tokens) || 0;
+          cacheRead += Number(r.usage.cache_read_input_tokens) || 0;
+          cacheCreation += Number(r.usage.cache_creation_input_tokens) || 0;
           // Provider-reported price rides along so agent_poll can surface it
           // (Codex r2: background Claude cost was silently dropped).
           costUsd += Math.max(0, Number(r.total_cost_usd) || 0);
-          await writeLine({ type: "turn.completed", usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_cost_usd: costUsd } });
+          await writeLine({ type: "turn.completed", usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheCreation, total_cost_usd: costUsd } });
         }
         yield raw;
       }
