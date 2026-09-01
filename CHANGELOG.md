@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### feat(STRAT-USAGE-SPLIT): input/output token split survives to receipts (surface 16)
+
+Every record ever written had `input_tokens = 0`: connectors read the true
+split from the SDK, then collapsed it into `Budget.tokens` at the return
+boundary, and compose filed the aggregate as output. The split now rides
+BESIDE the Budget-shaped usage — the `usdSource` seam — end to end:
+
+- `ConnectorResult.split?` (`{input, output, cacheRead?, cacheCreation?}`);
+  populated by the Claude connector (with cache detail), both Codex paths,
+  and the background scanner. The bg Claude worker forwards cache fields on
+  `turn.completed`.
+- Engine threads `split` wherever `usdSource` already flowed: `StepResult`,
+  the fanout dispatch wrap, `settleLegacyReceipt` → `buildReceipt`. The
+  never-populated `ReceiptRecord.split` now actually receives data.
+- `stratum_agent_run` / `stratum_agent_poll` `complete` responses declare
+  `split?`; **surface 15 → 16**.
+
+Consumers note: `output_tokens` in downstream records will DROP to true
+output — it previously contained the whole aggregate (prompt volume
+mislabeled as generation). That is the fix, not a regression.
+
 ### fix(connectors, engine, mcp): Codex review of 0a497ce (3 rounds, CLEAN)
 
 - `usdSource` moved from `ConnectorUsage` to `ConnectorResult`: the ledger
