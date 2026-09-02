@@ -41,9 +41,25 @@ export interface ConnectorResult {
    * receipt loses it (2026-08-30 census: local Claude receipts had no usd).
    */
   usdSource?: "reported";
+  /**
+   * Input/output token detail, reported BESIDE usage for the same reason as
+   * usdSource: the ledger admits only budget keys inside `usage`, so the
+   * split must ride alongside or it is lost at the Budget narrowing —
+   * which is exactly what happened to every record before STRAT-USAGE-SPLIT
+   * (input_tokens read 0 on all of them; the aggregate was filed as output).
+   */
+  split?: ConnectorSplit;
   text: string;
   usage: ConnectorUsage;
   telemetry: ConnectorTelemetry;
+}
+
+/** Token detail preserved beside the Budget-shaped usage (STRAT-USAGE-SPLIT). */
+export interface ConnectorSplit {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheCreation?: number;
 }
 
 /** Connector-local narration event; the MCP boundary adds its wire envelope. */

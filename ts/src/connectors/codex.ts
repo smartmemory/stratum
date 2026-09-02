@@ -225,6 +225,7 @@ export class CodexConnector {
     return {
       text: text.join(""),
       usage: { tokens: inputTokens + outputTokens, ms: durationMs },
+      split: { input: inputTokens, output: outputTokens },
       telemetry: { durationMs, ...identity },
     };
   }
@@ -314,6 +315,7 @@ export class CodexConnector {
     return {
       text: text.join(""),
       usage: { tokens: inputTokens + outputTokens, ms: durationMs },
+      split: { input: inputTokens, output: outputTokens },
       telemetry: { durationMs, ...modelIdentity(this.model) },
     };
   }

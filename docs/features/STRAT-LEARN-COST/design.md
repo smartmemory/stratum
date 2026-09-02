@@ -12,6 +12,7 @@
 - SmartMemory ingest already used by compose: `compose/lib/smartmemory-client.js:305` (`POST /memory/add`, body `{content, memory_type, metadata, use_pipeline}`, header `X-Workspace-Id`); no upsert — `/memory/add` mints a fresh id per call (`memory_service/api/routes/crud.py:577-590`)
 - SmartMemory type registry: `smart-memory-core/smartmemory/memory_types.py` (strict mode refuses unregistered types `:218/:251`; `SMARTMEMORY_EXTRA_MEMORY_TYPES` registers from env)
 - Parked follow-up (classifier + notes): §7 → STRAT-LEARN-COST-2
+- **Blocker surfaced by this feature's census:** `../STRAT-USAGE-SPLIT/design.md` — the §2 finding that attempts carry no usage was traced 2026-09-01 to connectors collapsing the input/output split into `Budget.tokens`. §7's classifier (retry-waste / outlier / **model-mismatch**) cannot be built until that split reaches storage.
 - Roadmap row: `docs/plans/COMPOSE-ROADMAP.md` → Standalone Tickets → STRAT-LEARN-COST (parent STRAT-TS-LEARN)
 
 ---

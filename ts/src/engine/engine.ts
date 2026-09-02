@@ -139,6 +139,8 @@ export interface StepResult {
   telemetry?: AttemptTelemetry;
   /** Provenance of usage.usd when the connector reported a provider price (ConnectorResult.usdSource). */
   usdSource?: "reported";
+  /** Input/output token detail preserved beside the Budget-shaped usage (ConnectorResult.split). */
+  split?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
 }
 
 export interface ReadyStep {
@@ -554,7 +556,7 @@ export class StratumEngine {
     delete usage.dispatches;
     // "settle": the agent already ran, so over-limit usage is still recorded in both ledgers.
     const budgetFailure = hasBudget(usage)
-      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state }, result.usdSource)
+      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state }, result.usdSource, result.split)
       : undefined;
     if (budgetFailure === "flow") {
       const failure = { attempt, reason: "flow budget exhausted" };
@@ -1816,7 +1818,7 @@ export class StratumEngine {
     const settled = hasBudget(usage)
       ? this.settleLegacyReceipt(run, usage, "fanout", result.telemetry, {
         scope: this.rootScope(run, spec), step, state, item,
-      }, result.usdSource)
+      }, result.usdSource, result.split)
       : undefined;
     if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
     const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
@@ -2165,6 +2167,7 @@ export class StratumEngine {
     telemetry: AttemptTelemetry | undefined,
     located: LocatedStep,
     usdSource?: "reported",
+    split?: StepResult["split"],
   ): "flow" | "subflow" | "task" | undefined {
     const seq = (run.receiptCounter ?? 0) + 1;
     const receipt = buildReceipt(run, {
@@ -2173,6 +2176,7 @@ export class StratumEngine {
       source,
       usage,
       ...(telemetry !== undefined ? { telemetry } : {}),
+      ...(split !== undefined ? { split } : {}),
       // A connector that priced the call itself keeps "reported"; only an
       // unlabelled usd is engine-synthesized "legacy".
       ...(usage.usd !== undefined ? { usdSource: usdSource ?? "legacy" } : {}),
@@ -2966,7 +2970,10 @@ export const defaultConnector: EngineConnector = async ({ agent, prompt, cwd, pr
     ...(agent === "codex" && sandbox !== undefined ? { sandboxMode: sandbox } : {}),
   });
   if ("status" in result) return { failure: "background connector response is not valid for synchronous fanout" };
-  const provenance = result.usdSource !== undefined ? { usdSource: result.usdSource } : {};
+  const provenance = {
+    ...(result.usdSource !== undefined ? { usdSource: result.usdSource } : {}),
+    ...(result.split !== undefined ? { split: result.split } : {}),
+  };
   if (outSchema === undefined) return { output: result.text, usage: result.usage, telemetry: result.telemetry, ...provenance };
   try {
     return { output: JSON.parse(stripJsonFences(result.text)), usage: result.usage, telemetry: result.telemetry, ...provenance };

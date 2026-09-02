@@ -1,5 +1,5 @@
 {
-  "surface": 15,
+  "surface": 16,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -182,7 +182,7 @@
     "stratum_agent_run": {
       "request": { "agent": "string", "prompt": "string", "cwd": "string", "model?": "string", "sandboxMode?": "string", "background?": "boolean", "allowedTools?": { "$array": "string" }, "disallowedTools?": { "$array": "string" } },
       "responses": {
-        "complete": { "text": "string", "usage": "object", "usdSource?": "string", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
+        "complete": { "text": "string", "usage": "object", "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" }, "usdSource?": "string", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
         "bg_started": { "runId": "string", "pid?": "number", "streamPath": "string" }
       }
     },
@@ -191,7 +191,7 @@
       "responses": {
         "not_found": { "runId": "string" },
         "running": { "runId": "string", "textTail": "string", "eventsSeen": "number", "streamPath": "string" },
-        "complete": { "runId": "string", "text": "string", "usage": "object", "usdSource?": "string", "exitCode": "number", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
+        "complete": { "runId": "string", "text": "string", "usage": "object", "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" }, "usdSource?": "string", "exitCode": "number", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
         "error": { "runId": "string", "textTail": "string", "stderrTail": "string", "reason?": "string", "exitCode?": "number", "eventsSeen?": "number", "streamPath?": "string", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } }
       }
     },
