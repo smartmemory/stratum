@@ -60,6 +60,8 @@ export class ClaudeConnector {
     let assistantText = "";
     let durationMs = 0;
     let inputTokens = 0;
+    let cacheRead = 0;
+    let cacheCreation = 0;
     let outputTokens = 0;
     let costUsd = 0;
     await this.emit({
@@ -115,13 +117,15 @@ export class ClaudeConnector {
       if (isRecord(raw.usage)) {
         inputTokens = finiteNonnegative(raw.usage.input_tokens);
         outputTokens = finiteNonnegative(raw.usage.output_tokens);
+        cacheRead = finiteNonnegative(raw.usage.cache_read_input_tokens);
+        cacheCreation = finiteNonnegative(raw.usage.cache_creation_input_tokens);
         await this.emit({
           kind: "step_usage",
           metadata: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
-            cache_creation_input_tokens: finiteNonnegative(raw.usage.cache_creation_input_tokens),
-            cache_read_input_tokens: finiteNonnegative(raw.usage.cache_read_input_tokens),
+            cache_creation_input_tokens: cacheCreation,
+            cache_read_input_tokens: cacheRead,
             model: requestedModel,
           },
         });
@@ -133,6 +137,15 @@ export class ClaudeConnector {
       // A zero/absent price is omitted entirely: receipts require provenance
       // whenever `usd` is present, and there is nothing to attribute.
       usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens, ms: durationMs },
+      // The Budget-shaped usage above necessarily drops the split; carry it
+      // beside so receipts and downstream accounting keep input vs output
+      // (STRAT-USAGE-SPLIT — before this, input_tokens read 0 everywhere).
+      split: {
+        input: inputTokens,
+        output: outputTokens,
+        ...(cacheRead > 0 ? { cacheRead } : {}),
+        ...(cacheCreation > 0 ? { cacheCreation } : {}),
+      },
       ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
       telemetry: { durationMs, model: resolvedModel },
     };

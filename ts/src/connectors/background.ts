@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
-import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorUsage } from "./base.js";
+import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorSplit, ConnectorUsage } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { applyHeadlessShellEnv, codexCommand, defaultCodexModel, withSandboxPreamble } from "./codex.js";
@@ -101,7 +101,7 @@ export interface RegistryOptions { registryRoot?: string }
 export type BackgroundPollResult =
   | { status: "not_found"; runId: string }
   | { status: "running"; runId: string; textTail: string; eventsSeen: number; streamPath: string }
-  | { status: "complete"; runId: string; text: string; usage: ConnectorUsage; usdSource?: "reported"; exitCode: 0; telemetry: ConnectorTelemetry }
+  | { status: "complete"; runId: string; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported"; exitCode: 0; telemetry: ConnectorTelemetry }
   | { status: "error"; runId: string; reason?: string; exitCode?: number; textTail: string; stderrTail: string; eventsSeen?: number; streamPath?: string; telemetry?: ConnectorTelemetry };
 
 export function agentRunsRoot(): string {
@@ -343,7 +343,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     }
     const telemetry = await terminalTelemetry(loaded.meta, streamPath);
     if (scan.exitCode === 0 && scan.error === undefined) {
-      return { status: "complete", runId, text, usage: scan.usage, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
+      return { status: "complete", runId, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
     }
     return {
       status: "error", runId, exitCode: scan.exitCode, textTail: text,
@@ -371,7 +371,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   }
   const telemetry = await terminalTelemetry(loaded.meta, streamPath);
   if (scan.exitCode === 0 && scan.error === undefined) {
-    return { status: "complete", runId, text, usage: scan.usage, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
+    return { status: "complete", runId, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
   }
   return {
     status: "error", runId, exitCode: scan.exitCode, textTail: text,
@@ -496,11 +496,13 @@ async function loadMeta(runId: string, root: string): Promise<{ meta: Background
 }
 
 async function scanStream(path: string): Promise<{
-  text: string; usage: ConnectorUsage; usdSource?: "reported"; exitCode?: number; error?: string; eventsSeen: number;
+  text: string; usage: ConnectorUsage; split: ConnectorSplit; usdSource?: "reported"; exitCode?: number; error?: string; eventsSeen: number;
 }> {
   let text = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheRead = 0;
+  let cacheCreation = 0;
   // Claude bg worker writes the SDK's cumulative total_cost_usd on turn.completed;
   // codex streams carry no price. Last value wins (it is cumulative).
   let costUsd = 0;
@@ -521,12 +523,20 @@ async function scanStream(path: string): Promise<{
     if (record.type === "turn.completed" && isRecord(record.usage)) {
       inputTokens += finiteNonnegative(record.usage.input_tokens);
       outputTokens += finiteNonnegative(record.usage.output_tokens);
+      cacheRead += finiteNonnegative(record.usage.cache_read_input_tokens);
+      cacheCreation += finiteNonnegative(record.usage.cache_creation_input_tokens);
       if (typeof record.usage.total_cost_usd === "number") costUsd = finiteNonnegative(record.usage.total_cost_usd);
     }
   }
   return {
     text,
     usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens },
+    split: {
+      input: inputTokens,
+      output: outputTokens,
+      ...(cacheRead > 0 ? { cacheRead } : {}),
+      ...(cacheCreation > 0 ? { cacheCreation } : {}),
+    },
     ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(error ? { error } : {}),
