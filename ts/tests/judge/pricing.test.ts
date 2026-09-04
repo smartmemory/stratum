@@ -7,14 +7,16 @@ describe("judge pricing", () => {
     ["gpt-5.6-terra/high", "gpt-5.6-terra"],
     ["gpt-5.6-sol/high", "gpt-5.6-sol"],
     ["gpt-5.6-sol", "gpt-5.6-sol"],
+    ["gpt-6-astra/high", "gpt-6-astra"],
   ])("normalizes %s", (model, expected) => expect(baseModel(model)).toBe(expected));
 
   it("ships only the three P2 judge tiers", () => {
-    expect(Object.keys(MODEL_PRICING).sort()).toEqual(["gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra"]);
+    expect(Object.keys(MODEL_PRICING).sort()).toEqual(["gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"]);
   });
 
   it("prices input and output independently", () => {
     expect(usdFromTokens("gpt-5.3-codex-spark/low", { inputTokens: 1_000, outputTokens: 500 })).toBeCloseTo(0.00875, 10);
+    expect(usdFromTokens("gpt-6-astra/high", { inputTokens: 1_000, outputTokens: 500 })).toBeCloseTo(0.035, 10);
   });
 
   it("returns zero for an unknown model or invalid counts", () => {

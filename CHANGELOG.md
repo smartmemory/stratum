@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### feat(judge): gpt-6-astra takes the paranoid tier
+
+OpenAI's new flagship `gpt-6-astra` ($10/$50 per MTok, 272K context in the
+Codex CLI) replaces `gpt-5.6-sol` as the `paranoid` stakes model in
+`STAKES_MODEL` and joins `MODEL_PRICING`. `default` stays `gpt-5.6-terra/high`
+(astra is 4x its price) and `cheap` stays `gpt-5.3-codex-spark/low`. The
+`CODEX_MODEL` default for the CodexConnector is unchanged; pass
+`gpt-6-astra/high` explicitly to route a dispatch there.
+
 ### feat(STRAT-USAGE-SPLIT): input/output token split survives to receipts (surface 16)
 
 Every record ever written had `input_tokens = 0`: connectors read the true

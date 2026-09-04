@@ -8,6 +8,7 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.free
   "gpt-5.3-codex-spark": { input: 1.75, output: 14 },
   "gpt-5.6-terra": { input: 2.5, output: 15 },
   "gpt-5.6-sol": { input: 5, output: 30 },
+  "gpt-6-astra": { input: 10, output: 50 },
 });
 
 export interface PricedTokenUsage {
