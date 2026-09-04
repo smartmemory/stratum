@@ -20,14 +20,14 @@ describe("judged predicates", () => {
     expect(STAKES_MODEL).toEqual({
       cheap: { model: "gpt-5.3-codex-spark", effort: "low" },
       default: { model: "gpt-5.6-terra", effort: "high" },
-      paranoid: { model: "gpt-5.6-sol", effort: "high" },
+      paranoid: { model: "gpt-6-astra", effort: "high" },
     });
   });
 
   it.each([
     ["cheap", "gpt-5.3-codex-spark/low", "low"],
     ["default", "gpt-5.6-terra/high", "high"],
-    ["paranoid", "gpt-5.6-sol/high", "high"],
+    ["paranoid", "gpt-6-astra/high", "high"],
   ] as const)("routes %s through its model tier", async (stakes, model, effort) => {
     generateObjectMock.mockResolvedValue(generated());
     const result = await evaluateJudged({ statement: "result.done is true", stakes }, { result: { done: true } });
@@ -90,7 +90,7 @@ describe("judged predicates", () => {
       holds: false,
       reason: "judge_error: provider unavailable",
       stakes: "paranoid",
-      model: "gpt-5.6-sol/high",
+      model: "gpt-6-astra/high",
       usage: { tokens: 0, usd: 0 },
     });
   });

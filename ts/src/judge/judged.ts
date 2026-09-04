@@ -16,7 +16,7 @@ export interface JudgeTier {
 export const STAKES_MODEL: Readonly<Record<Stakes, JudgeTier>> = Object.freeze({
   cheap: { model: "gpt-5.3-codex-spark", effort: "low" },
   default: { model: "gpt-5.6-terra", effort: "high" },
-  paranoid: { model: "gpt-5.6-sol", effort: "high" },
+  paranoid: { model: "gpt-6-astra", effort: "high" },
 });
 
 export interface JudgedContext {
