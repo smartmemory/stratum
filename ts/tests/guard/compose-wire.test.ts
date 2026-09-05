@@ -201,6 +201,52 @@ describe.sequential("Compose guard adapter wire shapes against the real TS CLI",
     expect(result.json).toMatchObject({ status: "applied", current_state: "review", ledger_ref: expect.any(String), verdict: expect.any(Object) });
   });
 
+  it("recomputes a transition's v2 payload digest from Compose's persisted envelope", async () => {
+    const policy = await run("policy", { resource_id: resourceId });
+    expect(policy).toMatchObject({ code: 0, json: { status: "ok", checksum: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+
+    const digest = await run("digest", {
+      from_state: "draft",
+      to_state: "review",
+      artifacts: { commit_sha: "deadbeef" },
+      modified_files: ["server/lifecycle-guard.js"],
+      resolved_by: "agent",
+      policy_checksum: policy.json.checksum,
+    });
+    const history = await run("history", { resource_id: resourceId });
+    const ledger = history.json.ledger as Array<Record<string, unknown>>;
+    const entry = ledger.find((candidate) => candidate.idempotency_key === "compose-transition-1");
+
+    expect(digest).toMatchObject({
+      code: 0,
+      json: { status: "ok", payload_digest: entry?.payload_digest, payload_digest_version: 2 },
+    });
+    expect(entry).toMatchObject({ payload_digest_version: 2 });
+
+    const invalidChecksum = await run("digest", {
+      from_state: "draft",
+      to_state: "review",
+      artifacts: { commit_sha: "deadbeef" },
+      policy_checksum: "A".repeat(64),
+    });
+    expect(invalidChecksum).toMatchObject({
+      code: 1,
+      json: { status: "error", error_type: "TypeError", message: expect.any(String) },
+    });
+
+    const unknownKey = await run("digest", {
+      from_state: "draft",
+      to_state: "review",
+      artifacts: { commit_sha: "deadbeef" },
+      policy_checksum: policy.json.checksum,
+      unexpected: true,
+    });
+    expect(unknownKey).toMatchObject({
+      code: 1,
+      json: { status: "error", error_type: "TypeError", message: 'unexpected guard argument "unexpected"' },
+    });
+  });
+
   it("keeps a guard refusal on exit 0 with state unchanged", async () => {
     const result = await run("transition", {
       resource_id: resourceId,

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.3] — 2026-09-05
+
+### feat(guard): STRAT-GUARD-DIGEST — `guard digest` on the CLI
+
+`guard digest` now returns the version-2 payload digest for a supplied transition
+envelope and policy checksum, using the guard's canonical digest implementation.
+
+This lets a recovering Compose consumer compare its persisted envelope against
+the ledger entry under an idempotency key without reimplementing canonical JSON
+or SHA-256. The policy checksum remains bound into the result.
+
 ## [0.4.2] — 2026-09-05
 
 ### feat(guard): STRAT-GUARD-CLI-APPLY — `guard apply-upgrade` and `guard policy` on the CLI
