@@ -191,12 +191,12 @@ describe.sequential("guard policy seam", () => {
       on_fail: "refuse",
     }]);
     await registerGuard("resource-refresh-bundle", { draft: ["done"], done: [] }, {}, "draft", ["done"], {}, workspace, firstBundle);
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await expect(registerGuard(
       "resource-refresh-bundle", { draft: ["done"], done: [] }, {}, "draft", ["done"], {}, workspace, secondBundle,
     )).resolves.toMatchObject({ status: "exists" });
     expect(loadRegistry("resource-refresh-bundle")?.bundle_id).toBe(secondBundle.bundle_id);
-    expect(info).toHaveBeenCalledWith(expect.stringMatching(/resource-refresh-bundle.*bundle_id/));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/resource-refresh-bundle.*bundle_id/));
   });
 
   it("backfills bundle_id on a checksum-equal legacy registration", async () => {

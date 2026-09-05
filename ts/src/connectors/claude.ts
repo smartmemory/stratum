@@ -1,6 +1,9 @@
-import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { spawn } from "node:child_process";
+import { query as sdkQuery, type SpawnOptions as ClaudeSpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, SMARTMEMORY_SCRUB_VARS } from "./base.js";
+
+import { linkAbort, processTermination, requireProcessGroups } from "./cancellation.js";
 
 interface QueryParams {
   prompt: string;
@@ -16,6 +19,15 @@ export interface ClaudeConnectorOptions {
   allowedTools?: string[];
   disallowedTools?: string[];
   thinking?: Record<string, unknown>;
+  effort?: string;
+  signal?: AbortSignal;
+  /** Opt in to POSIX process-group ownership. Set ONLY by the cancellation
+   * contract (an MCP `cancellationId`). `signal` alone must not imply it: MCP
+   * always supplies a request-scoped `extra.signal`, so gating on the signal
+   * made every MCP Claude dispatch demand process groups — and fail before
+   * spawn on Windows. */
+  ownProcessGroup?: boolean;
+  cancellationGraceMs?: number;
   env?: NodeJS.ProcessEnv;
   /** SDK-boundary test seam. */
   query?: QueryFunction;
@@ -37,118 +49,182 @@ export class ClaudeConnector {
   }
 
   async run(prompt: string): Promise<ConnectorResult> {
+    this.options.signal?.throwIfAborted();
+    const controller = new AbortController();
+    const unlink = linkAbort(this.options.signal, controller);
+    const ownProcessGroup = this.options.ownProcessGroup === true;
+    if (ownProcessGroup) requireProcessGroups();
+    const children: Array<ReturnType<typeof processTermination>> = [];
+    let stderr = "";
     const requestedModel = this.options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
-    const env = { ...(this.options.env ?? process.env) };
-    for (const key of SENSITIVE_ENV_VARS) delete env[key];
-    const sdkOptions: Record<string, unknown> = {
-      cwd: this.options.cwd ?? process.cwd(),
-      model: requestedModel,
-      permissionMode: "acceptEdits",
-      env,
-    };
-    if (this.options.allowedTools !== undefined) {
-      sdkOptions.tools = this.options.allowedTools;
-      if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
-    } else {
-      sdkOptions.tools = { type: "preset", preset: "claude_code" };
-      if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
-    }
-    if (this.options.thinking !== undefined) sdkOptions.thinking = this.options.thinking;
-
     let resolvedModel = requestedModel;
-    let finalText: string | undefined;
-    let assistantText = "";
     let durationMs = 0;
     let inputTokens = 0;
     let cacheRead = 0;
     let cacheCreation = 0;
     let outputTokens = 0;
     let costUsd = 0;
-    await this.emit({
-      kind: "agent_started",
-      metadata: { agent: "claude", model: requestedModel, prompt_chars: prompt.length },
-    });
-    for await (const raw of this.query({ prompt, options: sdkOptions })) {
-      if (!isRecord(raw)) continue;
-      if (raw.type === "system" && raw.subtype === "init" && typeof raw.model === "string") resolvedModel = raw.model;
-      if (raw.type === "assistant" && isRecord(raw.message) && Array.isArray(raw.message.content)) {
-        for (const block of raw.message.content) {
-          if (!isRecord(block)) continue;
-          if (block.type === "text" && typeof block.text === "string" && block.text) {
-            assistantText += block.text;
-            await this.emit({ kind: "agent_relay", metadata: { text: block.text, role: "assistant" } });
-          } else if (block.type === "tool_use" && typeof block.name === "string") {
-            const input = "input" in block ? block.input : {};
+    const terminate = (): void => {
+      for (const child of children) void child.terminate();
+    };
+    controller.signal.addEventListener("abort", terminate, { once: true });
+    try {
+      const env = { ...(this.options.env ?? process.env) };
+      for (const key of SENSITIVE_ENV_VARS) delete env[key];
+      const sdkOptions: Record<string, unknown> = {
+        cwd: this.options.cwd ?? process.cwd(),
+        model: requestedModel,
+        permissionMode: "acceptEdits",
+        env,
+        abortController: controller,
+        // Own the SDK process group so cancellation also stops shell/tool children.
+        ...(ownProcessGroup ? { spawnClaudeCodeProcess: (options: ClaudeSpawnOptions) => {
+          controller.signal.throwIfAborted();
+          const child = spawn(options.command, options.args, {
+            cwd: options.cwd, env: options.env, detached: process.platform !== "win32",
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          const termination = processTermination(child, true, this.options.cancellationGraceMs);
+          child.stderr.setEncoding("utf8");
+          child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-16_384); });
+          const sdkAbort = (): void => { void termination.terminate(); };
+          options.signal.addEventListener("abort", sdkAbort, { once: true });
+          void termination.close.then(() => options.signal.removeEventListener("abort", sdkAbort));
+          children.push(termination);
+          if (options.signal.aborted) sdkAbort();
+          // The SDK receives a process handle whose kill requests enter the same
+          // graceful teardown path; the actual ChildProcess.kill is never replaced.
+          // The requested signal is the one sent first — the grace path still owns
+          // escalation to SIGKILL, so a caller's SIGINT/SIGKILL is not downgraded.
+          // stderr is not part of the SDK's SpawnedProcess contract but costs
+          // nothing to surface and is what the connector itself reads.
+          return { stdin: child.stdin, stdout: child.stdout, stderr: child.stderr,
+            get killed() { return child.killed; },
+            get exitCode() { return child.exitCode; }, pid: child.pid,
+            kill: (signal?: NodeJS.Signals) => { void termination.terminate(signal); return true; },
+            on: child.on.bind(child), once: child.once.bind(child), off: child.off.bind(child) };
+        } } : {}),
+      };
+      if (this.options.allowedTools !== undefined) {
+        sdkOptions.tools = this.options.allowedTools;
+        if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
+      } else {
+        sdkOptions.tools = { type: "preset", preset: "claude_code" };
+        if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
+      }
+      if (this.options.effort !== undefined) sdkOptions.effort = this.options.effort;
+      if (this.options.thinking !== undefined) sdkOptions.thinking = this.options.thinking;
+
+      let finalText: string | undefined;
+      let assistantText = "";
+      await this.emit({
+        kind: "agent_started",
+        metadata: { agent: "claude", model: requestedModel, prompt_chars: prompt.length },
+      });
+      for await (const raw of this.query({ prompt, options: sdkOptions })) {
+        if (!isRecord(raw)) continue;
+        if (raw.type === "system" && raw.subtype === "init" && typeof raw.model === "string") resolvedModel = raw.model;
+        if (raw.type === "assistant" && isRecord(raw.message) && Array.isArray(raw.message.content)) {
+          for (const block of raw.message.content) {
+            if (!isRecord(block)) continue;
+            if (block.type === "text" && typeof block.text === "string" && block.text) {
+              assistantText += block.text;
+              await this.emit({ kind: "agent_relay", metadata: { text: block.text, role: "assistant" } });
+            } else if (block.type === "tool_use" && typeof block.name === "string") {
+              const input = "input" in block ? block.input : {};
+              await this.emit({
+                kind: "tool_use_summary",
+                metadata: {
+                  tool: block.name,
+                  summary: shortInputSummary(input),
+                  ok: true,
+                  duration_ms: 0,
+                  input: cappedToolInput(input),
+                  ...(typeof block.id === "string" ? { tool_use_id: block.id } : {}),
+                },
+              });
+            }
+          }
+        }
+        if (raw.type === "user" && isRecord(raw.message) && Array.isArray(raw.message.content)) {
+          for (const block of raw.message.content) {
+            if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
             await this.emit({
-              kind: "tool_use_summary",
+              kind: "tool_result",
               metadata: {
-                tool: block.name,
-                summary: shortInputSummary(input),
-                ok: true,
-                duration_ms: 0,
-                input: cappedToolInput(input),
-                ...(typeof block.id === "string" ? { tool_use_id: block.id } : {}),
+                tool_use_id: block.tool_use_id,
+                ok: block.is_error !== true,
+                output: capText(toolResultText(block.content)),
               },
             });
           }
         }
-      }
-      if (raw.type === "user" && isRecord(raw.message) && Array.isArray(raw.message.content)) {
-        for (const block of raw.message.content) {
-          if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+        if (raw.type !== "result") continue;
+        durationMs = finiteNonnegative(raw.duration_ms);
+        if (typeof raw.result === "string") finalText = raw.result;
+        costUsd = finiteNonnegative(raw.total_cost_usd);
+        if (isRecord(raw.usage)) {
+          inputTokens = finiteNonnegative(raw.usage.input_tokens);
+          outputTokens = finiteNonnegative(raw.usage.output_tokens);
+          cacheRead = finiteNonnegative(raw.usage.cache_read_input_tokens);
+          cacheCreation = finiteNonnegative(raw.usage.cache_creation_input_tokens);
           await this.emit({
-            kind: "tool_result",
+            kind: "step_usage",
             metadata: {
-              tool_use_id: block.tool_use_id,
-              ok: block.is_error !== true,
-              output: capText(toolResultText(block.content)),
+              input_tokens: inputTokens,
+              output_tokens: outputTokens,
+              cost_usd: costUsd,
+              cache_creation_input_tokens: cacheCreation,
+              cache_read_input_tokens: cacheRead,
+              model: requestedModel,
             },
           });
         }
+        if (raw.subtype !== "success") {
+          const errors = Array.isArray(raw.errors) ? raw.errors.filter((value): value is string => typeof value === "string") : [];
+          throw new Error(errors.join("; ") || `claude query failed: ${String(raw.subtype)}`);
+        }
       }
-      if (raw.type !== "result") continue;
-      durationMs = finiteNonnegative(raw.duration_ms);
-      if (raw.subtype !== "success") {
-        const errors = Array.isArray(raw.errors) ? raw.errors.filter((value): value is string => typeof value === "string") : [];
-        throw new Error(errors.join("; ") || `claude query failed: ${String(raw.subtype)}`);
-      }
-      if (typeof raw.result === "string") finalText = raw.result;
-      costUsd = finiteNonnegative(raw.total_cost_usd);
-      if (isRecord(raw.usage)) {
-        inputTokens = finiteNonnegative(raw.usage.input_tokens);
-        outputTokens = finiteNonnegative(raw.usage.output_tokens);
-        cacheRead = finiteNonnegative(raw.usage.cache_read_input_tokens);
-        cacheCreation = finiteNonnegative(raw.usage.cache_creation_input_tokens);
-        await this.emit({
-          kind: "step_usage",
-          metadata: {
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-            cache_creation_input_tokens: cacheCreation,
-            cache_read_input_tokens: cacheRead,
-            model: requestedModel,
-          },
-        });
+      controller.signal.throwIfAborted();
+      return {
+        text: finalText ?? assistantText,
+        // total_cost_usd is the SDK's own price for the call — provider-reported.
+        // A zero/absent price is omitted entirely: receipts require provenance
+        // whenever `usd` is present, and there is nothing to attribute.
+        usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens, ms: durationMs },
+        // The Budget-shaped usage above necessarily drops the split; carry it
+        // beside so receipts and downstream accounting keep input vs output
+        // (STRAT-USAGE-SPLIT — before this, input_tokens read 0 everywhere).
+        split: {
+          input: inputTokens,
+          output: outputTokens,
+          ...(cacheRead > 0 ? { cacheRead } : {}),
+          ...(cacheCreation > 0 ? { cacheCreation } : {}),
+        },
+        ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
+        telemetry: { durationMs, model: resolvedModel },
+      };
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      Object.assign(failure, {
+        telemetry: { durationMs, model: resolvedModel },
+        usage: { tokens: inputTokens + outputTokens, ms: durationMs, ...(costUsd > 0 ? { usd: costUsd } : {}) },
+        split: { input: inputTokens, output: outputTokens, cacheRead, cacheCreation },
+        ...(costUsd > 0 ? { usdSource: "reported" } : {}),
+      });
+      // Finish stderr collection and child teardown before returning a diagnostic.
+      if (controller.signal.aborted) { terminate(); await Promise.all(children.map(child => child.finish())); }
+      if (stderr) Object.assign(failure, { stderr, cause: failure.cause ?? new Error(stderr.trim()) });
+      throw failure;
+    } finally {
+      unlink();
+      controller.signal.removeEventListener("abort", terminate);
+      // Do not acknowledge cancellation while any owned process is still open.
+      if (controller.signal.aborted) {
+        terminate();
+        await Promise.all(children.map(child => child.finish()));
       }
     }
-    return {
-      text: finalText ?? assistantText,
-      // total_cost_usd is the SDK's own price for the call — provider-reported.
-      // A zero/absent price is omitted entirely: receipts require provenance
-      // whenever `usd` is present, and there is nothing to attribute.
-      usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens, ms: durationMs },
-      // The Budget-shaped usage above necessarily drops the split; carry it
-      // beside so receipts and downstream accounting keep input vs output
-      // (STRAT-USAGE-SPLIT — before this, input_tokens read 0 everywhere).
-      split: {
-        input: inputTokens,
-        output: outputTokens,
-        ...(cacheRead > 0 ? { cacheRead } : {}),
-        ...(cacheCreation > 0 ? { cacheCreation } : {}),
-      },
-      ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
-      telemetry: { durationMs, model: resolvedModel },
-    };
   }
 
   private async emit(event: ConnectorEvent): Promise<void> {

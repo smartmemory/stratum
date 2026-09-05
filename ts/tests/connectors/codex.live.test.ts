@@ -7,9 +7,8 @@ function codexAvailable(): boolean {
   return probe.status === 0 && !probe.error && !/operation not permitted/i.test(probe.stderr);
 }
 
-// Live test: needs an authenticated codex CLI + network, which CI lacks (the
-// binary exists on the runner but has no creds → 401). Skip under CI; run locally.
-describe.skipIf(!codexAvailable() || !!process.env.CI)("live codex connector", () => {
+// Paid live execution is opt-in even on authenticated developer machines.
+describe.skipIf(process.env.STRATUM_LIVE_CODEX !== "1" || !!process.env.CI || !codexAvailable())("live codex connector", () => {
   it("echoes through gpt-5.3-codex-spark/low", async () => {
     const result = await new CodexConnector({ model: "gpt-5.3-codex-spark/low" }).run("Reply with exactly: STRATUM_P3_ECHO_OK");
     expect(result.text).toContain("STRATUM_P3_ECHO_OK");

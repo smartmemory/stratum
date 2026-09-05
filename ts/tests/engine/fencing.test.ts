@@ -399,7 +399,9 @@ describe("engine issuance fencing", () => {
   it("audit exposes durable state, not the in-memory run pinned by an active fanout", async () => {
     let releaseConnector: () => void = () => undefined;
     const blocked = new Promise<void>((resolve) => { releaseConnector = resolve; });
-    const connector: EngineConnector = async ({ prompt }) => { await blocked; return { output: { value: prompt } }; };
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const connector: EngineConnector = async ({ prompt }) => { markEntered(); await blocked; return { output: { value: prompt } }; };
     const { engine, store } = await subject(connector);
     const spec = {
       version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
@@ -410,21 +412,25 @@ describe("engine issuance fencing", () => {
         } }],
       } },
     };
-    // plan returns while the fanout worker is blocked on the connector, so the
-    // run object stays pinned in memory (loadRun returns the live instance).
+    // plan schedules the fanout before returning; wait until its dispatch save
+    // has finished and it has actually entered the blocked connector.
     const planned = await engine.plan(spec, { items: ["a"] });
+    await entered;
 
     // Diverge disk from the pinned object: only the durable copy carries the
     // marker. audit must surface durable state — a token that exists only in
     // memory has not met "persist before expose".
+    try {
     const durable = await store.load(planned.runId);
     durable.steps.fan!.acceptedDispatchToken = "durable-marker";
     await store.save(durable);
     const during = await engine.audit(planned.runId);
     expect(during.steps.fan?.acceptedDispatchToken).toBe("durable-marker");
 
-    releaseConnector();
-    await waitFor(engine, planned.runId, (audit) => audit.status === "completed");
+    } finally {
+      releaseConnector();
+      await waitFor(engine, planned.runId, (audit) => audit.status === "completed");
+    }
   });
 
   it("guards commit and revert through a consumer worktree successor gate but releases at the specified boundaries", async () => {

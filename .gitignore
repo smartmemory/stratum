@@ -35,3 +35,6 @@ docs/features/*/.stratum.yaml
 
 # Lock files (pnpm/uv)
 uv.lock
+
+# Codex agent run logs
+.codex-out/

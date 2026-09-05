@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StratumEngine, type BgStatus, type EngineConnector } from "../../src/engine/engine.js";
 import { StateStore, type PersistedRun } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
@@ -235,3 +235,41 @@ const subflowGateFlow = {
     },
   },
 };
+
+
+it("does not combine an old running flow snapshot with a newly completed driver", async () => {
+  const root = await stateRoot();
+  let releaseConnector!: () => void;
+  const blocked = new Promise<void>((resolve) => { releaseConnector = resolve; });
+  let entered!: () => void;
+  const dispatched = new Promise<void>((resolve) => { entered = resolve; });
+  const subject = engine(root, async ({ prompt }) => { entered(); await blocked; return { output: { value: prompt } }; });
+  const started = await subject.flowRunBg(linearFlow, { name: "Ada" });
+  await dispatched;
+  const internals = subject as unknown as { store: StateStore; bgFlows: Map<string, { loop?: Promise<void> }> };
+  const originalLoad = internals.store.load.bind(internals.store);
+  let releaseRead!: () => void;
+  const heldRead = new Promise<void>((resolve) => { releaseRead = resolve; });
+  let readStarted!: () => void;
+  const snapshotRead = new Promise<void>((resolve) => { readStarted = resolve; });
+  const spy = vi.spyOn(internals.store, "load").mockImplementationOnce(async (id) => {
+    const snapshot = await originalLoad(id);
+    readStarted();
+    await heldRead;
+    return snapshot;
+  });
+  const polling = subject.flowBgPoll(started.runId);
+  try {
+    await snapshotRead;
+    releaseConnector();
+    await internals.bgFlows.get(started.runId)!.loop;
+    releaseRead();
+    expect(await polling).toMatchObject({ status: "running", bg: { status: "running" } });
+    expect(await subject.flowBgPoll(started.runId)).toMatchObject({ status: "completed", bg: { status: "completed" } });
+  } finally {
+    releaseRead(); releaseConnector();
+    await polling;
+    await internals.bgFlows.get(started.runId)?.loop;
+    spy.mockRestore();
+  }
+});

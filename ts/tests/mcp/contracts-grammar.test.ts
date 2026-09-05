@@ -78,9 +78,9 @@ describe("tagged frozen-contract shape grammar", () => {
 });
 
 describe("STRAT-LEARN-COST frozen contract declarations", () => {
-  it("freezes surface 16 and rejects undeclared nested usage-report keys", async () => {
+  it("freezes surface 17 and rejects undeclared nested usage-report keys", async () => {
     const surface = await mcpSurface();
-    expect(surface.surface).toBe(16);
+    expect(surface.surface).toBe(17);
     expect(surface.tools.stratum_usage_report).toBeDefined();
     await expect(assertToolRequest("stratum_usage_report", {
       runId: "run-1",
@@ -128,5 +128,27 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
       type: "usage_debit",
       detail: { seq: 1, dispatchId: "dispatch-1", source: "client", amount: {}, model: "fixture", durationMs: 2, extra: true },
     })).rejects.toThrow("event.detail.extra is undeclared");
+  });
+});
+
+describe("agent-run failure envelope declaration", () => {
+  it("declares agent_run_failed and every optional key the server attaches", async () => {
+    const declaration = (await mcpSurface()).errors.agent_run_failed;
+    expect(declaration).toBeDefined();
+    // The server attaches these five optional keys beside `code`; each must be declared
+    // or the envelope reaches a client in a shape the contract does not describe.
+    expect(() => assertShape({
+      code: "agent_run_failed",
+      usage: { tokens: 9, ms: 12, usd: 0.25 },
+      split: { input: 7, output: 2, cacheRead: 4, cacheCreation: 1 },
+      usdSource: "reported",
+      stderr: "fatal diagnostic",
+      telemetry: { model: "fixture", durationMs: 12, effort: "high" },
+    }, declaration!.data, "errors.agent_run_failed.data")).not.toThrow();
+    // `code` carries a connector-specific failure code when the connector has one.
+    expect(() => assertShape({ code: "CANCELLATION_TEARDOWN_TIMEOUT" }, declaration!.data, "errors.agent_run_failed.data")).not.toThrow();
+    // Anything the server has not declared is still a contract violation.
+    expect(() => assertShape({ code: "agent_run_failed", undeclared: true }, declaration!.data, "errors.agent_run_failed.data"))
+      .toThrow("errors.agent_run_failed.data.undeclared is undeclared");
   });
 });

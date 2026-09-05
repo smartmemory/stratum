@@ -14,6 +14,10 @@ export interface AgentRunOptions {
   cwd?: string;
   model?: string;
   background?: boolean;
+  signal?: AbortSignal;
+  ownProcessGroup?: boolean;
+  thinking?: Record<string, unknown>;
+  effort?: string;
   sandboxMode?: CodexSandboxMode;
   budgeted?: boolean;
   registryRoot?: string;
@@ -58,40 +62,81 @@ export async function runAgent(
       'cannot enforce read-only (D8). Omit sandboxMode or pass "workspace-write".',
     );
   }
+  options.signal?.throwIfAborted();
+  validateAgentSettings(options);
   const cwd = options.cwd ?? process.cwd();
   if (options.background) {
+    // Claude-only settings never reach a background codex run: startBackgroundRun's
+    // codex branch builds its argv from codexCommand() and records CodexRunMeta,
+    // neither of which carries a tool filter or a thinking block. Forwarding them
+    // here would advertise a guarantee the durable wrapper cannot keep, and
+    // validateAgentSettings has already rejected them for codex, so the spread is
+    // claude-only rather than dead (D5 / BG-WRITE-A).
     return startBackgroundRun({
       agent: options.agent,
       prompt: options.prompt,
       cwd,
       ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
       ...(options.budgeted !== undefined ? { budgeted: options.budgeted } : {}),
       ...(options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       ...(boundaries.backgroundCommand !== undefined ? { command: boundaries.backgroundCommand } : {}),
-      // 4b: carry tool filters through to background runs (D5 / BG-WRITE-A)
-      ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
-      ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
+      ...(options.agent === "claude" && options.thinking !== undefined ? { thinking: options.thinking } : {}),
+      // 4b: carry tool filters through to background CLAUDE runs (D5 / BG-WRITE-A)
+      ...(options.agent === "claude" && options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
+      ...(options.agent === "claude" && options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
     } as Parameters<typeof startBackgroundRun>[0]);
   }
   if (options.agent === "codex") {
     return new CodexConnector({
+      ...(options.ownProcessGroup !== undefined ? { ownProcessGroup: options.ownProcessGroup } : {}),
       cwd,
       ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       ...(boundaries.codexSpawn !== undefined ? { spawn: boundaries.codexSpawn } : {}),
       ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
     }).run(options.prompt);
   }
   return new ClaudeConnector({
     cwd,
+    ...(options.ownProcessGroup !== undefined ? { ownProcessGroup: options.ownProcessGroup } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
+    ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
     ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
     ...(options.env !== undefined ? { env: options.env } : {}),
     ...(boundaries.claudeQuery !== undefined ? { query: boundaries.claudeQuery } : {}),
     ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
   }).run(options.prompt);
+}
+
+/** Reject settings that would otherwise silently disappear at a provider boundary. */
+export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "model" | "effort" | "thinking" | "allowedTools" | "disallowedTools">): void {
+  if (options.agent === "codex") {
+    if (options.thinking !== undefined || options.allowedTools !== undefined || options.disallowedTools !== undefined) {
+      throw new Error("Codex does not support Claude thinking/tool filters; select a Codex sandboxMode instead");
+    }
+    if (options.effort !== undefined && !["minimal", "low", "medium", "high", "xhigh"].includes(options.effort)) {
+      throw new Error(`unsupported Codex reasoning effort ${JSON.stringify(options.effort)}`);
+    }
+  } else {
+    if (options.effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(options.effort)) {
+      throw new Error(`unsupported Claude effort ${JSON.stringify(options.effort)}`);
+    }
+    if (options.thinking !== undefined) {
+      const { type, budgetTokens, display, ...unknown } = options.thinking;
+      if (!["adaptive", "enabled", "disabled"].includes(String(type)) || Object.keys(unknown).length
+        || (budgetTokens !== undefined && (type !== "enabled" || !Number.isInteger(budgetTokens) || Number(budgetTokens) <= 0))
+        || (display !== undefined && (type === "disabled" || !["summarized", "omitted"].includes(String(display))))) {
+        throw new Error("invalid Claude thinking configuration");
+      }
+    }
+  }
 }

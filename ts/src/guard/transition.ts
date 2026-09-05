@@ -155,7 +155,7 @@ export function payloadDigestForVersion(
 export function noteLegacyDigestMatch(resourceId: string): void {
   if (legacyDigestMatchesLogged.has(resourceId)) return;
   legacyDigestMatchesLogged.add(resourceId);
-  console.info(`guard ${resourceId}: matched legacy payload digest version 1`);
+  console.warn(`guard ${resourceId}: matched legacy payload digest version 1`);
 }
 
 type PayloadDigests = Readonly<{ 1: string; 2: string }>;
@@ -428,7 +428,7 @@ export async function registerGuard(
           existing.bundle_id = bundle.bundle_id;
           await fenceResourceLock(resourceId, token);
           persistRegistry(existing);
-          console.info(`guard ${resourceId}: refreshed bundle_id from ${previousBundleId ?? "<unset>"} to ${bundle.bundle_id}`);
+          console.warn(`guard ${resourceId}: refreshed bundle_id from ${previousBundleId ?? "<unset>"} to ${bundle.bundle_id}`);
         }
         return "exists" as const;
       }

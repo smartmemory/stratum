@@ -1,6 +1,51 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0]
+
+Breaking release. The MCP surface moves 16 -> 17 and entry input is validated
+strictly, so requests and specs that previously slipped through now fail.
+
+- **MCP surface 17.** `stratum_agent_run` gains the foreground cancellation
+  contract (`cancellationId` plus `stratum_cancel_agent_run`), and the error
+  registry gains two envelopes: `input_validation_failed` for a rejected
+  request field, and `agent_run_failed` for a provider failure. The latter
+  declares the optional `usage`, `split`, `usdSource`, `stderr`, and
+  `telemetry` keys the server attaches, and its `code` carries the connector's
+  own failure code when it has one.
+- **Strict entry-input validation.** Flow entry input is validated against the
+  spec's declared inputs and rejected with `input_validation_failed` rather
+  than flowing into a step as an undeclared key.
+- **Provider settings are rejected, not dropped.** `thinking`,
+  `allowedTools`, and `disallowedTools` are Claude-only: passing them to a
+  Codex run fails before execution on both the foreground and background
+  paths, instead of silently disappearing at the provider boundary.
+- **Cancellation contract.** A supplied `cancellationId` is the only thing
+  that claims POSIX process-group ownership, for Claude and Codex alike; the
+  acknowledgement waits for the whole group to be reaped. Cancellation on
+  Windows fails before spawn with `CANCELLATION_UNSUPPORTED_PLATFORM`; runs
+  that do not ask for cancellation are unaffected on every platform.
+- **`revisionDigest` covers the normalized spec.** The same spec now digests
+  differently than it did on 0.3.4. Persisted runs stay self-consistent, so
+  this affects cross-version digest comparison only.
+- **Cancellation teardown is graceful and bounded.** SIGTERM to the owned
+  process group, `STRATUM_CANCEL_GRACE_MS` (default 5000) grace, then SIGKILL
+  and a bounded reap of every group member; a stdout overrun escalates
+  immediately even mid-grace. `stratum_cancel_agent_run` waits at most
+  `STRATUM_CANCEL_TIMEOUT_MS` (default 15000) and returns
+  `CANCELLATION_TEARDOWN_TIMEOUT` rather than acknowledging a live group.
+- **Provider failures carry usage.** A failed Claude or Codex result attaches
+  its usage, split, and USD provenance to the `agent_run_failed` envelope so
+  consumers can debit the attempt.
+- **Codex exec transport.** Foreground Codex runs that own a process group
+  use `codex exec` with the PATH binary, falling back to the SDK's bundled
+  CLI only when PATH has none; `STRATUM_CODEX_TRANSPORT` still selects the
+  transport for every other run. A nonzero exit with complete agent text is
+  a success, as before.
+- **stdout hygiene.** Engine and guard diagnostics go to stderr; the stdio
+  MCP channel carries JSON-RPC only.
+- **Durable polling.** `stratum_flow_poll` reads committed state, never the
+  in-memory run pinned by an active fanout, and background poll captures the
+  driver status before the disk read so the two cannot disagree.
 
 ### feat(judge): gpt-6-astra takes the paranoid tier
 

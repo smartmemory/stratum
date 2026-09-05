@@ -181,7 +181,7 @@ describe("P5 frozen MCP surface", () => {
       // and budget-exhausted via a gated, budgeted dispatch.
       const gateReady = await gateWaiting(call, gateFlow);
       await call("stratum_gate_resolve", { runId: gateReady, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateReady) });
-      const gateRunning = await gateWaiting(call, gateFanoutFlow());
+      const gateRunning = await gateWaiting(call, gateFanoutFlow(), { name: "x", items: ["a"] });
       await call("stratum_gate_resolve", { runId: gateRunning, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateRunning) });
       const gateComplete = await gateWaiting(call, terminalGateFlow());
       await call("stratum_gate_resolve", { runId: gateComplete, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateComplete) });
@@ -636,8 +636,8 @@ function flow(steps: unknown[], from: string) {
   return { version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: { input: { name: "string" }, output: { from, contract: "Result" }, steps } } };
 }
 
-async function gateWaiting(call: (tool: ToolName, args: Record<string, unknown>) => Promise<Record<string, unknown>>, spec: Record<string, unknown>): Promise<string> {
-  const planned = await call("stratum_plan", { spec, input: { name: "x", items: ["a"] } });
+async function gateWaiting(call: (tool: ToolName, args: Record<string, unknown>) => Promise<Record<string, unknown>>, spec: Record<string, unknown>, input: Record<string, unknown> = { name: "x" }): Promise<string> {
+  const planned = await call("stratum_plan", { spec, input });
   expect(planned.status).toBe("ready");
   const waiting = await call("stratum_step_done", { runId: planned.runId, stepId: "build", dispatchToken: readyToken(planned), result: { output: { value: "built" } } });
   expect(waiting.status).toBe("running");

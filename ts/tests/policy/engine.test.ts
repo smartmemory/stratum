@@ -89,7 +89,7 @@ describe.sequential("engine policy seam", () => {
       },
     };
     const { subject, root } = await engine();
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const planned = await subject.plan(spec, {}, { policyBundle });
     if (planned.status !== "ready") throw new Error("expected ready");
     const completed = await subject.stepDone(planned.runId, "finish", { output: { ok: true } }, planned.ready[0]!.dispatchToken);
@@ -101,7 +101,7 @@ describe.sequential("engine policy seam", () => {
       policy_rules: { "main/finish": [{ ensure_index: 0, rule_id: "decision-1#0", source, step_selector: "finish", on_fail: "refuse" }] },
       policy_verdicts: [{ rule_id: "decision-1#0", source, met: true, predicate_type: "deterministic" }],
     });
-    expect(info).toHaveBeenCalledWith(`policy bundle ${policyBundle.bundle_id}: 1 rules bound to 1 step-predicate pairs`);
+    expect(warn).toHaveBeenCalledWith(`policy bundle ${policyBundle.bundle_id}: 1 rules bound to 1 step-predicate pairs`);
     await vi.waitFor(() => expect(postedEvents()).toContainEqual(expect.objectContaining({
       event_id: `${planned.runId}:flow`,
       kind: "flow_terminal",
