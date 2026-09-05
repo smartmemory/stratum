@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.1] — 2026-09-05
+
+Patch republish of 0.4.0. The 0.4.0 publish was left in a staged state on the
+npm registry and never became installable, so the identical build ships as 0.4.1.
+No code changes.
+
 ## [0.4.0]
 
 Breaking release. The MCP surface moves 16 -> 17 and entry input is validated
