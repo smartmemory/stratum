@@ -2,8 +2,9 @@
 
 import { AUTHORIZATION_NAMESPACES, authorizationPayload, type AuthorizationKind } from "../guard/authorization.js";
 import { inspectDescriptorFile } from "../guard/descriptors.js";
+import { GuardError, GuardNotFound, GuardTampered } from "../guard/errors.js";
 import { guardChecksum } from "../guard/fingerprint.js";
-import { GuardError } from "../guard/errors.js";
+import { loadRegistry } from "../guard/store.js";
 import {
   _ledgerHead,
   guardHistory,
@@ -16,7 +17,7 @@ import {
   type GuardJudge,
 } from "../guard/transition.js";
 
-const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "authorize", "descriptors", "history"]);
+const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "apply-upgrade", "authorize", "descriptors", "history", "policy"]);
 
 let testJudge: GuardJudge | undefined;
 
@@ -105,12 +106,11 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
         required<Record<string, Array<Record<string, unknown>>>>(payload, "new_edge_predicates"),
         required<string>(payload, "rationale"), optional<string[]>(payload, "new_terminal", []), optional<Record<string, string>>(payload, "new_stakes", {}),
       );
-    // NO `apply-upgrade` action, deliberately. A CLI process inherits the
-    // CALLER's environment, so a caller could point both descriptor variables
-    // at a file it wrote itself and mint its own authorization — and the ledger
-    // would stamp it `resolved_by: "human"`. The privileged apply exists only on
-    // the MCP surface, inside the server that owns the pinned environment.
-    // See docs/features/STRAT-GUARD-DESCRIPTOR/design.md, "Decision 6".
+    // Descriptor location is caller-controlled, but authorization is a signed
+    // artifact verified against the in-source trust root. See Decision 6.
+    case "apply-upgrade":
+      assertOnlyKeys(payload, ["resource_id", "descriptor_id"]);
+      return guardApplyUpgrade(required<string>(payload, "resource_id"), required<string>(payload, "descriptor_id"));
     case "authorize": {
       // Prints the exact bytes to sign for an override or migrate. Grants
       // nothing: it reads the resource's ledger head, which is not a secret, and
@@ -163,6 +163,27 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
     case "history":
       assertOnlyKeys(payload, ["resource_id"]);
       return guardHistory(required<string>(payload, "resource_id"));
+    case "policy": {
+      assertOnlyKeys(payload, ["resource_id"]);
+      const resourceId = required<string>(payload, "resource_id");
+      const registry = loadRegistry(resourceId);
+      if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
+      if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
+        throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch`);
+      }
+      return {
+        status: "ok",
+        resource_id: resourceId,
+        checksum: registry.checksum,
+        graph: registry.graph,
+        edge_predicates: registry.edge_predicates,
+        terminal: registry.terminal,
+        stakes: registry.stakes,
+        initial: registry.initial,
+        graph_version: registry.graph_version,
+        current_state: registry.current_state,
+      };
+    }
     default:
       throw new Error(`unreachable guard action ${JSON.stringify(action)}`);
   }
