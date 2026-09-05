@@ -13,11 +13,12 @@ import {
   guardApplyUpgrade,
   guardTransition,
   guardUpgrade,
+  payloadDigestForVersion,
   registerGuard,
   type GuardJudge,
 } from "../guard/transition.js";
 
-const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "apply-upgrade", "authorize", "descriptors", "history", "policy"]);
+const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "apply-upgrade", "authorize", "descriptors", "history", "policy", "digest"]);
 
 let testJudge: GuardJudge | undefined;
 
@@ -65,6 +66,22 @@ function required<T>(payload: Record<string, unknown>, key: string): T {
 function optional<T>(payload: Record<string, unknown>, key: string, fallback: T): T {
   const value = payload[key];
   return value === undefined || value === null ? fallback : value as T;
+}
+
+function requiredStringRecord(payload: Record<string, unknown>, key: string): Record<string, string> {
+  const value = required<unknown>(payload, key);
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.values(value).some((entry) => typeof entry !== "string")) {
+    throw new TypeError(`guard argument ${JSON.stringify(key)} must be a record of strings`);
+  }
+  return value as Record<string, string>;
+}
+
+function optionalStringArray(payload: Record<string, unknown>, key: string, fallback: string[]): string[] {
+  const value = optional<unknown>(payload, key, fallback);
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new TypeError(`guard argument ${JSON.stringify(key)} must be an array of strings`);
+  }
+  return value;
 }
 
 async function dispatch(action: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -182,6 +199,27 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
         initial: registry.initial,
         graph_version: registry.graph_version,
         current_state: registry.current_state,
+      };
+    }
+    case "digest": {
+      // Grants nothing, reads no state: it only canonicalizes caller-provided envelope material.
+      assertOnlyKeys(payload, ["from_state", "to_state", "artifacts", "modified_files", "resolved_by", "policy_checksum"]);
+      const policyChecksum = required<string>(payload, "policy_checksum");
+      if (!/^[0-9a-f]{64}$/.test(policyChecksum)) {
+        throw new TypeError('guard argument "policy_checksum" must be 64 lowercase hexadecimal characters');
+      }
+      return {
+        status: "ok",
+        payload_digest: payloadDigestForVersion(
+          required<string>(payload, "from_state"),
+          required<string>(payload, "to_state"),
+          requiredStringRecord(payload, "artifacts"),
+          optionalStringArray(payload, "modified_files", []),
+          optional<string>(payload, "resolved_by", "agent"),
+          policyChecksum,
+          2,
+        ),
+        payload_digest_version: 2,
       };
     }
     default:
