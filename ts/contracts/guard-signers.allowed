@@ -34,3 +34,4 @@
 #     -n stratum-guard-descriptors /path/to/guard-upgrades.json
 #   (writes /path/to/guard-upgrades.json.sig; you will be prompted for the
 #    passphrase, which is the point)
+ruze ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK2WUTP7piAwC0brxMNjj/6lAhcbGsiJPb/HKnEbB/UU ruze guard signer
