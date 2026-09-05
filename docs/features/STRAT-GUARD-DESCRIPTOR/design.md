@@ -268,6 +268,17 @@ and still cannot produce a signature. The privileged apply nonetheless stays
 MCP-only for now: the narrower surface costs nothing, and re-opening it should be
 a deliberate act with its own review rather than a side effect of this change.
 
+**Amended 2026-09-05 (STRAT-GUARD-CLI-APPLY):** The CLI `apply-upgrade`
+restriction is removed. Decision 6 originally withheld it because a CLI caller
+could write a descriptor, compute its digest, and point both the path and
+`STRATUM_GUARD_UPGRADE_DESCRIPTORS_SHA256` at that artifact. The digest pin was
+removed when descriptors became sshsig-signed against the in-source trust root:
+locating an artifact is not authorizing it. The residual attacks — `NODE_OPTIONS`
+injection into a process the caller already controls, or editing the committed
+trust root — are the same on CLI and MCP surfaces, and compose spawns the MCP
+server itself anyway. Keeping the restriction therefore buys nothing and blocks
+compose's CLI-only COMP-LIFECYCLE-BACKFILL path.
+
 ### The honest ceiling
 
 An agent with a shell and write access to `~/.stratum/guards/` can edit registry

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.2] — 2026-09-05
+
+### feat(guard): STRAT-GUARD-CLI-APPLY — `guard apply-upgrade` and `guard policy` on the CLI
+
+`guard apply-upgrade` now applies a named, sshsig-authorized upgrade descriptor
+through the CLI, and `guard policy` returns a registered resource's verified
+stored policy, checksum, graph version, and current state. Both are CLI-only;
+the MCP surface and its contract version are unchanged.
+
+The old CLI restriction defended an environment digest pin: a caller could set
+both the descriptor path and its digest. Descriptors are now signed against the
+in-source trust root, so selecting a file is not authorization; the remaining
+attacks are equivalent on the CLI and MCP surfaces. This unblocks compose's
+CLI-only COMP-LIFECYCLE-BACKFILL flow.
+
 ## [0.4.1] — 2026-09-05
 
 Patch republish of 0.4.0. The 0.4.0 publish was left in a staged state on the

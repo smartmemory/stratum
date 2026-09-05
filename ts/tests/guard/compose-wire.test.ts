@@ -1,11 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { writeFile } from "node:fs/promises";
 import { guardCommand } from "../../src/cli/guard.js";
 import { AUTHORIZATION_NAMESPACES } from "../../src/guard/authorization.js";
+import { DESCRIPTOR_NAMESPACE, DESCRIPTOR_PATH_ENV } from "../../src/guard/descriptors.js";
 import { GUARDS_DIR, ResourceLockManager, setGuardsDir } from "../../src/guard/store.js";
 import { setGuardLockingForTests } from "../../src/guard/transition.js";
 import { setGuardTrustRootForTests } from "../../src/guard/trust.js";
@@ -37,6 +37,17 @@ async function run(action: string, kwargs: Record<string, unknown>): Promise<Cli
     process.stderr.write = err;
     if (inputDescriptor) Object.defineProperty(process, "stdin", inputDescriptor);
     else delete (process as { stdin?: NodeJS.ReadableStream }).stdin;
+  }
+}
+
+async function withDescriptorPath<T>(path: string, work: () => Promise<T>): Promise<T> {
+  const previous = process.env[DESCRIPTOR_PATH_ENV];
+  process.env[DESCRIPTOR_PATH_ENV] = path;
+  try {
+    return await work();
+  } finally {
+    if (previous === undefined) delete process.env[DESCRIPTOR_PATH_ENV];
+    else process.env[DESCRIPTOR_PATH_ENV] = previous;
   }
 }
 
@@ -75,6 +86,104 @@ describe.sequential("Compose guard adapter wire shapes against the real TS CLI",
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
     expect(result.json).toMatchObject({ guard_id: resourceId, checksum: expect.any(String), status: "registered" });
+  });
+
+  it("returns the stored policy and checksum, or guard_not_found", async () => {
+    const policy = await run("policy", { resource_id: resourceId });
+
+    expect(policy).toMatchObject({ code: 0, stderr: "" });
+    expect(Object.keys(policy.json).sort()).toEqual([
+      "checksum", "current_state", "edge_predicates", "graph", "graph_version", "initial", "resource_id", "stakes", "status", "terminal",
+    ]);
+    expect(policy.json).toMatchObject({
+      status: "ok",
+      resource_id: resourceId,
+      checksum: expect.any(String),
+      graph: { draft: ["review"], review: ["done"], done: [] },
+      edge_predicates: { "review->done": [{ id: "approval", type: "judged", statement: "approved" }] },
+      terminal: ["done"],
+      stakes: { "review->done": "high" },
+      initial: "draft",
+      graph_version: 1,
+      current_state: "draft",
+    });
+
+    const missing = await run("policy", { resource_id: "compose:acceptance:missing" });
+    expect(missing).toMatchObject({
+      code: 1,
+      json: { status: "error", error_type: "guard_not_found", message: expect.any(String) },
+    });
+  });
+
+  it("applies a signed backfill descriptor through the CLI and is idempotent", async () => {
+    const backfillResourceId = "compose:acceptance:STRAT-GUARD-CLI-APPLY";
+    const registered = await run("register", {
+      resource_id: backfillResourceId,
+      graph: { draft: ["review"], review: ["complete"], complete: [], killed: [] },
+      edge_predicates: {},
+      initial: "draft",
+      terminal: ["complete", "killed"],
+      stakes: {},
+      workspace_root: guardsRoot,
+    });
+    expect(registered).toMatchObject({ code: 0, json: { status: "registered", checksum: expect.any(String) } });
+
+    const descriptorPath = join(guardsRoot, "cli-backfill-descriptor.json");
+    const descriptor = JSON.stringify({
+      version: 1,
+      descriptors: [{
+        id: "complete-backfill",
+        rationale: "COMP-LIFECYCLE-BACKFILL fixture",
+        from_checksum: registered.json.checksum,
+        to_policy: {
+          graph: {
+            draft: ["review", "complete_backfilled"],
+            review: ["complete", "complete_backfilled"],
+            complete: [],
+            killed: [],
+            complete_backfilled: [],
+          },
+          edge_predicates: {},
+          terminal: ["complete", "killed", "complete_backfilled"],
+          stakes: {},
+        },
+      }],
+    });
+    await writeFile(descriptorPath, descriptor, "utf8");
+    await writeFile(`${descriptorPath}.sig`, operator.sign(descriptor, DESCRIPTOR_NAMESPACE), "utf8");
+
+    await withDescriptorPath(descriptorPath, async () => {
+      const applied = await run("apply-upgrade", { resource_id: backfillResourceId, descriptor_id: "complete-backfill" });
+      expect(applied).toMatchObject({ code: 0, json: { status: "applied", graph_version: 2, descriptor_id: "complete-backfill" } });
+
+      const unchanged = await run("apply-upgrade", { resource_id: backfillResourceId, descriptor_id: "complete-backfill" });
+      expect(unchanged).toMatchObject({ code: 0, json: { status: "unchanged", graph_version: 2, descriptor_id: "complete-backfill" } });
+    });
+
+    const policy = await run("policy", { resource_id: backfillResourceId });
+    expect(policy).toMatchObject({
+      code: 0,
+      json: { status: "ok", graph_version: 2, terminal: ["complete", "killed", "complete_backfilled"] },
+    });
+  });
+
+  it("refuses an unsigned descriptor and unexpected apply-upgrade payload keys", async () => {
+    const descriptorPath = join(guardsRoot, "unsigned-cli-descriptor.json");
+    await writeFile(descriptorPath, JSON.stringify({ version: 1, descriptors: [] }), "utf8");
+
+    await withDescriptorPath(descriptorPath, async () => {
+      const unsigned = await run("apply-upgrade", { resource_id: resourceId, descriptor_id: "anything" });
+      expect(unsigned).toMatchObject({
+        code: 1,
+        json: { status: "error", error_type: "upgrade_descriptor_unavailable", message: expect.any(String) },
+      });
+    });
+
+    const unknownKey = await run("apply-upgrade", { resource_id: resourceId, descriptor_id: "anything", unexpected: true });
+    expect(unknownKey).toMatchObject({
+      code: 1,
+      json: { status: "error", error_type: "TypeError", message: 'unexpected guard argument "unexpected"' },
+    });
   });
 
   it("accepts guardTransition's full kwargs shape and stores a verdict", async () => {
