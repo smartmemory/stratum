@@ -25,6 +25,7 @@ import {
   InvalidWorkspaceRoot,
   OverrideUnavailable,
   ParanoidEdgeNeedsTrustedEvidence,
+  PolicyChecksumMismatch,
   StaleFromState,
   UpgradeDescriptorMismatch,
 } from "./errors.js";
@@ -97,6 +98,8 @@ export interface GuardTransitionOptions {
   modifiedFiles?: string[];
   idempotencyKey?: string | null;
   resolvedBy?: string;
+  /** Optional precondition that pins this transition to the caller's observed policy. */
+  expectedPolicyChecksum?: string;
   /** Flow correlation ID for policy events; resourceId remains the legacy fallback. */
   runId?: string;
   /** `undefined` selects the configured production backend; `null` means unavailable. */
@@ -545,6 +548,10 @@ export async function guardTransition(
   const modifiedFiles = options.modifiedFiles ?? [];
   const idempotencyKey = options.idempotencyKey ?? null;
   const resolvedBy = options.resolvedBy ?? "agent";
+  const expectedPolicyChecksum = options.expectedPolicyChecksum;
+  if (expectedPolicyChecksum !== undefined && (typeof expectedPolicyChecksum !== "string" || !/^[0-9a-f]{64}$/.test(expectedPolicyChecksum))) {
+    throw new TypeError("expectedPolicyChecksum must be 64 lowercase hexadecimal characters");
+  }
   if (resolvedBy !== "agent" && resolvedBy !== "human") {
     throw new EvidenceParseError(`resolved_by must be "agent" or "human", got ${JSON.stringify(resolvedBy)}`);
   }
@@ -555,6 +562,11 @@ export async function guardTransition(
     if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
     if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
       throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch`);
+    }
+    if (expectedPolicyChecksum !== undefined && expectedPolicyChecksum !== registry.checksum) {
+      throw new PolicyChecksumMismatch(
+        `expected policy checksum ${expectedPolicyChecksum}, but guard ${JSON.stringify(resourceId)} has ${registry.checksum}`,
+      );
     }
     const digests = payloadDigests(fromState, toState, artifacts, modifiedFiles, resolvedBy, registry.checksum);
     const replay = _maybeReplay(registry, idempotencyKey, digests);
@@ -615,13 +627,18 @@ export async function guardTransition(
     assertTsOwnedForMutation(resourceId);
     const registry = loadRegistry(resourceId);
     if (registry === null) throw new GuardNotFound(`no guard registered for ${JSON.stringify(resourceId)}`);
+    if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
+      throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch during commit`);
+    }
+    if (expectedPolicyChecksum !== undefined && expectedPolicyChecksum !== registry.checksum) {
+      throw new PolicyChecksumMismatch(
+        `expected policy checksum ${expectedPolicyChecksum}, but guard ${JSON.stringify(resourceId)} has ${registry.checksum}`,
+      );
+    }
     const replay = _maybeReplay(registry, idempotencyKey, digests);
     if (replay !== null) return replay;
     if (registry.current_state !== fromState) {
       throw new StaleFromState(`current_state advanced to ${JSON.stringify(registry.current_state)} during evaluation`);
-    }
-    if (guardChecksum(registry.graph, registry.edge_predicates, registry.terminal, registry.stakes) !== registry.checksum) {
-      throw new GuardTampered(`guard ${JSON.stringify(resourceId)} policy checksum mismatch during commit`);
     }
     if (!_declaresEdge(registry.graph, fromState, toState)) {
       // Python has the same latent eval-outside-lock race; Slice E should add this re-check there too.

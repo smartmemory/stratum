@@ -187,6 +187,9 @@ describe.sequential("Compose guard adapter wire shapes against the real TS CLI",
   });
 
   it("accepts guardTransition's full kwargs shape and stores a verdict", async () => {
+    const policy = await run("policy", { resource_id: resourceId });
+    expect(policy).toMatchObject({ code: 0, json: { checksum: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+
     const result = await run("transition", {
       resource_id: resourceId,
       from_state: "draft",
@@ -195,10 +198,44 @@ describe.sequential("Compose guard adapter wire shapes against the real TS CLI",
       modified_files: ["server/lifecycle-guard.js"],
       idempotency_key: "compose-transition-1",
       resolved_by: "agent",
+      expected_policy_checksum: policy.json.checksum,
     });
 
     expect(result.code).toBe(0);
     expect(result.json).toMatchObject({ status: "applied", current_state: "review", ledger_ref: expect.any(String), verdict: expect.any(Object) });
+  });
+
+  it("rejects a changed or malformed expected policy checksum without writing a ledger entry", async () => {
+    const before = await run("history", { resource_id: resourceId });
+    expect(before).toMatchObject({ code: 0, json: { current_state: "review", ledger: expect.any(Array) } });
+
+    const mismatch = await run("transition", {
+      resource_id: resourceId,
+      from_state: "review",
+      to_state: "done",
+      artifacts: {},
+      expected_policy_checksum: "0".repeat(64),
+    });
+    expect(mismatch).toMatchObject({
+      code: 1,
+      json: { status: "error", error_type: "policy_checksum_mismatch", message: expect.any(String) },
+    });
+
+    const malformed = await run("transition", {
+      resource_id: resourceId,
+      from_state: "review",
+      to_state: "done",
+      artifacts: {},
+      expected_policy_checksum: "A".repeat(64),
+    });
+    expect(malformed).toMatchObject({
+      code: 1,
+      json: { status: "error", error_type: "TypeError", message: expect.any(String) },
+    });
+
+    const after = await run("history", { resource_id: resourceId });
+    expect(after).toMatchObject({ code: 0, json: { current_state: before.json.current_state } });
+    expect(after.json.ledger).toEqual(before.json.ledger);
   });
 
   it("recomputes a transition's v2 payload digest from Compose's persisted envelope", async () => {

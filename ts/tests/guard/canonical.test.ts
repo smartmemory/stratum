@@ -90,6 +90,7 @@ describe("guard error vocabulary", () => {
       "incompatible_policy_upgrade",
       "upgrade_descriptor_unavailable",
       "upgrade_descriptor_mismatch",
+      "policy_checksum_mismatch",
     ]);
     expect(guardErrorEnvelope("guard_not_found", "missing")).toEqual({
       status: "error", error_type: "guard_not_found", message: "missing",

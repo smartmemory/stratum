@@ -95,12 +95,15 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
         optional<string | null>(payload, "workspace_root", null),
       );
     case "transition":
-      assertOnlyKeys(payload, ["resource_id", "from_state", "to_state", "artifacts", "modified_files", "idempotency_key", "resolved_by"]);
+      assertOnlyKeys(payload, ["resource_id", "from_state", "to_state", "artifacts", "modified_files", "idempotency_key", "resolved_by", "expected_policy_checksum"]);
       return guardTransition(required<string>(payload, "resource_id"), required<string>(payload, "from_state"), required<string>(payload, "to_state"), {
         artifacts: required<Record<string, string>>(payload, "artifacts"),
         modifiedFiles: optional<string[]>(payload, "modified_files", []),
         idempotencyKey: optional<string | null>(payload, "idempotency_key", null),
         resolvedBy: optional<string>(payload, "resolved_by", "agent"),
+        ...(payload.expected_policy_checksum !== undefined && payload.expected_policy_checksum !== null
+          ? { expectedPolicyChecksum: required<string>(payload, "expected_policy_checksum") }
+          : {}),
         ...(testJudge ? { judge: testJudge } : {}),
       });
     case "override":

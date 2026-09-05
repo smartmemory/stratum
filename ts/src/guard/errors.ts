@@ -19,6 +19,7 @@ export const GUARD_ERROR_TYPES = [
   "incompatible_policy_upgrade",
   "upgrade_descriptor_unavailable",
   "upgrade_descriptor_mismatch",
+  "policy_checksum_mismatch",
 ] as const;
 
 export type GuardErrorType = (typeof GUARD_ERROR_TYPES)[number];
@@ -75,6 +76,8 @@ export class IncompatiblePolicyUpgrade extends namedGuardError("IncompatiblePoli
 export class UpgradeDescriptorUnavailable extends namedGuardError("UpgradeDescriptorUnavailable", "upgrade_descriptor_unavailable") {}
 /** The resource's current policy is not the one the descriptor was authorized against. */
 export class UpgradeDescriptorMismatch extends namedGuardError("UpgradeDescriptorMismatch", "upgrade_descriptor_mismatch") {}
+/** A caller's persisted policy checksum no longer matches the resource's policy. */
+export class PolicyChecksumMismatch extends namedGuardError("PolicyChecksumMismatch", "policy_checksum_mismatch") {}
 
 export class LedgerCorrupt extends GuardError {
   constructor(message: string) {
