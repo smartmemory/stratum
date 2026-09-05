@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.4] — 2026-09-05
+
+### feat(guard): STRAT-GUARD-EXPECTED-CHECKSUM — atomic policy-checksum precondition on transition
+
+`guard transition` now accepts an optional `expected_policy_checksum`. When supplied, it must be a lowercase SHA-256 checksum matching the verified policy under the resource lock; a mismatch returns `policy_checksum_mismatch` before evaluation or ledger writes.
+
+This remains CLI-only because the frozen MCP surface 17 contract cannot accept an additional request field without a contract-version change. Existing transition payload digests continue to bind the policy checksum.
+
 ## [0.4.3] — 2026-09-05
 
 ### feat(guard): STRAT-GUARD-DIGEST — `guard digest` on the CLI
