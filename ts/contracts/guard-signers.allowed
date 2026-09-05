@@ -7,7 +7,7 @@
 #     <principal[,principal...]> ssh-ed25519 <base64>  [comment]
 #
 # Option lists (cert-authority, namespaces=, valid-before=) are REFUSED, not
-# ignored — a restriction written here must never be silently dropped.
+# ignored - a restriction written here must never be silently dropped.
 #
 # THIS FILE IS THE TRUST ROOT. It is read from the installed source tree, never
 # from an environment variable, so changing who may authorize a guard policy
