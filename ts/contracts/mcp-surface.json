@@ -1,5 +1,5 @@
 {
-  "surface": 16,
+  "surface": 17,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -25,47 +25,301 @@
           }
         }
       }
+    },
+    "input_validation_failed": {
+      "data": {
+        "code": "string",
+        "errors": {
+          "$array": {
+            "code": "string",
+            "path": "string",
+            "message": "string"
+          }
+        }
+      }
+    },
+    "agent_run_failed": {
+      "data": {
+        "code": "string",
+        "usage?": {
+          "tokens?": "number",
+          "ms?": "number",
+          "usd?": "number"
+        },
+        "split?": {
+          "input?": "number",
+          "output?": "number",
+          "cacheRead?": "number",
+          "cacheCreation?": "number"
+        },
+        "usdSource?": "string",
+        "stderr?": "string",
+        "telemetry?": {
+          "model?": "string",
+          "durationMs?": "number",
+          "effort?": "string"
+        }
+      }
     }
   },
   "tools": {
     "stratum_validate": {
-      "request": { "spec": "object" },
+      "request": {
+        "spec": "object"
+      },
       "responses": {
         "valid": {},
-        "invalid": { "errors": "array" }
+        "invalid": {
+          "errors": "array"
+        }
       }
     },
     "stratum_compile_speckit": {
-      "request": { "tasks_dir": "string", "flow_name?": "string" },
+      "request": {
+        "tasks_dir": "string",
+        "flow_name?": "string"
+      },
       "responses": {
-        "ok": { "yaml": "string", "flow_name": "string", "steps": "array" },
-        "error": { "error_type": "string", "message": "string" }
+        "ok": {
+          "yaml": "string",
+          "flow_name": "string",
+          "steps": "array"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_plan": {
-      "request": { "spec": "object", "input": "object", "workspaceRoot?": "string", "policy_bundle?": "object", "policy_step_selector?": "string" },
+      "request": {
+        "spec": "object",
+        "input": "object",
+        "workspaceRoot?": "string",
+        "policy_bundle?": "object",
+        "policy_step_selector?": "string"
+      },
       "responses": {
-        "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
-        ] } }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" }
+        "ready": {
+          "runId": "string",
+          "ready": {
+            "$array": {
+              "$oneOf": [
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  }
+                },
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  },
+                  "flow": "string",
+                  "step": "string",
+                  "stage": "number",
+                  "isFinalStage": "boolean",
+                  "itemIndex": "number",
+                  "generation": "number",
+                  "contract": {
+                    "$oneOf": [
+                      {
+                        "root": "string",
+                        "contracts": "object"
+                      },
+                      "null"
+                    ]
+                  },
+                  "contractDigest": "string|null",
+                  "policy": {
+                    "isolation": "string",
+                    "merge": "string",
+                    "pre_merge": {
+                      "$array": "string"
+                    }
+                  },
+                  "revisionDigest": "string"
+                }
+              ]
+            }
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "running": {
+          "runId": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "completed": {
+          "runId": "string",
+          "output": "any",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "failed": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        }
       }
     },
     "stratum_step_done": {
-      "request": { "runId": "string", "stepId": "string", "result": { "output?": "any", "failure?": "string", "usage?": "object", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } }, "dispatchToken": "string" },
+      "request": {
+        "runId": "string",
+        "stepId": "string",
+        "result": {
+          "output?": "any",
+          "failure?": "string",
+          "usage?": "object",
+          "telemetry?": {
+            "durationMs": "number",
+            "model": "string",
+            "effort?": "string"
+          }
+        },
+        "dispatchToken": "string"
+      },
       "responses": {
-        "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
-        ] } }, "ledger": { "spent": "object", "budget?": "object" } },
-        "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" } },
-        "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" } },
-        "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } },
-        "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } }
+        "ready": {
+          "runId": "string",
+          "ready": {
+            "$array": {
+              "$oneOf": [
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  }
+                },
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  },
+                  "flow": "string",
+                  "step": "string",
+                  "stage": "number",
+                  "isFinalStage": "boolean",
+                  "itemIndex": "number",
+                  "generation": "number",
+                  "contract": {
+                    "$oneOf": [
+                      {
+                        "root": "string",
+                        "contracts": "object"
+                      },
+                      "null"
+                    ]
+                  },
+                  "contractDigest": "string|null",
+                  "policy": {
+                    "isolation": "string",
+                    "merge": "string",
+                    "pre_merge": {
+                      "$array": "string"
+                    }
+                  },
+                  "revisionDigest": "string"
+                }
+              ]
+            }
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "running": {
+          "runId": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "completed": {
+          "runId": "string",
+          "output": "any",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "failed": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        }
       }
     },
     "stratum_usage_report": {
@@ -76,101 +330,577 @@
           "stepId?": "string",
           "source": "string",
           "usage": "object",
-          "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" },
-          "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" },
+          "telemetry?": {
+            "durationMs": "number",
+            "model": "string",
+            "effort?": "string"
+          },
+          "split?": {
+            "input": "number",
+            "output": "number",
+            "cacheRead?": "number",
+            "cacheCreation?": "number"
+          },
           "usdSource?": "string",
           "at?": "string"
         }
       },
       "responses": {
-        "ok": { "runId": "string", "seq": "number", "budget?": "string", "ledger": { "spent": "object", "budget?": "object" } },
-        "duplicate": { "runId": "string", "seq": "number", "ledger": { "spent": "object", "budget?": "object" } }
+        "ok": {
+          "runId": "string",
+          "seq": "number",
+          "budget?": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "duplicate": {
+          "runId": "string",
+          "seq": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        }
       }
     },
     "stratum_commit": {
       "description": "Save a named checkpoint of the current flow state; state-only; no files are touched; the caller owns file-level undo.",
-      "request": { "flow_id": "string", "label": "string" },
+      "request": {
+        "flow_id": "string",
+        "label": "string"
+      },
       "responses": {
-        "committed": { "flow_id": "string", "label": "string", "step_number": "number", "current_step_id": "string|null", "checkpoints": "array" },
-        "error": { "error_type": "string", "message": "string", "available?": "array" }
+        "committed": {
+          "flow_id": "string",
+          "label": "string",
+          "step_number": "number",
+          "current_step_id": "string|null",
+          "checkpoints": "array"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string",
+          "available?": "array"
+        }
       }
     },
     "stratum_revert": {
       "description": "Roll back flow state to a named checkpoint; state-only; no files are touched; the caller owns file-level undo.",
-      "request": { "flow_id": "string", "label": "string" },
+      "request": {
+        "flow_id": "string",
+        "label": "string"
+      },
       "responses": {
-        "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
-        ] } }, "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
-        "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
-        "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
-        "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
-        "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" }, "reverted_to": "string" },
-        "error": { "error_type": "string", "message": "string", "available?": "array" }
+        "ready": {
+          "runId": "string",
+          "ready": {
+            "$array": {
+              "$oneOf": [
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  }
+                },
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  },
+                  "flow": "string",
+                  "step": "string",
+                  "stage": "number",
+                  "isFinalStage": "boolean",
+                  "itemIndex": "number",
+                  "generation": "number",
+                  "contract": {
+                    "$oneOf": [
+                      {
+                        "root": "string",
+                        "contracts": "object"
+                      },
+                      "null"
+                    ]
+                  },
+                  "contractDigest": "string|null",
+                  "policy": {
+                    "isolation": "string",
+                    "merge": "string",
+                    "pre_merge": {
+                      "$array": "string"
+                    }
+                  },
+                  "revisionDigest": "string"
+                }
+              ]
+            }
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "reverted_to": "string"
+        },
+        "running": {
+          "runId": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "reverted_to": "string"
+        },
+        "completed": {
+          "runId": "string",
+          "output": "any",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "reverted_to": "string"
+        },
+        "failed": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "reverted_to": "string"
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "reverted_to": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string",
+          "available?": "array"
+        }
       }
     },
     "stratum_resume": {
-      "request": { "runId": "string" },
+      "request": {
+        "runId": "string"
+      },
       "responses": {
-        "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
-        ] } }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" },
-        "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" }, "revisionDigest": "string" }
+        "ready": {
+          "runId": "string",
+          "ready": {
+            "$array": {
+              "$oneOf": [
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  }
+                },
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  },
+                  "flow": "string",
+                  "step": "string",
+                  "stage": "number",
+                  "isFinalStage": "boolean",
+                  "itemIndex": "number",
+                  "generation": "number",
+                  "contract": {
+                    "$oneOf": [
+                      {
+                        "root": "string",
+                        "contracts": "object"
+                      },
+                      "null"
+                    ]
+                  },
+                  "contractDigest": "string|null",
+                  "policy": {
+                    "isolation": "string",
+                    "merge": "string",
+                    "pre_merge": {
+                      "$array": "string"
+                    }
+                  },
+                  "revisionDigest": "string"
+                }
+              ]
+            }
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "running": {
+          "runId": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "completed": {
+          "runId": "string",
+          "output": "any",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "failed": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "revisionDigest": "string"
+        }
       }
     },
     "stratum_audit": {
-      "request": { "runId": "string" },
+      "request": {
+        "runId": "string"
+      },
       "responses": {
-        "running": { "runId": "string", "events": "array", "steps": "object", "flowSpent": "object", "output?": "any" },
-        "completed": { "runId": "string", "events": "array", "steps": "object", "flowSpent": "object", "output?": "any" },
-        "failed": { "runId": "string", "events": "array", "steps": "object", "flowSpent": "object", "output?": "any" },
-        "budget_exhausted": { "runId": "string", "events": "array", "steps": "object", "flowSpent": "object", "output?": "any" }
+        "running": {
+          "runId": "string",
+          "events": "array",
+          "steps": "object",
+          "flowSpent": "object",
+          "output?": "any"
+        },
+        "completed": {
+          "runId": "string",
+          "events": "array",
+          "steps": "object",
+          "flowSpent": "object",
+          "output?": "any"
+        },
+        "failed": {
+          "runId": "string",
+          "events": "array",
+          "steps": "object",
+          "flowSpent": "object",
+          "output?": "any"
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "events": "array",
+          "steps": "object",
+          "flowSpent": "object",
+          "output?": "any"
+        }
       }
     },
     "stratum_gate_resolve": {
-      "request": { "runId": "string", "stepId": "string", "decision": "string", "gateToken": "string", "user_id?": "string" },
+      "request": {
+        "runId": "string",
+        "stepId": "string",
+        "decision": "string",
+        "gateToken": "string",
+        "user_id?": "string"
+      },
       "responses": {
-        "ready": { "runId": "string", "ready": { "$array": { "$oneOf": [
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" } },
-          { "id": "string", "do": "string", "agent": "string", "attempt": "number", "epoch": "number", "dispatchToken": "string", "previousFailure?": { "attempt": "number", "reason": "string" }, "flow": "string", "step": "string", "stage": "number", "isFinalStage": "boolean", "itemIndex": "number", "generation": "number", "contract": { "$oneOf": [{ "root": "string", "contracts": "object" }, "null"] }, "contractDigest": "string|null", "policy": { "isolation": "string", "merge": "string", "pre_merge": { "$array": "string" } }, "revisionDigest": "string" }
-        ] } }, "ledger": { "spent": "object", "budget?": "object" } },
-        "running": { "runId": "string", "ledger": { "spent": "object", "budget?": "object" } },
-        "completed": { "runId": "string", "output": "any", "ledger": { "spent": "object", "budget?": "object" } },
-        "failed": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } },
-        "budget_exhausted": { "runId": "string", "failure": { "attempt": "number", "reason": "string" }, "ledger": { "spent": "object", "budget?": "object" } }
+        "ready": {
+          "runId": "string",
+          "ready": {
+            "$array": {
+              "$oneOf": [
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  }
+                },
+                {
+                  "id": "string",
+                  "do": "string",
+                  "agent": "string",
+                  "attempt": "number",
+                  "epoch": "number",
+                  "dispatchToken": "string",
+                  "previousFailure?": {
+                    "attempt": "number",
+                    "reason": "string"
+                  },
+                  "flow": "string",
+                  "step": "string",
+                  "stage": "number",
+                  "isFinalStage": "boolean",
+                  "itemIndex": "number",
+                  "generation": "number",
+                  "contract": {
+                    "$oneOf": [
+                      {
+                        "root": "string",
+                        "contracts": "object"
+                      },
+                      "null"
+                    ]
+                  },
+                  "contractDigest": "string|null",
+                  "policy": {
+                    "isolation": "string",
+                    "merge": "string",
+                    "pre_merge": {
+                      "$array": "string"
+                    }
+                  },
+                  "revisionDigest": "string"
+                }
+              ]
+            }
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "running": {
+          "runId": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "completed": {
+          "runId": "string",
+          "output": "any",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "failed": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "failure": {
+            "attempt": "number",
+            "reason": "string"
+          },
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          }
+        }
       }
     },
     "stratum_flow_poll": {
-      "request": { "runId": "string", "cursor?": "number" },
+      "request": {
+        "runId": "string",
+        "cursor?": "number"
+      },
       "responses": {
-        "running": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" },
-        "completed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" },
-        "failed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" },
-        "budget_exhausted": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object" }
+        "running": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object"
+        },
+        "completed": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object"
+        },
+        "failed": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object"
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object"
+        }
       }
     },
     "stratum_flow_run_bg": {
-      "request": { "spec": "object", "input": "object", "workspaceRoot?": "string" },
+      "request": {
+        "spec": "object",
+        "input": "object",
+        "workspaceRoot?": "string"
+      },
       "responses": {
-        "running": { "runId": "string" }
+        "running": {
+          "runId": "string"
+        }
       }
     },
     "stratum_flow_bg_poll": {
-      "request": { "runId": "string", "cursor?": "number" },
+      "request": {
+        "runId": "string",
+        "cursor?": "number"
+      },
       "responses": {
-        "running": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "pendingGates": "array", "gateStepId?": "string" } },
-        "completed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "pendingGates": "array", "gateStepId?": "string" } },
-        "failed": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "pendingGates": "array", "gateStepId?": "string" } },
-        "budget_exhausted": { "runId": "string", "events": "array", "nextCursor": "number", "ledger": { "spent": "object", "budget?": "object" }, "output?": "any", "failure?": "object", "bg": { "status": "string", "cancelRequested": "boolean", "pendingGates": "array", "gateStepId?": "string" } }
+        "running": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object",
+          "bg": {
+            "status": "string",
+            "cancelRequested": "boolean",
+            "pendingGates": "array",
+            "gateStepId?": "string"
+          }
+        },
+        "completed": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object",
+          "bg": {
+            "status": "string",
+            "cancelRequested": "boolean",
+            "pendingGates": "array",
+            "gateStepId?": "string"
+          }
+        },
+        "failed": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object",
+          "bg": {
+            "status": "string",
+            "cancelRequested": "boolean",
+            "pendingGates": "array",
+            "gateStepId?": "string"
+          }
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object",
+          "bg": {
+            "status": "string",
+            "cancelRequested": "boolean",
+            "pendingGates": "array",
+            "gateStepId?": "string"
+          }
+        }
       }
     },
     "stratum_flow_cancel_bg": {
-      "request": { "runId": "string" },
+      "request": {
+        "runId": "string"
+      },
       "responses": {
         "running": {},
         "completed": {},
@@ -180,82 +910,298 @@
       }
     },
     "stratum_agent_run": {
-      "request": { "agent": "string", "prompt": "string", "cwd": "string", "model?": "string", "sandboxMode?": "string", "background?": "boolean", "allowedTools?": { "$array": "string" }, "disallowedTools?": { "$array": "string" } },
+      "request": {
+        "agent": "string",
+        "prompt": "string",
+        "cwd": "string",
+        "model?": "string",
+        "sandboxMode?": "string",
+        "background?": "boolean",
+        "allowedTools?": {
+          "$array": "string"
+        },
+        "disallowedTools?": {
+          "$array": "string"
+        },
+        "thinking?": "object",
+        "effort?": "string",
+        "cancellationId?": "string"
+      },
       "responses": {
-        "complete": { "text": "string", "usage": "object", "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" }, "usdSource?": "string", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
-        "bg_started": { "runId": "string", "pid?": "number", "streamPath": "string" }
+        "complete": {
+          "text": "string",
+          "usage": "object",
+          "split?": {
+            "input": "number",
+            "output": "number",
+            "cacheRead?": "number",
+            "cacheCreation?": "number"
+          },
+          "usdSource?": "string",
+          "telemetry": {
+            "durationMs": "number",
+            "model": "string",
+            "effort?": "string"
+          }
+        },
+        "bg_started": {
+          "runId": "string",
+          "pid?": "number",
+          "streamPath": "string"
+        }
       }
     },
     "stratum_agent_poll": {
-      "request": { "runId": "string" },
+      "request": {
+        "runId": "string"
+      },
       "responses": {
-        "not_found": { "runId": "string" },
-        "running": { "runId": "string", "textTail": "string", "eventsSeen": "number", "streamPath": "string" },
-        "complete": { "runId": "string", "text": "string", "usage": "object", "split?": { "input": "number", "output": "number", "cacheRead?": "number", "cacheCreation?": "number" }, "usdSource?": "string", "exitCode": "number", "telemetry": { "durationMs": "number", "model": "string", "effort?": "string" } },
-        "error": { "runId": "string", "textTail": "string", "stderrTail": "string", "reason?": "string", "exitCode?": "number", "eventsSeen?": "number", "streamPath?": "string", "telemetry?": { "durationMs": "number", "model": "string", "effort?": "string" } }
+        "not_found": {
+          "runId": "string"
+        },
+        "running": {
+          "runId": "string",
+          "textTail": "string",
+          "eventsSeen": "number",
+          "streamPath": "string"
+        },
+        "complete": {
+          "runId": "string",
+          "text": "string",
+          "usage": "object",
+          "split?": {
+            "input": "number",
+            "output": "number",
+            "cacheRead?": "number",
+            "cacheCreation?": "number"
+          },
+          "usdSource?": "string",
+          "exitCode": "number",
+          "telemetry": {
+            "durationMs": "number",
+            "model": "string",
+            "effort?": "string"
+          }
+        },
+        "error": {
+          "runId": "string",
+          "textTail": "string",
+          "stderrTail": "string",
+          "reason?": "string",
+          "exitCode?": "number",
+          "eventsSeen?": "number",
+          "streamPath?": "string",
+          "telemetry?": {
+            "durationMs": "number",
+            "model": "string",
+            "effort?": "string"
+          }
+        }
       }
     },
     "stratum_cancel_agent_run": {
-      "request": { "runId": "string" },
+      "request": {
+        "runId": "string"
+      },
       "responses": {
-        "cancelled": { "runId": "string" },
-        "already_complete": { "runId": "string" },
-        "already_error": { "runId": "string" },
-        "not_found": { "runId": "string" }
+        "cancelled": {
+          "runId": "string"
+        },
+        "already_complete": {
+          "runId": "string"
+        },
+        "already_error": {
+          "runId": "string"
+        },
+        "not_found": {
+          "runId": "string"
+        }
       }
     },
     "stratum_guard_register": {
-      "request": { "resource_id": "string", "graph": "object", "edge_predicates": "object", "initial": "string", "terminal?": "array|null", "stakes?": "object|null", "workspace_root?": "string|null", "policy_bundle?": "object" },
+      "request": {
+        "resource_id": "string",
+        "graph": "object",
+        "edge_predicates": "object",
+        "initial": "string",
+        "terminal?": "array|null",
+        "stakes?": "object|null",
+        "workspace_root?": "string|null",
+        "policy_bundle?": "object"
+      },
       "responses": {
-        "registered": { "guard_id": "string", "checksum": "string" },
-        "exists": { "guard_id": "string", "checksum": "string" },
-        "error": { "error_type": "string", "message": "string" }
+        "registered": {
+          "guard_id": "string",
+          "checksum": "string"
+        },
+        "exists": {
+          "guard_id": "string",
+          "checksum": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_guard_transition": {
-      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "artifacts": "object", "modified_files?": "array|null", "idempotency_key?": "string|null", "resolved_by?": "string", "run_id?": "string" },
+      "request": {
+        "resource_id": "string",
+        "from_state": "string",
+        "to_state": "string",
+        "artifacts": "object",
+        "modified_files?": "array|null",
+        "idempotency_key?": "string|null",
+        "resolved_by?": "string",
+        "run_id?": "string"
+      },
       "responses": {
-        "applied": { "verdict": "object", "ledger_ref": "string", "current_state": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
-        "refused": { "verdict": "object", "ledger_ref": "string", "current_state": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
-        "replayed": { "verdict": "object", "ledger_ref": "string", "current_state": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
-        "error": { "error_type": "string", "message": "string" }
+        "applied": {
+          "verdict": "object",
+          "ledger_ref": "string",
+          "current_state": "string",
+          "entry_digest": "string",
+          "prev_digest": "string",
+          "payload_digest": "string"
+        },
+        "refused": {
+          "verdict": "object",
+          "ledger_ref": "string",
+          "current_state": "string",
+          "entry_digest": "string",
+          "prev_digest": "string",
+          "payload_digest": "string"
+        },
+        "replayed": {
+          "verdict": "object",
+          "ledger_ref": "string",
+          "current_state": "string",
+          "entry_digest": "string",
+          "prev_digest": "string",
+          "payload_digest": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_guard_override": {
-      "request": { "resource_id": "string", "from_state": "string", "to_state": "string", "authorization": "string", "rationale": "string", "resolved_by?": "string", "user_id?": "string", "run_id?": "string" },
+      "request": {
+        "resource_id": "string",
+        "from_state": "string",
+        "to_state": "string",
+        "authorization": "string",
+        "rationale": "string",
+        "resolved_by?": "string",
+        "user_id?": "string",
+        "run_id?": "string"
+      },
       "responses": {
-        "deviation": { "ledger_ref": "string", "current_state": "string", "rationale": "string", "authorized_by": "string", "entry_digest": "string", "prev_digest": "string", "payload_digest": "string" },
-        "error": { "error_type": "string", "message": "string" }
+        "deviation": {
+          "ledger_ref": "string",
+          "current_state": "string",
+          "rationale": "string",
+          "authorized_by": "string",
+          "entry_digest": "string",
+          "prev_digest": "string",
+          "payload_digest": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_guard_migrate": {
-      "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "authorization": "string", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
+      "request": {
+        "resource_id": "string",
+        "new_graph": "object",
+        "new_edge_predicates": "object",
+        "authorization": "string",
+        "rationale": "string",
+        "new_terminal?": "array|null",
+        "new_stakes?": "object|null"
+      },
       "responses": {
-        "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string", "authorized_by": "string" },
-        "error": { "error_type": "string", "message": "string" }
+        "migrated": {
+          "checksum": "string",
+          "graph_version": "number",
+          "ledger_ref": "string",
+          "rationale": "string",
+          "authorized_by": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_guard_upgrade": {
-      "request": { "resource_id": "string", "new_graph": "object", "new_edge_predicates": "object", "rationale": "string", "new_terminal?": "array|null", "new_stakes?": "object|null" },
+      "request": {
+        "resource_id": "string",
+        "new_graph": "object",
+        "new_edge_predicates": "object",
+        "rationale": "string",
+        "new_terminal?": "array|null",
+        "new_stakes?": "object|null"
+      },
       "responses": {
-        "migrated": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "rationale": "string" },
-        "unchanged": { "checksum": "string", "graph_version": "number", "rationale": "string" },
-        "error": { "error_type": "string", "message": "string" }
+        "migrated": {
+          "checksum": "string",
+          "graph_version": "number",
+          "ledger_ref": "string",
+          "rationale": "string"
+        },
+        "unchanged": {
+          "checksum": "string",
+          "graph_version": "number",
+          "rationale": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_guard_apply_upgrade": {
-      "request": { "resource_id": "string", "descriptor_id": "string" },
+      "request": {
+        "resource_id": "string",
+        "descriptor_id": "string"
+      },
       "responses": {
-        "applied": { "checksum": "string", "graph_version": "number", "ledger_ref": "string", "descriptor_id": "string" },
-        "unchanged": { "checksum": "string", "graph_version": "number", "descriptor_id": "string" },
-        "error": { "error_type": "string", "message": "string" }
+        "applied": {
+          "checksum": "string",
+          "graph_version": "number",
+          "ledger_ref": "string",
+          "descriptor_id": "string"
+        },
+        "unchanged": {
+          "checksum": "string",
+          "graph_version": "number",
+          "descriptor_id": "string"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     },
     "stratum_guard_history": {
-      "request": { "resource_id": "string" },
+      "request": {
+        "resource_id": "string"
+      },
       "responses": {
-        "success": { "resource_id": "string", "current_state": "string", "graph_version": "number", "ledger": "array" },
-        "error": { "error_type": "string", "message": "string" }
+        "success": {
+          "resource_id": "string",
+          "current_state": "string",
+          "graph_version": "number",
+          "ledger": "array"
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
       }
     }
   }

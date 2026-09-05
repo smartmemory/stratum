@@ -314,7 +314,7 @@ describe("guard transition orchestration", () => {
       `${canonicalJson({ ...core, entry_digest: entryDigest })}\n`,
       "utf8",
     );
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await expect(guardTransition("legacy-replay", "draft", "shipped", {
       idempotencyKey: "legacy-key", artifacts: { proof: "same" }, modifiedFiles: ["z", "a"],
@@ -325,8 +325,8 @@ describe("guard transition orchestration", () => {
     await expect(guardTransition("legacy-replay", "draft", "shipped", {
       idempotencyKey: "legacy-key", artifacts: { proof: "changed" }, modifiedFiles: ["a", "z"],
     })).rejects.toBeInstanceOf(IdempotencyConflict);
-    expect(info).toHaveBeenCalledTimes(1);
-    expect(info).toHaveBeenCalledWith("guard legacy-replay: matched legacy payload digest version 1");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("guard legacy-replay: matched legacy payload digest version 1");
   });
 
   it("routes LLM predicates at edge stakes and ANDs their verdict with deterministic evidence", async () => {

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,7 +9,7 @@ import { Worker } from "node:worker_threads";
 import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorSplit, ConnectorUsage } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
-import { applyHeadlessShellEnv, codexCommand, defaultCodexModel, withSandboxPreamble } from "./codex.js";
+import { applyHeadlessShellEnv, codexCommand, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
@@ -86,6 +86,8 @@ export interface StartBackgroundRunOptions {
   prompt: string;
   cwd: string;
   model?: string;
+  thinking?: Record<string, unknown>;
+  effort?: string;
   sandboxMode?: CodexSandboxMode;
   budgeted?: boolean;
   registryRoot?: string;
@@ -142,7 +144,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600 }),
     writeFile(inputPath, withSandboxPreamble(options.prompt), { encoding: "utf8", mode: 0o600 }),
   ]);
-  const model = options.model ?? defaultCodexModel();
+  const model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
   const command = options.command ?? codexCommand(model, options.cwd, sandboxMode);
   const env: NodeJS.ProcessEnv = {
     ...(options.env ?? process.env),
@@ -237,6 +239,8 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     prompt: options.prompt,
     connectorOptions: {
       model,
+      ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
       cwd: options.cwd,
       ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
       ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
@@ -282,7 +286,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     void claimFinalization(entry, runId, async () => {
       const scan = await scanStream(streamPath);
       if (scan.exitCode !== undefined) return; // worker's terminal record is authoritative
-      await appendFile(streamPath, errorLine + sentinelLine, { encoding: "utf8" });
+      await appendExistingStream(streamPath, errorLine + sentinelLine);
     });
   });
 
@@ -550,7 +554,18 @@ async function writeSentinelIfAbsent(streamPath: string, exitCode: number): Prom
   const scan = await scanStream(streamPath);
   if (scan.exitCode !== undefined) return; // already has a sentinel
   const line = JSON.stringify({ [T2F5_DONE_SENTINEL]: exitCode }) + "\n";
-  await appendFile(streamPath, line, { encoding: "utf8" });
+  await appendExistingStream(streamPath, line);
+}
+
+// Terminal artifacts may be removed as soon as the caller sees the sentinel,
+// before the worker exit handler runs. Never resurrect a deleted stream during
+// fallback finalization. O_APPEND retains atomic append semantics against workers.
+async function appendExistingStream(path: string, text: string): Promise<void> {
+  let handle;
+  try { handle = await open(path, constants.O_WRONLY | constants.O_APPEND); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  try { await handle.writeFile(text, "utf8"); }
+  finally { await handle.close(); }
 }
 
 async function* completeJsonLines(path: string): AsyncGenerator<Record<string, unknown>> {

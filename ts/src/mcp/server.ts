@@ -1,3 +1,4 @@
+import { linkAbort, teardownDeadline } from "../connectors/cancellation.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
@@ -5,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
 import type { ConnectorEventHandler } from "../connectors/base.js";
-import { CheckpointOperationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
+import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
 import { createEvaluateRunner } from "../engine/evaluate.js";
 import { validateSpec } from "../ir/validate.js";
@@ -39,6 +40,7 @@ export interface McpDependencies {
    * window (python-server parity: ctx.report_progress).
    */
   heartbeatMs?: number;
+  cancellationTimeoutMs?: number;
 }
 
 export type ToolName =
@@ -48,7 +50,7 @@ export type ToolName =
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
   | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_upgrade" | "stratum_guard_apply_upgrade" | "stratum_guard_history";
 
-interface ToolCallContext { onAgentEvent?: ConnectorEventHandler }
+interface ToolCallContext { onAgentEvent?: ConnectorEventHandler; signal?: AbortSignal }
 
 export interface ToolDispatcher {
   call(tool: ToolName, request: Record<string, unknown>, context?: ToolCallContext): Promise<Record<string, unknown>>;
@@ -87,14 +89,64 @@ function defaultEngine(): StratumEngine {
   });
 }
 
+/** Every structured MCP error goes through the registry: an envelope the
+ * contract does not declare (or whose payload drifts from the declaration)
+ * fails here rather than reaching a client as an undeclared shape. */
+async function registryError(envelope: string, errorCode: ErrorCode, message: string, data: Record<string, unknown>): Promise<McpError> {
+  const declaration = (await mcpSurface()).errors[envelope];
+  if (!declaration) throw new Error(`MCP error registry is missing ${envelope}`);
+  assertShape(data, declaration.data, `errors.${envelope}.data`);
+  return new McpError(errorCode, message, data);
+}
+
+/** Rejects a request field before the contract check can run — the cancellation
+ * bookkeeping below must be in place before any awaited contract I/O, so these
+ * few fields are validated by hand and reported in the declared shape. */
+function inputValidationError(path: string, message: string): Promise<McpError> {
+  return registryError("input_validation_failed", ErrorCode.InvalidParams, message, {
+    code: "input_validation_failed",
+    errors: [{ code: "input_validation_failed", path, message }],
+  });
+}
+
 export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDispatcher {
   const engine = dependencies.engine ?? defaultEngine();
   const agentRun = dependencies.runAgent ?? runAgent;
   const agentPoll = dependencies.pollBackgroundRun ?? pollBackgroundRun;
   const agentCancel = dependencies.cancelBackgroundRun ?? cancelBackgroundRun;
+  // Register before contract I/O: an immediate cancellation cannot overtake startup.
+  // UUIDs cannot collide with durable background IDs.
+  const foreground = new Map<string, { controller: AbortController; settled: Promise<void> }>();
+  const completed = new Map<string, "already_complete" | "already_error" | "cancelled" | Error>();
   return {
     async call(tool, request, context = {}) {
+      // This request has one required string field. Check that exact shape before
+      // acting synchronously, otherwise contract loading can let startup overtake
+      // an already-received cancellation. Full contract validation still follows.
+      if (tool === "stratum_cancel_agent_run" && typeof request.runId === "string"
+        && Object.keys(request).length === 1) {
+        foreground.get(request.runId)?.controller.abort(new Error("Foreground agent run cancelled"));
+      }
+      let cancellationId: string | undefined;
+      let controller: AbortController | undefined;
+      let settle: (() => void) | undefined;
+      let unlink: (() => void) | undefined;
+      let succeeded = false;
+      let teardownFailure: Error | undefined;
       try {
+        if (tool === "stratum_agent_run" && request.cancellationId !== undefined) {
+          if (typeof request.cancellationId !== "string"
+            || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.cancellationId)) {
+            throw await inputValidationError("cancellationId", "cancellationId must be a UUID");
+          }
+          cancellationId = request.cancellationId;
+          if (request.background === true) throw await inputValidationError("background", "cancellationId is only supported for foreground runs");
+          if (foreground.has(cancellationId) || completed.has(cancellationId)) throw await inputValidationError("cancellationId", "cancellationId has already been used");
+          controller = new AbortController();
+          const settled = new Promise<void>((resolve) => { settle = resolve; });
+          foreground.set(cancellationId, { controller, settled });
+          unlink = linkAbort(context.signal, controller);
+        }
         await assertToolRequest(tool, request);
         let response: Record<string, unknown>;
         switch (tool) {
@@ -157,6 +209,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             : undefined;
           const executed = await agentRun({
             agent: string(request, "agent") as "claude" | "codex",
+            ...(cancellationId !== undefined ? { ownProcessGroup: true } : {}),
             prompt: string(request, "prompt"),
             cwd: string(request, "cwd"),
             // Presence-based forwarding, NOT truthiness: sandboxMode:"" must reach
@@ -169,12 +222,34 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             ...(allowedTools !== undefined ? { allowedTools } : {}),
             ...(disallowedTools !== undefined ? { disallowedTools } : {}),
             ...(context.onAgentEvent !== undefined ? { onEvent: context.onAgentEvent } : {}),
+            ...((controller?.signal ?? context.signal) !== undefined ? { signal: (controller?.signal ?? context.signal)! } : {}),
+            ...(request.thinking !== undefined ? { thinking: record(request, "thinking") } : {}),
+            ...(request.effort !== undefined ? { effort: string(request, "effort") } : {}),
           });
+          unlink?.(); // Provider finished; a late disconnect cannot cancel a completed run.
+          succeeded = true;
           response = "status" in executed ? { ...executed } : { status: "complete", ...executed };
           break;
         }
         case "stratum_agent_poll": response = await agentPoll(string(request, "runId")); break;
-        case "stratum_cancel_agent_run": response = await agentCancel(string(request, "runId")); break;
+        case "stratum_cancel_agent_run": {
+          const runId = string(request, "runId");
+          const running = foreground.get(runId);
+          if (running) {
+            running.controller.abort(new Error("Foreground agent run cancelled"));
+            // Acknowledge only after the connector has finished teardown.
+            await teardownDeadline(running.settled, dependencies.cancellationTimeoutMs ?? Number(process.env.STRATUM_CANCEL_TIMEOUT_MS ?? 15000), "Foreground connector teardown did not settle");
+            const outcome = completed.get(runId);
+            if (outcome instanceof Error) throw outcome;
+            response = { status: "cancelled", runId };
+          } else if (completed.has(runId)) {
+            const outcome = completed.get(runId);
+            if (outcome instanceof Error) throw outcome;
+            response = { status: outcome, runId };
+          }
+          else response = await agentCancel(runId);
+          break;
+        }
         case "stratum_guard_register": {
           const { registerGuard } = await import("../guard/transition.js");
           response = await registerGuard(string(request, "resource_id"), record(request, "graph") as Record<string, string[]>, record(request, "edge_predicates") as Record<string, Array<Record<string, unknown>>>, string(request, "initial"), optionalArray(request, "terminal"), optionalRecord(request, "stakes"), optionalString(request, "workspace_root") ?? null, request.policy_bundle !== undefined ? record(request, "policy_bundle") as unknown as PolicyBundle : undefined);
@@ -220,27 +295,48 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           for (const event of response.events) await assertEvent(event);
         }
         await assertToolResponse(tool, response);
+        succeeded = true;
         return response;
       } catch (error) {
+        if (error instanceof Error && "code" in error
+          && ["CANCELLATION_TEARDOWN_TIMEOUT", "CANCELLATION_UNCONFIRMED"].includes(String(error.code))) {
+          teardownFailure = error;
+        }
         if (error instanceof SpecValidationError) {
           const code = tool === "stratum_flow_run_bg"
             && error.errors.some((entry) => entry.code === "consumer_dispatch_bg_unsupported")
-            ? "consumer_dispatch_bg_unsupported" : "spec_validation_failed";
-          const data = { code, errors: error.errors };
-          const declaration = (await mcpSurface()).errors[code];
-          if (!declaration) throw new Error(`MCP error registry is missing ${code}`);
-          assertShape(data, declaration.data, `errors.${code}.data`);
-          throw new McpError(ErrorCode.InvalidParams, error.message, data);
+            ? "consumer_dispatch_bg_unsupported" : error instanceof InputValidationError ? "input_validation_failed" : "spec_validation_failed";
+          throw await registryError(code, ErrorCode.InvalidParams, error.message, { code, errors: error.errors });
         }
         if ((tool === "stratum_commit" || tool === "stratum_revert") && error instanceof CheckpointOperationError) {
           const response = checkpointErrorEnvelope(error);
           await assertToolResponse(tool, response);
           return response;
         }
+        if (tool === "stratum_agent_run" || tool === "stratum_cancel_agent_run") {
+          // An McpError already carries a declared code and payload — rewrapping it
+          // as agent_run_failed would replace a precise contract error (a rejected
+          // request field, an undeclared response) with a generic provider failure.
+          if (error instanceof McpError) throw error;
+          const failure = error as Error & { code?: string; usage?: unknown; split?: unknown; usdSource?: unknown; stderr?: string };
+          // The envelope is always agent_run_failed; `code` names the specific
+          // connector failure (CANCELLATION_TEARDOWN_TIMEOUT and friends) when it has one.
+          const data = { code: failure.code ?? "agent_run_failed", ...Object.fromEntries(
+            ["usage", "split", "usdSource", "stderr", "telemetry"].filter(key => key in Object(failure)).map(key => [key, (failure as unknown as Record<string, unknown>)[key]])) };
+          throw await registryError("agent_run_failed", ErrorCode.InternalError, failure.message ?? String(error), data);
+        }
         if (!tool.startsWith("stratum_guard_")) throw error;
         const response = guardErrorEnvelope(error);
         await assertToolResponse(tool, response);
         return response;
+      } finally {
+        unlink?.();
+        if (cancellationId !== undefined && controller) {
+          completed.set(cancellationId, teardownFailure ?? (succeeded ? "already_complete" : controller.signal.aborted ? "cancelled" : "already_error"));
+          foreground.delete(cancellationId);
+          if (completed.size > 1024) completed.delete(completed.keys().next().value!);
+          settle?.();
+        }
       }
     },
   };
@@ -279,7 +375,7 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
       heartbeat.unref?.();
     }
     try {
-      let context: ToolCallContext | undefined;
+      let context: ToolCallContext = { signal: extra.signal };
       if (request.params.name === "stratum_agent_run" && progressToken !== undefined) {
         // No flow_id: an agent run has no flow, and a server-invented UUID cannot
         // match any consumer's correlation id — compose dropped EVERY agent event
@@ -288,6 +384,7 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
         // consumer stamps its own correlation id on an absent flow_id.
         let eventSeq = 0;
         context = {
+          signal: extra.signal,
           onAgentEvent: async (event) => {
             const message = JSON.stringify({
               // 0.2.8: flow_id is OPTIONAL on `_agent_run` envelopes (call-local).
@@ -296,7 +393,11 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
               seq: eventSeq,
               ts: new Date().toISOString(),
               kind: event.kind,
-              metadata: event.metadata,
+              // Agent connector events are call-local; stamp the same step
+              // identity in usage metadata required by the BuildStreamEvent contract.
+              metadata: event.kind === "step_usage"
+                ? { ...event.metadata, stepId: "_agent_run" }
+                : event.metadata,
               reply_required: false,
             });
             eventSeq += 1;

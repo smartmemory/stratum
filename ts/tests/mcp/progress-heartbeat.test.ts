@@ -42,7 +42,7 @@ const streamingAgent: NonNullable<McpDependencies["runAgent"]> = async (options)
   }).onEvent;
   await onEvent?.({ kind: "agent_started", metadata: { agent: "claude", model: "stub", prompt_chars: 6 } });
   await onEvent?.({ kind: "agent_relay", metadata: { text: "visible", role: "assistant" } });
-  await onEvent?.({ kind: "step_usage", metadata: { input_tokens: 3, output_tokens: 4, model: "stub" } });
+  await onEvent?.({ kind: "step_usage", metadata: { input_tokens: 3, output_tokens: 4, cost_usd: 0.01, model: "stub" } });
   return { text: "visible", usage: { tokens: 7 }, telemetry: { durationMs: 1, model: "stub" } };
 };
 
@@ -89,6 +89,9 @@ describe("progress heartbeats during tool calls", () => {
         expect(event).not.toHaveProperty("flow_id");
       }
       expect(events[1]?.metadata).toEqual({ text: "visible", role: "assistant" });
+      expect(events[2]?.metadata).toEqual({
+        stepId: "_agent_run", input_tokens: 3, output_tokens: 4, cost_usd: 0.01, model: "stub",
+      });
     } finally { await pair.close(); }
   });
 

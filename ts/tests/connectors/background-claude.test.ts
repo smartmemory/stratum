@@ -320,3 +320,17 @@ describe("claude background run — stream failure containment (STRATUM_TEST_WOR
     expect(result.status).toBe("error");
   });
 });
+
+
+it("does not recreate removed terminal streams when worker finalization arrives late", async () => {
+  const registryRoot = await root();
+  const started = await startBackgroundRun({ agent: "claude", prompt: "test", cwd: registryRoot, registryRoot });
+  const entry = claudeWorkerRegistry.get(started.runId)!;
+  const workerExited = new Promise<void>((resolve) => entry.worker.once("exit", () => resolve()));
+  await waitFor(started.runId, registryRoot, "complete", 5_000);
+  const runDir = join(registryRoot, started.runId);
+  await rm(join(runDir, "stream.jsonl"), { force: true });
+  await workerExited;
+  await entry.finalizationClaim;
+  await expect(readFile(join(runDir, "stream.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+});

@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getEncoding } from "js-tiktoken";
 import { parseDocument } from "yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
+import type { StateStore } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { validateSpec } from "../../src/ir/validate.js";
 import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
@@ -78,4 +79,35 @@ describe("P6 v1 reference parity flows", () => {
     const terminal = await subject.stepDone(planned.runId, "after", { output: { value: "after" } });
     expect(terminal.status).toBe("completed");
   });
+});
+
+
+it("does not publish fanout completion before its durable terminal save finishes", async () => {
+  const subject = await engine();
+  const store = (subject as unknown as { store: StateStore }).store;
+  const save = store.save.bind(store);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reached!: () => void;
+  const terminalWrite = new Promise<void>((resolve) => { reached = resolve; });
+  const spy = vi.spyOn(store, "save").mockImplementation(async (run) => {
+    if (run.status === "completed") { reached(); await held; }
+    await save(run);
+  });
+  const planned = await subject.plan(await v1("fanout"), { items: ["a", "b"] });
+  try {
+    await terminalWrite;
+    const beforeCommit = await subject.flowPoll(planned.runId);
+    expect(beforeCommit.status).toBe("running");
+    expect(beforeCommit.events.some((event) => event.type === "completed")).toBe(false);
+    expect((await subject.audit(planned.runId)).status).toBe("running");
+  } finally {
+    release();
+    await waitForTerminal(subject, planned.runId);
+    spy.mockRestore();
+  }
+  const afterCommit = await subject.flowPoll(planned.runId);
+  expect(afterCommit.status).toBe("completed");
+  expect(afterCommit.events.some((event) => event.type === "completed")).toBe(true);
+  expect((await subject.audit(planned.runId)).status).toBe("completed");
 });

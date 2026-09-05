@@ -39,12 +39,14 @@ const gateFlow = (route: "approve" | "revise" | "kill") => ({
 });
 
 async function waitForTerminal(engine: StratumEngine, runId: string) {
-  for (let tick = 0; tick < 100; tick += 1) {
+  // Real git worktree creation/merge can exceed 500 ms under suite contention.
+  const deadline = performance.now() + 4_000;
+  while (performance.now() < deadline) {
     const poll = await engine.flowPoll(runId, 0);
     if (poll.status !== "running") return poll;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("fanout did not finish");
+  throw new Error(`fanout did not finish within 4 seconds: ${JSON.stringify(await engine.flowPoll(runId, 0))}`);
 }
 
 describe("P4 gates (E3)", () => {
@@ -977,7 +979,7 @@ describe("P4 frozen contracts", () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
     expect(eventsContract.events).toBe(2);
-    expect(surface.surface).toBe(16);
+    expect(surface.surface).toBe(17);
     expect(Object.keys(surface.tools)).toHaveLength(24);
 
     const allEvents: AuditEvent[] = [];

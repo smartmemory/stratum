@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 // ts/tests/mcp/agent-run.test.ts
 // Public MCP-surface tests for stratum_agent_run using createMcpServer + InMemoryTransport.
 // Same pattern as tests/mcp/p5.test.ts.
@@ -26,7 +28,7 @@ import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { pollBackgroundRun, runAgent } from "../../src/connectors/index.js";
 import type { AgentRunOptions } from "../../src/connectors/runner.js";
-import { createMcpServer, type McpDependencies } from "../../src/mcp/server.js";
+import { createMcpServer, createToolDispatcher, type McpDependencies } from "../../src/mcp/server.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -331,4 +333,129 @@ describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
       expect(capturedSdkOptions!).not.toHaveProperty("allowedTools");
     } finally { await pair.close(); }
   });
+});
+
+
+describe("foreground cancellation protocol", () => {
+  it("acknowledges explicit cancellation only after connector teardown", async () => {
+    let began!: () => void;
+    const started = new Promise<void>((resolve) => { began = resolve; });
+    let stopped = false;
+    const connection = await connected({ runAgent: async (options) => {
+      began();
+      await new Promise<void>((resolve) => options.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      await delay(40);
+      stopped = true;
+      options.signal!.throwIfAborted();
+      throw new Error("unreachable");
+    } });
+    const cancellationId = randomUUID();
+    try {
+      const call = connection.client.callTool({ name: "stratum_agent_run", arguments: { agent: "codex", prompt: "p", cwd: "/tmp", cancellationId } }).catch((error: unknown) => error);
+      await started;
+      const result = response(await connection.client.callTool({ name: "stratum_cancel_agent_run", arguments: { runId: cancellationId } }));
+      expect(result.status).toBe("cancelled");
+      expect(stopped).toBe(true);
+      await call;
+      expect(response(await connection.client.callTool({ name: "stratum_cancel_agent_run", arguments: { runId: cancellationId } })).status).toBe("cancelled");
+    } finally { await connection.close(); }
+  });
+
+  it("registers before the first await so immediate cancellation prevents startup", async () => {
+    let spawned = false;
+    const dispatcher = createToolDispatcher({ runAgent: (options) => runAgent(options, { claudeQuery: async function* () { spawned = true; yield {}; } }) });
+    const cancellationId = randomUUID();
+    const running = dispatcher.call("stratum_agent_run", { agent: "claude", prompt: "p", cwd: "/tmp", cancellationId }).catch((error: unknown) => error);
+    expect((await dispatcher.call("stratum_cancel_agent_run", { runId: cancellationId })).status).toBe("cancelled");
+    await running;
+    expect(spawned).toBe(false);
+  });
+
+  it("forwards thinking/effort and transport disconnect cancellation without requiring progress", async () => {
+    let began!: () => void;
+    const started = new Promise<void>((resolve) => { began = resolve; });
+    let finished!: () => void;
+    const stopped = new Promise<void>((resolve) => { finished = resolve; });
+    let captured: AgentRunOptions | undefined;
+    const connection = await connected({ runAgent: async (options) => {
+      captured = options;
+      began();
+      await new Promise<void>((resolve) => options.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      finished();
+      options.signal!.throwIfAborted();
+      throw new Error("unreachable");
+    } });
+    const call = connection.client.callTool({ name: "stratum_agent_run", arguments: { agent: "claude", prompt: "p", cwd: "/tmp", thinking: { type: "adaptive" }, effort: "high" } }).catch((error: unknown) => error);
+    await started;
+    expect(captured).toMatchObject({ thinking: { type: "adaptive" }, effort: "high" });
+    await connection.close();
+    await stopped;
+    await call;
+  });
+});
+
+it('only cancellationId asks MCP Codex runs to own a process group', async () => {
+  const seen: AgentRunOptions[] = [];
+  const dispatcher = createToolDispatcher({ runAgent: async options => { seen.push(options); return { text: 'ok', usage: {}, telemetry: { model: 'fixture', durationMs: 0 } }; } });
+  const request = { agent: 'codex', prompt: 'fixture', cwd: process.cwd() };
+  await dispatcher.call('stratum_agent_run', request, { signal: new AbortController().signal });
+  await dispatcher.call('stratum_agent_run', { ...request, cancellationId: randomUUID() });
+  expect(seen[0]!.ownProcessGroup).toBeUndefined();
+  expect(seen[1]!.ownProcessGroup).toBe(true);
+});
+
+it('returns a distinct bounded teardown error when a connector ignores abort', async () => {
+  let finish!: (value: { text: string; usage: {}, telemetry: { model: 'fixture', durationMs: 0 } }) => void;
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  const dispatcher = createToolDispatcher({ cancellationTimeoutMs: 25, runAgent: async () => {
+    began(); return new Promise(resolve => { finish = resolve; });
+  } });
+  const cancellationId = randomUUID();
+  const run = dispatcher.call('stratum_agent_run', { agent: 'codex', prompt: 'p', cwd: process.cwd(), cancellationId });
+  await started;
+  try {
+    await expect(dispatcher.call('stratum_cancel_agent_run', { runId: cancellationId })).rejects.toMatchObject({
+      data: { code: 'CANCELLATION_TEARDOWN_TIMEOUT' }, message: expect.stringContaining('25ms'),
+    });
+  } finally { finish({ text: 'eventually complete', usage: {}, telemetry: { model: 'fixture', durationMs: 0 } }); await run; }
+});
+
+it('invalid and duplicate cancellation IDs stay structured and leave prior completion intact', async () => {
+  const dispatcher = createToolDispatcher({ runAgent: async () => ({ text: 'ok', usage: {}, telemetry: { model: 'fixture', durationMs: 0 } }) });
+  // A rejected request field is a contract error, not a provider failure: it keeps
+  // the declared input_validation_failed code instead of being rewrapped.
+  for (const cancellationId of [42, 'not-a-uuid']) {
+    await expect(dispatcher.call('stratum_agent_run', { agent: 'codex', prompt: 'p', cwd: process.cwd(), cancellationId })).rejects.toMatchObject({
+      code: -32602,
+      data: { code: 'input_validation_failed', errors: [{ path: 'cancellationId', message: 'cancellationId must be a UUID' }] },
+    });
+  }
+  const id = randomUUID();
+  await dispatcher.call('stratum_agent_run', { agent: 'codex', prompt: 'p', cwd: process.cwd(), cancellationId: id });
+  await expect(dispatcher.call('stratum_agent_run', { agent: 'codex', prompt: 'p', cwd: process.cwd(), cancellationId: id })).rejects.toThrow(/already been used/);
+  expect(await dispatcher.call('stratum_cancel_agent_run', { runId: id })).toMatchObject({ status: 'already_complete' });
+});
+
+it('late disconnect cannot mark a completed provider run cancelled', async () => {
+  const control = new AbortController();
+  const dispatcher = createToolDispatcher({ runAgent: async () => {
+    queueMicrotask(() => queueMicrotask(() => control.abort()));
+    return { text: 'done', usage: {}, telemetry: { model: 'fixture', durationMs: 0 } };
+  } });
+  const id = randomUUID();
+  await dispatcher.call('stratum_agent_run', { agent: 'codex', prompt: 'p', cwd: process.cwd(), cancellationId: id }, { signal: control.signal });
+  expect(await dispatcher.call('stratum_cancel_agent_run', { runId: id })).toMatchObject({ status: 'already_complete' });
+});
+
+it('failure usage crosses an actual MCP client/server error envelope', async () => {
+  const fixture = await connected({ runAgent: async options => runAgent(options, { claudeQuery: async function* () {
+    yield { type: 'result', subtype: 'error_during_execution', errors: ['billable failure'], total_cost_usd: 0.25,
+      usage: { input_tokens: 7, output_tokens: 2, cache_read_input_tokens: 4 } };
+  } }) });
+  try {
+    await expect(fixture.client.callTool({ name: 'stratum_agent_run', arguments: { agent: 'claude', prompt: 'p', cwd: process.cwd() } })).rejects.toMatchObject({
+      data: { code: 'agent_run_failed', usage: { tokens: 9, usd: 0.25 }, split: { input: 7, output: 2, cacheRead: 4 }, usdSource: 'reported' },
+    });
+  } finally { await fixture.close(); }
 });

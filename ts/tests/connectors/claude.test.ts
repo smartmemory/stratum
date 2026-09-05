@@ -6,7 +6,7 @@ async function* messages() {
   yield { type: "assistant", message: { content: [{ type: "text", text: "partial" }] } };
   yield {
     type: "result", subtype: "success", result: "echo ok", duration_ms: 42, total_cost_usd: 0.01,
-    usage: { input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 2, cache_read_input_tokens: 1, dispatches: 50 },
+    usage: { input_tokens: 3, output_tokens: 4, cost_usd: 0.01, cache_creation_input_tokens: 2, cache_read_input_tokens: 1, dispatches: 50 },
   };
 }
 
@@ -26,7 +26,7 @@ describe("ClaudeConnector", () => {
       };
       yield {
         type: "result", subtype: "success", result: "done", duration_ms: 5, total_cost_usd: 0.01,
-        usage: { input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 2, cache_read_input_tokens: 1 },
+        usage: { input_tokens: 3, output_tokens: 4, cost_usd: 0.01, cache_creation_input_tokens: 2, cache_read_input_tokens: 1 },
       };
     };
     const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
@@ -51,7 +51,7 @@ describe("ClaudeConnector", () => {
       {
         kind: "step_usage",
         metadata: {
-          input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 2,
+          input_tokens: 3, output_tokens: 4, cost_usd: 0.01, cache_creation_input_tokens: 2,
           cache_read_input_tokens: 1, model: "claude-test",
         },
       },

@@ -415,7 +415,13 @@ Detached background flow execution: start a flow under a background driver, poll
 
 ### `stratum_agent_run` / `stratum_agent_poll` / `stratum_cancel_agent_run`
 
-Dispatch an agent (Claude, Codex, opencode) as part of a flow step, synchronously or in the background; poll and cancel background runs. `cancel` is a documented no-op for synchronous runs.
+Dispatch Claude or Codex as part of a flow step, synchronously or in the background. Background runs return a durable `runId` for polling and cancellation.
+
+For acknowledged foreground cancellation, supply a fresh UUID as `cancellationId` on `stratum_agent_run`, then call `stratum_cancel_agent_run` with that UUID as `runId`. The cancellation response waits for connector teardown. Keep awaiting the original run response as well; cancellation reports an error there. MCP transport cancellation and disconnection also abort foreground work, but MCP cancellation notifications suppress the original response and do not acknowledge teardown. Foreground IDs are scoped to the current server process; recent terminal IDs return `already_complete`, `already_error`, or `cancelled`.
+
+`allowedTools`, `disallowedTools`, and `thinking` are Claude-specific. `effort` accepts Claude's `low`, `medium`, `high`, `xhigh`, `max`, or Codex's `minimal`, `low`, `medium`, `high`, `xhigh`. Unsupported provider settings fail before execution. Codex uses `sandboxMode` (`read-only` or `workspace-write`); an explicit effort must agree with any model suffix. Cancellable Codex runs use an owned process group around the Codex CLI so shell descendants stop before cancellation is acknowledged; the CLI on `PATH` is preferred and the SDK's bundled CLI is the fallback. Claude uses the SDK's custom spawn hook for the same process ownership. Process-group ownership is claimed only when a `cancellationId` is supplied, so ordinary runs are unaffected by it. It requires POSIX process groups: on Windows a run that asks for cancellation fails before spawn with `CANCELLATION_UNSUPPORTED_PLATFORM`, and non-cancellable runs there are unaffected. Detached processes that intentionally leave the agent's process group are outside this cancellation contract.
+
+The authenticated live Codex smoke test is opt-in: `STRATUM_LIVE_CODEX=1 npm test -- tests/connectors/codex.live.test.ts` from `ts/`. Ordinary test runs do not invoke a paid model.
 
 > The authoritative tool surface is [`ts/src/mcp/server.ts`](ts/src/mcp/server.ts). Python-era tools that were retired rather than ported (parallel lifecycle, iterations, timers/skip, `list_workflows`, `draft_pipeline`, judge/distill/goal surfaces) live on `python-legacy`; see the Phase 2/3 usage audit in [`docs/plans/2026-07-11-strat-py-retire-progress.md`](docs/plans/2026-07-11-strat-py-retire-progress.md) for per-tool dispositions.
 

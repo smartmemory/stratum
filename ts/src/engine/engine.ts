@@ -291,6 +291,10 @@ export class SpecValidationError extends Error {
   }
 }
 
+export class InputValidationError extends SpecValidationError {
+  constructor(errors: ValidationError[]) { super(errors); this.message = "entry input validation failed"; }
+}
+
 export class StratumEngine {
   private readonly store: StateStore;
   private readonly evaluator: Evaluator;
@@ -389,19 +393,33 @@ export class StratumEngine {
       policyFields = { bundle_id: merged.bundle_id, policy_rules: merged.policy_rules, policy_rules_version: 2, policy_verdicts: [] };
       const policyBindings = Object.values(merged.policy_rules).flat();
       const ruleCount = new Set(policyBindings.map((binding) => binding.rule_id)).size;
-      console.info(`policy bundle ${merged.bundle_id}: ${ruleCount} rules bound to ${policyBindings.length} step-predicate pairs`);
+      console.warn(`policy bundle ${merged.bundle_id}: ${ruleCount} rules bound to ${policyBindings.length} step-predicate pairs`);
       if (bundle.rules.some((rule) => rule.bind.kind === "ensure" && rule.on_fail === "gate")) {
         console.warn("ensure policy rule on_fail=gate is enforced as refuse in P1; gate routing is deferred to P3");
       }
     }
+    // Validate the policy-merged specification and entry input before allocating
+    // or persisting a run. A rejected request must never dispatch work.
+    const effectiveValidation = validateSpec(effectiveSpec);
+    if (!effectiveValidation.ok) throw new SpecValidationError(effectiveValidation.errors);
+    effectiveSpec = effectiveValidation.value;
     const flowName = effectiveSpec.flows.entry;
+    const parsedInput = effectiveValidation.inputs[flowName]?.safeParse(input);
+    if (!parsedInput) throw new Error("entry flow input contract missing after validation");
+    if (!parsedInput.success) {
+      throw new InputValidationError(parsedInput.error.issues.map((issue) => ({
+        code: "INPUT_CONTRACT_INVALID",
+        path: ["input", ...issue.path].map((part, index) => typeof part === "number" ? `[${part}]` : index === 0 ? part : `.${part}`).join(""),
+        message: issue.message,
+      })));
+    }
     const flow = effectiveSpec.flows[flowName];
     if (!flow) throw new Error("entry flow missing after validation");
     const steps: Record<string, StepState> = Object.create(null);
     for (const step of flow.steps) steps[step.id] = { status: "pending", attempts: [], spent: {} };
     const run: PersistedRun = {
       id: randomUUID(), spec: effectiveSpec, revisionDigest: digest(effectiveSpec), generationCounter: 0,
-      input, flowName, status: "running", flowSpent: {}, steps,
+      input: parsedInput.data, flowName, status: "running", flowSpent: {}, steps,
       events: [{ at: now(), type: "planned" }],
       ...policyFields,
       // Canonicalize at plan time: a relative root must never re-resolve against a
@@ -409,8 +427,6 @@ export class StratumEngine {
       ...(options.workspaceRoot !== undefined ? { workspaceRoot: resolve(options.workspaceRoot) } : {}),
     };
     await this.persist(run);
-    const effectiveValidation = validateSpec(effectiveSpec);
-    if (!effectiveValidation.ok) throw new SpecValidationError(effectiveValidation.errors);
     return this.withRevisionDigest(await this.advance(run, effectiveValidation.value, effectiveValidation.contracts), run);
   }
 
@@ -806,7 +822,10 @@ export class StratumEngine {
   /** Restart-safe read-only wait surface: events are sliced from the persisted spine. */
   async flowPoll(runId: string, cursor = 0): Promise<FlowPollResponse> {
     if (!Number.isInteger(cursor) || cursor < 0) throw new Error("invalid event cursor");
-    const run = await this.loadRun(runId);
+    // Active fanouts pin a mutable run and set terminal status before save()
+    // finishes. Observers must see only committed state; otherwise "completed"
+    // can race the final write/rename and disagree with a restarted engine.
+    const run = await this.store.load(runId);
     return {
       runId,
       status: run.status,
@@ -819,17 +838,18 @@ export class StratumEngine {
   }
 
   async flowBgPoll(runId: string, cursor = 0): Promise<BgFlowPollResponse> {
-    const flow = await this.flowPoll(runId, cursor);
     const bg = this.bgFlows.get(runId);
     if (!bg) throw new Error(`background flow ${runId} not found`);
-    return {
-      ...flow,
-      bg: {
-        status: bg.status,
-        cancelRequested: bg.cancelRequested,
-        pendingGates: [...bg.pendingGates],
-      },
+    // Capture driver state before reading disk. A terminal driver status is set
+    // only after persistence, so this ordering cannot pair bg.completed with an
+    // older running snapshot when the driver finishes during the asynchronous read.
+    const driver = {
+      status: bg.status,
+      cancelRequested: bg.cancelRequested,
+      pendingGates: [...bg.pendingGates],
     };
+    const flow = await this.flowPoll(runId, cursor);
+    return { ...flow, bg: driver };
   }
 
   async flowCancelBg(runId: string): Promise<{ status: BgStatus }> {

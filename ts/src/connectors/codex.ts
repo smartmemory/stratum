@@ -1,10 +1,13 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity, SMARTMEMORY_SCRUB_VARS } from "./base.js";
+
+import { linkAbort, cancellationGraceMs, processTermination, requireProcessGroups } from "./cancellation.js";
 
 export type SpawnProcess = (
   command: string,
@@ -13,6 +16,11 @@ export type SpawnProcess = (
 ) => ChildProcessWithoutNullStreams;
 
 export type CodexTransport = "sdk" | "exec";
+
+/** How long a post-spawn `error` may wait for the matching `close` before the
+ * run settles on the error alone. Short: it only covers the gap between the two
+ * events for a child that did start. */
+const SPAWN_ERROR_CLOSE_MS = 250;
 
 export interface CodexSdkThread {
   runStreamed(input: string, options?: TurnOptions): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
@@ -26,6 +34,10 @@ export type CodexSdkFactory = (options: CodexOptions) => CodexSdkClient;
 
 export interface CodexConnectorOptions {
   model?: string;
+  effort?: string;
+  signal?: AbortSignal;
+  ownProcessGroup?: boolean;
+  cancellationGraceMs?: number;
   cwd?: string;
   sandboxMode?: CodexSandboxMode;
   env?: NodeJS.ProcessEnv;
@@ -150,16 +162,21 @@ export function codexCommand(modelId: string, cwd: string, sandboxMode: CodexSan
 
 export class CodexConnector {
   private readonly model: string;
+  private readonly signal: AbortSignal | undefined;
   private readonly cwd: string;
   private readonly sandboxMode: CodexSandboxMode;
   private readonly env: NodeJS.ProcessEnv;
   private readonly transport: CodexTransport;
+  private readonly ownProcessGroup: boolean;
+  private readonly graceMs: number;
+  private readonly injectedSpawn: boolean;
   private readonly sdkFactory: CodexSdkFactory;
   private readonly spawn: SpawnProcess;
   private readonly onEvent: ConnectorEventHandler | undefined;
 
   constructor(options: CodexConnectorOptions = {}) {
-    this.model = options.model ?? defaultCodexModel();
+    this.model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
+    this.signal = options.signal;
     this.cwd = options.cwd ?? process.cwd();
     this.sandboxMode = options.sandboxMode ?? "read-only";
     this.env = { ...(options.env ?? process.env) };
@@ -169,13 +186,22 @@ export class CodexConnector {
     if (options.env === undefined) applyHeadlessShellEnv(this.env);
     // Passing an injected spawn is itself an explicit request for the legacy
     // process seam. Production selects exec with STRATUM_CODEX_TRANSPORT=exec.
-    this.transport = options.transport ?? (options.spawn ? "exec" : resolveCodexTransport(this.env));
+    const selectedTransport = options.transport ?? (options.spawn ? "exec" : resolveCodexTransport(this.env));
+    // Owning a process group requires exec. A transport request or signal alone
+    // keeps the selected SDK/exec transport; only the MCP cancellation contract
+    // opts into process-group ownership.
+    this.ownProcessGroup = options.ownProcessGroup === true;
+    this.transport = this.ownProcessGroup ? "exec" : selectedTransport;
+    this.graceMs = options.cancellationGraceMs ?? cancellationGraceMs(this.env);
+    this.injectedSpawn = options.spawn !== undefined;
     this.sdkFactory = options.sdkFactory ?? defaultSdkFactory;
     this.spawn = options.spawn ?? (nodeSpawn as SpawnProcess);
     this.onEvent = options.onEvent;
   }
 
   async run(prompt: string): Promise<ConnectorResult> {
+    this.signal?.throwIfAborted();
+    if (this.ownProcessGroup) requireProcessGroups();
     const framed = withSandboxPreamble(prompt);
     return this.transport === "sdk" ? this.runSdk(framed) : this.runExec(framed);
   }
@@ -184,82 +210,114 @@ export class CodexConnector {
     const startedAt = Date.now();
     const stdoutLimit = resolveStdoutLimit();
     const controller = new AbortController();
-    const identity = modelIdentity(this.model);
-    const options: ThreadOptions = {
-      approvalPolicy: "never",
-      model: identity.model,
-      sandboxMode: this.sandboxMode,
-      skipGitRepoCheck: true,
-      workingDirectory: this.cwd,
-      ...(identity.effort !== undefined ? { modelReasoningEffort: reasoningEffort(identity.effort) } : {}),
-    };
-    const client = this.sdkFactory({ env: stringEnvironment(this.env) });
-    const streamed = await client.startThread(options).runStreamed(prompt, { signal: controller.signal });
-    const text: string[] = [];
+    const unlink = linkAbort(this.signal, controller);
     let inputTokens = 0;
     let outputTokens = 0;
-    // Consume SDK events directly rather than run(), which buffers every tool
-    // and file-change item for the whole turn. Stratum only retains the final
-    // agent text and accounting data, matching the direct JSONL transport. The
-    // SDK does not expose its raw readline/stderr buffers, so this enforces the
-    // same per-JSONL-line bound immediately after each event is yielded.
-    for await (const event of streamed.events) {
-      if (exceedsStreamLimit(JSON.stringify(event), stdoutLimit)) {
-        controller.abort();
-        throw stdoutOverrunError(stdoutLimit);
+    let cacheRead = 0;
+    let costUsd = 0;
+    try {
+      const identity = modelIdentity(this.model);
+      const options: ThreadOptions = {
+        approvalPolicy: "never",
+        model: identity.model,
+        sandboxMode: this.sandboxMode,
+        skipGitRepoCheck: true,
+        workingDirectory: this.cwd,
+        ...(identity.effort !== undefined ? { modelReasoningEffort: reasoningEffort(identity.effort) } : {}),
+      };
+      const pathBinary = pathCodex(this.env);
+      const client = this.sdkFactory({ env: stringEnvironment(this.env), ...(pathBinary ? { codexPathOverride: pathBinary } : {}) });
+      const streamed = await client.startThread(options).runStreamed(prompt, { signal: controller.signal });
+      const text: string[] = [];
+
+      // Consume SDK events directly rather than run(), which buffers every tool
+      // and file-change item for the whole turn. Stratum only retains the final
+      // agent text and accounting data, matching the direct JSONL transport. The
+      // SDK does not expose its raw readline/stderr buffers, so this enforces the
+      // same per-JSONL-line bound immediately after each event is yielded.
+      for await (const event of streamed.events) {
+        if (exceedsStreamLimit(JSON.stringify(event), stdoutLimit)) {
+          controller.abort();
+          throw stdoutOverrunError(stdoutLimit);
+        }
+        for (const connectorEvent of codexConnectorEvents(event, this.model, prompt)) {
+          await this.emit(connectorEvent);
+        }
+        if ((event.type === "turn.completed" || event.type === "turn.failed") && "usage" in event && isRecord(event.usage)) {
+          inputTokens += finiteNonnegative(event.usage.input_tokens);
+          outputTokens += finiteNonnegative(event.usage.output_tokens);
+          cacheRead += finiteNonnegative(event.usage.cached_input_tokens);
+          costUsd += finiteNonnegative((event.usage as unknown as Record<string, unknown>).total_cost_usd ?? (event.usage as unknown as Record<string, unknown>).cost_usd);
+        }
+        if (event.type === "error") throw new Error(event.message);
+        if (event.type === "turn.failed") throw new Error(event.error.message);
+        if (event.type === "item.completed" && event.item.type === "agent_message" && event.item.text) {
+          text.push(event.item.text);
+        }
       }
-      for (const connectorEvent of codexConnectorEvents(event, this.model, prompt)) {
-        await this.emit(connectorEvent);
-      }
-      if (event.type === "error") throw new Error(event.message);
-      if (event.type === "turn.failed") throw new Error(event.error.message);
-      if (event.type === "item.completed" && event.item.type === "agent_message" && event.item.text) {
-        text.push(event.item.text);
-      }
-      if (event.type === "turn.completed") {
-        inputTokens += finiteNonnegative(event.usage.input_tokens);
-        outputTokens += finiteNonnegative(event.usage.output_tokens);
-      }
-    }
-    const durationMs = Math.max(0, Date.now() - startedAt);
-    return {
-      text: text.join(""),
-      usage: { tokens: inputTokens + outputTokens, ms: durationMs },
-      split: { input: inputTokens, output: outputTokens },
-      telemetry: { durationMs, ...identity },
-    };
+      controller.signal.throwIfAborted();
+      const durationMs = Math.max(0, Date.now() - startedAt);
+      return {
+        text: text.join(""),
+        usage: { tokens: inputTokens + outputTokens, ms: durationMs },
+        split: { input: inputTokens, output: outputTokens },
+        telemetry: { durationMs, ...identity },
+      };
+    } catch (error) {
+      throw attachCodexUsage(error, inputTokens, outputTokens, cacheRead, costUsd, Date.now() - startedAt, this.model);
+    } finally { unlink(); }
   }
 
   private async runExec(prompt: string): Promise<ConnectorResult> {
     const startedAt = Date.now();
-    const child = this.spawn("codex", codexExecArgs(this.model, this.cwd, this.sandboxMode), {
+    const command = this.injectedSpawn ? { command: "codex", prefix: [] } : resolveCodexCommand(this.env);
+    const child = this.spawn(command.command, [...command.prefix, ...codexExecArgs(this.model, this.cwd, this.sandboxMode)], {
       cwd: this.cwd,
       env: this.env,
+      detached: this.ownProcessGroup && process.platform !== "win32",
     });
+    const termination = processTermination(child, this.ownProcessGroup, this.graceMs);
+    const killGroup = (): void => { void termination.terminate(); };
+    const abort = killGroup;
+    this.signal?.addEventListener("abort", abort, { once: true });
+    if (this.signal?.aborted) abort();
     const stdoutLimit = resolveStdoutLimit();
     const text: string[] = [];
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheRead = 0;
+    let costUsd = 0;
     let codexError: string | undefined;
     let eventDelivery = Promise.resolve();
+    let eventDeliveryError: Error | undefined;
     const handleLine = (line: string): void => {
       const record = parseRecord(line);
       if (!record) return;
       const connectorEvents = codexConnectorEvents(record, this.model, prompt);
       if (connectorEvents.length > 0) {
         eventDelivery = eventDelivery.then(async () => {
+          if (eventDeliveryError) return;
           for (const connectorEvent of connectorEvents) await this.emit(connectorEvent);
+        }).catch((error: unknown) => {
+          // Attach immediately, while the process is still alive: a callback
+          // rejection must neither escape as unhandled nor leave an agent running.
+          eventDeliveryError = error instanceof Error ? error : new Error(String(error));
+          try { killGroup(); }
+          catch (killError) { eventDeliveryError = new Error("Could not terminate Codex after an event callback failed", { cause: killError }); }
         });
       }
+      if (record.type === "turn.failed" && isRecord(record.error)) codexError = String(record.error.message ?? "codex turn failed");
       if (record.type === "error" && codexError === undefined) {
         codexError = typeof record.message === "string" ? record.message : "codex error";
       }
       if (record.type === "item.completed" && isRecord(record.item) && record.item.type === "agent_message") {
         if (typeof record.item.text === "string" && record.item.text) text.push(record.item.text);
       }
-      if (record.type === "turn.completed" && isRecord(record.usage)) {
+      if ((record.type === "turn.completed" || record.type === "turn.failed") && isRecord(record.usage)) {
         inputTokens += finiteNonnegative(record.usage.input_tokens);
         outputTokens += finiteNonnegative(record.usage.output_tokens);
+        cacheRead += finiteNonnegative(record.usage.cached_input_tokens);
+        costUsd += finiteNonnegative(record.usage.total_cost_usd ?? record.usage.cost_usd);
       }
     };
 
@@ -276,7 +334,10 @@ export class CodexConnector {
       overrun = true;
       pending = "";
       pendingBytes = 0;
-      child.kill("SIGKILL");
+      // Overrun means the child is producing output we can no longer parse, so
+      // the graceful window buys nothing and lets it keep flooding: SIGKILL the
+      // group now. Teardown (including group reaping) is still awaited below.
+      void termination.terminate("SIGKILL");
     };
     child.stdout.on("data", (chunk: string) => {
       if (overrun) return;
@@ -297,20 +358,50 @@ export class CodexConnector {
       if (pendingBytes > stdoutLimit) declareOverrun();
     });
     child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-stdoutLimit); });
+    // A cancelled child may close stdin before it consumes the prompt.
+    child.stdin.on("error", () => {});
     child.stdin.end(prompt, "utf8");
 
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code) => resolve(code ?? 1));
-    });
-    if (overrun) {
-      throw stdoutOverrunError(stdoutLimit);
-    }
-    if (pending) handleLine(pending);
+    let spawnError: Error | undefined;
+    const exitCode = await new Promise<number>((resolve) => {
+      let settled = false;
+      let deadline: NodeJS.Timeout | undefined;
+      const settle = (code: number): void => {
+        if (settled) return;
+        settled = true;
+        if (deadline) clearTimeout(deadline);
+        resolve(code);
+      };
+      child.once("close", (code) => settle(code ?? 1));
+      child.once("error", (error) => {
+        spawnError = error;
+        // A process that never started emits `error` and no `close`, so waiting
+        // on `close` alone would hang the run forever. A post-spawn `error`
+        // (EPIPE on a killed child) is still followed by `close`, so give that
+        // a short bound rather than settling immediately and losing the code.
+        if (!settled) deadline = setTimeout(() => settle(1), SPAWN_ERROR_CLOSE_MS);
+      });
+    }).finally(() => this.signal?.removeEventListener("abort", abort));
+    if (!overrun && pending) handleLine(pending);
+    // Child exit is not the whole lifetime: callbacks may still be writing a
+    // usage/event ledger. Drain them before every terminal outcome, including
+    // abort and stream overrun, so cancellation acknowledges complete teardown.
     await eventDelivery;
+    try {
+    await termination.finish();
+    this.signal?.throwIfAborted();
+    if (overrun) throw stdoutOverrunError(stdoutLimit);
+    if (spawnError) throw spawnError;
+    if (eventDeliveryError) throw eventDeliveryError;
 
     if (codexError) throw new Error(codexError);
+    // A nonzero exit is NOT on its own a failed run: codex exits nonzero on some
+    // sandbox denials after it has already emitted a complete agent_message.
+    // Only an exit that produced no agent text at all is an error.
     if (exitCode !== 0 && text.length === 0) throw new Error(stderr.trim() || `codex exited with code ${exitCode}`);
+    } catch (error) {
+      throw attachCodexUsage(error, inputTokens, outputTokens, cacheRead, costUsd, Date.now() - startedAt, this.model);
+    }
     const durationMs = Math.max(0, Date.now() - startedAt);
     return {
       text: text.join(""),
@@ -427,4 +518,52 @@ function stdoutOverrunError(limit: number): Error {
   return new Error(
     `codex stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES (current limit ${limit} bytes). Raise the env knob and retry.`,
   );
+}
+
+export function codexModelWithEffort(model: string, effort?: string): string {
+  const identity = modelIdentity(model);
+  if (effort !== undefined && identity.effort !== undefined && effort !== identity.effort) {
+    throw new Error("Codex effort conflicts with the effort suffix in model");
+  }
+  const selected = effort ?? identity.effort;
+  if (selected !== undefined) reasoningEffort(selected);
+  return selected === undefined ? identity.model : `${identity.model}/${selected}`;
+}
+
+/** Resolve only at execution time; the user's PATH binary takes precedence. */
+export function bundledCodexCommand(env: NodeJS.ProcessEnv = process.env): { command: string; prefix: string[] } {
+  try {
+    const sdkRequire = createRequire(import.meta.resolve("@openai/codex-sdk"));
+    const manifest = sdkRequire.resolve("@openai/codex/package.json");
+    const cli = join(dirname(manifest), "bin", "codex.js");
+    if (!existsSync(cli)) throw new Error("SDK CLI entrypoint is absent");
+    return { command: process.execPath, prefix: [cli] };
+  } catch (cause) {
+    const command = pathCodex(env);
+    if (command) return { command, prefix: [] };
+    throw new Error("Codex CLI unavailable: no executable codex on PATH and the SDK bundled CLI could not be resolved", { cause });
+  }
+}
+
+function pathCodex(env: NodeJS.ProcessEnv): string | undefined {
+  for (const directory of (env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = join(directory, process.platform === "win32" ? "codex.exe" : "codex");
+    try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* try next */ }
+  }
+  return undefined;
+}
+
+export function resolveCodexCommand(env: NodeJS.ProcessEnv = process.env) {
+  const command = pathCodex(env);
+  return command ? { command, prefix: [] } : bundledCodexCommand(env);
+}
+
+function attachCodexUsage(error: unknown, input: number, output: number, cacheRead: number, usd: number, ms: number, model: string): Error {
+  return Object.assign(error instanceof Error ? error : new Error(String(error)), {
+    telemetry: { durationMs: ms, ...modelIdentity(model) },
+    usage: { tokens: input + output, ms, ...(usd > 0 ? { usd } : {}) },
+    split: { input, output, ...(cacheRead > 0 ? { cacheRead } : {}) },
+    ...(usd > 0 ? { usdSource: "reported" } : {}),
+  });
 }
