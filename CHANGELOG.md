@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.6] — 2026-09-06
+
+### chore: `mcpName` for MCP registry listing
+
+The MCP registry refuses to list a package whose published artifact does not name the server it
+claims to be, so `package.json` now carries `"mcpName": "ai.smartmemory/stratum-mcp"`. No code
+change; this release exists to put that marker in a published tarball.
+
+The listing uses the DNS-authenticated `ai.smartmemory/*` namespace (a TXT proof on
+`smartmemory.ai`) rather than `io.github.smartmemory/*`, so the org's public directory presence
+does not depend on a GitHub identity. The pre-existing `io.github.smartmemory/stratum-mcp` entry
+still points at the retired PyPI package `stratum-mcp` 0.2.42 and is superseded by this one.
+
 ## [0.4.5] — 2026-09-06
 
 ### feat(guard): `guard list` — read-only resource discovery
