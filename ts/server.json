@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.smartmemory/stratum-mcp",
+  "title": "Stratum MCP",
+  "description": "Structured execution for coding agents: contracts, postconditions, gates, guardrails.",
+  "repository": {
+    "url": "https://github.com/smartmemory/stratum",
+    "source": "github"
+  },
+  "version": "0.4.6",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@smartmemory/stratum",
+      "version": "0.4.6",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
