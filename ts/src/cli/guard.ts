@@ -1,10 +1,12 @@
 /** CLI boundary for the guarded state-machine API. */
 
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
+import { join } from "node:path";
 import { AUTHORIZATION_NAMESPACES, authorizationPayload, type AuthorizationKind } from "../guard/authorization.js";
 import { inspectDescriptorFile } from "../guard/descriptors.js";
 import { GuardError, GuardNotFound, GuardTampered } from "../guard/errors.js";
 import { guardChecksum } from "../guard/fingerprint.js";
-import { loadRegistry } from "../guard/store.js";
+import { GUARDS_DIR, loadRegistry } from "../guard/store.js";
 import {
   _ledgerHead,
   guardHistory,
@@ -18,7 +20,7 @@ import {
   type GuardJudge,
 } from "../guard/transition.js";
 
-const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "apply-upgrade", "authorize", "descriptors", "history", "policy", "digest"]);
+const ACTIONS = new Set(["register", "transition", "override", "migrate", "upgrade", "apply-upgrade", "authorize", "descriptors", "history", "policy", "list", "digest"]);
 
 let testJudge: GuardJudge | undefined;
 
@@ -203,6 +205,61 @@ async function dispatch(action: string, payload: Record<string, unknown>): Promi
         graph_version: registry.graph_version,
         current_state: registry.current_state,
       };
+    }
+    case "list": {
+      assertOnlyKeys(payload, ["prefix"]);
+      const prefix = optional<unknown>(payload, "prefix", undefined);
+      if (prefix !== undefined && typeof prefix !== "string") {
+        throw new TypeError('guard argument "prefix" must be a string');
+      }
+
+      let entries: Dirent[];
+      try {
+        // Dirent.isDirectory() deliberately excludes symlinked guard-root entries.
+        entries = readdirSync(GUARDS_DIR, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return { status: "ok", resources: [], skipped: 0 };
+        }
+        throw error;
+      }
+
+      let skipped = 0;
+      const resources: Array<{
+        resource_id: string;
+        checksum: string;
+        current_state: string;
+        terminal: string[];
+        graph_version: number;
+      }> = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const raw: unknown = JSON.parse(readFileSync(join(GUARDS_DIR, entry.name, "registry.json"), "utf8"));
+          if (typeof raw !== "object" || raw === null || Array.isArray(raw) || typeof (raw as { resource_id?: unknown }).resource_id !== "string") {
+            throw new TypeError("registry.json must contain a string resource_id");
+          }
+          const resourceId = (raw as { resource_id: string }).resource_id;
+          if (prefix !== undefined && !resourceId.startsWith(prefix)) continue;
+
+          const registry = loadRegistry(resourceId);
+          if (registry === null) {
+            skipped += 1;
+            continue;
+          }
+          resources.push({
+            resource_id: registry.resource_id,
+            checksum: registry.checksum,
+            current_state: registry.current_state,
+            terminal: registry.terminal,
+            graph_version: registry.graph_version,
+          });
+        } catch {
+          skipped += 1;
+        }
+      }
+      resources.sort((left, right) => left.resource_id.localeCompare(right.resource_id));
+      return { status: "ok", resources, skipped };
     }
     case "digest": {
       // Grants nothing, reads no state: it only canonicalizes caller-provided envelope material.
