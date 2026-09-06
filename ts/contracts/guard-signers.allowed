@@ -34,4 +34,12 @@
 #     -n stratum-guard-descriptors /path/to/guard-upgrades.json
 #   (writes /path/to/guard-upgrades.json.sig; you will be prompted for the
 #    passphrase, which is the point)
+#
+# Note on ssh-agent "confirm mode" (ssh-add -c): on macOS the launchd ssh-agent
+# has no askpass program (its compiled-in path /usr/X11R6/bin/ssh-askpass does
+# not exist), so confirm mode fails closed with no dialog rather than asking.
+# The advice above stands for a different reason than "the dialog is weak": the
+# dialog never appears. Compose automates signing without an agent-reachable
+# key: a root-owned key and signer behind sudo + pam_tid, one Touch ID prompt
+# per signature (compose: docs/features/COMP-GUARD-ONE-TAP/design.md).
 ruze ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK2WUTP7piAwC0brxMNjj/6lAhcbGsiJPb/HKnEbB/UU ruze guard signer
