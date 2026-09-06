@@ -102,6 +102,21 @@ describe("guard store Python byte parity", () => {
 });
 
 describe("guard store paths and registry", () => {
+  it("reads GUARDS_DIR from STRATUM_GUARDS_DIR", async () => {
+    const originalEnv = process.env.STRATUM_GUARDS_DIR;
+    const tempRoot = await mkdtemp(join(tmpdir(), "stratum-guard-store-env-"));
+
+    try {
+      process.env.STRATUM_GUARDS_DIR = tempRoot;
+      const module = await import("../../src/guard/store.js?env-override-cachebust");
+      expect(module.GUARDS_DIR).toBe(tempRoot);
+    } finally {
+      if (originalEnv === undefined) delete process.env.STRATUM_GUARDS_DIR;
+      else process.env.STRATUM_GUARDS_DIR = originalEnv;
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("hashes UTF-8 resource ids and rejects unsafe ids", async () => {
     const root = await tempGuardsRoot();
     expect(resourceHash("project:δ")).toBe("5fea8fdb812a07ff567431a7cc56a280");

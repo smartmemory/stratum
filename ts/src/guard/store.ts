@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { canonicalJson } from "./canonical.js";
 import { LedgerCorrupt, ResourceIdMismatch } from "./errors.js";
 
@@ -54,8 +54,12 @@ export type LedgerEntryFields = {
 
 export type LedgerEntryCore = Omit<Required<LedgerEntryFields>, "entry_digest">;
 
-// Module-global and read at call time, matching Python's monkeypatchable GUARDS_DIR.
-export let GUARDS_DIR = join(homedir(), ".stratum", "guards");
+// Consumers' test suites set STRATUM_GUARDS_DIR to a temp dir so fixture
+// registrations never land in the real store (Compose leaked into
+// ~/.stratum/guards before this existed).
+export let GUARDS_DIR = process.env.STRATUM_GUARDS_DIR
+  ? resolve(process.env.STRATUM_GUARDS_DIR)
+  : join(homedir(), ".stratum", "guards");
 
 export function setGuardsDir(path: string): void {
   GUARDS_DIR = path;
