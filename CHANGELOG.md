@@ -35,7 +35,9 @@ one-tap approach (a root-owned key behind `sudo` + `pam_tid`).
 site, so an operator enrolled here has their public key committed. `npm run release` sets
 `STRATUM_TRUST_ROOT_EMPTY=1`, which strips every signer entry from the copy placed in
 `dist/`, keeping the published package's "empty by default, no default trust" guarantee
-while a plain `npm run build` preserves the local enrolment.
+while a plain `npm run build` preserves the local enrolment. The release script rebuilds
+afterwards, so the stripped dist never outlives the publish — a checkout left stripped
+would fail its own signature verification on the next one-tap.
 
 ## [0.4.4] — 2026-09-05
 

@@ -27,7 +27,7 @@
     "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "release": "STRATUM_TRUST_ROOT_EMPTY=1 npm publish"
+    "release": "STRATUM_TRUST_ROOT_EMPTY=1 npm publish && npm run build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.11",
