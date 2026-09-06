@@ -1,6 +1,6 @@
 {
   "name": "@smartmemory/stratum",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Stratum engine: your agent proposes the step, Stratum decides whether it actually finished. Typed, resumable, postcondition-enforced workflows for AI agents.",
   "license": "Apache-2.0",
   "type": "module",
@@ -26,7 +26,8 @@
     "build": "node scripts/prepare-dist.mjs --clean && tsc -p tsconfig.build.json && node scripts/prepare-dist.mjs",
     "prepack": "npm run build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release": "STRATUM_TRUST_ROOT_EMPTY=1 npm publish"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.11",

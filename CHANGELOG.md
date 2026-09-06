@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.4.5] — 2026-09-06
+
+### feat(guard): `guard list` — read-only resource discovery
+
+`guard list {prefix}` returns every registered resource under a prefix as
+`{status:'ok', resources:[{resource_id, checksum, current_state, terminal, graph_version}], skipped}`.
+A consumer that needs to know which resources are registered no longer has to walk the
+filesystem: Compose's guard status went from 76 s of per-feature-directory probing to 7 s,
+and the store listing finds registrations whose feature directory is gone — the probe never
+could.
+
+### fix(guard): honour `STRATUM_GUARDS_DIR`
+
+The guard store location is now overridable, so a consumer's test suite writes fixtures to a
+temp dir instead of the operator's real store. Compose's suite had leaked 32 fixture
+registrations into `~/.stratum/guards`.
+
+### fix(guard): trust-root header must be printable ASCII
+
+The `allowed_signers` parser refuses non-ASCII inside comments too, so the em dash shipped in
+the trust-root header made the file unloadable with any key. Signed authorization was
+unavailable in 0.4.4 for that reason alone.
+
+### docs(guard): ssh-agent confirm mode has no askpass on macOS
+
+`ssh-add -c` fails closed with no dialog on the launchd agent (its compiled-in askpass path
+does not exist), so confirm mode is not a viable prompt. Recorded alongside the Compose
+one-tap approach (a root-owned key behind `sudo` + `pam_tid`).
+
+### build: the published trust root is always empty
+
+`contracts/guard-signers.allowed` is local install state — a checkout is its own install
+site, so an operator enrolled here has their public key committed. `npm run release` sets
+`STRATUM_TRUST_ROOT_EMPTY=1`, which strips every signer entry from the copy placed in
+`dist/`, keeping the published package's "empty by default, no default trust" guarantee
+while a plain `npm run build` preserves the local enrolment.
+
 ## [0.4.4] — 2026-09-05
 
 ### feat(guard): STRAT-GUARD-EXPECTED-CHECKSUM — atomic policy-checksum precondition on transition

@@ -38,6 +38,22 @@ for (const relative of ["../dist/mcp/contracts.js", "../dist/guard/trust.js"]) {
 
 const distContracts = new URL("../dist/contracts/", import.meta.url);
 await mkdir(distContracts, { recursive: true });
-for (const name of ["events.json", "mcp-surface.json", "guard-signers.allowed"]) {
+for (const name of ["events.json", "mcp-surface.json"]) {
   await copyFile(new URL(`../contracts/${name}`, import.meta.url), new URL(name, distContracts));
+}
+
+// The trust root is the one contract whose committed contents are LOCAL state:
+// this checkout is its own install site, so an operator enrolled here has their
+// public key in `contracts/guard-signers.allowed` and needs it in dist for the
+// symlinked-consumer path to verify. A published package must not carry it -
+// "empty by default, there is no default trust" is the whole design, and a
+// tarball that trusts this machine's operator would trust them on every
+// installer's machine too. `npm run release` sets the flag; a plain build keeps
+// the local enrolment.
+{
+  const source = await readFile(new URL("../contracts/guard-signers.allowed", import.meta.url), "utf8");
+  const shipped = process.env.STRATUM_TRUST_ROOT_EMPTY === "1"
+    ? source.split("\n").filter((line) => line.trim() === "" || line.startsWith("#")).join("\n")
+    : source;
+  await writeFile(new URL("guard-signers.allowed", distContracts), shipped);
 }
