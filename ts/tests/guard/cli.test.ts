@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -96,5 +96,60 @@ describe.sequential("guard CLI boundary", () => {
     const unknown = await capture("", ["nope"]);
     expect(unknown).toMatchObject({ code: 1, stdout: "" });
     expect(unknown.stderr).toContain("Unknown guard action: nope");
+  });
+
+  it("lists an empty guard directory", async () => {
+    const result = await capture("{}", ["list"]);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toEqual({ status: "ok", resources: [], skipped: 0 });
+  });
+
+  it("lists registered resources sorted and filters by prefix", async () => {
+    await capture(JSON.stringify(policy("feature/zebra")), ["register"]);
+    await capture(JSON.stringify(policy("other/alpha")), ["register"]);
+
+    const filtered = await capture(JSON.stringify({ prefix: "feature/" }), ["list"]);
+    expect(JSON.parse(filtered.stdout)).toMatchObject({
+      status: "ok",
+      resources: [expect.objectContaining({ resource_id: "feature/zebra", current_state: "draft" })],
+      skipped: 0,
+    });
+
+    const all = await capture("{}", ["list"]);
+    expect(JSON.parse(all.stdout)).toMatchObject({
+      status: "ok",
+      resources: [
+        expect.objectContaining({ resource_id: "feature/zebra" }),
+        expect.objectContaining({ resource_id: "other/alpha" }),
+      ],
+      skipped: 0,
+    });
+  });
+
+  it("skips corrupt registries while returning valid resources", async () => {
+    await capture(JSON.stringify(policy("valid")), ["register"]);
+    await mkdir(join(GUARDS_DIR, "corrupt"));
+    await writeFile(join(GUARDS_DIR, "corrupt", "registry.json"), "{not json", "utf8");
+
+    const result = await capture("{}", ["list"]);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ok",
+      resources: [expect.objectContaining({ resource_id: "valid" })],
+      skipped: 1,
+    });
+  });
+
+  it("lists ledger-derived current state", async () => {
+    resetJudge = setGuardJudgeForTests(judge(true));
+    await capture(JSON.stringify(policy("stateful")), ["register"]);
+    await capture(JSON.stringify({ resource_id: "stateful", from_state: "draft", to_state: "shipped", artifacts: {} }), ["transition"]);
+
+    const result = await capture("{}", ["list"]);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ok",
+      resources: [expect.objectContaining({ resource_id: "stateful", current_state: "shipped" })],
+      skipped: 0,
+    });
   });
 });
