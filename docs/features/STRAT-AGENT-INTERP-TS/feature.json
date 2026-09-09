@@ -1,0 +1,20 @@
+{
+  "code": "STRAT-AGENT-INTERP-TS",
+  "description": "TS successor to STRAT-AGENT-INTERP, which shipped in the Python engine (4651933) and was retired at the TS cutover: the TS IR declares agent as a literal enum (ts/src/ir/schema.ts:41,65) and both step and fanout-stage dispatch emit it verbatim (engine.ts). Let a step's agent and a fanout stage's agent resolve from recorded flow state: `${input.executor}`, a router step's output, or per fanout item `${item.agent}`, validated to a known agent before dispatch. Stays in the data plane (recorded state only; replay identical). First consumer: cross-provider per-item routing in compose COMP-FABLE-ASTRA (one wave mixing claude and codex workers), which today needs two fanout stages. Not required for per-item TIER routing, which compose resolves itself from the recorded item (STRAT-LOOP-CARRY). Standalone Tickets M medium",
+  "status": "PLANNED",
+  "created": "2026-09-09",
+  "profile": {
+    "needs_prd": true,
+    "needs_architecture": true,
+    "needs_verification": true,
+    "needs_report": true
+  },
+  "updated": "2026-09-09",
+  "links": [
+    {
+      "kind": "related",
+      "to_code": "STRAT-LOOP-CARRY",
+      "note": "LOOP-CARRY records the item; this makes the agent field read it"
+    }
+  ]
+}

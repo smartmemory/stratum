@@ -35,7 +35,7 @@ carry:
   in the run record. This is a first-class deliverable with two compose consumers: D4
   (`files_owned` enforcement at merge) and D6 (per-item tier resolution, so Fable assigns
   `critical | standard | fast` per task). The stage `agent` literal is unchanged; provider
-  stays per stage. Cross-provider per-item routing is a separate future ticket (the
+  stays per stage. Cross-provider per-item routing is STRAT-AGENT-INTERP-TS (the
   STRAT-AGENT-INTERP row marked COMPLETE in compose's roadmap describes the retired Python
   engine; the TS IR has `agent: z.enum(["claude","codex"])` at `ts/src/ir/schema.ts:41,65`).
 - Codex sol/high round-2 review of COMP-FABLE-ASTRA confirmed this transaction preserves
