@@ -575,9 +575,9 @@ export function validateSpec(input: unknown): ValidationResult {
       return { ok: false, errors: [{ code: "CARRY_ROOT_ONLY", path: carryPath, message: "carry may only be declared on the entry flow" }] };
     }
 
-    // Exactly one full-value ${} reference of kind step|input (D2), typed by the same
-    // rules an ordinary reference obeys (R1-3).
-    const carryReference = (value: string, path: string): Reference | ValidationError => {
+    // Exactly one full-value ${} reference of kind step|input (D2). Shape only — typing is a
+    // separate step so the carry-specific rules can be reported before the generic ones (F1).
+    const carryShape = (value: string, path: string): Reference | ValidationError => {
       const extracted = extractReferences(value);
       if (!extracted || extracted.length !== 1 || !extracted[0]!.fullValue) {
         return { code: "CARRY_REF_INVALID", path, message: "carry value must be one full reference" };
@@ -586,6 +586,13 @@ export function validateSpec(input: unknown): ValidationResult {
       if (reference.kind !== "step" && reference.kind !== "input") {
         return { code: "CARRY_REF_INVALID", path, message: "carry value must reference a step output or a flow input" };
       }
+      return reference;
+    };
+
+    // Shape plus the same type rules an ordinary reference obeys (R1-3).
+    const carryReference = (value: string, path: string): Reference | ValidationError => {
+      const reference = carryShape(value, path);
+      if ("code" in reference) return reference;
       return referenceTypeError(reference, path) ?? reference;
     };
 
@@ -594,9 +601,10 @@ export function validateSpec(input: unknown): ValidationResult {
       if (name === "item" || name === "prev" || name === "input" || ids.has(name)) {
         return { ok: false, errors: [{ code: "CARRY_NAME_CONFLICT", path: `${carryPath}.${name}`, message: "carry name is reserved or collides with a step id" }] };
       }
-      const initial = carryReference(declaration.initial, `${carryPath}.${name}.initial`);
+      const initialPath = `${carryPath}.${name}.initial`;
+      const initial = carryShape(declaration.initial, initialPath);
       if ("code" in initial) return { ok: false, errors: [initial] };
-      if (initial.kind === "step") {
+      if (initial.kind === "step" && ids.has(initial.stepId)) {
         // The initial source must be UNCONDITIONAL. Three ways a step can fail to run:
         //  - a `when` can skip it (engine advanceScopeLoop);
         //  - a gate step never produces an output;
@@ -606,9 +614,13 @@ export function validateSpec(input: unknown): ValidationResult {
         //    would not save it. R2-2.
         const source = ids.get(initial.stepId)!.step;
         if (source.when !== undefined || source.gate !== undefined || routedTargets.has(initial.stepId)) {
-          return { ok: false, errors: [{ code: "CARRY_INITIAL_SOURCE_CONDITIONAL", path: `${carryPath}.${name}.initial`, message: "carry initial source must be an unconditional, non-gate, non-routed step" }] };
+          return { ok: false, errors: [{ code: "CARRY_INITIAL_SOURCE_CONDITIONAL", path: initialPath, message: "carry initial source must be an unconditional, non-gate, non-routed step" }] };
         }
       }
+      // Typing runs LAST: an unknown step, a missing out contract or a bad path are all
+      // reported here, after the carry-specific conditional-source rule has had its say.
+      const typeError = referenceTypeError(initial, initialPath);
+      if (typeError) return { ok: false, errors: [typeError] };
       carrySources.set(name, initial.kind === "step" ? initial.stepId : undefined);
     }
 
@@ -640,6 +652,18 @@ export function validateSpec(input: unknown): ValidationResult {
         const target = gateStep.gate.on_revise;
         if (target === null) {
           return { ok: false, errors: [{ code: "CARRY_REVISE_TARGET_NULL", path: gatePath, message: "a gate that rewrites carry must have a revise target" }] };
+        }
+        // The target must be a real, non-self step BEFORE the closure is computed: running
+        // resetClosure over an invalid target yields a closure that misses every consumer,
+        // and CARRY_REVISE_MISSES_CONSUMER would mask the routing defect (F2). Same codes
+        // and path the later reviseGates pass uses.
+        const gateReviseIndex = ids.get(gateId)!.index;
+        const gateRevisePath = `flows.${flowName}.steps[${gateReviseIndex}].gate.on_revise`;
+        if (!ids.has(target)) {
+          return { ok: false, errors: [{ code: "ROUTING_UNKNOWN_TARGET", path: gateRevisePath, message: "unknown revise target" }] };
+        }
+        if (target === gateId) {
+          return { ok: false, errors: [{ code: "ROUTING_SELF_TARGET", path: gateRevisePath, message: "routing edge targets itself" }] };
         }
         const closure = resetClosure(flow, target);
         for (const consumer of consumers) {
