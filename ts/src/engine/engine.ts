@@ -17,7 +17,7 @@ import type { EnforcementEvent, PolicyBundle, RuleVerdict } from "../policy/type
 import { BUDGET_KEYS, BudgetLedger, type Budget, validConnectorTelemetry, validUsage } from "./ledger.js";
 import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
 import { buildReceipt, findReceipt, ReceiptValidationError, spineSpent, type ReceiptInput } from "./receipts.js";
-import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, StateStore, type StepState } from "./state.js";
+import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type CarryEntry, type CarryProvenance, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, StateStore, type StepState } from "./state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -117,11 +117,22 @@ interface FanoutEnsureContext {
 interface ExecutionScope {
   input: unknown;
   steps: Record<string, StepState>;
+  /** Root-flow loop-carried values (D5). Populated by rootScope only; childScope
+   *  deliberately leaves it undefined so a subflow can never read carry even if a
+   *  future validation change let it try. */
+  carry?: Record<string, CarryEntry> | undefined;
   flow: Flow;
   flowName: string;
   prefix?: string;
   parent?: { step: Step; state: StepState };
 }
+
+/** Result of one `materialiseCarry` pass. It never throws: `failed` is turned into a
+ *  `failScope` transition by the caller, so a partial write can never be persisted (R2-5). */
+type CarryMaterialisation =
+  | { kind: "unchanged" }
+  | { kind: "written" }
+  | { kind: "failed"; reason: string };
 
 interface LocatedStep {
   scope: ExecutionScope;
@@ -903,6 +914,32 @@ export class StratumEngine {
     return response;
   }
 
+  /** Every on_revise write this gate declares, resolved against the UN-RESET scope.
+   *  All expressions are resolved before any of them is applied, so a missing source
+   *  output fails the decision with no partial mutation. */
+  private resolveCarryOnRevise(scope: ExecutionScope, gateId: string, gateToken: string): Array<{ name: string; value: unknown; provenance: CarryProvenance }> {
+    const declarations = scope.flow.carry;
+    if (declarations === undefined) return [];
+    const writes: Array<{ name: string; value: unknown; provenance: CarryProvenance }> = [];
+    for (const [name, declaration] of Object.entries(declarations)) {
+      // Object.hasOwn on the on_revise map too: a gate step legitimately named
+      // `constructor` must not pick up an inherited member as a declaration (R2-3).
+      const onRevise = declaration.on_revise;
+      if (onRevise === undefined || !Object.hasOwn(onRevise, gateId)) continue;   // gates that declare nothing leave the entry untouched
+      const expression = onRevise[gateId]!;
+      const value = this.resolve(this.carryReference(expression), scope);
+      if (value === undefined) {
+        throw new Error(`carry_revise_unresolved: carry ${JSON.stringify(name)} at gate ${JSON.stringify(gateId)} resolved to no value`);
+      }
+      // sourceStep/sourceEpoch name the INITIAL declaration's source (D6), so the write
+      // survives every later advance until that source is itself reset (D7).
+      const initial = this.carryReference(declaration.initial);
+      const source = initial.kind === "step" ? { sourceStep: initial.stepId, sourceEpoch: scope.steps[initial.stepId]?.epoch ?? 0 } : {};
+      writes.push({ name, value, provenance: { kind: "revise", ...source, gate: gateId, gateToken, at: now() } });
+    }
+    return writes;
+  }
+
   private async gateResolveLocked(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken?: string): Promise<EngineResponse> {
     // Runtime guard for JS callers: an unknown decision must be rejected, not
     // fall through the ternary chain onto the kill route.
@@ -924,8 +961,37 @@ export class StratumEngine {
     if (state.gateToken !== gateToken) {
       throw new Error("gate decision is stale: issued for a superseded gate round");
     }
-    delete state.gateToken;
     const target = decision === "approve" ? step.gate.on_approve : decision === "revise" ? step.gate.on_revise : step.gate.on_kill;
+
+    // ---- STRAT-LOOP-CARRY R1-6: MUTATION-FREE PREFLIGHT ---------------------
+    // Everything that can throw runs here, while the gate token is still valid and no
+    // event has been appended. loadRun returns the LIVE run object while a fanout is
+    // active, so a throw after this point would strand the gate: the token would be
+    // consumed and the decision unrepeatable.
+    let carryWrites: Array<{ name: string; value: unknown; provenance: CarryProvenance }> = [];
+    let reviseTotal = 0;
+    let reviseGateRounds = 0;
+    if (decision === "revise") {
+      reviseGateRounds = state.iterations ?? 0;
+      reviseTotal = (scope.parent ? scope.parent.state.sub?.rounds ?? 0 : run.rounds ?? 0) + 1;
+      const flowLimit = scope.flow.max_rounds;
+      const gateLimit = step.gate.max_rounds;
+      if (target === null || flowLimit === undefined || reviseTotal > flowLimit || (gateLimit !== undefined && reviseGateRounds + 1 > gateLimit)) {
+        // Rounds exhaustion terminalises the run deliberately; it is the one preflight
+        // outcome that mutates, and nothing runs after it.
+        delete state.gateToken;
+        this.event(run, "gate_resolved", stepId, { decision, target });
+        return scope.parent
+          ? this.failScope(run, validated.value, validated.contracts, scope, "gate revision rounds exhausted")
+          : this.terminalFailure(run, { attempt: 0, reason: "gate revision rounds exhausted" });
+      }
+      // Resolves every declared expression against the UN-RESET scope. Throws
+      // `carry_revise_unresolved` before any mutation if one has no value.
+      carryWrites = this.resolveCarryOnRevise(scope, step.id, gateToken);
+    }
+    // ---- END PREFLIGHT; EVERYTHING BELOW MUTATES ----------------------------
+
+    delete state.gateToken;
     this.event(run, "gate_resolved", stepId, { decision, target });
     if (decision === "kill") {
       state.status = "succeeded";
@@ -936,20 +1002,19 @@ export class StratumEngine {
           : this.terminalFailure(run, { attempt: 0, reason });
       }
     } else if (decision === "revise") {
-      const total = (scope.parent ? scope.parent.state.sub?.rounds ?? 0 : run.rounds ?? 0) + 1;
-      const gateRounds = state.iterations ?? 0;
-      const flowLimit = scope.flow.max_rounds;
-      const gateLimit = step.gate.max_rounds;
-      if (target === null || flowLimit === undefined || total > flowLimit || (gateLimit !== undefined && gateRounds + 1 > gateLimit)) {
-        return scope.parent
-          ? this.failScope(run, validated.value, validated.contracts, scope, "gate revision rounds exhausted")
-          : this.terminalFailure(run, { attempt: 0, reason: "gate revision rounds exhausted" });
+      if (scope.parent) scope.parent.state.sub!.rounds = reviseTotal;
+      else run.rounds = reviseTotal;
+      if (carryWrites.length > 0) {
+        const carryStore = this.carryScope(run, validated.value, scope).carry!;
+        for (const write of carryWrites) {
+          const provenance: CarryProvenance = { ...write.provenance, round: reviseTotal };
+          carryStore[write.name] = { value: write.value, provenance };
+          this.event(run, "carry_updated", step.id, { name: write.name, reason: "revise", provenance });
+        }
       }
-      if (scope.parent) scope.parent.state.sub!.rounds = total;
-      else run.rounds = total;
-      this.resetFrom(run, scope, target);
+      this.resetFrom(run, scope, target!);
       // The target's descendants include this gate; retain its local revision counter.
-      scope.steps[step.id]!.iterations = gateRounds + 1;
+      scope.steps[step.id]!.iterations = reviseGateRounds + 1;
       await this.persist(run);
       return this.advance(run, validated.value, validated.contracts, scope);
     } else {
@@ -1092,12 +1157,65 @@ export class StratumEngine {
     }
   }
 
+  /** Idempotent `initial` materialisation. Re-writes only when the source step's epoch
+   *  differs from the recorded one, so:
+   *   - a source that re-runs (which can only happen after a reset bumped its epoch)
+   *     replaces its now-stale derived value;
+   *   - a revise write, stamped with the initial source's CURRENT epoch, survives every
+   *     later advance until that source is itself reset.
+   *  `scope` MUST come from `carryScope` so `scope.carry === run.carry` (R2-1). */
+  private materialiseCarry(run: PersistedRun, scope: ExecutionScope): CarryMaterialisation {
+    const declarations = scope.flow.carry;
+    if (declarations === undefined) return { kind: "unchanged" };
+    const store = scope.carry;
+    if (store === undefined) return { kind: "unchanged" };
+    const staged: Array<{ name: string; value: unknown; provenance: CarryProvenance }> = [];
+    for (const [name, declaration] of Object.entries(declarations)) {
+      const reference = this.carryReference(declaration.initial);
+      // Object.hasOwn: a declared variable named `toString` must not read as materialised
+      // just because Object.prototype has one (R2-3).
+      const existing = Object.hasOwn(store, name) ? store[name] : undefined;
+      let provenance: CarryProvenance;
+      if (reference.kind === "step") {
+        const source = scope.steps[reference.stepId];
+        if (source?.status !== "succeeded") continue;
+        const sourceEpoch = source.epoch ?? 0;
+        if (existing !== undefined && existing.provenance.sourceEpoch === sourceEpoch) continue;
+        provenance = { kind: "initial", sourceStep: reference.stepId, sourceEpoch, at: now() };
+      } else {
+        if (existing !== undefined) continue;                 // input-sourced: write once
+        provenance = { kind: "initial", at: now() };
+      }
+      const value = this.resolve(reference, scope);
+      // NEVER create an entry from an absent value (R1-3): a materialised-but-undefined
+      // carry would fail later at a confusing site, or hand `undefined` to a fanout.
+      if (value === undefined) {
+        return { kind: "failed", reason: `carry_initial_unresolved: carry ${JSON.stringify(name)} resolved to no value from ${declaration.initial}` };
+      }
+      staged.push({ name, value, provenance });
+    }
+    if (staged.length === 0) return { kind: "unchanged" };
+    for (const write of staged) {
+      store[write.name] = { value: write.value, provenance: write.provenance };
+      this.event(run, "carry_updated", write.provenance.sourceStep, { name: write.name, reason: "initial", provenance: write.provenance });
+    }
+    return { kind: "written" };
+  }
+
   private async advance(
     run: PersistedRun,
     spec: Specification,
     contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
     scope: ExecutionScope = this.rootScope(run, spec),
   ): Promise<EngineResponse> {
+    // STRAT-LOOP-CARRY D7: the re-entry after every dispatching settle, and BEFORE the
+    // scope loop, so a ${carry} fanout sees the value in the same pass it activates.
+    // carryScope patches THIS scope object when it is the root one (R2-1) — building a
+    // detached root scope here would leave the live scope's carry undefined.
+    // `advance` does not persist on every path, so a write persists itself.
+    const materialised = this.materialiseCarry(run, this.carryScope(run, spec, scope));
+    if (materialised.kind === "failed") return this.failScope(run, spec, contracts, scope, materialised.reason);
+    if (materialised.kind === "written") await this.persist(run);
     await this.advanceScopeLoop(run, spec, contracts, scope);
     if (run.status !== "running") return this.response(run);
     if (run.cancelRequested === true) return { status: "running", runId: run.id, ledger: this.ledgerInfo(run) };
@@ -1214,6 +1332,9 @@ export class StratumEngine {
           state.output = output;
           state.attempts.push({ attempt: 1, at: now(), result: output });
           this.event(run, "result", this.scopedId(scope, step.id), { attempt: 1, result: output });
+          // R1-2: a later step in THIS pass may read the value. R2-5: never a partial write.
+          const setCarry = this.materialiseCarry(run, this.carryScope(run, spec, scope));
+          if (setCarry.kind === "failed") { await this.failScope(run, spec, contracts, scope, setCarry.reason); break; }
           changed = true;
           await this.persist(run);
           continue;
@@ -1348,6 +1469,8 @@ export class StratumEngine {
           state.output = parsed.data;
           state.attempts.push({ attempt, at: now(), result: parsed.data });
           this.event(run, "result", this.scopedId(scope, step.id), { attempt, result: parsed.data });
+          const evalCarry = this.materialiseCarry(run, this.carryScope(run, spec, scope));
+          if (evalCarry.kind === "failed") { await this.failScope(run, spec, contracts, scope, evalCarry.reason); break; }
           await this.persist(run);
           changed = true;
           continue;
@@ -2447,7 +2570,19 @@ export class StratumEngine {
   }
 
   private rootScope(run: PersistedRun, spec: Specification): ExecutionScope {
-    return { input: run.input, steps: run.steps, flow: this.flowFor(run, spec), flowName: run.flowName };
+    return { input: run.input, steps: run.steps, carry: run.carry, flow: this.flowFor(run, spec), flowName: run.flowName };
+  }
+
+  /** The root scope carry is written through, sharing ONE object with the run so a write
+   *  made during this pass is visible to every later read through the LIVE scope (R2-1).
+   *  Null-prototype so an inherited name like `toString` can never masquerade as a
+   *  declared variable (R2-3); a reloaded run's plain object is guarded by Object.hasOwn. */
+  private carryScope(run: PersistedRun, spec: Specification, scope: ExecutionScope): ExecutionScope {
+    const root = scope.parent === undefined ? scope : this.rootScope(run, spec);
+    if (root.flow.carry === undefined) return root;      // never persist an empty carry map
+    run.carry ??= Object.create(null) as Record<string, CarryEntry>;
+    root.carry = run.carry;
+    return root;
   }
 
   private childScope(spec: Specification, parentStep: Step, parentState: StepState): ExecutionScope {
@@ -2638,9 +2773,30 @@ export class StratumEngine {
     return this.advance(run, spec, contracts, root);
   }
 
+  /** The single reference in a carry `initial` / `on_revise` value. Validation has
+   *  already proved the shape (CARRY_REF_INVALID), so a failure here is a bug. */
+  private carryReference(value: string): Reference {
+    const extracted = extractReferences(value);
+    const reference = extracted?.length === 1 && extracted[0]!.fullValue ? extracted[0]!.reference : undefined;
+    if (!reference) throw new Error("invalid carry reference after validation");
+    return reference;
+  }
+
   private resolve(reference: Reference, scope: ExecutionScope): unknown {
     if (reference.kind === "input") return access(scope.input, reference.path);
     if (reference.kind === "step") return access(scope.steps[reference.stepId]?.output, reference.path);
+    if (reference.kind === "carry") {
+      // Object.hasOwn, never `?.[name]`: a persisted run reloads as a PLAIN object
+      // (state.ts JSON.parse), so a variable legitimately named `toString` or
+      // `constructor` would otherwise resolve to an inherited function (R2-3).
+      const store = scope.carry;
+      if (store === undefined || !Object.hasOwn(store, reference.name)) {
+        // A named, actionable failure replaces the generic "must resolve to an array"
+        // that `over` would otherwise produce two frames up (D1).
+        throw new Error(`carry variable ${JSON.stringify(reference.name)} is not materialised`);
+      }
+      return access(store[reference.name]!.value, reference.path);
+    }
     throw new Error("fanout references are outside P1 engine scope");
   }
 
