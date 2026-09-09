@@ -339,7 +339,10 @@ export async function acquireRunLock(root: string, runId: string, options: RunLo
   }
   const path = lockPath(root, runId);
   const nowMs = options.now ?? Date.now;
-  const deadline = nowMs() + (options.timeoutMs ?? runLockTimeoutMs());
+  // A CALLER-supplied budget gets the same validation as the env one (F4). `nowMs() >= NaN` is
+  // false forever, so a mistyped timeout did not shorten the wait, it removed the deadline: the
+  // acquire loop retried against a lock somebody else holds and never raised RUN_LOCK_TIMEOUT.
+  const deadline = nowMs() + requireDurationMs(options.timeoutMs ?? runLockTimeoutMs(), "timeoutMs");
   await mkdir(root, { recursive: true });
   for (;;) {
     await sweepOrphanTemporaries(root, runId, options);

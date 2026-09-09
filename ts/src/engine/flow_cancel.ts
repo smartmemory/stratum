@@ -85,6 +85,15 @@ function timeoutBudgetMs(options: CancelFlowOptions): number {
   return value;
 }
 
+/** F2. `graceMs` is validated HERE rather than deep in the registry, for the same reason as the
+ *  budget: the registry only sees it after the run has been settled. */
+function requireGraceMs(options: CancelFlowOptions): void {
+  if (options.graceMs === undefined) return;
+  if (!Number.isFinite(options.graceMs) || options.graceMs < 0) {
+    throw new Error("graceMs must be a nonnegative finite number");
+  }
+}
+
 /** The phases of a foreground cancel, shared by the MCP tool and the CLI. Both surfaces call
  *  this and NOTHING else (R1-4) — a phase implemented at one call site is a phase the other
  *  surface silently lacks.
@@ -119,6 +128,12 @@ export async function cancelFlow(
   // no envelope for it (R3-5). Every other error (ENOENT for an unknown flow above all)
   // propagates untouched: the CLI maps it, and inventing a cancellation code for it would
   // report a teardown verdict about a run we never found.
+  // EVERY budget is validated BEFORE the engine is touched (F2). Validating them after the
+  // settle meant a mistyped timeout produced the worst possible outcome: the run was already
+  // durably cancelled, no agent had been signalled, and the caller got an argument error that
+  // reads as "nothing happened". The clock only starts once the run is settled, further down.
+  const budgetMs = timeoutBudgetMs(options);
+  requireGraceMs(options);
   let settled: FlowCancelResult;
   try {
     settled = await engine.flowCancel(runId, options.reason);
@@ -143,7 +158,7 @@ export async function cancelFlow(
   // never eats into it — and shared by every phase. Three independent per-phase timeouts is how
   // a caller ends up waiting 3x the budget it configured, and how a slow signal pass silently
   // leaves no time to reap.
-  const deadline = Date.now() + timeoutBudgetMs(options);
+  const deadline = Date.now() + budgetMs;
   const remaining = (): number => Math.max(0, deadline - Date.now());
   const registryOptions: SweepOptions = {
     ...(options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {}),

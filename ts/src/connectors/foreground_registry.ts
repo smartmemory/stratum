@@ -318,7 +318,10 @@ async function signalGroup(
   // Verify the start-time identity a second time immediately before the only signal.
   const second = await identityVerdict(probes, pid, expected, deadline);
   if (second === "deadline") return "deadline";
-  if (second === "mismatch") return "unreachable";
+  // Re-probe, exactly as the FIRST mismatch branch does (F6). An exit between the group-leader
+  // probe and here leaves no readable start time, which reads as a mismatch — so a teardown that
+  // demonstrably completed was reported `unreachable` and could never be acknowledged.
+  if (second === "mismatch") return probes.groupState(pid) === "gone" ? "gone" : "unreachable";
   // The LAST word before the signal is the clock (F6). A SIGTERM sent after the caller's
   // deadline has no grace window left to run in and no reap pass left to confirm it: it is a
   // signal delivered to a child nobody is waiting on.
@@ -360,7 +363,9 @@ async function escalateGroup(
   // the signal reintroduces exactly the window it was added to close.
   const second = await identityVerdict(probes, pid, expected, deadline);
   if (second === "deadline") return "deadline";
-  if (second === "mismatch") return "unreachable";
+  // Same re-probe as the first branch (F6): the grace window is the longest pause in the whole
+  // teardown, so the leader exiting DURING this second check is the expected case, not an edge.
+  if (second === "mismatch") return probes.groupState(pid) === "gone" ? "gone" : "unreachable";
   if (Date.now() >= deadline) return "deadline";
   try { probes.kill(pid, "SIGKILL"); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unreachable"; }
@@ -378,7 +383,7 @@ export async function killAndReapGroup(
   options: { startTime?: string; graceMs?: number; timeoutMs?: number; deadlineAt?: number; probes?: Partial<ProcessProbes> } & RegistryRootOptions = {},
 ): Promise<"reaped" | "gone" | "unreachable" | "timeout"> {
   const probes = resolveProbes(options);
-  const deadline = options.deadlineAt ?? Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs");
+  const deadline = resolveDeadline(options);
   const grace = requireDuration(options.graceMs ?? cancellationGraceMs(), "graceMs");
   // No recorded identity, a mismatched one, a non-leader or a refused signal: there is no
   // group we can honestly claim to have killed (invariant 15b). A group already gone is a
@@ -421,6 +426,21 @@ export function cancelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
 function requireDuration(value: number, name: string): number {
   if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a nonnegative finite number`);
   return value;
+}
+
+/** THE one place a teardown deadline is resolved (F3). `deadlineAt` used to bypass
+ *  `requireDuration` entirely — it is an absolute instant, not a duration, so no validator ever
+ *  saw it — and a NaN one is exactly as fatal: every `Date.now() >= deadline` test against it is
+ *  false, so the reap loop that trusts it runs forever. Every entry point resolves through here,
+ *  so neither shape can reach a loop unvalidated. */
+function resolveDeadline(options: { timeoutMs?: number; deadlineAt?: number }): number {
+  if (options.deadlineAt === undefined) {
+    return Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs");
+  }
+  if (!Number.isFinite(options.deadlineAt)) {
+    throw new Error("deadlineAt must be a finite epoch-millisecond timestamp");
+  }
+  return options.deadlineAt;
 }
 
 // ── The sweep ─────────────────────────────────────────────────────────────────
@@ -488,7 +508,7 @@ export async function signalFlowAgents(
   // after the caller has given up waiting for anything to answer them.
   await sweepPass(resolveRoot(options), flowRunId, accumulated, {
     escalate: false,
-    deadline: options.deadlineAt ?? Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs"),
+    deadline: resolveDeadline(options),
     graceMs: requireDuration(options.graceMs ?? cancellationGraceMs(), "graceMs"),
     probes: resolveProbes(options),
   });
@@ -584,7 +604,7 @@ export async function reapFlowAgents(
   options: SweepOptions = {},
 ): Promise<AgentCancelSummary> {
   const root = resolveRoot(options);
-  const deadline = options.deadlineAt ?? Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs");
+  const deadline = resolveDeadline(options);
   const graceMs = requireDuration(options.graceMs ?? cancellationGraceMs(), "graceMs");
   const identity = options.identity ?? processIdentity;
   const probes = resolveProbes(options);
@@ -614,7 +634,11 @@ export async function cancelFlowAgents(
   flowRunId: string,
   options: SweepOptions = {},
 ): Promise<AgentCancelSummary> {
-  return reapFlowAgents(flowRunId, await signalFlowAgents(flowRunId, options), options);
+  // ONE deadline, resolved here and handed to BOTH phases (F7). Passing `options` through gave
+  // each phase its own `timeoutMs` budget, so a slow signal pass did not eat into the reap's
+  // time — it doubled the total, and a caller that configured 15s could wait 30.
+  const shared: SweepOptions = { ...options, deadlineAt: resolveDeadline(options) };
+  return reapFlowAgents(flowRunId, await signalFlowAgents(flowRunId, shared), shared);
 }
 
 /** The sweep stamps `settled` itself ONLY when the owning server is PROVABLY dead and every
