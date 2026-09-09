@@ -14,7 +14,7 @@ The founding intent behind this machinery is recorded in [docs/VISION.md](docs/V
 
 One shipped component:
 
-- **`ts/`** — the TypeScript engine (`@smartmemory/stratum`): IR validation (`version: 1` specs), flow execution with ensure postconditions, MCP server for Claude Code, `query`/`gate`/`guard` CLI, background flows and background agent runs. Runs from this checkout; not published to a registry.
+- **`ts/`** — the TypeScript engine (`@smartmemory/stratum`): IR validation (`version: 1` specs), flow execution with ensure postconditions, MCP server for Claude Code, `query`/`gate`/`guard` CLI, background flows and background agent runs. Published to npm as `@smartmemory/stratum` (bins: `stratum`, `stratum-mcp`) and listed in the MCP registry as `ai.smartmemory/stratum-mcp`.
 
 > **Engine status (2026-07-18, STRAT-PY-RETIRE):** the TS engine is the ONLY engine.
 > The Python library (`stratum-py`) and Python MCP server (`stratum-mcp`) are retired.
@@ -58,7 +58,13 @@ One shipped component:
 
 ## Installation
 
-The engine runs directly from a checkout — there is nothing to install from a registry.
+Install from npm (Node >= 22):
+
+```bash
+npm install -g @smartmemory/stratum    # provides `stratum` (CLI) and `stratum-mcp` (MCP server)
+```
+
+Or run from a checkout for development:
 
 ```bash
 git clone https://github.com/smartmemory/stratum
@@ -70,7 +76,20 @@ bootstrap gates `--experimental-transform-types` automatically).
 
 ### MCP Server (for Claude Code)
 
-Register the MCP bin in your project's `.mcp.json`:
+Register the server in your project's `.mcp.json`. From the npm package:
+
+```json
+{
+  "mcpServers": {
+    "stratum": {
+      "command": "npx",
+      "args": ["-y", "-p", "@smartmemory/stratum", "stratum-mcp"]
+    }
+  }
+}
+```
+
+From a checkout:
 
 ```json
 {
@@ -88,10 +107,11 @@ Restart Claude Code to activate. Optionally append the [Stratum execution model 
 ### CLI
 
 ```bash
-node ts/src/cli/bin.mjs help    # validate | migrate | query | gate | guard | watch
+stratum help                    # validate | migrate | query | gate | guard | watch  (npm install)
+node ts/src/cli/bin.mjs help    # same, from a checkout
 ```
 
-A thin wrapper script (e.g. `~/bin/stratum-ts`) pointing at `ts/src/cli/bin.mjs` is convenient; the bare name `stratum` is not used to avoid PATH collisions.
+From a checkout, a thin wrapper script (e.g. `~/bin/stratum-ts`) pointing at `ts/src/cli/bin.mjs` avoids a PATH collision with the installed `stratum` bin.
 
 ---
 
