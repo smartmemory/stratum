@@ -43,6 +43,7 @@ function run(): PersistedRun {
     cancelRequested: false,
     bgDriven: false,
     parallel: { stepId: "build", tasks: [] },
+    carry: { wave: { value: ["a"], provenance: { kind: "initial", sourceStep: "build", sourceEpoch: 0, at: "before" } } },
   };
 }
 
@@ -50,7 +51,7 @@ describe("checkpoint state", () => {
   it("classifies every PersistedRun field as snapshotted or excluded with a reason", () => {
     const classified = [...CHECKPOINT_FIELDS, ...Object.keys(CHECKPOINT_EXCLUDED)].sort();
     expect(classified).toEqual([
-      "bgDriven", "bundle_id", "cancelRequested", "checkpoints", "events", "failure", "flowName", "flowSpent", "generationCounter", "id", "input",
+      "bgDriven", "bundle_id", "cancelRequested", "carry", "checkpoints", "events", "failure", "flowName", "flowSpent", "generationCounter", "id", "input",
       "output", "parallel", "policy_rules", "policy_rules_version", "policy_verdicts", "receiptCounter", "receipts", "revisionDigest", "rounds", "spec", "status", "steps", "workspaceRoot",
     ]);
     expect(Object.values(CHECKPOINT_EXCLUDED).every((reason) => reason.length > 0)).toBe(true);
@@ -72,12 +73,15 @@ describe("checkpoint state", () => {
     state.events.push({ at: "after", type: "result" });
     state.status = "failed";
     state.spec = { immutable: "changed" };
+    state.carry!.wave!.value = ["a", "b"];
     expect((snapshot.output as { nested: { value: string } }).nested.value).toBe("before");
+    expect((snapshot.carry as NonNullable<PersistedRun["carry"]>).wave!.value).toEqual(["a"]);
 
     expect(revertCheckpoint(state, "before")).toBe(true);
     expect(state).toMatchObject({
       status: "running", output: { nested: { value: "before" } }, flowSpent: { tokens: 2 }, rounds: 1,
       steps: { build: { output: { nested: { value: "before" } } } }, events: [{ at: "before" }],
+      carry: { wave: { value: ["a"], provenance: { kind: "initial", sourceStep: "build", sourceEpoch: 0, at: "before" } } },
     });
     expect(state.spec).not.toBe(originalSpec);
     expect(state.spec).toEqual({ immutable: "changed" });

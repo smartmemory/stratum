@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **STRAT-LOOP-CARRY S02 (state)**: `CarryEntry`/`CarryProvenance`, `PersistedRun.carry` as a
+  checkpoint field, `carry_updated` event kind (events contract 2→3).
 - **STRAT-LOOP-CARRY S01 (IR)**: `carry:` flow block, `${name}` carry reference kind, and the
   validation passes (13 new error codes incl. `FANOUT_OVER_SINGLE_REF`); collectors tagged by
   field language and mirrored (`referencesInStep` / `stringLeaves`), `resetClosure` exported.

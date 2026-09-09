@@ -1,5 +1,5 @@
 {
-  "events": 2,
+  "events": 3,
   "shapeLanguage": "Each kind maps to the full event payload shape minus the implicit {at: string, type: string}. Leaf types: number|string|boolean|object|array|null|any, unions with '|', optional keys end in '?', nested objects are declared inline. Undeclared keys are contract violations.",
   "kinds": {
     "planned": {},
@@ -92,6 +92,22 @@
         "label": "string",
         "receiptsAtRevert": "number",
         "stepsRestored": { "$array": "string" }
+      }
+    },
+    "carry_updated": {
+      "stepId?": "string",
+      "detail": {
+        "name": "string",
+        "reason": "string",
+        "provenance": {
+          "kind": "string",
+          "sourceStep?": "string",
+          "sourceEpoch?": "number",
+          "gate?": "string",
+          "gateToken?": "string",
+          "round?": "number",
+          "at": "string"
+        }
       }
     }
   }
