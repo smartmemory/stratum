@@ -20,15 +20,41 @@ export interface RegistryRootOptions { registryRoot?: string }
 
 export type ProcessIdentity = (pid: number, startTime: string) => Promise<"alive" | "dead" | "unknown">;
 
+/** The four OS probes every signal decision is built on, as one injectable bundle.
+ *
+ *  A test cannot otherwise reach the case F6 is about — an identity that is valid when SIGTERM
+ *  is sent and stale by the time SIGKILL would be — because the real probes answer about real
+ *  processes and cannot be made to change their answer between two points in one call. */
+export interface ProcessProbes {
+  startTime: (pid: number) => Promise<string | undefined>;
+  groupId: (pid: number) => Promise<number | undefined>;
+  groupState: (pid: number) => "alive" | "gone" | "unknown";
+  kill: (pid: number, signal: NodeJS.Signals) => void;
+}
+
+const REAL_PROBES: ProcessProbes = {
+  startTime: procStartTime,
+  groupId: processGroupId,
+  groupState: (pid) => realGroupState(pid),
+  kill: (pid, signal) => { process.kill(-pid, signal); },
+};
+
+function resolveProbes(options: { probes?: Partial<ProcessProbes> }): ProcessProbes {
+  return options.probes === undefined ? REAL_PROBES : { ...REAL_PROBES, ...options.probes };
+}
+
 export interface SweepOptions extends RegistryRootOptions {
   timeoutMs?: number;
   graceMs?: number;
   /** One absolute deadline for the whole teardown, overriding `timeoutMs` (S03 computes it
-   *  after settlement so the phases share one budget). */
+   *  after settlement so the phases share one budget). It bounds the SIGNAL pass too: a reap
+   *  pass that overruns must not be followed by a signal nobody is left to wait on. */
   deadlineAt?: number;
   /** Identity oracle seam, mirroring `RunLockOptions.identity`. Production uses the tri-state
    *  probe; a test injects a deterministic answer. */
   identity?: ProcessIdentity;
+  /** Signal-path probe seam (see ProcessProbes). */
+  probes?: Partial<ProcessProbes>;
 }
 
 function resolveRoot(options: RegistryRootOptions): string {
@@ -81,8 +107,19 @@ export interface ForegroundRunMeta {
 export interface AgentCancelSummary {
   /** Groups that received SIGTERM. */
   signalled: number;
-  /** Groups confirmed gone (ESRCH on the group probe) before the deadline. */
+  /** Groups confirmed gone (ESRCH on the group probe) before the deadline, AFTER we signalled
+   *  them. */
   reaped: number;
+  /** Groups that were ALREADY gone when the sweep first probed them — ESRCH on the group,
+   *  before any signal of ours. A resolved state, and an acknowledgeable one: the agent exited
+   *  on its own before the cancel arrived, which is the outcome the cancel wanted.
+   *
+   *  Kept apart from `reaped` because `reaped` is a claim that WE tore it down, and apart from
+   *  `unreachable` because an entry that can never be acknowledged is exactly the bug this
+   *  counter fixes: a group gone before SIGTERM used to fail the first identity gate and be
+   *  recorded unreachable, so a flow whose agent had already exited could never report
+   *  `acknowledged: true`. */
+  gone: number;
   /** Identity mismatch, no recorded procStartTime, not a group leader, or EPERM on the probe.
    *  NOT killed, and — on a still-unsettled entry — NOT acknowledgeable either (R1-5). */
   unreachable: number;
@@ -95,14 +132,28 @@ export interface AgentCancelSummary {
   /** Every matching entry that is NOT durably `settled` at the deadline, whatever the state
    *  of its groups (R3-6). Reaping the children is not the same as the run having finished. */
   unsettled: number;
+  /** Groups that reached the deadline in no final state at all — signalled and still answering
+   *  the group probe, or never signalled because the deadline expired first.
+   *
+   *  This is what acknowledgement tests, in place of the old `signalled === reaped` equality.
+   *  That equality was wrong in both directions: a group already gone before SIGTERM is never
+   *  counted `signalled`, so a perfectly torn-down flow failed it, and a group signalled and
+   *  later found unreachable made it accidentally true. */
+  unreaped: number;
 }
 
-type GroupOutcome = "signalled" | "reaped" | "unreachable";
+type GroupOutcome = "signalled" | "reaped" | "gone" | "unreachable";
 
 interface TrackedGroup {
   startTime?: string;
   everSignalled: boolean;
   outcome?: GroupOutcome;
+  /** The instant this group may be escalated to SIGKILL, recorded when ITS SIGTERM was sent.
+   *  A single sweep-wide clock started before the signal pass gives a group signalled late in
+   *  that pass less than the configured grace — and a group signalled by a rescan, none at
+   *  all. The grace is a promise to each child, so each child's clock starts at its own
+   *  SIGTERM. */
+  escalateAt?: number;
   /** The most recent group probe. `unknown` is NOT a terminal verdict mid-poll: a leader that
    *  has exited but not yet been reaped by its parent answers EPERM on macOS, and ending the
    *  poll there would report a group that is about to be confirmed dead as unreachable. Only
@@ -199,21 +250,70 @@ export async function settleForegroundRun(registryId: string, options: RegistryR
  *  reaped. The lifecycle test helper's bare catch
  *  (ts/tests/connectors/background-codex-lifecycle.test.ts:34-41) gets this wrong and must not
  *  be copied here (invariant 13). */
-function groupState(pid: number): "alive" | "gone" | "unknown" {
+function realGroupState(pid: number): "alive" | "gone" | "unknown" {
   try { process.kill(-pid, 0); return "alive"; }
   catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown";
   }
 }
 
-/** The four gates from `background.ts:444-452`, verbatim. Returns whether SIGTERM was sent. */
-async function signalGroup(pid: number, expected: string | undefined): Promise<boolean> {
-  if (!await processIdentityMatches(pid, expected)) return false;
-  if (await processGroupId(pid) !== pid) return false;
+async function identityMatches(probes: ProcessProbes, pid: number, expected: string | undefined): Promise<boolean> {
+  if (!expected) return false;
+  return (await probes.startTime(pid)) === expected;
+}
+
+/**
+ * The four gates from `background.ts:444-452`, plus the prior question they never asked.
+ *
+ * TRI-STATE, because "we did not signal it" is two different facts. A group that is already
+ * gone (ESRCH on the group probe) is RESOLVED — the thing we wanted dead is dead — while a
+ * group whose identity does not match, or cannot be read, is UNREACHABLE and can never be
+ * acknowledged. The old boolean collapsed both into `false` and recorded both as unreachable,
+ * so an agent that exited a moment before the cancel arrived permanently blocked the
+ * acknowledgement of a teardown that had already happened.
+ */
+async function signalGroup(
+  probes: ProcessProbes,
+  pid: number,
+  expected: string | undefined,
+): Promise<"signalled" | "gone" | "unreachable"> {
+  if (probes.groupState(pid) === "gone") return "gone";
+  if (!await identityMatches(probes, pid, expected)) {
+    // Re-probe: the identity may have failed to read BECAUSE the process exited between the
+    // group probe above and here, which is a `gone`, not an unreachable.
+    return probes.groupState(pid) === "gone" ? "gone" : "unreachable";
+  }
+  if (await probes.groupId(pid) !== pid) return "unreachable";
   // Verify the start-time identity a second time immediately before the only signal.
-  if (!await processIdentityMatches(pid, expected)) return false;
-  try { process.kill(-pid, "SIGTERM"); } catch { return false; }
-  return true;
+  if (!await identityMatches(probes, pid, expected)) return "unreachable";
+  try { probes.kill(pid, "SIGTERM"); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unreachable"; }
+  return "signalled";
+}
+
+/**
+ * SIGKILL escalation, through the SAME gates as the SIGTERM — re-run here, immediately before
+ * the signal, never inherited from the earlier pass.
+ *
+ * The escalation used to be a bare `process.kill(-pid, "SIGKILL")` on the recorded number. The
+ * gap between SIGTERM and SIGKILL is the grace window, by construction the longest pause in the
+ * whole teardown, and it is exactly the window in which the group leader exits and its pid is
+ * handed to something else. A kill by pid alone at the end of it is a SIGKILL delivered to a
+ * stranger's process group.
+ */
+async function escalateGroup(
+  probes: ProcessProbes,
+  pid: number,
+  expected: string | undefined,
+): Promise<"escalated" | "gone" | "unreachable"> {
+  if (probes.groupState(pid) === "gone") return "gone";
+  if (!await identityMatches(probes, pid, expected)) {
+    return probes.groupState(pid) === "gone" ? "gone" : "unreachable";
+  }
+  if (await probes.groupId(pid) !== pid) return "unreachable";
+  try { probes.kill(pid, "SIGKILL"); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unreachable"; }
+  return "escalated";
 }
 
 const REAP_POLL_MS = 10;
@@ -224,27 +324,33 @@ const REAP_POLL_MS = 10;
  *  nothing and reports `unreachable`. */
 export async function killAndReapGroup(
   pid: number,
-  options: { startTime?: string; graceMs?: number; timeoutMs?: number; deadlineAt?: number } & RegistryRootOptions = {},
-): Promise<"reaped" | "unreachable" | "timeout"> {
+  options: { startTime?: string; graceMs?: number; timeoutMs?: number; deadlineAt?: number; probes?: Partial<ProcessProbes> } & RegistryRootOptions = {},
+): Promise<"reaped" | "gone" | "unreachable" | "timeout"> {
+  const probes = resolveProbes(options);
   const deadline = options.deadlineAt ?? Date.now() + (options.timeoutMs ?? cancelTimeoutMs());
   const grace = options.graceMs ?? cancellationGraceMs();
   // No recorded identity, a mismatched one, a non-leader or a refused signal: there is no
-  // group we can honestly claim to have killed (invariant 15b).
-  if (!await signalGroup(pid, options.startTime)) return "unreachable";
+  // group we can honestly claim to have killed (invariant 15b). A group already gone is a
+  // different answer entirely, and a resolved one.
+  const signal = await signalGroup(probes, pid, options.startTime);
+  if (signal !== "signalled") return signal;
+  // The grace clock starts at OUR SIGTERM, not at the top of the call.
   const escalateAt = Date.now() + grace;
   let escalated = false;
   let last: "alive" | "unknown" = "alive";
   while (Date.now() < deadline) {
-    const state = groupState(pid);
+    const state = probes.groupState(pid);
     if (state === "gone") return "reaped";
     last = state;
     if (!escalated && Date.now() >= escalateAt) {
       escalated = true;
-      try { process.kill(-pid, "SIGKILL"); } catch { /* raced its own exit */ }
+      const result = await escalateGroup(probes, pid, options.startTime);
+      if (result === "gone") return "reaped";
+      if (result === "unreachable") return "unreachable";
     }
     await delay(REAP_POLL_MS);
   }
-  const final = groupState(pid);
+  const final = probes.groupState(pid);
   if (final === "gone") return "reaped";
   return final === "unknown" || last === "unknown" ? "unreachable" : "timeout";
 }
@@ -312,10 +418,18 @@ function absorb(accumulated: SignalledGroups, id: string, meta: ForegroundRunMet
  *  `reapFlowAgents` so nothing is double-counted across the rescan passes. */
 export async function signalFlowAgents(
   flowRunId: string,
-  options: RegistryRootOptions = {},
+  options: SweepOptions = {},
 ): Promise<SignalledGroups> {
   const accumulated: SignalledGroups = { entries: new Map() };
-  await sweepPass(resolveRoot(options), flowRunId, accumulated, { escalate: false });
+  // The SIGNAL pass shares the caller's one absolute deadline (R3-5). Without it a slow scan
+  // can hand the reap a budget that is already spent, and — worse — keep sending SIGTERMs
+  // after the caller has given up waiting for anything to answer them.
+  await sweepPass(resolveRoot(options), flowRunId, accumulated, {
+    escalate: false,
+    deadline: options.deadlineAt ?? Date.now() + (options.timeoutMs ?? cancelTimeoutMs()),
+    graceMs: options.graceMs ?? cancellationGraceMs(),
+    probes: resolveProbes(options),
+  });
   return accumulated;
 }
 
@@ -323,12 +437,13 @@ async function sweepPass(
   root: string,
   flowRunId: string,
   accumulated: SignalledGroups,
-  options: { escalate: boolean },
+  options: { escalate: boolean; deadline: number; graceMs: number; probes: ProcessProbes },
 ): Promise<void> {
+  const { probes } = options;
   for (const { id, meta } of await scan(root, flowRunId)) {
     const entry = absorb(accumulated, id, meta);
     for (const [pid, group] of entry.groups) {
-      if (group.outcome === "reaped" || group.outcome === "unreachable") continue;
+      if (group.outcome === "reaped" || group.outcome === "gone" || group.outcome === "unreachable") continue;
       // A settled entry is never SIGNALLED again (invariant 14) — but its already-signalled
       // groups are still PROBED below. Skipping a settled entry outright leaves the probe
       // taken during the signal pass as the final verdict, and that probe is `unknown` for
@@ -337,23 +452,43 @@ async function sweepPass(
       // could never be acknowledged.
       if (entry.settled && !group.everSignalled) continue;
       if (!group.everSignalled) {
-        if (await signalGroup(pid, group.startTime)) {
-          group.everSignalled = true;
-          group.outcome = "signalled";
-        } else {
+        // Past the deadline nothing new is signalled: a SIGTERM sent now has no grace window
+        // left to run in and no reap pass left to confirm it. The group stays unresolved and
+        // is reported as such, which is the honest answer.
+        if (Date.now() >= options.deadline) continue;
+        const signal = await signalGroup(probes, pid, group.startTime);
+        if (signal === "gone") { group.outcome = "gone"; delete group.lastProbe; continue; }
+        if (signal === "unreachable") {
           // An identity mismatch means the pid is now some other process: the group we
-          // recorded is gone too, but we never signalled it, so it is `unreachable`, not
-          // `reaped`. Collapsing the two would let a recycled pid read as a teardown.
+          // recorded is gone too, but we never signalled it, and we cannot prove which — so
+          // it is `unreachable`, not `gone`. Collapsing the two would let a recycled pid read
+          // as a teardown.
           group.outcome = "unreachable";
           continue;
         }
+        group.everSignalled = true;
+        group.outcome = "signalled";
+        // Per-group grace, clocked from THIS SIGTERM (F5).
+        group.escalateAt = Date.now() + options.graceMs;
       }
-      const state = groupState(pid);
+      const state = probes.groupState(pid);
       if (state === "gone") { group.outcome = "reaped"; delete group.lastProbe; continue; }
       group.lastProbe = state;
-      if (options.escalate && !entry.settled) { try { process.kill(-pid, "SIGKILL"); } catch { /* raced its own exit */ } }
+      const escalateAt = group.escalateAt ?? options.deadline;
+      if (options.escalate && !entry.settled && Date.now() >= escalateAt && Date.now() < options.deadline) {
+        // F6: the identity and group-leader gates are re-run here, immediately before the
+        // SIGKILL. The grace window is long enough for the leader to exit and its pid to be
+        // reissued, and a kill by bare pgid at the end of it lands on a stranger.
+        const result = await escalateGroup(probes, pid, group.startTime);
+        if (result === "gone") { group.outcome = "reaped"; delete group.lastProbe; continue; }
+        if (result === "unreachable") { group.outcome = "unreachable"; delete group.lastProbe; }
+      }
     }
   }
+}
+
+function resolvedOutcome(outcome: GroupOutcome | undefined): boolean {
+  return outcome === "reaped" || outcome === "gone" || outcome === "unreachable";
 }
 
 function entryResolved(entry: TrackedEntry): boolean {
@@ -364,7 +499,7 @@ function entryResolved(entry: TrackedEntry): boolean {
     // blocks it until the probe answers, settled entry or not — the entry settling says the
     // dispatcher unwound, not that the process group is gone.
     if (entry.settled && !group.everSignalled) continue;
-    if (group.outcome !== "reaped" && group.outcome !== "unreachable") return false;
+    if (!resolvedOutcome(group.outcome)) return false;
   }
   // Reaping the groups is not the same as the entry being over, and `summarise` says so:
   // it counts every unsettled entry as `unsettled` whatever its groups did (R3-6). Breaking
@@ -384,10 +519,14 @@ export async function reapFlowAgents(
 ): Promise<AgentCancelSummary> {
   const root = resolveRoot(options);
   const deadline = options.deadlineAt ?? Date.now() + (options.timeoutMs ?? cancelTimeoutMs());
-  const escalateAt = Date.now() + (options.graceMs ?? cancellationGraceMs());
+  const graceMs = options.graceMs ?? cancellationGraceMs();
   const identity = options.identity ?? processIdentity;
+  const probes = resolveProbes(options);
   while (true) {
-    await sweepPass(root, flowRunId, signalled, { escalate: Date.now() >= escalateAt });
+    // `escalate: true` unconditionally: each group carries its OWN escalation instant now, so
+    // the pass decides per group rather than off one clock that started before some of them
+    // had even been signalled.
+    await sweepPass(root, flowRunId, signalled, { escalate: true, deadline, graceMs, probes });
     await applyDeadOwnerException(root, signalled, identity);
     if ([...signalled.entries.values()].every(entryResolved)) break;
     if (Date.now() >= deadline) break;
@@ -425,7 +564,7 @@ async function applyDeadOwnerException(root: string, accumulated: SignalledGroup
     if (entry.groups.size === 0) continue;
     let resolved = true;
     for (const group of entry.groups.values()) {
-      if (group.outcome !== "reaped" && group.outcome !== "unreachable") { resolved = false; break; }
+      if (!resolvedOutcome(group.outcome)) { resolved = false; break; }
     }
     if (!resolved) continue;
     if (await identity(entry.serverPid, entry.serverProcStartTime) !== "dead") continue;
@@ -435,13 +574,15 @@ async function applyDeadOwnerException(root: string, accumulated: SignalledGroup
 }
 
 function summarise(accumulated: SignalledGroups): AgentCancelSummary {
-  const summary: AgentCancelSummary = { signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0 };
+  const summary: AgentCancelSummary = { signalled: 0, reaped: 0, gone: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0, unreaped: 0 };
   for (const entry of accumulated.entries.values()) {
     if (entry.alreadySettled) { summary.alreadySettled += 1; continue; }
     for (const group of entry.groups.values()) {
       if (group.everSignalled) summary.signalled += 1;
       if (group.outcome === "reaped") summary.reaped += 1;
+      else if (group.outcome === "gone") summary.gone += 1;
       else if (group.outcome === "unreachable") summary.unreachable += 1;
+      else summary.unreaped += 1;
     }
     if (entry.state === "starting" && !entry.settled) summary.unresolved += 1;
     if (!entry.settled) summary.unsettled += 1;

@@ -197,7 +197,7 @@ describe("STRAT-FLOW-CANCEL-FG cross-process kill", () => {
     const root = await tempRoot();
     await writeMeta(root, "dddddddddddd", baseMeta("flow-done", { state: "settled", settledAt: new Date().toISOString(), groups: [{ childPid: 1, procStartTime: "0.0" }] }));
     expect(await cancelFlowAgents("flow-done", { registryRoot: root, timeoutMs: 200, graceMs: 0 }))
-      .toEqual({ signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 1, unresolved: 0, unsettled: 0 });
+      .toEqual({ signalled: 0, reaped: 0, gone: 0, unreachable: 0, alreadySettled: 1, unresolved: 0, unsettled: 0, unreaped: 0 });
   });
 
   it("T-S02-6: a record for a different flow is not touched", async () => {
@@ -205,7 +205,7 @@ describe("STRAT-FLOW-CANCEL-FG cross-process kill", () => {
     const { pid, startTime, path } = await startGroup(root, false);
     await writeMeta(root, "eeeeeeeeeeee", baseMeta("flow-other", { state: "running", groups: [{ childPid: pid, procStartTime: startTime }] }));
     expect(await cancelFlowAgents("flow-target", { registryRoot: root, timeoutMs: 200, graceMs: 0 }))
-      .toEqual({ signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0 });
+      .toEqual({ signalled: 0, reaped: 0, gone: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0, unreaped: 0 });
     const before = await readFile(path, "utf8");
     await delay(60);
     expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length);
@@ -370,4 +370,104 @@ describe("STRAT-FLOW-CANCEL-FG rescan accounting", () => {
       await chmod(join(root, id), 0o700);
     }
   });
+});
+
+describe("STRAT-FLOW-CANCEL-FG signal gating", () => {
+  it("T-S02-11: a group already gone before SIGTERM is `gone`, not unreachable, and resolves the entry", async () => {
+    const root = await tempRoot();
+    const departed = await departedPid();
+    const owner = await departedPid();
+    await writeMeta(root, "aaaa1111aaaa", baseMeta("flow-already-gone", {
+      state: "running",
+      serverPid: owner,
+      serverProcStartTime: "0.0",
+      groups: [{ childPid: departed, procStartTime: "0.0" }],
+    }));
+    const summary = await cancelFlowAgents("flow-already-gone", { registryRoot: root, timeoutMs: 2000, graceMs: 0 });
+    // The agent exited on its own a moment before the cancel arrived. That is the outcome the
+    // cancel wanted, so nothing about it may block an acknowledgement.
+    expect(summary).toMatchObject({ signalled: 0, reaped: 0, gone: 1, unreachable: 0, unreaped: 0, unresolved: 0, unsettled: 0 });
+    expect((await readMeta(root, "aaaa1111aaaa")).state).toBe("settled");
+  }, 20_000);
+
+  it("T-S02-12: an identity that goes stale during the grace window is never SIGKILLed", async () => {
+    const root = await tempRoot();
+    const { pid, startTime } = await startGroup(root);
+    const signals: Array<{ pid: number; signal: string }> = [];
+    let termed = false;
+    await writeMeta(root, "bbbb2222bbbb", baseMeta("flow-flip", {
+      state: "running",
+      serverPid: process.pid,
+      serverProcStartTime: await selfIdentity(),
+      groups: [{ childPid: pid, procStartTime: startTime }],
+    }));
+    const summary = await cancelFlowAgents("flow-flip", {
+      registryRoot: root, timeoutMs: 2000, graceMs: 40,
+      probes: {
+        // The leader's pid is reissued to a different process during the grace window: the
+        // recorded start time stops matching AFTER the SIGTERM and BEFORE the SIGKILL.
+        startTime: async (probed) => probed === pid && termed ? "a-different-process" : startTime,
+        kill: (killed, signal) => {
+          signals.push({ pid: killed, signal });
+          if (signal === "SIGTERM") termed = true;
+          process.kill(-killed, signal);
+        },
+      },
+    });
+    expect(signals.filter((entry) => entry.signal === "SIGTERM")).toHaveLength(1);
+    // The escalation gates are re-run immediately before the SIGKILL, so it is never sent.
+    expect(signals.filter((entry) => entry.signal === "SIGKILL")).toEqual([]);
+    expect(summary).toMatchObject({ signalled: 1, reaped: 0, unreachable: 1 });
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+  }, 20_000);
+
+  it("T-S02-13: no group is signalled once the shared deadline has passed", async () => {
+    const root = await tempRoot();
+    const { pid, startTime } = await startGroup(root);
+    const signals: string[] = [];
+    await writeMeta(root, "cccc3333cccc", baseMeta("flow-expired", {
+      state: "running",
+      serverPid: process.pid,
+      serverProcStartTime: await selfIdentity(),
+      groups: [{ childPid: pid, procStartTime: startTime }],
+    }));
+    const summary = await cancelFlowAgents("flow-expired", {
+      registryRoot: root,
+      deadlineAt: Date.now() - 1,
+      graceMs: 0,
+      probes: { kill: (killed, signal) => { signals.push(signal); process.kill(-killed, signal); } },
+    });
+    // A SIGTERM sent past the deadline has no grace window left to run in and no reap pass left
+    // to confirm it: the honest report is an unresolved group, not a signal nobody waits on.
+    expect(signals).toEqual([]);
+    expect(summary).toMatchObject({ signalled: 0, reaped: 0, gone: 0, unreaped: 1 });
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+  }, 20_000);
+
+  it("T-S02-14: each group's grace is clocked from its OWN SIGTERM, not from the sweep's start", async () => {
+    const root = await tempRoot();
+    const { pid, startTime } = await startGroup(root);
+    const sent: Array<{ signal: string; at: number }> = [];
+    await writeMeta(root, "dddd4444dddd", baseMeta("flow-grace", {
+      state: "running",
+      serverPid: process.pid,
+      serverProcStartTime: await selfIdentity(),
+      groups: [{ childPid: pid, procStartTime: startTime }],
+    }));
+    await cancelFlowAgents("flow-grace", {
+      registryRoot: root, timeoutMs: 8000, graceMs: 300,
+      probes: {
+        // A slow identity probe pushes the SIGTERM well past the sweep's own start. A grace
+        // clocked from the sweep's start would then escalate almost immediately.
+        startTime: async (probed) => { if (probed === pid) await delay(120); return startTime; },
+        kill: (killed, signal) => { sent.push({ signal, at: Date.now() }); process.kill(-killed, signal); },
+      },
+    });
+    const term = sent.find((entry) => entry.signal === "SIGTERM");
+    const kill = sent.find((entry) => entry.signal === "SIGKILL");
+    expect(term).toBeDefined();
+    expect(kill).toBeDefined();
+    expect(kill!.at - term!.at).toBeGreaterThanOrEqual(280);
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+  }, 20_000);
 });

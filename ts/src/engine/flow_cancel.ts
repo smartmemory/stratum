@@ -1,4 +1,4 @@
-import { reapFlowAgents, signalFlowAgents, type AgentCancelSummary } from "../connectors/foreground_registry.js";
+import { reapFlowAgents, signalFlowAgents, type AgentCancelSummary, type SweepOptions } from "../connectors/foreground_registry.js";
 import type { FlowCancelResult, StratumEngine } from "./engine.js";
 import type { RunStatus } from "./state.js";
 
@@ -13,6 +13,12 @@ export interface CancelFlowOptions {
   registryRoot?: string;
   timeoutMs?: number;
   reason?: string;
+  /** Per-group SIGTERM→SIGKILL grace, forwarded verbatim to BOTH agent phases. It has to reach
+   *  the signal pass as well as the reap: the grace clock now starts at each group's own
+   *  SIGTERM, and that SIGTERM is sent during the signal pass. */
+  graceMs?: number;
+  identity?: SweepOptions["identity"];
+  probes?: SweepOptions["probes"];
   /** OPTIONAL same-process phase (R1-4). The MCP dispatcher passes a callback that aborts
    *  every foreground AbortController belonging to this flow; the CLI passes nothing. It runs
    *  INSIDE this function, so both surfaces execute the identical ordered sequence.
@@ -36,7 +42,7 @@ export interface CancelFailure extends Error {
 }
 
 export const EMPTY_AGENTS: AgentCancelSummary = Object.freeze({
-  signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0,
+  signalled: 0, reaped: 0, gone: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0, unreaped: 0,
 });
 
 function emptyAgents(): AgentCancelSummary { return { ...EMPTY_AGENTS }; }
@@ -132,8 +138,17 @@ export async function cancelFlow(
   // leaves no time to reap.
   const deadline = Date.now() + timeoutBudgetMs(options);
   const remaining = (): number => Math.max(0, deadline - Date.now());
-  const registryOptions = options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {};
+  const registryOptions: SweepOptions = {
+    ...(options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {}),
+    ...(options.graceMs !== undefined ? { graceMs: options.graceMs } : {}),
+    ...(options.identity !== undefined ? { identity: options.identity } : {}),
+    ...(options.probes !== undefined ? { probes: options.probes } : {}),
+    deadlineAt: deadline,
+  };
 
+  // The signal pass gets the SAME absolute deadline as the reap. A signal pass with no deadline
+  // can spend the whole budget probing and then hand the reap nothing, and can keep sending
+  // SIGTERMs after the caller has stopped waiting for an answer to any of them.
   const signalled = await signalFlowAgents(runId, registryOptions);
   // An abortLocal that times out does NOT abort the cancel: the groups were already signalled
   // and the reap is the authority on whether they died. Record it and keep going (R3-5).
@@ -144,17 +159,22 @@ export async function cancelFlow(
     if (codeOf(error) !== "CANCELLATION_TEARDOWN_TIMEOUT") throw error;
     localTimedOut = true;
   }
-  const agents = await reapFlowAgents(runId, signalled, { ...registryOptions, deadlineAt: deadline });
+  const agents = await reapFlowAgents(runId, signalled, registryOptions);
   // R1-5: acknowledged is a GUARANTEE, not a summary. Anything unresolved is an error.
   // R3-6: unsettled is the strongest of the three and subsumes "groups reaped but the owning
   // dispatcher is still unwinding". All four must be clear.
+  // Acknowledgement is "every group reached a final resolved state and nothing is outstanding",
+  // NOT the old `signalled === reaped` equality. That equality failed both ways: a group that
+  // had already exited before our SIGTERM is never counted `signalled`, so a flow whose agent
+  // died on its own could never be acknowledged; and a group signalled and later found
+  // unreachable satisfied it by accident.
   const acknowledged = settled.flowSettled
     && agents.unsettled === 0
     && agents.unresolved === 0
     && agents.unreachable === 0
-    && agents.signalled === agents.reaped;
+    && agents.unreaped === 0;
   if (!acknowledged) {
-    const code = agents.unreachable > 0 && agents.unresolved === 0 && agents.signalled === agents.reaped
+    const code = agents.unreachable > 0 && agents.unresolved === 0 && agents.unreaped === 0
       ? "CANCELLATION_UNCONFIRMED"
       : "CANCELLATION_TEARDOWN_TIMEOUT";
     // R3-5: every failure leaves this function as ONE structured error with the same fields,
