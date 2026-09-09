@@ -21,6 +21,21 @@ function engine(root: string, connector: EngineConnector): TokenEchoingEngine {
   return tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator: createEvaluator(), connector }));
 }
 
+/** The engine that comes up AFTER a crash, where the previous driver is genuinely gone.
+ *
+ *  A same-process fixture cannot show that by identity alone, and must no longer try: a driver
+ *  lease is reclaimed only from an owner that is provably DEAD or by the token this engine
+ *  itself holds (F1). Before that, "same pid and start time" was read as "our own leftover",
+ *  which is true of every engine instance in one process — so a test's second engine reclaimed
+ *  the first engine's LIVE lease, and so would a second engine in a real server. The oracle
+ *  states what the crash makes true, rather than leaving the fixture to rely on the hole. */
+function restartedEngine(root: string, connector: EngineConnector): TokenEchoingEngine {
+  return tokenEchoingEngine(new StratumEngine({
+    stateRoot: root, evaluator: createEvaluator(), connector,
+    lockOptions: { identity: async () => "dead" },
+  }));
+}
+
 async function fixture(name: string): Promise<unknown> {
   const bytes = await readFile(new URL(`../../parity/${name}.v1.yaml`, import.meta.url));
   return parseDocument(bytes.toString("utf8"), { prettyErrors: false }).toJS();
@@ -59,7 +74,7 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
     await dispatched;
 
     const prompts: string[] = [];
-    const restarted = engine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    const restarted = restartedEngine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
     await restarted.rehydrateBgFlows();
 
     expect((await waitForBg(restarted, started.runId, "completed")).status).toBe("completed");
@@ -170,7 +185,7 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
     const started = await first.flowRunBg(linearFlow, { name: "Ada" });
     await dispatched;
     let dispatches = 0;
-    const restarted = engine(root, async ({ prompt }) => { dispatches += 1; return { output: { value: prompt } }; });
+    const restarted = restartedEngine(root, async ({ prompt }) => { dispatches += 1; return { output: { value: prompt } }; });
 
     await restarted.rehydrateBgFlows();
     await restarted.rehydrateBgFlows();
@@ -197,7 +212,7 @@ describe("STRAT-TS-FLOW-BG-REHYDRATE", () => {
     await dispatched;
 
     const prompts: string[] = [];
-    const restarted = engine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
+    const restarted = restartedEngine(root, async ({ prompt }) => { prompts.push(prompt); return { output: { value: prompt } }; });
     await expect(restarted.rehydrateBgFlows()).resolves.toBeUndefined();
 
     // The valid run still resumes to completion; the corrupt one fails in its own

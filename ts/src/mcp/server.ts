@@ -9,7 +9,7 @@ import { createForegroundRun, killAndReapGroup, recordForegroundGroup, settleFor
 import { procStartTime } from "../connectors/proc_identity.js";
 import type { ConnectorEventHandler } from "../connectors/base.js";
 import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
-import { cancelFlow } from "../engine/flow_cancel.js";
+import { cancelFlow, EMPTY_AGENTS } from "../engine/flow_cancel.js";
 import type { AgentCancelSummary } from "../connectors/foreground_registry.js";
 import { createEvaluator } from "../eval/expr.js";
 import { createEvaluateRunner } from "../engine/evaluate.js";
@@ -487,7 +487,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             flowSettled: failure.flowSettled ?? false,
             ...(failure.reason !== undefined ? { reason: failure.reason } : {}),
             ...(failure.holderPid !== undefined ? { holderPid: failure.holderPid } : {}),
-            agents: failure.agents ?? { signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0 },
+            // F8: the ONE summary literal, shared with cancelFlow. A hand-written copy here
+            // drifted from the contract the moment `gone` and `unreaped` were added, and the
+            // shape check below then rejected the very envelope this branch exists to send.
+            agents: failure.agents ?? { ...EMPTY_AGENTS },
           });
         }
         // A registry refusal is the cause; the connector's abort is its consequence (R3-8).

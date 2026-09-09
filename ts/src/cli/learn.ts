@@ -12,7 +12,7 @@ import {
 import { applyCandidate, reconcile, revertApply } from "../learn/apply.js";
 import { LearnEgress } from "../learn/smartmemory_egress.js";
 import { StateStore } from "../engine/state.js";
-import { lockedSave } from "../engine/run_lock.js";
+import { lockedSave, lockedRead } from "../engine/run_lock.js";
 
 const USAGE =
   "Usage: stratum learn <harvest|list|apply|revert|reconcile|egress> [--root <dir>] [--stage] [--json]\n" +
@@ -190,7 +190,11 @@ async function egressCommand(args: string[]): Promise<number> {
   // `stratum learn`, and certainly not a running engine. It takes the real cross-process lock.
   const egress = new LearnEgress({
     store,
+    // F3: `lockedSave` is now lease-aware and refuses a cancelled run, so a CLI egress can no
+    // longer revert a live driver's receipts or rewrite a settled record. Reads go through
+    // `lockedRead`, which takes the same lock and saves nothing.
     withReceiptUpdate: (id, update) => lockedSave(store, id, update),
+    withReceiptRead: (id, read) => lockedRead(store, id, read),
   });
 
   try {

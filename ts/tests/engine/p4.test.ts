@@ -294,7 +294,16 @@ describe("P4 fanout", () => {
     const terminal = await waitForTerminal(e, planned.runId);
     expect(terminal).toMatchObject({ status: "completed", output: { value: "done" } });
     expect(peak).toBeLessThanOrEqual(2);
-    const fresh = new StratumEngine({ stateRoot: (e as unknown as { store: { root: string } }).store.root, evaluator: createEvaluator(), connector });
+    const fresh = new StratumEngine({
+      stateRoot: (e as unknown as { store: { root: string } }).store.root,
+      evaluator: createEvaluator(),
+      connector,
+      // The process that planned this run is, in the fiction of this test, gone — and a same-
+      // process fixture must now say so. A driver lease is reclaimed only from a provably DEAD
+      // owner or by the token this engine itself holds (F1); "same pid and start time" is no
+      // longer read as ownership, because every engine in one process satisfies it.
+      lockOptions: { identity: async () => "dead" as const },
+    });
     const poll = await fresh.flowPoll(planned.runId, 1);
     expect(poll.nextCursor).toBeGreaterThan(1);
     expect(poll.events.map((event) => event.type)).toEqual(expect.arrayContaining(["fanout_item_ready", "fanout_item_dispatched", "fanout_attempt_result", "fanout_ledger_debit"]));
@@ -363,7 +372,16 @@ describe("P4 fanout", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     blockSecondItem = false;
-    const fresh = new StratumEngine({ stateRoot: (e as unknown as { store: { root: string } }).store.root, evaluator: createEvaluator(), connector });
+    const fresh = new StratumEngine({
+      stateRoot: (e as unknown as { store: { root: string } }).store.root,
+      evaluator: createEvaluator(),
+      connector,
+      // The process that planned this run is, in the fiction of this test, gone — and a same-
+      // process fixture must now say so. A driver lease is reclaimed only from a provably DEAD
+      // owner or by the token this engine itself holds (F1); "same pid and start time" is no
+      // longer read as ownership, because every engine in one process satisfies it.
+      lockOptions: { identity: async () => "dead" as const },
+    });
     await fresh.resume(planned.runId);
     expect(await waitForTerminal(fresh, planned.runId)).toMatchObject({ status: "completed", output: { value: "done" } });
     // Item a ran exactly once across both engine lifetimes.
@@ -415,7 +433,13 @@ describe("P4 fanout", () => {
       return { output: { value: prompt } };
     };
     const stateRoot = (first as unknown as { store: { root: string } }).store.root;
-    const fresh = new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector });
+    const fresh = new StratumEngine({ stateRoot, evaluator: createEvaluator(), connector,
+      // The process that planned this run is, in the fiction of this test, gone — and a same-
+      // process fixture must now say so. A driver lease is reclaimed only from a provably DEAD
+      // owner or by the token this engine itself holds (F1); "same pid and start time" is no
+      // longer read as ownership, because every engine in one process satisfies it.
+      lockOptions: { identity: async () => "dead" as const },
+    });
     let terminal: Awaited<ReturnType<typeof waitForTerminal>>;
     try {
       await fresh.resume(planned.runId);
