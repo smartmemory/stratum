@@ -978,7 +978,7 @@ describe("P4 frozen contracts", () => {
   it("every emitted event and engine response validates against the frozen contract payload shapes", async () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
-    expect(eventsContract.events).toBe(2);
+    expect(eventsContract.events).toBe(3);
     expect(surface.surface).toBe(17);
     expect(Object.keys(surface.tools)).toHaveLength(24);
 
@@ -1130,8 +1130,9 @@ describe("P4 frozen contracts", () => {
 
     for (const { engine: source, runId } of runIds) allEvents.push(...(await source.audit(runId)).events);
 
-    // S02 emits these two kinds. S01 declares their exact strict shapes now, so
-    // keep full-vocabulary coverage without pretending the current engine emitted them.
+    // S02/S01 declare these kinds' exact strict shapes now, but the emitters ship in later
+    // slices (carry_updated in STRAT-LOOP-CARRY S03). Keep full-vocabulary coverage without
+    // pretending the current engine emitted them.
     const declaredAheadOfEmission: AuditEvent[] = [
       {
         at: "2026-08-30T00:00:00.000Z", type: "step_reset", stepId: "build",
@@ -1140,6 +1141,11 @@ describe("P4 frozen contracts", () => {
       {
         at: "2026-08-30T00:00:00.000Z", type: "checkpoint_reverted",
         detail: { label: "before", receiptsAtRevert: 1, stepsRestored: ["build"] },
+      },
+      // STRAT-LOOP-CARRY S03 emits this
+      {
+        at: "2026-08-30T00:00:00.000Z", type: "carry_updated", stepId: "build",
+        detail: { name: "wave", reason: "initial", provenance: { kind: "initial", sourceStep: "build", sourceEpoch: 0, at: "2026-08-30T00:00:00.000Z" } },
       },
     ];
 

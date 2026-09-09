@@ -10,7 +10,7 @@ import type { CheckpointSnapshot, PersistedRun } from "./state.js";
  * detached/fanout mutable state -> cancelRequested / parallel
  */
 export const CHECKPOINT_FIELDS = [
-  "status", "output", "failure", "flowSpent", "rounds", "steps", "events", "policy_verdicts", "cancelRequested", "parallel",
+  "status", "output", "failure", "flowSpent", "rounds", "steps", "events", "policy_verdicts", "cancelRequested", "parallel", "carry",
 ] as const satisfies readonly (keyof PersistedRun)[];
 
 export type CheckpointField = (typeof CHECKPOINT_FIELDS)[number];

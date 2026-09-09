@@ -146,6 +146,30 @@ export interface SubflowState {
   rounds?: number;
 }
 
+/** Provenance of one carry write. `sourceStep`/`sourceEpoch` are present exactly when the
+ *  evaluated reference was a step reference; an `input.`-sourced initial has neither.
+ *  For a revise write they name the INITIAL declaration's source step and its epoch at
+ *  write time — that is the pair `materialiseCarry` compares against, so a revise value
+ *  survives every advance until the initial's own source is reset. */
+export interface CarryProvenance {
+  kind: "initial" | "revise";
+  sourceStep?: string;
+  sourceEpoch?: number;
+  /** Revise only: the gate step id that authorised the write. */
+  gate?: string;
+  /** Revise only: the consumed gate token that fenced the decision. */
+  gateToken?: string;
+  /** Revise only: `run.rounds` after the bump. */
+  round?: number;
+  at: string;
+}
+
+/** One loop-carried flow value plus the record of who last wrote it. */
+export interface CarryEntry {
+  value: unknown;
+  provenance: CarryProvenance;
+}
+
 export interface StepState {
   status: StepStatus;
   attempts: AttemptRecord[];
@@ -174,14 +198,14 @@ export interface AuditEvent {
   type: "planned" | "ready" | "result" | "judged" | "routed" | "skipped" | "resumed" | "completed" | "failed" | "budget_exhausted"
     | "gate_waiting" | "gate_resolved" | "fanout_item_ready" | "fanout_item_dispatched" | "fanout_attempt_result"
     | "fanout_item_skipped" | "fanout_ledger_debit" | "fanout_merge"
-    | "usage_debit" | "step_reset" | "checkpoint_reverted";
+    | "usage_debit" | "step_reset" | "checkpoint_reverted" | "carry_updated";
   stepId?: string;
   detail?: unknown;
 }
 
 export type CheckpointSnapshot = Pick<PersistedRun,
   | "status" | "output" | "failure" | "flowSpent" | "rounds"
-  | "steps" | "events" | "policy_verdicts" | "cancelRequested" | "parallel"
+  | "steps" | "events" | "policy_verdicts" | "cancelRequested" | "parallel" | "carry"
 >;
 
 /** One named checkpoint. An ORDERED ARRAY (not a keyed map) so label order is true
@@ -229,6 +253,9 @@ export interface PersistedRun {
   /** Named state-only snapshots in insertion order; optional so runs created before
    * checkpoints remain loadable. */
   checkpoints?: CheckpointEntry[];
+  /** Loop-carried flow values keyed by declared name. Optional so runs created before
+   * STRAT-LOOP-CARRY remain loadable. Root-flow only in v1 (D5). */
+  carry?: Record<string, CarryEntry>;
 }
 
 let temporarySequence = 0;
