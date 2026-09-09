@@ -422,7 +422,7 @@ export async function serveStdio(): Promise<void> {
 }
 
 function auditResponse(audit: AuditTrail): Record<string, unknown> {
-  return { status: audit.status, runId: audit.runId, events: audit.events, steps: audit.steps, flowSpent: audit.flowSpent, ...(audit.output !== undefined ? { output: audit.output } : {}) };
+  return { status: audit.status, runId: audit.runId, events: audit.events, steps: audit.steps, flowSpent: audit.flowSpent, ...(audit.output !== undefined ? { output: audit.output } : {}), ...(audit.carry !== undefined ? { carry: audit.carry } : {}) };
 }
 
 function flowPollResponse(response: FlowPollResponse): Record<string, unknown> { return { ...response }; }

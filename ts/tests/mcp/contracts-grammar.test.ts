@@ -80,7 +80,7 @@ describe("tagged frozen-contract shape grammar", () => {
 describe("STRAT-LEARN-COST frozen contract declarations", () => {
   it("freezes surface 17 and rejects undeclared nested usage-report keys", async () => {
     const surface = await mcpSurface();
-    expect(surface.surface).toBe(17);
+    expect(surface.surface).toBe(18);
     expect(surface.tools.stratum_usage_report).toBeDefined();
     await expect(assertToolRequest("stratum_usage_report", {
       runId: "run-1",
@@ -138,6 +138,20 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
       detail: { seq: 1, dispatchId: "dispatch-1", source: "client", amount: {}, model: "fixture", durationMs: 2, extra: true },
     })).rejects.toThrow("event.detail.extra is undeclared");
   });
+
+  // T-S04-4: every stratum_audit variant declares carry, not just the ones edited by hand.
+  it.each(["running", "completed", "failed", "budget_exhausted"] as const)(
+    "declares carry on the stratum_audit %s response variant",
+    async (variant) => {
+      const surface = await mcpSurface();
+      const carrySample = {
+        runId: "r", events: [], steps: {}, flowSpent: {},
+        carry: { wave: { value: [], provenance: { kind: "initial", at: "2026-09-09T00:00:00.000Z" } } },
+      };
+      expect(() => assertShape(carrySample, surface.tools.stratum_audit!.responses[variant]!, `stratum_audit:${variant}`))
+        .not.toThrow();
+    },
+  );
 });
 
 describe("agent-run failure envelope declaration", () => {

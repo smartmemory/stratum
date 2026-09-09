@@ -309,9 +309,15 @@ describe("P5 frozen MCP surface", () => {
       const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec, input: { items: ["a"] } } }));
       expect(planned).toMatchObject({ status: "ready", revisionDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
       const first = (planned.ready as Array<Record<string, unknown>>)[0]!;
-      expect(first).toMatchObject({ id: "fan/0", stage: 0, itemIndex: 0, revisionDigest: planned.revisionDigest });
+      expect(first).toMatchObject({ id: "fan/0", stage: 0, itemIndex: 0, item: "a", revisionDigest: planned.revisionDigest });
       await expect(assertToolResponse("stratum_plan", {
         status: "ready", runId: planned.runId, ready: [{ id: "bare" }], ledger: { spent: {} }, revisionDigest: planned.revisionDigest,
+      })).rejects.toThrow(/oneOf variants matched/);
+      // T-S04-2: a full consumer descriptor with `item` deleted also rejects — the field is
+      // required, not merely tolerated when present.
+      const { item: _omittedItem, ...withoutItem } = first;
+      await expect(assertToolResponse("stratum_plan", {
+        status: "ready", runId: planned.runId, ready: [withoutItem], ledger: { spent: {} }, revisionDigest: planned.revisionDigest,
       })).rejects.toThrow(/oneOf variants matched/);
       expect((await mcpSurface()).errors.consumer_dispatch_bg_unsupported).toEqual({
         data: { code: "string", errors: { $array: { code: "string", path: "string", message: "string" } } },
@@ -443,6 +449,141 @@ describe("P5 frozen MCP surface", () => {
       const gateToken = ((gateAudit.steps as Record<string, Record<string, unknown>>).review!).gateToken;
       const resolved = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: { runId: gatePlan.runId, stepId: "review", decision: "approve", gateToken } }));
       expect(resolved).toMatchObject({ status: "ready", ready: [{ id: "finish" }] });
+    } finally { await pair.close(); }
+  });
+
+  it("T-S04-3: audit exposes carry with provenance through the real MCP surface", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-carry-audit-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    const carrySpec = {
+      version: 1,
+      contracts: {
+        TaskGraph: { tasks: "string[]" },
+        Result: { value: "string" },
+        WaveDecision: { action: "string", tasks: "string[]" },
+      },
+      flows: { entry: "main", main: {
+        input: { goal: "string" },
+        output: { from: "${assess.output}", contract: "WaveDecision" },
+        max_rounds: 4,
+        carry: { wave: { initial: "${plan.output.tasks}", on_revise: { assess_gate: "${assess.output.tasks}" } } },
+        steps: [
+          { id: "plan", do: "plan ${input.goal}", out: "TaskGraph" },
+          { id: "execute", after: ["plan"], fanout: {
+            over: "${wave}", dispatch: "consumer", concurrency: 1, isolation: "none",
+            require: "all", merge: "sequential", steps: [{ do: "do ${item}", out: "Result" }],
+          } },
+          { id: "execute_merge", after: ["execute"], gate: { on_approve: "verify", on_revise: "execute", on_kill: null } },
+          { id: "verify", after: ["execute_merge"], do: "verify", out: "Result" },
+          { id: "assess", after: ["verify"], do: "assess", out: "WaveDecision" },
+          { id: "assess_gate", after: ["assess"], gate: { on_approve: null, on_revise: "execute", on_kill: null } },
+        ],
+      } },
+    };
+    try {
+      const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec: carrySpec, input: { goal: "g" } } }));
+      const done1 = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "plan", dispatchToken: readyToken(planned), result: { output: { tasks: ["t1"] } },
+      } }));
+      const executeFirst = (done1.ready as Array<Record<string, unknown>>)[0]!;
+      const done2 = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "execute/0", dispatchToken: executeFirst.dispatchToken, result: { output: { value: "done" } },
+      } }));
+      expect(done2.status).toBe("running");
+      const audit1 = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
+      const mergeToken = ((audit1.steps as Record<string, Record<string, unknown>>).execute_merge!).gateToken;
+      const afterMerge = response(await pair.client.callTool({ name: "stratum_gate_resolve", arguments: {
+        runId: planned.runId, stepId: "execute_merge", decision: "approve", gateToken: mergeToken,
+      } }));
+      const verifyDone = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "verify", dispatchToken: readyToken(afterMerge), result: { output: { value: "v" } },
+      } }));
+      const assessDone = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "assess", dispatchToken: readyToken(verifyDone), result: { output: { action: "repair", tasks: ["t2"] } },
+      } }));
+      expect(assessDone.status).toBe("running");
+      const audit2 = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
+      const assessGateToken = ((audit2.steps as Record<string, Record<string, unknown>>).assess_gate!).gateToken;
+      await pair.client.callTool({ name: "stratum_gate_resolve", arguments: {
+        runId: planned.runId, stepId: "assess_gate", decision: "revise", gateToken: assessGateToken,
+      } });
+      const finalAudit = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
+      const carry = finalAudit.carry as Record<string, { value: unknown; provenance: Record<string, unknown> }>;
+      expect(carry.wave!.value).toEqual(["t2"]);
+      expect(carry.wave!.provenance.gate).toBe("assess_gate");
+      expect(carry.wave!.provenance.kind).toBe("revise");
+    } finally { await pair.close(); }
+  });
+
+  it("T-S04-5: an input-sourced carry_updated event carries no stepId", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-carry-input-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    const spec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { tasks: "string[]" },
+        output: { from: "${finish.output}", contract: "Result" },
+        carry: { wave: { initial: "${input.tasks}" } },
+        steps: [{ id: "finish", do: "finish", out: "Result" }],
+      } },
+    };
+    try {
+      const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec, input: { tasks: ["t1"] } } }));
+      await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "finish", dispatchToken: readyToken(planned), result: { output: { value: "done" } },
+      } });
+      const audit = response(await pair.client.callTool({ name: "stratum_audit", arguments: { runId: planned.runId } }));
+      const events = audit.events as Array<Record<string, unknown>>;
+      const carryUpdated = events.find((event) => event.type === "carry_updated")!;
+      expect(carryUpdated).toBeDefined();
+      expect(carryUpdated.detail).toMatchObject({ reason: "initial" });
+      expect("stepId" in carryUpdated).toBe(false);
+    } finally { await pair.close(); }
+  });
+
+  it("T-S04-6: descriptor item reaches the consumer through every ready-bearing tool", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-p5-carry-item-tools-")); roots.push(root);
+    const pair = await connected({ engine: new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }) });
+    const spec = {
+      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", attempts: 2, fanout: {
+          over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none",
+          require: "all", merge: "sequential", steps: [{ do: "fan ${item}", out: "Result" }],
+        } }],
+      } },
+    };
+    try {
+      // stratum_plan (live)
+      const planned = response(await pair.client.callTool({ name: "stratum_plan", arguments: { spec, input: { items: ["a"] } } }));
+      expect((planned.ready as Array<Record<string, unknown>>)[0]).toMatchObject({ item: "a" });
+
+      // stratum_resume (live) — same run, no dispatch yet.
+      const resumed = response(await pair.client.callTool({ name: "stratum_resume", arguments: { runId: planned.runId } }));
+      expect((resumed.ready as Array<Record<string, unknown>>)[0]).toMatchObject({ item: "a" });
+
+      // stratum_step_done (live) — a failed attempt re-dispatches the same item.
+      const first = (planned.ready as Array<Record<string, unknown>>)[0]!;
+      const failed = response(await pair.client.callTool({ name: "stratum_step_done", arguments: {
+        runId: planned.runId, stepId: "fan/0", dispatchToken: first.dispatchToken, result: { failure: "retry me" },
+      } }));
+      expect((failed.ready as Array<Record<string, unknown>>)[0]).toMatchObject({ item: "a" });
+
+      // stratum_gate_resolve carrying an item-bearing descriptor is exercised live above
+      // (the T-S04-3 carry test's re-fan after `assess_gate` revise). stratum_revert has no
+      // live path that both re-fans a consumer AND satisfies assertNoForegroundFanout at the
+      // checkpoint boundary in one flow, so it gets a literal contract-shape assertion instead
+      // (the same escape hatch p4.test.ts's declaredAheadOfEmission uses).
+      await expect(assertToolResponse("stratum_revert", {
+        status: "ready", runId: planned.runId,
+        ready: [{
+          id: "fan/0", do: "fan a", agent: "claude", attempt: 1, epoch: 0, dispatchToken: "d",
+          flow: "main", step: "fan", stage: 0, isFinalStage: true, itemIndex: 0, item: "a", generation: 0,
+          contract: null, contractDigest: null,
+          policy: { isolation: "none", merge: "sequential", pre_merge: [] },
+          revisionDigest: "a".repeat(64),
+        }],
+        ledger: { spent: {} }, reverted_to: "pre",
+      })).resolves.toBeUndefined();
     } finally { await pair.close(); }
   });
 });

@@ -1,5 +1,5 @@
 {
-  "surface": 17,
+  "surface": 18,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -133,6 +133,7 @@
                   "stage": "number",
                   "isFinalStage": "boolean",
                   "itemIndex": "number",
+                  "item": "any",
                   "generation": "number",
                   "contract": {
                     "$oneOf": [
@@ -255,6 +256,7 @@
                   "stage": "number",
                   "isFinalStage": "boolean",
                   "itemIndex": "number",
+                  "item": "any",
                   "generation": "number",
                   "contract": {
                     "$oneOf": [
@@ -426,6 +428,7 @@
                   "stage": "number",
                   "isFinalStage": "boolean",
                   "itemIndex": "number",
+                  "item": "any",
                   "generation": "number",
                   "contract": {
                     "$oneOf": [
@@ -541,6 +544,7 @@
                   "stage": "number",
                   "isFinalStage": "boolean",
                   "itemIndex": "number",
+                  "item": "any",
                   "generation": "number",
                   "contract": {
                     "$oneOf": [
@@ -623,28 +627,32 @@
           "events": "array",
           "steps": "object",
           "flowSpent": "object",
-          "output?": "any"
+          "output?": "any",
+          "carry?": "object"
         },
         "completed": {
           "runId": "string",
           "events": "array",
           "steps": "object",
           "flowSpent": "object",
-          "output?": "any"
+          "output?": "any",
+          "carry?": "object"
         },
         "failed": {
           "runId": "string",
           "events": "array",
           "steps": "object",
           "flowSpent": "object",
-          "output?": "any"
+          "output?": "any",
+          "carry?": "object"
         },
         "budget_exhausted": {
           "runId": "string",
           "events": "array",
           "steps": "object",
           "flowSpent": "object",
-          "output?": "any"
+          "output?": "any",
+          "carry?": "object"
         }
       }
     },
@@ -690,6 +698,7 @@
                   "stage": "number",
                   "isFinalStage": "boolean",
                   "itemIndex": "number",
+                  "item": "any",
                   "generation": "number",
                   "contract": {
                     "$oneOf": [

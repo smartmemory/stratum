@@ -266,6 +266,7 @@ Named contract references use an initial capital letter. Recursive contract refe
 | `steps` | yes | Array of strict step objects |
 | `budget` | no | Positive limits for one or more of `usd`, `tokens`, `dispatches`, or `ms` |
 | `max_rounds` | no | Positive integer required when a gate can revise to an ancestor |
+| `carry` | no | Named loop-carried flow values; entry flow only |
 
 The `output.from` value must be one full reference to a step output with a known contract. A fanout output is an array, so a flow output must select an item such as `${fan.output[0]}`.
 
@@ -299,10 +300,55 @@ V1 uses `${...}` references in task templates, subflow inputs, fanout sources, a
 | `${fan.output[0].field}` | Field in one fanout item output |
 | `${item}` | Current item inside a fanout stage task |
 | `${prev}` | Previous stage output for the same fanout item |
+| `${name}` | A declared carry variable |
+| `${name.field}` | Field inside a carry variable |
 
 A full-value reference preserves its JSON type in `with` and `fanout.over`. A reference embedded in other text is interpolated into a string. Step-output references create data dependencies. Use `after` for ordering dependencies that are not implied by references.
 
 Expressions in `ensure`, `when`, `set`, and `iterate.until` use the v1 expression bindings instead of `${...}` interpolation. `input` is the flow input. In an ensure, `result` is the output under test. In `when` and `set`, `result` is a mapping of completed step IDs to outputs. Fanout stage expressions also receive `item` and `prev`.
+
+### Carry
+
+The entry flow may declare a `carry:` block: a mapping from carry variable name to a shape with
+one required `initial` reference and an optional `on_revise` mapping.
+
+```yaml
+carry:
+  wave:
+    initial: "${plan.output.tasks}"
+    on_revise:
+      assess_gate: "${assess.output.tasks}"
+```
+
+`initial` and every `on_revise` value must be one full `${...}` reference, exactly like a
+step-output reference — no interpolation, no expression syntax. The `initial` source must be an
+unconditional, non-gate step that is not itself a gate's routing target. Materialisation happens
+once, the moment that source step succeeds.
+
+Each `on_revise` key names a gate step id. When that gate resolves with `revise`, the engine
+resolves the declared reference against the run's pre-reset scope and writes the result as the
+variable's new value, alongside provenance (which gate, its consumed token, the source epoch, and
+the round). A gate that declares nothing for a variable leaves it unchanged, so a merge-retry
+revise re-fans over the same list.
+
+A carry reference (`${name}` or `${name.field}`) is legal wherever a step-output reference is
+legal on a **rendered** field — `do`, `with`, `evaluate.in`, `fanout.over`, and a fanout stage's
+`do` — but is rejected in the six **expression** fields: `when`, `set`, a fanout stage's `when`,
+`iterate.until`, and `ensure` (both flow-level and stage-level). Carry values do not participate
+in the v1 expression bindings.
+
+A carry path may not begin with the exact segment `output` — `${wave.output}` collides with the
+step-output grammar and is rejected, while `${wave.outputs}` (or any other field name) is fine.
+
+Carry creates **no dependency edge**. A step that reads `${wave}` needs an explicit `after` to
+order it after the variable's `initial` source, and a gate that declares an `on_revise` for a
+variable must have a revise target whose reset closure covers every step that reads that
+variable, and the gate itself must be ordered (by `after`/routing, not merely mentioned) after
+those steps.
+
+Carry is entry-flow only — a subflow's spec may not declare `carry`, and a carry variable is not
+visible inside a subflow. Carry values are snapshotted with checkpoints (`stratum_commit` /
+`stratum_revert` restore them alongside step outputs) and are exposed by `stratum_audit`.
 
 ### Migrating v0.x Specs
 
@@ -716,6 +762,9 @@ Declare the gate directly on a step, as shown in the [full gate example](#full-e
 - Any non-null revise target requires flow-level `max_rounds`.
 - Gate-level `max_rounds` may impose a tighter positive limit on that gate.
 - A gate step accepts only common fields and the nested `gate` object.
+- A revise at a gate that declares `on_revise` for a carry variable rewrites that variable
+  before the reset. A gate that declares nothing for a variable leaves it unchanged, so a
+  merge-retry revise re-fans over the same list.
 
 ### Resolution
 

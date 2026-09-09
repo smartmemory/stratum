@@ -170,6 +170,10 @@ export interface ConsumerDispatchDescriptor extends ReadyStep {
   stage: number;
   isFinalStage: boolean;
   itemIndex: number;
+  /** The resolved fanout element for this item. Computed from `over`, never persisted:
+   *  the carried list can only change at a gate that runs after the fanout settles, and
+   *  that revise resets the fanout, so no in-flight item can observe a rewritten list. */
+  item: unknown;
   generation: number;
   contract: { root: string; contracts: Record<string, Record<string, string>> } | null;
   contractDigest: string | null;
@@ -245,6 +249,7 @@ export interface AuditTrail {
   steps: Record<string, StepState>;
   flowSpent: Budget;
   output?: unknown;
+  carry?: Record<string, CarryEntry>;
 }
 
 export interface StratumEngineOptions {
@@ -827,7 +832,7 @@ export class StratumEngine {
     // holds: audit is the consumer's discovery surface (D5) and a token minted
     // on the live object must stay invisible until its save lands.
     const run = await this.store.load(runId);
-    return { runId, status: run.status, events: structuredClone(run.events), steps: structuredClone(run.steps), flowSpent: structuredClone(run.flowSpent), ...(run.output !== undefined ? { output: structuredClone(run.output) } : {}) };
+    return { runId, status: run.status, events: structuredClone(run.events), steps: structuredClone(run.steps), flowSpent: structuredClone(run.flowSpent), ...(run.output !== undefined ? { output: structuredClone(run.output) } : {}), ...(run.carry !== undefined ? { carry: structuredClone(run.carry) } : {}) };
   }
 
   /** Restart-safe read-only wait surface: events are sliced from the persisted spine. */
@@ -2459,6 +2464,7 @@ export class StratumEngine {
       stage: item.stage,
       isFinalStage: item.stage === step.fanout.steps.length - 1,
       itemIndex: item.index,
+      item: values[item.index],
       generation: item.generation,
       contract: closure,
       contractDigest: closure === null ? null : digest(closure),
