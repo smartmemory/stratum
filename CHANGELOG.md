@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **STRAT-FLOW-CANCEL-FG blueprint** written and verified (`docs/features/STRAT-FLOW-CANCEL-FG/blueprint.md`):
+  three slices, 134 refs verified, four Codex sol/high rounds (39 findings) folded. Design pivoted in
+  review from a lockless sidecar to a cross-process run lock plus a driver lease; v1 boundary is
+  stated in §2.1b. Round-4 fixes not re-reviewed; see its Review log.
+
 - **STRAT-LOOP-CARRY S04 (surfaces)**: consumer descriptor gains `item` (the resolved fanout
   element), `stratum_audit` returns `carry` with provenance, MCP surface 17→18, version 0.5.0
   (compose must take a minor when it adopts the surface). README documents `carry:`.
