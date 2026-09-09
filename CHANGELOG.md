@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **STRAT-LOOP-CARRY S04 (surfaces)**: consumer descriptor gains `item` (the resolved fanout
+  element), `stratum_audit` returns `carry` with provenance, MCP surface 17→18, version 0.5.0
+  (compose must take a minor when it adopts the surface). README documents `carry:`.
 - **STRAT-LOOP-CARRY S03 (runtime)**: carry scope shared with the run, `${name}` resolution,
   staged atomic `materialiseCarry` (top of advance + after in-loop set/evaluate settles),
   mutation-free revise preflight then carry write + reset + single persist.

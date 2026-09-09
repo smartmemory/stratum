@@ -979,7 +979,7 @@ describe("P4 frozen contracts", () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
     expect(eventsContract.events).toBe(3);
-    expect(surface.surface).toBe(17);
+    expect(surface.surface).toBe(18);
     expect(Object.keys(surface.tools)).toHaveLength(24);
 
     const allEvents: AuditEvent[] = [];
@@ -1128,11 +1128,25 @@ describe("P4 frozen contracts", () => {
     });
     await collect(g, gPlanned.runId);
 
+    // Run H — carry: materialising an `initial` value emits carry_updated for real, so the
+    // vocabulary assertion below sees a genuine emission rather than a declared-ahead literal.
+    const h = await engine();
+    const hSpec = {
+      version: 1, contracts: { TaskGraph: { tasks: "string[]" } }, flows: { entry: "main", main: {
+        input: { goal: "string" }, output: { from: "${plan.output}", contract: "TaskGraph" },
+        carry: { wave: { initial: "${plan.output.tasks}" } },
+        steps: [{ id: "plan", do: "plan ${input.goal}", out: "TaskGraph" }],
+      } },
+    };
+    const hPlanned = await h.plan(hSpec, { goal: "g" });
+    if (hPlanned.status !== "ready") throw new Error("expected plan to be ready");
+    await h.stepDone(hPlanned.runId, "plan", { output: { tasks: ["t1"] } }, hPlanned.ready[0]!.dispatchToken);
+    await collect(h, hPlanned.runId);
+
     for (const { engine: source, runId } of runIds) allEvents.push(...(await source.audit(runId)).events);
 
     // S02/S01 declare these kinds' exact strict shapes now, but the emitters ship in later
-    // slices (carry_updated in STRAT-LOOP-CARRY S03). Keep full-vocabulary coverage without
-    // pretending the current engine emitted them.
+    // slices. Keep full-vocabulary coverage without pretending the current engine emitted them.
     const declaredAheadOfEmission: AuditEvent[] = [
       {
         at: "2026-08-30T00:00:00.000Z", type: "step_reset", stepId: "build",
@@ -1141,11 +1155,6 @@ describe("P4 frozen contracts", () => {
       {
         at: "2026-08-30T00:00:00.000Z", type: "checkpoint_reverted",
         detail: { label: "before", receiptsAtRevert: 1, stepsRestored: ["build"] },
-      },
-      // STRAT-LOOP-CARRY S03 emits this
-      {
-        at: "2026-08-30T00:00:00.000Z", type: "carry_updated", stepId: "build",
-        detail: { name: "wave", reason: "initial", provenance: { kind: "initial", sourceStep: "build", sourceEpoch: 0, at: "2026-08-30T00:00:00.000Z" } },
       },
     ];
 
