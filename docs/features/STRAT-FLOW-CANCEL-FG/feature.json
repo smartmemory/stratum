@@ -1,0 +1,20 @@
+{
+  "code": "STRAT-FLOW-CANCEL-FG",
+  "description": "Foreground flow cancel addressable by flow id. Consumer fanout is rejected in background flows (engine.ts), so compose runs team builds as foreground flows; the only durable flow-cancel operation is flowCancelBg, and foreground agent cancellation needs the per-call cancellationId held by the MCP server that started the call (mcp/server.ts). A second process (compose build --abort opens a fresh client) therefore cannot cancel a running foreground build or its agents. Add a foreground cancel surface keyed by flow id: mark the run cancelling in the persisted record, propagate to in-flight agent runs through their recorded cancellation ids, refuse any consumer result or patch captured after the cancel mark, and settle the run as cancelled with an acknowledgement (0.4.0 acknowledged-cancellation semantics). Expose it on the CLI and MCP surface. First consumer: compose COMP-FABLE-ASTRA (D5) and the general compose build --abort defect. Standalone Tickets M high",
+  "status": "PLANNED",
+  "created": "2026-09-09",
+  "profile": {
+    "needs_prd": true,
+    "needs_architecture": true,
+    "needs_verification": true,
+    "needs_report": true
+  },
+  "updated": "2026-09-09",
+  "links": [
+    {
+      "kind": "related",
+      "to_code": "COMP-FABLE-ASTRA",
+      "note": "first consumer (compose)"
+    }
+  ]
+}
