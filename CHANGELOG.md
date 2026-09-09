@@ -7,7 +7,8 @@
 - **STRAT-LOOP-CARRY** (PLANNED, M): a declared `carry:` flow variable with an `initial`
   expression and per-gate `on_revise` updates, evaluated under the gate token before the
   reset and persisted with provenance, so a fanout can re-fan over a re-planned list without
-  a routing cycle. Also exposes the resolved item on the consumer descriptor.
+  a routing cycle. Also exposes the resolved item on the consumer descriptor, which two
+  compose seams depend on (ownership enforcement at merge, per-item tier routing).
 - **STRAT-FLOW-CANCEL-FG** (PLANNED, M): a foreground flow cancel keyed by flow id, since
   consumer fanout is foreground-only and the per-call cancellation id lives in the starting
   MCP server process, which leaves a second process unable to cancel a running build.

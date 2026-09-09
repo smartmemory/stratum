@@ -31,7 +31,13 @@ carry:
 - Revise transaction: under the gate token, evaluate the declared expression, write the new
   value plus provenance `{gate, gateToken, sourceEpoch}` into the run record, run `resetFrom`,
   persist once. A gate with no declaration for the variable leaves it unchanged.
-- Consumer descriptor gains `item` (the resolved fanout element) beside `itemIndex`.
+- Consumer descriptor gains `item` (the resolved fanout element) beside `itemIndex`, persisted
+  in the run record. This is a first-class deliverable with two compose consumers: D4
+  (`files_owned` enforcement at merge) and D6 (per-item tier resolution, so Fable assigns
+  `critical | standard | fast` per task). The stage `agent` literal is unchanged; provider
+  stays per stage. Cross-provider per-item routing is a separate future ticket (the
+  STRAT-AGENT-INTERP row marked COMPLETE in compose's roadmap describes the retired Python
+  engine; the TS IR has `agent: z.enum(["claude","codex"])` at `ts/src/ir/schema.ts:41,65`).
 - Codex sol/high round-2 review of COMP-FABLE-ASTRA confirmed this transaction preserves
   resume, replay and audit invariants given the existing gate lock and single persistence
   boundary (engine.ts gate resolution, `resetFrom`).
