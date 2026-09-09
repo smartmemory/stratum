@@ -452,7 +452,7 @@ export async function cancelBackgroundRun(runId: string, options: RegistryOption
   return { status: "cancelled", runId };
 }
 
-async function newRunDir(root: string): Promise<{ runId: string; runDir: string }> {
+export async function newRunDir(root: string): Promise<{ runId: string; runDir: string }> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   while (true) {
     const runId = randomBytes(6).toString("hex");
@@ -463,7 +463,7 @@ async function newRunDir(root: string): Promise<{ runId: string; runDir: string 
   }
 }
 
-async function atomicWriteJson(path: string, value: unknown): Promise<void> {
+export async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(value, null, 2), { encoding: "utf8", mode: 0o600 });

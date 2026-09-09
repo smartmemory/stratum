@@ -5,6 +5,8 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } fr
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
+import { createForegroundRun, killAndReapGroup, recordForegroundGroup, settleForegroundRun } from "../connectors/foreground_registry.js";
+import { procStartTime } from "../connectors/proc_identity.js";
 import type { ConnectorEventHandler } from "../connectors/base.js";
 import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { createEvaluator } from "../eval/expr.js";
@@ -27,7 +29,7 @@ const SERVER_VERSION: string = JSON.parse(
 ).version;
 
 export interface McpDependencies {
-  engine?: Pick<StratumEngine, "plan" | "stepDone" | "usageReport" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg">;
+  engine?: Pick<StratumEngine, "plan" | "stepDone" | "usageReport" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg" | "admitFlowAgent">;
   runAgent?: typeof runAgent;
   pollBackgroundRun?: typeof pollBackgroundRun;
   cancelBackgroundRun?: typeof cancelBackgroundRun;
@@ -41,6 +43,12 @@ export interface McpDependencies {
    */
   heartbeatMs?: number;
   cancellationTimeoutMs?: number;
+  /** Root of the foreground agent registry (R1-9). Without it every test would write to the
+   *  developer's real `~/.stratum` and two dispatchers could not be isolated from each other. */
+  foregroundRegistryRoot?: string;
+  /** State root for the DEFAULT engine only (R2-8): it names where `admitFlowAgent` reads the
+   *  run record. An injected engine already carries its own root. */
+  flowStateRoot?: string;
 }
 
 export type ToolName =
@@ -74,15 +82,16 @@ export function judgeBackend(env: NodeJS.ProcessEnv = process.env): "openai" | "
   return env.OPENAI_API_KEY ? "openai" : "codex";
 }
 
-function defaultEngine(): StratumEngine {
+function defaultEngine(stateRoot?: string): StratumEngine {
   const backend = judgeBackend();
   const judge = backend === "openai"
     ? (predicate: Parameters<typeof evaluateJudged>[0], context: Parameters<typeof evaluateJudged>[1]) => evaluateJudged(predicate, context)
     : backend === "codex"
       ? (predicate: Parameters<typeof evaluateJudged>[0], context: Parameters<typeof evaluateJudged>[1]) => evaluateJudgedViaCodex(predicate, context)
       : createFixtureJudge();
+  const resolvedRoot = stateRoot ?? process.env.STRATUM_STATE_ROOT;
   return new StratumEngine({
-    ...(process.env.STRATUM_STATE_ROOT ? { stateRoot: process.env.STRATUM_STATE_ROOT } : {}),
+    ...(resolvedRoot ? { stateRoot: resolvedRoot } : {}),
     evaluator: createEvaluator(),
     judge,
     evaluateRunner: createEvaluateRunner(),
@@ -102,6 +111,24 @@ async function registryError(envelope: string, errorCode: ErrorCode, message: st
 /** Rejects a request field before the contract check can run — the cancellation
  * bookkeeping below must be in place before any awaited contract I/O, so these
  * few fields are validated by hand and reported in the declared shape. */
+/** The admission refusals from `engine.admitFlowAgent` (R3-7), mapped onto their declared
+ *  envelopes. Both the pre-spawn and the post-stamp check report through here, so a refusal
+ *  reaches the client as a contract error rather than a generic provider failure.
+ *
+ *  `status` is optional because the engine's admission error carries no status field: the run
+ *  may be terminal, cancelled, missing or unreadable, and fabricating a value here would be
+ *  exactly the hardcoded status R1-5 forbids. */
+async function admissionError(error: unknown, runId: string): Promise<McpError> {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  const envelope = code === "FLOW_ADMISSION_FAILED" ? "flow_admission_failed" : "flow_not_running";
+  const detail = error instanceof Error ? error.message : String(error);
+  return registryError(envelope, ErrorCode.InvalidRequest, detail, { code: envelope, runId });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function inputValidationError(path: string, message: string): Promise<McpError> {
   return registryError("input_validation_failed", ErrorCode.InvalidParams, message, {
     code: "input_validation_failed",
@@ -110,7 +137,12 @@ function inputValidationError(path: string, message: string): Promise<McpError> 
 }
 
 export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDispatcher {
-  const engine = dependencies.engine ?? defaultEngine();
+  const engine = dependencies.engine ?? defaultEngine(dependencies.flowStateRoot);
+  const registryOptions = { ...(dependencies.foregroundRegistryRoot !== undefined ? { registryRoot: dependencies.foregroundRegistryRoot } : {}) };
+  // Captured once per dispatcher: `serverProcStartTime` is what lets a sweeping canceller tell
+  // a departed server from a recycled pid (R3-6). A failure to read it leaves the field absent,
+  // and an entry without it is simply never eligible for the dead-owner exception.
+  const selfStartTime: Promise<string | undefined> = procStartTime(process.pid).catch(() => undefined);
   const agentRun = dependencies.runAgent ?? runAgent;
   const agentPoll = dependencies.pollBackgroundRun ?? pollBackgroundRun;
   const agentCancel = dependencies.cancelBackgroundRun ?? cancelBackgroundRun;
@@ -128,12 +160,26 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         foreground.get(request.runId)?.controller.abort(new Error("Foreground agent run cancelled"));
       }
       let cancellationId: string | undefined;
+      let registryId: string | undefined;
+      let flowRunId: string | undefined;
+      // Serialises the per-run meta.json read-modify-write: two spawns cannot interleave.
+      let registryWrites: Promise<void> = Promise.resolve();
+      // The FIRST registry failure, kept so the tool reports the real cause. Aborting the
+      // controller makes the connector reject too, and that downstream "cancelled" would
+      // otherwise reach the client instead of the refusal that caused it.
+      let registryFailure: unknown;
       let controller: AbortController | undefined;
       let settle: (() => void) | undefined;
       let unlink: (() => void) | undefined;
       let succeeded = false;
       let teardownFailure: Error | undefined;
       try {
+        if (tool === "stratum_agent_run" && request.flow !== undefined && request.cancellationId === undefined) {
+          // Hand-validated here for the same reason the cancellationId checks are: the
+          // bookkeeping must be in place before any awaited contract I/O. The SHAPE of `flow`
+          // is still validated by assertToolRequest.
+          throw await inputValidationError("flow", "flow requires a cancellationId: without a process group there is nothing to cancel");
+        }
         if (tool === "stratum_agent_run" && request.cancellationId !== undefined) {
           if (typeof request.cancellationId !== "string"
             || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.cancellationId)) {
@@ -146,6 +192,38 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           const settled = new Promise<void>((resolve) => { settle = resolve; });
           foreground.set(cancellationId, { controller, settled });
           unlink = linkAbort(context.signal, controller);
+          if (isRecord(request.flow)) {
+            const flow = {
+              runId: string(request.flow, "runId"),
+              ...(typeof request.flow.stepId === "string" ? { stepId: request.flow.stepId } : {}),
+              ...(typeof request.flow.itemIndex === "number" ? { itemIndex: request.flow.itemIndex } : {}),
+            };
+            flowRunId = flow.runId;
+            const serverStartTime = await selfStartTime;
+            // Throws on failure — a run whose record could not be written is an agent nobody
+            // can cancel, the same hazard background.ts:191-196 refuses to accept.
+            registryId = await createForegroundRun({
+              foreground: true,
+              state: "starting",
+              agent: String(request.agent) as "claude" | "codex",
+              cancellationId,
+              serverPid: process.pid,
+              ...(serverStartTime !== undefined ? { serverProcStartTime: serverStartTime } : {}),
+              flow,
+              cwd: string(request, "cwd"),
+              ...(typeof request.model === "string" ? { model: request.model } : {}),
+              createdAt: new Date().toISOString(),
+              groups: [],
+            }, registryOptions);
+            // R1-3 check 1: the flow may have been cancelled while this request was in
+            // flight. Refuse BEFORE spawning anything.
+            try {
+              await engine.admitFlowAgent(flow.runId);
+            } catch (error) {
+              await settleForegroundRun(registryId, registryOptions).catch(() => undefined);
+              throw await admissionError(error, flow.runId);
+            }
+          }
         }
         await assertToolRequest(tool, request);
         let response: Record<string, unknown>;
@@ -210,6 +288,49 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           const executed = await agentRun({
             agent: string(request, "agent") as "claude" | "codex",
             ...(cancellationId !== undefined ? { ownProcessGroup: true } : {}),
+            ...(registryId !== undefined ? {
+              onSpawn: (pid: number) => {
+                // R2-6: attach the rejection handler to THIS link immediately. A promise
+                // chained but not observed until the finally would let the successful agent
+                // result be returned first, and the caller would never learn the group was
+                // unrecorded — an uncancellable orphan reported as success.
+                registryWrites = registryWrites.then(async () => {
+                  const recorded = await recordForegroundGroup(registryId!, pid, registryOptions);
+                  // procStartTime returns undefined when libproc is unreachable
+                  // (proc_identity.ts:50-58, darwin fails closed). An entry without it can
+                  // NEVER be signalled (:80-83), so it is a registration FAILURE, not a
+                  // degraded success.
+                  if (recorded.procStartTime === undefined) {
+                    throw Object.assign(new Error("could not capture process start time; agent would be uncancellable"), { code: "REGISTRY_WRITE_FAILED" });
+                  }
+                  // R1-3 check 2: the cancel may have swept between the pre-spawn check and
+                  // this pid landing. If so this group is ours to kill, right now.
+                  try {
+                    await engine.admitFlowAgent(flowRunId!);
+                  } catch (error) {
+                    // R3-8: the recorded identity is REQUIRED to signal a group. It was just
+                    // written above, so pass it explicitly rather than re-reading the file.
+                    await killAndReapGroup(pid, { startTime: recorded.procStartTime });
+                    throw await admissionError(error, flowRunId!);
+                  }
+                }).catch(async (error: unknown) => {
+                  // Any failure in this link — write, start-time capture, or the cancel check
+                  // — kills the child and fails the call. It aborts the controller too, so the
+                  // agent run itself unwinds rather than completing into a rejected chain.
+                  // With no recorded identity there is no group kill at all (invariant 15b);
+                  // the controller is then the only honest handle on the child.
+                  registryFailure ??= error;
+                  controller?.abort(error instanceof Error ? error : new Error(String(error)));
+                  await killAndReapGroup(pid, registryOptions).catch(() => undefined);
+                  await settleForegroundRun(registryId!, registryOptions).catch(() => undefined);
+                  throw error;
+                });
+                // Mark the rejection observed without consuming it: the awaits below still see
+                // a rejected promise, but Node does not report it as unhandled in the window
+                // before they run.
+                void registryWrites.catch(() => undefined);
+              },
+            } : {}),
             prompt: string(request, "prompt"),
             cwd: string(request, "cwd"),
             // Presence-based forwarding, NOT truthiness: sandboxMode:"" must reach
@@ -227,6 +348,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             ...(request.effort !== undefined ? { effort: string(request, "effort") } : {}),
           });
           unlink?.(); // Provider finished; a late disconnect cannot cancel a completed run.
+          // R3-8: the registry must be durable BEFORE this run counts as successful. A
+          // rejection here propagates as the tool's error, which is the honest outcome: the
+          // agent ran, but nobody could have cancelled it.
+          await registryWrites;
           succeeded = true;
           response = "status" in executed ? { ...executed } : { status: "complete", ...executed };
           break;
@@ -313,6 +438,8 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           await assertToolResponse(tool, response);
           return response;
         }
+        // A registry refusal is the cause; the connector's abort is its consequence (R3-8).
+        if (registryFailure !== undefined) throw registryFailure;
         if (tool === "stratum_agent_run" || tool === "stratum_cancel_agent_run") {
           // An McpError already carries a declared code and payload — rewrapping it
           // as agent_run_failed would replace a precise contract error (a rejected
@@ -331,6 +458,17 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         return response;
       } finally {
         unlink?.();
+        if (registryId !== undefined) {
+          // Not swallowed (R1-3, R2-6): a rejected group write already aborted the controller
+          // and killed its child in its own handler, and the try body awaits this chain before
+          // returning success — so reaching here means either success or an error already on
+          // its way to the client. Ordered BEFORE settle?.() so a cancel awaiting
+          // `running.settled` cannot observe an unsettled record after the acknowledgement.
+          await registryWrites.catch(() => undefined);
+          // The one place a swallow is right: the run is over, and a failure to stamp costs
+          // only a stale entry, which the sweep reports as unreachable once the pid is gone.
+          await settleForegroundRun(registryId, registryOptions).catch(() => undefined);
+        }
         if (cancellationId !== undefined && controller) {
           completed.set(cancellationId, teardownFailure ?? (succeeded ? "already_complete" : controller.signal.aborted ? "cancelled" : "already_error"));
           foreground.delete(cancellationId);

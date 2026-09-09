@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **STRAT-FLOW-CANCEL-FG S02 (foreground agent registry)**: durable `~/.stratum/ts/agent_fg/<12hex>/meta.json`
+  records for cancellable foreground agent runs, a sibling of the background registry so a
+  foreground entry can never be loaded and killed as a detached background run. `stratum_agent_run`
+  accepts `flow: {runId, stepId?, itemIndex?}` (legal only with `cancellationId`); the record is
+  written `starting` before the spawn, stamped `running` with each child's pid and start time
+  through a new `onSpawn` connector callback, and stamped `settled` in the dispatcher's finally.
+  `engine.admitFlowAgent` gates the spawn before it happens and again after each pid lands, failing
+  closed (`flow_not_running`, `flow_admission_failed`); a failed registry write aborts the run, kills
+  and reaps the child, and fails the call. `signalFlowAgents`/`reapFlowAgents` sweep a flow's agents
+  from any process under one absolute deadline, rescanning so a mid-spawn agent cannot escape, with
+  per-id and per-pid accounting (`signalled`/`reaped`/`unreachable`/`alreadySettled`/`unresolved`/`unsettled`).
 - **STRAT-FLOW-CANCEL-FG S01 (engine)**: cross-process run lock (`engine/run_lock.ts`: hard-link
   publication, tri-state process identity, dead-only stale takeover), driver lease on pinned runs,
   every persist under the lock, `cancelled` RunStatus, `flowCancel` settle transaction, resume /

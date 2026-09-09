@@ -16,6 +16,10 @@ export interface AgentRunOptions {
   background?: boolean;
   signal?: AbortSignal;
   ownProcessGroup?: boolean;
+  /** Group-leader pid of each cancellable child, reported as it spawns (S02-1). Forwarded to
+   *  the foreground connectors only: a background run already records its own pid
+   *  (background.ts:176-191). */
+  onSpawn?: (pid: number) => void;
   thinking?: Record<string, unknown>;
   effort?: string;
   sandboxMode?: CodexSandboxMode;
@@ -97,6 +101,7 @@ export async function runAgent(
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.onSpawn !== undefined ? { onSpawn: options.onSpawn } : {}),
       ...(boundaries.codexSpawn !== undefined ? { spawn: boundaries.codexSpawn } : {}),
       ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
@@ -112,6 +117,7 @@ export async function runAgent(
     ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
     ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
     ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.onSpawn !== undefined ? { onSpawn: options.onSpawn } : {}),
     ...(boundaries.claudeQuery !== undefined ? { query: boundaries.claudeQuery } : {}),
     ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
   }).run(options.prompt);

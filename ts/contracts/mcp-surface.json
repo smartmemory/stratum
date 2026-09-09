@@ -38,6 +38,19 @@
         }
       }
     },
+    "flow_not_running": {
+      "data": {
+        "code": "string",
+        "runId": "string",
+        "status?": "string"
+      }
+    },
+    "flow_admission_failed": {
+      "data": {
+        "code": "string",
+        "runId": "string"
+      }
+    },
     "agent_run_failed": {
       "data": {
         "code": "string",
@@ -934,7 +947,12 @@
         },
         "thinking?": "object",
         "effort?": "string",
-        "cancellationId?": "string"
+        "cancellationId?": "string",
+        "flow?": {
+          "runId": "string",
+          "stepId?": "string",
+          "itemIndex?": "number"
+        }
       },
       "responses": {
         "complete": {

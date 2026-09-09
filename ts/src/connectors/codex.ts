@@ -38,6 +38,11 @@ export interface CodexConnectorOptions {
   signal?: AbortSignal;
   ownProcessGroup?: boolean;
   cancellationGraceMs?: number;
+  /** Group-leader pid of the cancellable child, reported as it spawns (S02-1). Invoked only
+   *  when ownProcessGroup is true: a non-detached child is not a group leader, so recording
+   *  it would produce an entry that fails the processGroupId(pid) === pid gate anyway.
+   *  Called synchronously; never awaited. */
+  onSpawn?: (pid: number) => void;
   cwd?: string;
   sandboxMode?: CodexSandboxMode;
   env?: NodeJS.ProcessEnv;
@@ -173,6 +178,7 @@ export class CodexConnector {
   private readonly sdkFactory: CodexSdkFactory;
   private readonly spawn: SpawnProcess;
   private readonly onEvent: ConnectorEventHandler | undefined;
+  private readonly onSpawn: ((pid: number) => void) | undefined;
 
   constructor(options: CodexConnectorOptions = {}) {
     this.model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
@@ -197,6 +203,7 @@ export class CodexConnector {
     this.sdkFactory = options.sdkFactory ?? defaultSdkFactory;
     this.spawn = options.spawn ?? (nodeSpawn as SpawnProcess);
     this.onEvent = options.onEvent;
+    this.onSpawn = options.onSpawn;
   }
 
   async run(prompt: string): Promise<ConnectorResult> {
@@ -276,6 +283,7 @@ export class CodexConnector {
       env: this.env,
       detached: this.ownProcessGroup && process.platform !== "win32",
     });
+    if (this.ownProcessGroup && child.pid !== undefined) this.onSpawn?.(child.pid);
     const termination = processTermination(child, this.ownProcessGroup, this.graceMs);
     const killGroup = (): void => { void termination.terminate(); };
     const abort = killGroup;
