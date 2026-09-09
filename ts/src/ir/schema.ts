@@ -125,6 +125,19 @@ export const ContractSchema = z.custom<Record<string, string>>(
 ).superRefine(rejectReservedFields).pipe(z.record(ContractFieldNameSchema, z.string()));
 export const ContractsSchema = z.record(z.string().regex(PATH_FIELD_PATTERN), ContractSchema);
 
+// Carry names use StepIdSchema (STEP_ID_PATTERN), not PATH_FIELD_PATTERN (R3-2): the
+// step-reference regex only claims lowercase step-id-shaped names, so a carry name must
+// share that charset for the `${name.output}` reservation (CARRY_PATH_RESERVED) to be total.
+export const CarryVariableSchema = z.object({
+  initial: z.string().min(1),
+  on_revise: z.record(StepIdSchema, z.string().min(1)).optional(),
+}).strict();
+
+export const CarrySchema = z.custom<Record<string, unknown>>(
+  (value) => typeof value === "object" && value !== null && !Array.isArray(value),
+  "carry must be an object",
+).superRefine(rejectReservedFields).pipe(z.record(StepIdSchema, CarryVariableSchema));
+
 export const FlowOutputSchema = z.object({
   from: z.string(),
   contract: z.string(),
@@ -135,6 +148,7 @@ export const FlowSchema = z.object({
   output: FlowOutputSchema,
   budget: BudgetSchema.optional(),
   max_rounds: z.number().int().positive().optional(),
+  carry: CarrySchema.optional(),
   steps: z.array(StepSchema),
 }).strict();
 

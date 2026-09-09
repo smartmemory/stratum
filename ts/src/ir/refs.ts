@@ -1,11 +1,16 @@
 export const STEP_ID_PATTERN = /^[a-z][a-z0-9_-]*$/;
 export const PATH_FIELD_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+// A step reference is ALWAYS `<id>.output` followed by end-of-source, `.` or `[`, so only
+// that exact first segment is reserved (R2-6): `${wave.outputValue}` and `${wave.outputs}`
+// stay carry references, `${wave.output.tasks}` does not.
+const STEP_OUTPUT_SEGMENT = /^\.output(?:$|\.|\[)/;
 
 export type PathSegment = string | number;
 
 export type Reference =
   | { kind: "input"; path: PathSegment[] }
   | { kind: "step"; stepId: string; path: PathSegment[] }
+  | { kind: "carry"; name: string; path: PathSegment[] }
   | { kind: "item" }
   | { kind: "prev" };
 
@@ -52,6 +57,15 @@ export function parseReference(source: string): Reference | undefined {
   if (source.startsWith("input.")) {
     const path = parsePath(source.slice("input".length));
     return path && path.length > 0 ? { kind: "input", path } : undefined;
+  }
+
+  // A carry variable is a bare flow-value name with an optional path. Same charset as
+  // STEP_ID_PATTERN (R3-2). Declined only when the remainder is exactly the reserved
+  // `.output` segment, which is claimed by the step-reference branch below.
+  const carry = /^([a-z][a-z0-9_-]*)(.*)$/.exec(source);
+  if (carry?.[1] !== undefined && !STEP_OUTPUT_SEGMENT.test(carry[2] ?? "")) {
+    const path = parsePath(carry[2] ?? "");
+    return path === undefined ? undefined : { kind: "carry", name: carry[1], path };
   }
 
   const match = /^([a-z][a-z0-9_-]*)\.output(.*)$/.exec(source);

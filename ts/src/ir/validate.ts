@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { expressionUsesFilePredicate } from "../eval/expr.js";
-import { extractReferences, referenceEdges, type PathSegment } from "./refs.js";
+import { extractReferences, referenceEdges, type PathSegment, type Reference } from "./refs.js";
 import { SpecificationSchema, type Flow, type Specification, type Step } from "./schema.js";
 
 export interface ValidationError {
@@ -223,21 +223,28 @@ function leaves(value: unknown, path: readonly (string | number)[]): Array<{ val
   return [];
 }
 
-function referencesInStep(step: Step, base: readonly (string | number)[]): Array<{ value: string; path: string; fanoutStage: boolean }> {
-  const result: Array<{ value: string; path: string; fanoutStage: boolean }> = [];
-  const add = (value: unknown, path: readonly (string | number)[], fanoutStage = false) => {
-    result.push(...leaves(value, path).map((leaf) => ({ ...leaf, fanoutStage })));
+export function referencesInStep(step: Step, base: readonly (string | number)[]): Array<{ value: string; path: string; fanoutStage: boolean; expression: boolean }> {
+  const result: Array<{ value: string; path: string; fanoutStage: boolean; expression: boolean }> = [];
+  const add = (value: unknown, path: readonly (string | number)[], fanoutStage = false, expression = false) => {
+    result.push(...leaves(value, path).map((leaf) => ({ ...leaf, fanoutStage, expression })));
   };
   if (step.do !== undefined) add(step.do, [...base, "do"]);
-  if (step.when !== undefined) add(step.when, [...base, "when"]);
-  if (step.set !== undefined) add(step.set, [...base, "set"]);
+  if (step.when !== undefined) add(step.when, [...base, "when"], false, true);
+  if (step.set !== undefined) add(step.set, [...base, "set"], false, true);
+  if (step.iterate?.until !== undefined) add(step.iterate.until, [...base, "iterate", "until"], false, true);
+  step.ensure?.forEach((predicate, index) => {
+    if ("expr" in predicate) add(predicate.expr, [...base, "ensure", index, "expr"], false, true);
+  });
   if (step.run !== undefined && step.with !== undefined) add(step.with, [...base, "with"]);
   if (step.evaluate?.in !== undefined) add(step.evaluate.in, [...base, "evaluate", "in"]);
   if (step.fanout !== undefined) {
     add(step.fanout.over, [...base, "fanout", "over"]);
     step.fanout.steps.forEach((stage, index) => {
       add(stage.do, [...base, "fanout", "steps", index, "do"], true);
-      if (stage.when !== undefined) add(stage.when, [...base, "fanout", "steps", index, "when"], true);
+      if (stage.when !== undefined) add(stage.when, [...base, "fanout", "steps", index, "when"], true, true);
+      stage.ensure?.forEach((predicate, ensureIndex) => {
+        if ("expr" in predicate) add(predicate.expr, [...base, "fanout", "steps", index, "ensure", ensureIndex, "expr"], true, true);
+      });
     });
   }
   return result;
@@ -288,6 +295,26 @@ function reaches(adjacency: Map<string, Edge[]>, from: string, target: string): 
     }
   }
   return false;
+}
+
+/** Mirrors engine.resetFrom's descendant closure (engine.ts:2226-2244): dependency
+ *  edges PLUS on_fail / gate approve+kill routes. Exported as the parity-test seam;
+ *  the engine keeps its own walk over live StepState, so the two must be pinned
+ *  against each other (T-S01-14). */
+export function resetClosure(flow: Flow, target: string): Set<string> {
+  const descendants = new Set<string>([target]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const step of flow.steps) {
+      if (descendants.has(step.id)) continue;
+      const viaDependency = [...dependencyIds(step)].some((dependency) => descendants.has(dependency));
+      const viaRoute = flow.steps.some((router) => descendants.has(router.id)
+        && (router.on_fail === step.id || router.gate?.on_approve === step.id || router.gate?.on_kill === step.id));
+      if (viaDependency || viaRoute) { descendants.add(step.id); grew = true; }
+    }
+  }
+  return descendants;
 }
 
 function flowEntries(spec: Specification): Array<[string, Flow]> {
@@ -360,10 +387,49 @@ export function validateSpec(input: unknown): ValidationResult {
     }
 
     const adjacency = new Map<string, Edge[]>();
+    // Dependency-only forward graph: `after` plus step-output refs, NO routing edges.
+    // Only these edges guarantee execution, which is what carry ordering needs (R1-4).
+    const dependencyEdges = new Map<string, Set<string>>();
+    const carryUses: Array<{ name: string; stepId: string; path: string }> = [];
     const add = (edge: Edge): ValidationError | undefined => {
       if (!ids.has(edge.from)) return { code: "ROUTING_UNKNOWN_TARGET", path: edge.path, message: `unknown step ${edge.from}` };
       if (!ids.has(edge.to)) return { code: "ROUTING_UNKNOWN_TARGET", path: edge.path, message: `unknown step ${edge.to}` };
       return addEdge(adjacency, edge);
+    };
+
+    /** Every type rule an ordinary `${}` reference obeys, shared by the per-step loop
+     *  and the carry pass (R1-3). Returns undefined when the reference is well typed.
+     *  Edge creation stays at the call site — carry creates no edges. */
+    const referenceTypeError = (reference: Reference, path: string): ValidationError | undefined => {
+      if (reference.kind === "input" && !containsPathInFields(inputFields, reference.path, parsed)) {
+        return { code: "REF_UNKNOWN_PATH", path, message: "unknown input path" };
+      }
+      if (reference.kind !== "step") return undefined;
+      const source = ids.get(reference.stepId);
+      // A step id that is a declared carry name can only be the reserved `${name.output…}`
+      // spelling (CARRY_NAME_CONFLICT already forbids a real collision) — R1-8. This arm is
+      // total only because carry names share the step-id charset (R3-2): every legal carry
+      // name is a legal step id, so the step regex always claims the reserved spelling.
+      if (!source && Object.hasOwn(flow.carry ?? {}, reference.stepId)) {
+        return { code: "CARRY_PATH_RESERVED", path, message: `carry paths may not begin with "output"; ${reference.stepId}.output reads as a step reference` };
+      }
+      if (!source) return { code: "REF_UNKNOWN_STEP", path, message: `unknown step ${reference.stepId}` };
+      if (source.step.fanout !== undefined && !source.step.fanout.steps.at(-1)?.out) {
+        return { code: "FANOUT_OUTPUT_REQUIRES_FINAL_OUT", path: `flows.${flowName}.steps[${source.index}].fanout.steps[${source.step.fanout.steps.length - 1}].out`, message: "fanout output requires final stage out" };
+      }
+      const sourceContract = contractForStep(source.step, flows);
+      if (!sourceContract) return { code: "REF_OUTPUT_CONTRACT_REQUIRED", path, message: "referenced output requires an out contract" };
+      if (source.step.fanout !== undefined) {
+        const [head, ...rest] = reference.path;
+        if (reference.path.length > 0 && (typeof head !== "number" || !containsPathInContract(sourceContract, rest, parsed))) {
+          return { code: "REF_UNKNOWN_PATH", path, message: "fanout output is an array — index it before accessing fields" };
+        }
+        return undefined;
+      }
+      if (!containsPathInContract(sourceContract, reference.path, parsed)) {
+        return { code: "REF_UNKNOWN_PATH", path, message: "unknown output path" };
+      }
+      return undefined;
     };
 
     for (const [index, step] of flow.steps.entries()) {
@@ -377,6 +443,13 @@ export function validateSpec(input: unknown): ValidationResult {
         if (error) return { ok: false, errors: [error] };
       }
 
+      if (step.fanout !== undefined) {
+        const overRefs = extractReferences(step.fanout.over);
+        if (!overRefs || overRefs.length !== 1 || !overRefs[0]!.fullValue) {
+          return { ok: false, errors: [{ code: "FANOUT_OVER_SINGLE_REF", path: formatPath([...base, "fanout", "over"]), message: "fanout over must be one full reference" }] };
+        }
+      }
+
       for (const leaf of referencesInStep(step, base)) {
         const extracted = extractReferences(leaf.value);
         if (!extracted) return { ok: false, errors: [{ code: "REF_INVALID", path: leaf.path, message: "invalid reference syntax" }] };
@@ -385,28 +458,19 @@ export function validateSpec(input: unknown): ValidationResult {
           if ((reference.kind === "item" || reference.kind === "prev") && !leaf.fanoutStage) {
             return { ok: false, errors: [{ code: "REF_INVALID_SCOPE", path: leaf.path, message: `${reference.kind} is only available in fanout stages` }] };
           }
-          if (reference.kind === "input" && !containsPathInFields(inputFields, reference.path, parsed)) {
-            return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: leaf.path, message: "unknown input path" }] };
+          if (reference.kind === "carry") {
+            // Carry is resolved by `resolve()` during template rendering. It is NOT a
+            // binding in the `expr` language, whose identifier set is closed at
+            // eval/expr.ts:5,22 to result|input|item|prev — so it is illegal on any
+            // expression-language field (R1-5).
+            if (leaf.expression) {
+              return { ok: false, errors: [{ code: "CARRY_REF_IN_EXPRESSION", path: leaf.path, message: "carry references are not available in expressions" }] };
+            }
+            carryUses.push({ name: reference.name, stepId: step.id, path: leaf.path });
           }
+          const typeError = referenceTypeError(reference, leaf.path);
+          if (typeError) return { ok: false, errors: [typeError] };
           if (reference.kind === "step") {
-            const source = ids.get(reference.stepId);
-            if (!source) return { ok: false, errors: [{ code: "REF_UNKNOWN_STEP", path: leaf.path, message: `unknown step ${reference.stepId}` }] };
-            if (source.step.fanout !== undefined && !source.step.fanout.steps.at(-1)?.out) {
-              return { ok: false, errors: [{ code: "FANOUT_OUTPUT_REQUIRES_FINAL_OUT", path: `flows.${flowName}.steps[${source.index}].fanout.steps[${source.step.fanout.steps.length - 1}].out`, message: "fanout output requires final stage out" }] };
-            }
-            const sourceContract = contractForStep(source.step, flows);
-            if (!sourceContract) return { ok: false, errors: [{ code: "REF_OUTPUT_CONTRACT_REQUIRED", path: leaf.path, message: "referenced output requires an out contract" }] };
-            if (source.step.fanout !== undefined) {
-              // A fanout's output is the ARRAY of per-item final-stage outputs:
-              // `${fan.output}` is the array itself, `${fan.output[0].field}`
-              // indexes an element — a bare field path is a type error.
-              const [head, ...rest] = reference.path;
-              if (reference.path.length > 0 && (typeof head !== "number" || !containsPathInContract(sourceContract, rest, parsed))) {
-                return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: leaf.path, message: "fanout output is an array — index it before accessing fields" }] };
-              }
-            } else if (!containsPathInContract(sourceContract, reference.path, parsed)) {
-              return { ok: false, errors: [{ code: "REF_UNKNOWN_PATH", path: leaf.path, message: "unknown output path" }] };
-            }
             for (const refEdge of referenceEdges(step.id, [extractedReference])) {
               const error = add({ ...refEdge, path: leaf.path });
               if (error) return { ok: false, errors: [error] };
@@ -475,6 +539,120 @@ export function validateSpec(input: unknown): ValidationResult {
         }] };
       }
     }
+
+    for (const step of flow.steps) {
+      for (const dependency of dependencyIds(step)) {
+        if (!dependencyEdges.has(dependency)) dependencyEdges.set(dependency, new Set());
+        dependencyEdges.get(dependency)!.add(step.id);
+      }
+    }
+    const reachesByDependency = (from: string, target: string): boolean => {
+      const queue = [from];
+      const seen = new Set(queue);
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (current === target) return true;
+        for (const next of dependencyEdges.get(current) ?? []) if (!seen.has(next)) { seen.add(next); queue.push(next); }
+      }
+      return false;
+    };
+
+    // --- STRAT-LOOP-CARRY ---------------------------------------------------
+    // Carry is root-only (D5) and adds NO dependency edge, so ordering and reset
+    // coverage are both proved statically here rather than discovered at runtime.
+    const carry = flow.carry ?? {};
+    const carryNames = new Set(Object.keys(carry));      // never `name in carry` — R1-11
+    const carryPath = `flows.${flowName}.carry`;
+    // Same construction the consumer-worktree rule uses at validate.ts:456-462; built once
+    // here because the carry pass needs it too (R2-2).
+    const routedTargets = new Set<string>();
+    for (const candidate of flow.steps) {
+      if (candidate.on_fail !== undefined) routedTargets.add(candidate.on_fail);
+      if (candidate.gate?.on_approve) routedTargets.add(candidate.gate.on_approve);
+      if (candidate.gate?.on_kill) routedTargets.add(candidate.gate.on_kill);
+    }
+    if (flow.carry !== undefined && flowName !== spec.flows.entry) {
+      return { ok: false, errors: [{ code: "CARRY_ROOT_ONLY", path: carryPath, message: "carry may only be declared on the entry flow" }] };
+    }
+
+    // Exactly one full-value ${} reference of kind step|input (D2), typed by the same
+    // rules an ordinary reference obeys (R1-3).
+    const carryReference = (value: string, path: string): Reference | ValidationError => {
+      const extracted = extractReferences(value);
+      if (!extracted || extracted.length !== 1 || !extracted[0]!.fullValue) {
+        return { code: "CARRY_REF_INVALID", path, message: "carry value must be one full reference" };
+      }
+      const reference = extracted[0]!.reference;
+      if (reference.kind !== "step" && reference.kind !== "input") {
+        return { code: "CARRY_REF_INVALID", path, message: "carry value must reference a step output or a flow input" };
+      }
+      return referenceTypeError(reference, path) ?? reference;
+    };
+
+    const carrySources = new Map<string, string | undefined>();   // name -> initial source step id
+    for (const [name, declaration] of Object.entries(carry)) {
+      if (name === "item" || name === "prev" || name === "input" || ids.has(name)) {
+        return { ok: false, errors: [{ code: "CARRY_NAME_CONFLICT", path: `${carryPath}.${name}`, message: "carry name is reserved or collides with a step id" }] };
+      }
+      const initial = carryReference(declaration.initial, `${carryPath}.${name}.initial`);
+      if ("code" in initial) return { ok: false, errors: [initial] };
+      if (initial.kind === "step") {
+        // The initial source must be UNCONDITIONAL. Three ways a step can fail to run:
+        //  - a `when` can skip it (engine advanceScopeLoop);
+        //  - a gate step never produces an output;
+        //  - a ROUTING target is inactive until routed (engine.isActivated, engine.ts:2217-2221)
+        //    and can be skipped outright (unreachableOnFailTarget, :2210-2215) — and a skipped
+        //    dependency satisfies its edge (dependenciesDone, :2287-2293), so ordering alone
+        //    would not save it. R2-2.
+        const source = ids.get(initial.stepId)!.step;
+        if (source.when !== undefined || source.gate !== undefined || routedTargets.has(initial.stepId)) {
+          return { ok: false, errors: [{ code: "CARRY_INITIAL_SOURCE_CONDITIONAL", path: `${carryPath}.${name}.initial`, message: "carry initial source must be an unconditional, non-gate, non-routed step" }] };
+        }
+      }
+      carrySources.set(name, initial.kind === "step" ? initial.stepId : undefined);
+    }
+
+    // Reference-side rules. carryUses was collected by the per-step loop (S01-6).
+    for (const use of carryUses) {
+      if (!carryNames.has(use.name)) {
+        return { ok: false, errors: [{ code: "REF_UNKNOWN_CARRY", path: use.path, message: `unknown carry variable ${use.name}` }] };
+      }
+      const source = carrySources.get(use.name);
+      if (source === undefined) continue;                       // input-sourced: available from step zero
+      if (source === use.stepId || !reachesByDependency(source, use.stepId)) {
+        return { ok: false, errors: [{ code: "CARRY_REF_BEFORE_INITIAL", path: use.path, message: `carry ${use.name} is not guaranteed materialised before ${use.stepId}` }] };
+      }
+    }
+
+    // on_revise coverage (R1-1). A gate that rewrites a variable must also reset every
+    // consumer of it, and must itself run after every consumer, or a step would keep a
+    // rendering derived from a list that has just changed.
+    for (const [name, declaration] of Object.entries(carry)) {
+      const consumers = carryUses.filter((use) => use.name === name).map((use) => use.stepId);
+      for (const [gateId, expression] of Object.entries(declaration.on_revise ?? {})) {
+        const gatePath = `${carryPath}.${name}.on_revise.${gateId}`;
+        const gateStep = ids.get(gateId)?.step;
+        if (gateStep?.gate === undefined) {
+          return { ok: false, errors: [{ code: "CARRY_UNKNOWN_GATE", path: gatePath, message: "on_revise key must be a gate step in this flow" }] };
+        }
+        const revise = carryReference(expression, gatePath);
+        if ("code" in revise) return { ok: false, errors: [revise] };
+        const target = gateStep.gate.on_revise;
+        if (target === null) {
+          return { ok: false, errors: [{ code: "CARRY_REVISE_TARGET_NULL", path: gatePath, message: "a gate that rewrites carry must have a revise target" }] };
+        }
+        const closure = resetClosure(flow, target);
+        for (const consumer of consumers) {
+          if (!closure.has(consumer)) {
+            return { ok: false, errors: [{ code: "CARRY_REVISE_MISSES_CONSUMER", path: gatePath, message: `revise target ${target} does not reset ${consumer}, which reads ${name}` }] };
+          }
+          if (consumer !== gateId && !reachesByDependency(consumer, gateId)) {
+            return { ok: false, errors: [{ code: "CARRY_REVISE_GATE_NOT_AFTER_CONSUMER", path: gatePath, message: `gate ${gateId} is not ordered after ${consumer}, which reads ${name}` }] };
+          }
+        }
+      }
+    }
+    // --- end STRAT-LOOP-CARRY -----------------------------------------------
 
     const reviseGates = flow.steps.flatMap((step, index) => step.gate?.on_revise ? [{ step, index, target: step.gate.on_revise }] : []);
     if (reviseGates.length > 0 && flow.max_rounds === undefined) {

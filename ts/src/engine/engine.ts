@@ -2295,7 +2295,7 @@ export class StratumEngine {
 
   private dependencies(step: Step): string[] {
     const output = new Set(step.after ?? []);
-    for (const value of stringLeaves(step)) {
+    for (const { value } of stringLeaves(step)) {
       for (const extracted of extractReferences(value) ?? []) if (extracted.reference.kind === "step") output.add(extracted.reference.stepId);
     }
     return [...output];
@@ -2878,16 +2878,18 @@ function access(value: unknown, path: readonly PathSegment[]): unknown {
   return current;
 }
 
-function stringLeaves(step: Step): string[] {
-  const values: string[] = [];
-  const collect = (value: unknown): void => {
-    if (typeof value === "string") values.push(value);
-    else if (Array.isArray(value)) value.forEach(collect);
-    else if (typeof value === "object" && value !== null) Object.values(value).forEach(collect);
+export function stringLeaves(step: Step): Array<{ value: string; expression: boolean }> {
+  const values: Array<{ value: string; expression: boolean }> = [];
+  const collect = (value: unknown, expression = false): void => {
+    if (typeof value === "string") values.push({ value, expression });
+    else if (Array.isArray(value)) value.forEach((entry) => collect(entry, expression));
+    else if (typeof value === "object" && value !== null) Object.values(value).forEach((entry) => collect(entry, expression));
   };
   if (step.do !== undefined) collect(step.do);
-  if (step.when !== undefined) collect(step.when);
-  if (step.set !== undefined) collect(step.set);
+  if (step.when !== undefined) collect(step.when, true);
+  if (step.set !== undefined) collect(step.set, true);
+  if (step.iterate?.until !== undefined) collect(step.iterate.until, true);
+  for (const predicate of step.ensure ?? []) if ("expr" in predicate) collect(predicate.expr, true);
   // The engine's dependency edges must mirror the validator's: subflow `with`
   // templates and fanout over/stage templates reference steps too — a fanout
   // over "${prep.output.items}" must wait for prep, not fail at resolve time.
@@ -2897,7 +2899,8 @@ function stringLeaves(step: Step): string[] {
     collect(step.fanout.over);
     for (const stage of step.fanout.steps) {
       collect(stage.do);
-      if (stage.when !== undefined) collect(stage.when);
+      if (stage.when !== undefined) collect(stage.when, true);
+      for (const predicate of stage.ensure ?? []) if ("expr" in predicate) collect(predicate.expr, true);
     }
   }
   return values;
