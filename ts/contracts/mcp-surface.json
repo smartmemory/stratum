@@ -1,5 +1,5 @@
 {
-  "surface": 18,
+  "surface": 19,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -71,6 +71,24 @@
           "model?": "string",
           "durationMs?": "number",
           "effort?": "string"
+        }
+      }
+    },
+    "flow_cancel_unacknowledged": {
+      "data": {
+        "code": "string",
+        "runId": "string",
+        "status": "string",
+        "flowSettled": "boolean",
+        "reason?": "string",
+        "holderPid?": "number",
+        "agents": {
+          "signalled": "number",
+          "reaped": "number",
+          "unreachable": "number",
+          "alreadySettled": "number",
+          "unresolved": "number",
+          "unsettled": "number"
         }
       }
     }
@@ -666,6 +684,14 @@
           "flowSpent": "object",
           "output?": "any",
           "carry?": "object"
+        },
+        "cancelled": {
+          "runId": "string",
+          "events": "array",
+          "steps": "object",
+          "flowSpent": "object",
+          "output?": "any",
+          "carry?": "object"
         }
       }
     },
@@ -828,6 +854,17 @@
           },
           "output?": "any",
           "failure?": "object"
+        },
+        "cancelled": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object"
         }
       }
     },
@@ -916,6 +953,23 @@
             "pendingGates": "array",
             "gateStepId?": "string"
           }
+        },
+        "cancelled": {
+          "runId": "string",
+          "events": "array",
+          "nextCursor": "number",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "output?": "any",
+          "failure?": "object",
+          "bg": {
+            "status": "string",
+            "cancelRequested": "boolean",
+            "pendingGates": "array",
+            "gateStepId?": "string"
+          }
         }
       }
     },
@@ -929,6 +983,85 @@
         "failed": {},
         "budget_exhausted": {},
         "cancelled": {}
+      }
+    },
+    "stratum_flow_cancel": {
+      "request": {
+        "runId": "string"
+      },
+      "responses": {
+        "cancelled": {
+          "runId": "string",
+          "flowSettled": "boolean",
+          "acknowledged": "boolean",
+          "reason?": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "agents": {
+            "signalled": "number",
+            "reaped": "number",
+            "unreachable": "number",
+            "alreadySettled": "number",
+            "unresolved": "number",
+            "unsettled": "number"
+          }
+        },
+        "completed": {
+          "runId": "string",
+          "flowSettled": "boolean",
+          "acknowledged": "boolean",
+          "reason?": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "agents": {
+            "signalled": "number",
+            "reaped": "number",
+            "unreachable": "number",
+            "alreadySettled": "number",
+            "unresolved": "number",
+            "unsettled": "number"
+          }
+        },
+        "failed": {
+          "runId": "string",
+          "flowSettled": "boolean",
+          "acknowledged": "boolean",
+          "reason?": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "agents": {
+            "signalled": "number",
+            "reaped": "number",
+            "unreachable": "number",
+            "alreadySettled": "number",
+            "unresolved": "number",
+            "unsettled": "number"
+          }
+        },
+        "budget_exhausted": {
+          "runId": "string",
+          "flowSettled": "boolean",
+          "acknowledged": "boolean",
+          "reason?": "string",
+          "ledger": {
+            "spent": "object",
+            "budget?": "object"
+          },
+          "agents": {
+            "signalled": "number",
+            "reaped": "number",
+            "unreachable": "number",
+            "alreadySettled": "number",
+            "unresolved": "number",
+            "unsettled": "number"
+          }
+        }
       }
     },
     "stratum_agent_run": {

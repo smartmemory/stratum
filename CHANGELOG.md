@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **STRAT-FLOW-CANCEL-FG S03 (surfaces)**: `stratum_flow_cancel` MCP tool and `stratum flow cancel <runId>`
+  CLI over one shared orchestrator (`engine/flow_cancel.ts`): settle first, then signal, local abort,
+  reap under one absolute teardown deadline; lease/lock refusals return `CANCELLATION_UNCONFIRMED`
+  with `reason` and `holderPid` and sweep nothing; already-terminal runs return `acknowledged:false`.
+  `cancelled` status on audit/flow_poll/flow_bg_poll; MCP surface 18→19 (25 tools). README documents it.
 - **STRAT-FLOW-CANCEL-FG S02 (foreground agent registry)**: durable `~/.stratum/ts/agent_fg/<12hex>/meta.json`
   records for cancellable foreground agent runs, a sibling of the background registry so a
   foreground entry can never be loaded and killed as a detached background run. `stratum_agent_run`

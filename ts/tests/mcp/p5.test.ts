@@ -84,6 +84,8 @@ describe("P5 frozen MCP surface", () => {
             : fakeCodex([{ type: "item.completed", item: { type: "agent_message", text: "background ok" } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }], { sleep: 0.15 }),
         codexSpawn: fakeCodexSpawn([{ type: "item.completed", item: { type: "agent_message", text: "sync ok" } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }]),
       }),
+      // Keeps the foreground-cancel sweep off the developer's real ~/.stratum tree.
+      foregroundRegistryRoot: join(root, "agent_fg"),
       pollBackgroundRun: (runId) => pollBackgroundRun(runId, { registryRoot }),
       cancelBackgroundRun: (runId) => cancelBackgroundRun(runId, { registryRoot }),
     });
@@ -238,6 +240,20 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_cancel_agent_run", { runId: cancelId });
       await waitForBackground(cancelId, registryRoot, "error");
       await call("stratum_cancel_agent_run", { runId: cancelId });
+
+      // flow_cancel: the settle on a live run, and each already-terminal variant. A terminal
+      // run gets no agent sweep, so those three report flowSettled:false with a reason.
+      const cancelTarget = await call("stratum_plan", { spec: chainFlow(), input: { name: "x" } });
+      await call("stratum_flow_cancel", { runId: cancelTarget.runId });
+      await call("stratum_flow_cancel", { runId: complete.runId });
+      await call("stratum_flow_cancel", { runId: failing.runId });
+      await call("stratum_flow_cancel", { runId: budget.runId });
+      // audit and flow_poll expose the new durable status on the run just cancelled, and
+      // bg_poll exposes it on a background run cancelled through the foreground surface.
+      await call("stratum_audit", { runId: cancelTarget.runId });
+      await call("stratum_flow_poll", { runId: cancelTarget.runId, cursor: 0 });
+      await call("stratum_flow_cancel", { runId: bgCancel.runId });
+      await call("stratum_flow_bg_poll", { runId: bgCancel.runId, cursor: 0 });
 
       const surface = await mcpSurface();
       for (const tool of Object.keys(surface.tools).filter((tool) => !tool.startsWith("stratum_guard_"))) {

@@ -327,9 +327,15 @@ async function sweepPass(
 ): Promise<void> {
   for (const { id, meta } of await scan(root, flowRunId)) {
     const entry = absorb(accumulated, id, meta);
-    if (entry.settled) continue;
     for (const [pid, group] of entry.groups) {
       if (group.outcome === "reaped" || group.outcome === "unreachable") continue;
+      // A settled entry is never SIGNALLED again (invariant 14) — but its already-signalled
+      // groups are still PROBED below. Skipping a settled entry outright leaves the probe
+      // taken during the signal pass as the final verdict, and that probe is `unknown` for
+      // the whole window in which the leader is dead but not yet reaped by its parent — so
+      // an agent whose teardown demonstrably completed would be reported `unreachable` and
+      // could never be acknowledged.
+      if (entry.settled && !group.everSignalled) continue;
       if (!group.everSignalled) {
         if (await signalGroup(pid, group.startTime)) {
           group.everSignalled = true;
@@ -345,19 +351,27 @@ async function sweepPass(
       const state = groupState(pid);
       if (state === "gone") { group.outcome = "reaped"; delete group.lastProbe; continue; }
       group.lastProbe = state;
-      if (options.escalate) { try { process.kill(-pid, "SIGKILL"); } catch { /* raced its own exit */ } }
+      if (options.escalate && !entry.settled) { try { process.kill(-pid, "SIGKILL"); } catch { /* raced its own exit */ } }
     }
   }
 }
 
 function entryResolved(entry: TrackedEntry): boolean {
-  if (entry.settled) return true;
-  if (entry.state === "starting") return false;
   // Multi-group Claude entries (C9) follow the same rule: every pid must be resolved.
   for (const group of entry.groups.values()) {
+    // A group this sweep never signalled belongs to an entry that was already settled when we
+    // arrived: it is not ours to tear down and never blocks resolution. A group we DID signal
+    // blocks it until the probe answers, settled entry or not — the entry settling says the
+    // dispatcher unwound, not that the process group is gone.
+    if (entry.settled && !group.everSignalled) continue;
     if (group.outcome !== "reaped" && group.outcome !== "unreachable") return false;
   }
-  return entry.groups.size > 0;
+  // Reaping the groups is not the same as the entry being over, and `summarise` says so:
+  // it counts every unsettled entry as `unsettled` whatever its groups did (R3-6). Breaking
+  // the poll here would stop watching an entry the owning dispatcher is still unwinding and
+  // then report that as a teardown failure — so an unsettled entry keeps the poll alive until
+  // it settles or the deadline answers for it.
+  return entry.settled;
 }
 
 /** Steps 3-5 of §2.4: grace, escalation, reap and rescan, all under ONE absolute deadline.
