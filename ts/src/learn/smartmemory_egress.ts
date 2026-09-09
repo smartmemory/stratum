@@ -61,9 +61,14 @@ export interface LearnEgressOptions {
   clearTimeoutImpl?: (handle: TimeoutHandle) => void;
   store: StateStore;
   withReceiptUpdate: WithReceiptUpdate;
+  /** The READ half of `withReceiptUpdate` (F3). Taking a drain snapshot through the mutating
+   *  path re-saves the record it only meant to read — which is how a pure read reverted a
+   *  concurrent driver's writes and tripped the cancelled-run guard. Defaults to
+   *  `withReceiptUpdate` so an existing caller keeps its current behaviour. */
+  withReceiptRead?: WithReceiptUpdate;
 }
 
-export type LearnEgressRuntimeOptions = Omit<LearnEgressOptions, "store" | "withReceiptUpdate">;
+export type LearnEgressRuntimeOptions = Omit<LearnEgressOptions, "store" | "withReceiptUpdate" | "withReceiptRead">;
 
 export interface EgressVerifyReport {
   runId: string;
@@ -87,6 +92,7 @@ export class LearnEgress implements LearnEgressDriver {
   private readonly clearTimeoutImpl: (handle: TimeoutHandle) => void;
   private readonly store: StateStore;
   private readonly withReceiptUpdate: WithReceiptUpdate;
+  private readonly withReceiptRead: WithReceiptUpdate;
   private readonly drains = new Map<string, DrainState>();
   private readonly backoffs = new Map<string, BackoffState>();
   private workspaceWarningIssued = false;
@@ -106,6 +112,7 @@ export class LearnEgress implements LearnEgressDriver {
     this.clearTimeoutImpl = options.clearTimeoutImpl ?? clearTimeout;
     this.store = options.store;
     this.withReceiptUpdate = options.withReceiptUpdate;
+    this.withReceiptRead = options.withReceiptRead ?? options.withReceiptUpdate;
   }
 
   enabled(): boolean {
@@ -227,7 +234,7 @@ export class LearnEgress implements LearnEgressDriver {
     const backoff = this.backoffs.get(runId);
     if (backoff !== undefined && this.now() < backoff.nextAttemptAt) return;
 
-    const snapshot = await this.withReceiptUpdate(runId, (run): DrainSnapshot => ({
+    const snapshot = await this.withReceiptRead(runId, (run): DrainSnapshot => ({
       id: run.id,
       flowName: run.flowName,
       ...(run.workspaceRoot !== undefined ? { workspaceRoot: run.workspaceRoot } : {}),

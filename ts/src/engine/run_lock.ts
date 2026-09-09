@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { linkSync, unlinkSync, writeFileSync, readFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, openSync, readSync, statSync, unlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { link, mkdir, open, readdir, stat, unlink, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { processIdentity } from "../connectors/proc_identity.js";
@@ -33,16 +33,25 @@ const RUN_LOCK_TMP_TTL_MS = 60_000;
  *  the absence of an identity: a PARSEABLE break-lock is never aged out, however old. */
 const BREAK_LOCK_OPAQUE_TTL_MS = 60_000;
 
+/** A timeout that is NaN or Infinity is not a long budget, it is a missing one: `Date.now() +
+ *  NaN` is NaN, every `Date.now() >= deadline` comparison against it is false, and the loop it
+ *  bounds never ends. Reject the value where it is read, so a mistyped env var fails loudly at
+ *  the first call instead of hanging a teardown (F6). */
+export function requireDurationMs(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a nonnegative finite number`);
+  return value;
+}
+
 export function runLockTimeoutMs(): number {
-  return Number(process.env.STRATUM_RUN_LOCK_TIMEOUT_MS ?? DEFAULT_RUN_LOCK_TIMEOUT_MS);
+  return requireDurationMs(Number(process.env.STRATUM_RUN_LOCK_TIMEOUT_MS ?? DEFAULT_RUN_LOCK_TIMEOUT_MS), "STRATUM_RUN_LOCK_TIMEOUT_MS");
 }
 
 export function cancelLockWaitMs(): number {
-  return Number(process.env.STRATUM_CANCEL_LOCK_WAIT_MS ?? DEFAULT_CANCEL_LOCK_WAIT_MS);
+  return requireDurationMs(Number(process.env.STRATUM_CANCEL_LOCK_WAIT_MS ?? DEFAULT_CANCEL_LOCK_WAIT_MS), "STRATUM_CANCEL_LOCK_WAIT_MS");
 }
 
 export function cancelTimeoutMs(): number {
-  return Number(process.env.STRATUM_CANCEL_TIMEOUT_MS ?? DEFAULT_CANCEL_TIMEOUT_MS);
+  return requireDurationMs(Number(process.env.STRATUM_CANCEL_TIMEOUT_MS ?? DEFAULT_CANCEL_TIMEOUT_MS), "STRATUM_CANCEL_TIMEOUT_MS");
 }
 
 export interface LockRecord {
@@ -134,10 +143,14 @@ async function readHandleRecord(handle: FileHandle): Promise<LockRecord | undefi
   return parseRecord(buffer.toString("utf8"));
 }
 
+/** ABSENCE and FAILURE are different answers (F4). A blanket catch here reports an EACCES or an
+ *  EIO as "there is no lock", and every caller reads that as a licence to proceed — which is how
+ *  an unreadable-but-live lock file turns into two writers. Only ENOENT is absence. */
 async function readRecord(path: string): Promise<LockRecord | undefined> {
   let handle: FileHandle;
-  try { handle = await open(path, "r"); } catch { return undefined; }
-  try { return await readHandleRecord(handle); } catch { return undefined; } finally { await handle.close(); }
+  try { handle = await open(path, "r"); }
+  catch (error) { if (isNotFound(error)) return undefined; throw error; }
+  try { return await readHandleRecord(handle); } finally { await handle.close(); }
 }
 
 /**
@@ -179,7 +192,12 @@ async function publishRecord(path: string, record: LockRecord): Promise<boolean>
  */
 async function unlinkOwn(path: string, token: string, options: RunLockOptions = {}): Promise<boolean> {
   let handle: FileHandle;
-  try { handle = await open(path, "r"); } catch { return false; }
+  // `false` is reserved for the four benign verdicts: the record is gone, unparseable, carries
+  // another token, or names another inode. An EACCES/EIO is none of those — it is a lock we
+  // could not remove, and swallowing it reports a release that never happened and leaves a
+  // live-owned lock nobody can reclaim (F4).
+  try { handle = await open(path, "r"); }
+  catch (error) { if (isNotFound(error)) return false; throw error; }
   try {
     const record = await readHandleRecord(handle);
     if (record === undefined || record.token !== token) return false;
@@ -192,7 +210,7 @@ async function unlinkOwn(path: string, token: string, options: RunLockOptions = 
     if (still === undefined || still.token !== token) return false;
     try { await unlink(path); } catch (error) { if (!isNotFound(error)) throw error; }
     return true;
-  } catch { return false; } finally { await handle.close(); }
+  } finally { await handle.close(); }
 }
 
 /** The opaque-break-lock reclaim (see BREAK_LOCK_OPAQUE_TTL_MS). Conditional on the inode that
@@ -373,9 +391,17 @@ export async function readRunLock(root: string, runId: string): Promise<LockReco
  * retrying. The one case resolved here is an incumbent that is literally us: the same pid AND
  * the same start time is our own leftover lease, and reclaiming it needs no probe.
  *
+ * IDENTITY IS NOT OWNERSHIP (F1). The reclaim used to fire on "same pid AND same start time",
+ * which is true of every engine instance inside ONE process — so a second engine sharing a state
+ * root read a live sibling's lease as its own leftover, deleted it, and claimed the run the
+ * sibling was actively driving. The only lease this call may reclaim is one carrying a token
+ * THIS engine instance recorded for THIS run (`ownToken`); a same-identity lease with any other
+ * token is HELD, and the caller resolves it by liveness through `prepareLease`.
+ *
+ * @param ownToken the token this caller last received for `runId`, if it still holds one.
  * @throws DRIVER_LEASE_HELD when a lease that is not ours already exists.
  */
-export function writeDriverLeaseSync(root: string, runId: string, startTime: string): string {
+export function writeDriverLeaseSync(root: string, runId: string, startTime: string, ownToken?: string): string {
   const path = driverLeasePath(root, runId);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const token = randomUUID();
@@ -390,8 +416,8 @@ export function writeDriverLeaseSync(root: string, runId: string, startTime: str
     try { unlinkSync(temporary); } catch { /* best effort */ }
     if (claimed) return token;
     const held = readDriverLeaseSync(root, runId);
-    // Our own process, our own boot: a leftover of ours, and reclaiming it is not a race.
-    if (held !== undefined && held.pid === process.pid && held.startTime === startTime) {
+    // OUR OWN acquisition, by token — never merely our own pid.
+    if (held !== undefined && ownToken !== undefined && held.token === ownToken) {
       releaseDriverLeaseSync(root, runId, held.token);
       continue;
     }
@@ -406,7 +432,10 @@ export function writeDriverLeaseSync(root: string, runId: string, startTime: str
 export function readDriverLeaseSync(root: string, runId: string): DriverLease | undefined {
   const path = driverLeasePath(root, runId);
   let text: string;
-  try { text = readFileSync(path, "utf8"); } catch { return undefined; }
+  // ENOENT is "no lease"; every other failure is "we could not tell", and reporting that as
+  // "no lease" is a licence to publish over a live one (F4).
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) { if (isNotFound(error)) return undefined; throw error; }
   const record = parseRecord(text);
   return record as DriverLease | undefined;
 }
@@ -417,15 +446,38 @@ export function readDriverLeaseSync(root: string, runId: string): DriverLease | 
  *  that is never removed, which wedges the run for every other process — and reports success
  *  while doing it. */
 export function releaseDriverLeaseSync(root: string, runId: string, token: string): void {
-  const path = driverLeasePath(root, runId);
-  const lease = readDriverLeaseSync(root, runId);
-  if (lease === undefined || lease.token !== token) return;
-  try { unlinkSync(path); } catch (error) { if (!isNotFound(error)) throw error; }
+  unlinkOwnSync(driverLeasePath(root, runId), token);
 }
 
-export function unlinkDriverLeaseSync(root: string, runId: string): void {
-  try { unlinkSync(driverLeasePath(root, runId)); } catch (error) { if (!isNotFound(error)) throw error; }
+/** The synchronous twin of `unlinkOwn`: token AND inode, both re-checked off the descriptor that
+ *  was judged, immediately before the removal (F1). The read-then-unlink it replaces could delete
+ *  a SUCCESSOR's lease — our lease is reclaimed by a breaker, a new driver publishes, and our
+ *  late release unlinks theirs. `openSync` keeps the judged inode pinned across the comparison.
+ *  ENOENT is the only swallowed failure; anything else propagates (F4). */
+function unlinkOwnSync(path: string, token: string): void {
+  let fd: number;
+  try { fd = openSync(path, "r"); }
+  catch (error) { if (isNotFound(error)) return; throw error; }
+  try {
+    const before = fstatSync(fd);
+    if (before.size === 0 || before.size > 64 * 1024) return;
+    const buffer = Buffer.allocUnsafe(before.size);
+    readSync(fd, buffer, 0, before.size, 0);
+    if (parseRecord(buffer.toString("utf8"))?.token !== token) return;
+    let current;
+    try { current = statSync(path); } catch (error) { if (isNotFound(error)) return; throw error; }
+    if (current.ino !== before.ino) return;                 // the path names a successor now
+    const after = fstatSync(fd);                            // same fd, so the same inode
+    const recheck = Buffer.allocUnsafe(after.size);
+    readSync(fd, recheck, 0, after.size, 0);
+    if (parseRecord(recheck.toString("utf8"))?.token !== token) return;
+    try { unlinkSync(path); } catch (error) { if (!isNotFound(error)) throw error; }
+  } finally { closeSync(fd); }
 }
+
+/* An UNCONDITIONAL lease removal used to live here. It is gone on purpose (F1): every reclaim
+ * now names the token it judged, so a slow reclaimer can no longer delete the lease of the
+ * successor that replaced the one it read. */
 
 /**
  * Load-modify-save one run record under the real cross-process lock.
@@ -442,11 +494,65 @@ export async function lockedSave<T>(
 ): Promise<T> {
   const release = await acquireRunLock(store.root, runId, options);
   try {
+    // The run lock alone is NOT enough to write a run record (F3). A pinned run's authority is
+    // the DRIVER'S in-memory copy, not the file: a CLI that takes the lock, loads from disk and
+    // saves is writing a snapshot the driver has already moved past — which is how an egress
+    // receipt marked `sent` comes back as `pending`. And a cancelled run is written exactly
+    // once (invariant 4b), by the settle and nothing else.
+    await assertNoForeignDriverLease(store.root, runId, options);
     const run = await store.load(runId);
+    assertNotCancelled(run, runId);
     const result = await mutate(run);
     await store.save(run);
     return result;
   } finally {
     await release();
   }
+}
+
+/**
+ * The READ half of `lockedSave`, and a separate function on purpose (F3): a snapshot taken
+ * through the mutating path re-saves the record it only meant to read, so a pure read
+ * rewrote the file, bumped its mtime, and could revert a concurrent driver's writes.
+ *
+ * A read is refused by neither the lease nor the cancelled guard — observing a run another
+ * process drives is always safe. It takes the lock so the snapshot is not torn.
+ */
+export async function lockedRead<T>(
+  store: Pick<StateStore, "root" | "load">,
+  runId: string,
+  read: (run: PersistedRun) => T | Promise<T>,
+  options: RunLockOptions = {},
+): Promise<T> {
+  const release = await acquireRunLock(store.root, runId, options);
+  try {
+    return await read(await store.load(runId));
+  } finally {
+    await release();
+  }
+}
+
+function assertNotCancelled(run: PersistedRun, runId: string): void {
+  if (run.status !== "cancelled" && run.cancelRequested !== true) return;
+  throw Object.assign(
+    new Error(`run ${runId} is cancelled; no further record updates are accepted`),
+    { code: "PERSIST_ON_CANCELLED_RUN" },
+  );
+}
+
+/** A lease naming a LIVE process means that process owns this run's in-memory copy: refuse.
+ *  A provably dead owner's lease is reclaimed, because its memory is gone and disk is truth
+ *  again. `unknown` is never reclaimed — the same rule the engine's own pin path follows. */
+async function assertNoForeignDriverLease(root: string, runId: string, options: RunLockOptions): Promise<void> {
+  const lease = readDriverLeaseSync(root, runId);
+  if (lease === undefined) return;
+  const identity = options.identity ?? processIdentity;
+  if (await identity(lease.pid, lease.startTime) === "dead") {
+    releaseDriverLeaseSync(root, runId, lease.token);
+    return;
+  }
+  throw Object.assign(
+    new Error(`run ${runId} is driven by pid ${lease.pid}; it cannot be written from this process`),
+    { code: "DRIVER_LEASE_HELD", holderPid: lease.pid },
+  );
 }

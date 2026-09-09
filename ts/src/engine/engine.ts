@@ -18,7 +18,7 @@ import { emitPolicyEvent as postPolicyEvent } from "../policy/smartmemory_client
 import type { EnforcementEvent, PolicyBundle, RuleVerdict } from "../policy/types.js";
 import { BUDGET_KEYS, BudgetLedger, type Budget, validConnectorTelemetry, validUsage } from "./ledger.js";
 import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
-import { acquireRunLock, cancelLockWaitMs, readDriverLeaseSync, releaseDriverLeaseSync, unlinkDriverLeaseSync, writeDriverLeaseSync, type RunLockOptions } from "./run_lock.js";
+import { acquireRunLock, cancelLockWaitMs, readDriverLeaseSync, releaseDriverLeaseSync, writeDriverLeaseSync, type RunLockOptions } from "./run_lock.js";
 import { buildReceipt, findReceipt, ReceiptValidationError, spineSpent, type ReceiptInput } from "./receipts.js";
 import { assertRunId, type AttemptRecord, type AttemptTelemetry, type AuditEvent, burnIssuances, type CarryEntry, type CarryProvenance, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, type RunStatus, StateStore, type StepState } from "./state.js";
 
@@ -392,6 +392,10 @@ export class StratumEngine {
       ...options.learnEgressOptions,
       store: this.store,
       withReceiptUpdate: (runId, update) => this.withReceiptUpdate(runId, update),
+      // F3: a drain snapshot is a READ. Routed through the update path it re-persisted the
+      // record, and on a cancelled run that meant the guard above rejected a call that was
+      // never going to write anything.
+      withReceiptRead: (runId, read) => this.withRunLock(runId, async () => read(await this.loadRun(runId))),
     });
     this.learnEgressStartup = this.learnEgress.enabled()
       ? this.learnEgress.drainAll().catch((error) => {
@@ -425,7 +429,12 @@ export class StratumEngine {
     // Lease FIRST, then register the pin: a throwing claim must leave no pin behind. The error
     // propagates — a swallowed one produced precisely the unleased pin above, and reported
     // success while doing it.
-    const token = writeDriverLeaseSync(this.store.root, runId, this.selfStartTime);
+    //
+    // The token we already hold for this run is passed so `writeDriverLeaseSync` can tell OUR
+    // leftover from a live sibling's lease. Identity alone cannot: two engines in one process
+    // share a pid and a start time, so the old same-identity reclaim let the second one delete
+    // the first's live lease and drive the same run (F1).
+    const token = writeDriverLeaseSync(this.store.root, runId, this.selfStartTime, this.driverLeases.get(runId));
     this.activeRuns.set(runId, { run, refs: 1 });
     this.driverLeases.set(runId, token);
   }
@@ -440,13 +449,13 @@ export class StratumEngine {
   private async prepareLease(runId: string): Promise<void> {
     const lease = readDriverLeaseSync(this.store.root, runId);
     if (lease === undefined) return;
-    if (this.driverLeases.get(runId) === lease.token) return;                        // ours
-    if (lease.pid === process.pid && lease.startTime === this.selfStartTime) {       // our own leftover
-      unlinkDriverLeaseSync(this.store.root, runId);
-      return;
-    }
+    if (this.driverLeases.get(runId) === lease.token) return;                        // ours, by TOKEN
+    // There is deliberately no "same pid and start time, therefore ours" arm here (F1). Two
+    // engine instances in one process answer that test identically, so it let the second one
+    // reclaim a lease the first was actively driving. A same-identity lease whose token we do
+    // not hold is a LIVE lease, and the probe below says so.
     const state = await this.identity(lease.pid, lease.startTime);
-    if (state === "dead") { unlinkDriverLeaseSync(this.store.root, runId); return; }
+    if (state === "dead") { releaseDriverLeaseSync(this.store.root, runId, lease.token); return; }
     throw Object.assign(
       new Error(`run ${runId} is driven by pid ${lease.pid}; it cannot be pinned from this process`),
       { code: "DRIVER_LEASE_HELD", holderPid: lease.pid },
@@ -601,12 +610,24 @@ export class StratumEngine {
     // queues behind this section, so it observes whatever the durable record says afterwards.
     await this.withRunLock(first.runId, async () => {
       const current = await this.loadRun(first.runId);
-      current.bgDriven = true;
-      await this.persist(current);
+      // OWNERSHIP BEFORE BOOKKEEPING (F2). The durable `bgDriven` mark used to be written
+      // first, so a lease this process could not claim left the run marked as driven by a
+      // driver that never started — a run rehydrated on the next boot as a live bg flow with
+      // nothing behind it. Nothing is mutated until the lease and the pin are both held, and
+      // anything that fails after them is rolled back here.
       await this.prepareLease(first.runId);
+      this.retainRun(first.runId, current);
       const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
       this.bgFlows.set(first.runId, bg);
-      this.retainRun(first.runId, current);
+      try {
+        current.bgDriven = true;
+        await this.persist(current);
+      } catch (error) {
+        delete current.bgDriven;
+        this.bgFlows.delete(first.runId);
+        this.releaseRun(first.runId);
+        throw error;
+      }
       const loop = this.driveBg(first.runId, first);
       bg.loop = loop;
       void loop.finally(() => {
@@ -670,11 +691,16 @@ export class StratumEngine {
             this.bgFlows.set(current.id, { status: "cancelled", cancelRequested: true, pendingGates: [] });
             return;
           }
+          // Lease and pin BEFORE the `bgFlows` insert (F2): a failing lease write used to leave
+          // a `running` entry naming a driver that never launched, and every later poll and
+          // cancel read that entry as a live loop in this process.
           await this.prepareLease(current.id);
+          this.retainRun(current.id, current);
           const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
           this.bgFlows.set(current.id, bg);
-          this.retainRun(current.id, current);
-          const loop = this.driveBg(current.id, { status: "running", runId: current.id, ledger: { spent: {} } });
+          let loop: Promise<void>;
+          try { loop = this.driveBg(current.id, { status: "running", runId: current.id, ledger: { spent: {} } }); }
+          catch (error) { this.bgFlows.delete(current.id); this.releaseRun(current.id); throw error; }
           bg.loop = loop;
           void loop.finally(() => {
             this.releaseRun(current.id);
@@ -994,6 +1020,13 @@ export class StratumEngine {
     if (run.cancelRequested === true || run.status === "cancelled") {
       throw new Error(`run ${runId} is cancelled; resume is not permitted`);
     }
+    // Resume is the TAKEOVER entry point: it re-arms in-flight fanouts, and arming one pins the
+    // run. The pin used to meet the incumbent lease with no way to resolve it — `scheduleFanout`
+    // is synchronous, so it cannot probe an owner — and the only thing that got past a leftover
+    // lease was the same-pid reclaim F1 removes. A crashed driver's lease would therefore have
+    // wedged every later resume. Resolve it HERE, where the probe can be awaited: a dead owner
+    // is reclaimed, a live one still refuses.
+    await this.prepareLease(runId);
     const computedDigest = digest(run.spec);
     if (run.revisionDigest !== undefined && run.revisionDigest !== computedDigest) {
       throw new Error("persisted revision digest does not match the effective specification");
@@ -1077,7 +1110,7 @@ export class StratumEngine {
     if (lease === undefined) return;
     if (this.driverLeases.get(runId) === lease.token) return;   // ours
     const state = await this.identity(lease.pid, lease.startTime);
-    if (state === "dead") { unlinkDriverLeaseSync(this.store.root, runId); return; }
+    if (state === "dead") { releaseDriverLeaseSync(this.store.root, runId, lease.token); return; }
     throw Object.assign(
       new Error(`run ${runId} is driven by pid ${lease.pid}; cancel must be issued from that process`),
       { code: "CANCELLATION_UNCONFIRMED", reason: "engine_dispatch_active", holderPid: lease.pid },
@@ -1178,12 +1211,25 @@ export class StratumEngine {
           bg.pendingGates = [];
           return;
         }
-        bg.status = "running";
-        bg.pendingGates = [];
         const run = await this.loadRun(runId);
+        // The gate is CONSUMED only once the driver is provably ours to start (F2). Clearing
+        // `pendingGates` and flipping the status first meant a refused lease left the flow with
+        // no pending gate and no loop: the gate could not be resolved again and nothing was
+        // running to resolve it.
         await this.prepareLease(runId);
         this.retainRun(runId, run);
-        const loop = this.driveBg(runId, response);
+        const priorStatus = bg.status;
+        const priorGates = bg.pendingGates;
+        bg.status = "running";
+        bg.pendingGates = [];
+        let loop: Promise<void>;
+        try { loop = this.driveBg(runId, response); }
+        catch (error) {
+          bg.status = priorStatus;
+          bg.pendingGates = priorGates;
+          this.releaseRun(runId);
+          throw error;
+        }
         bg.loop = loop;
         void loop.finally(() => {
           this.releaseRun(runId);
@@ -1814,12 +1860,16 @@ export class StratumEngine {
     // from scheduling the fresh one by the stale execution still draining.
     const key = `${run.id}:${stepId}:${run.steps[stepId]?.fanoutEpoch ?? 0}`;
     if (this.scheduledFanouts.has(key)) return;
-    this.scheduledFanouts.add(key);
     // Pin SYNCHRONOUSLY with the scheduler's own run object: from here until
     // release, loadRun hands this exact instance to every entry point, so an
     // independent stepDone proceeds during a slow fanout and mutates the same
     // instance — never a divergent disk copy, never blocked behind the batch.
+    //
+    // The pin comes BEFORE the key is marked scheduled (F2). Marked first, a failing lease
+    // write left the key set with no execution behind it, and the epoch-keyed guard above then
+    // refused to schedule the fanout ever again — the step simply never ran.
     this.retainRun(run.id, run);
+    this.scheduledFanouts.add(key);
     const scheduledFanout = run.steps[stepId]?.fanout;
     queueMicrotask(() => {
       void this.executeFanout(run, stepId).catch(async (error) => {

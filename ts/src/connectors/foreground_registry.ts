@@ -257,9 +257,34 @@ function realGroupState(pid: number): "alive" | "gone" | "unknown" {
   }
 }
 
-async function identityMatches(probes: ProcessProbes, pid: number, expected: string | undefined): Promise<boolean> {
-  if (!expected) return false;
-  return (await probes.startTime(pid)) === expected;
+/** Every probe on the signal path is an `await` on another process, and an unbounded one turns
+ *  the caller's absolute deadline into a suggestion (F6). A probe that has not answered by the
+ *  deadline yields no verdict at all — `undefined` — and the caller stops rather than acting on
+ *  an answer nobody is still waiting for. */
+async function bounded<T>(work: Promise<T>, deadline: number): Promise<{ value: T } | undefined> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) { void work.catch(() => undefined); return undefined; }
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), remaining);
+    timer.unref?.();
+  });
+  try { return await Promise.race([work.then((value) => ({ value })), expiry]); }
+  finally { clearTimeout(timer); }
+}
+
+type IdentityVerdict = "match" | "mismatch" | "deadline";
+
+async function identityVerdict(
+  probes: ProcessProbes,
+  pid: number,
+  expected: string | undefined,
+  deadline: number,
+): Promise<IdentityVerdict> {
+  if (!expected) return "mismatch";
+  const probed = await bounded(probes.startTime(pid), deadline);
+  if (probed === undefined) return "deadline";
+  return probed.value === expected ? "match" : "mismatch";
 }
 
 /**
@@ -276,16 +301,28 @@ async function signalGroup(
   probes: ProcessProbes,
   pid: number,
   expected: string | undefined,
-): Promise<"signalled" | "gone" | "unreachable"> {
+  deadline: number,
+): Promise<"signalled" | "gone" | "unreachable" | "deadline"> {
+  if (Date.now() >= deadline) return "deadline";
   if (probes.groupState(pid) === "gone") return "gone";
-  if (!await identityMatches(probes, pid, expected)) {
+  const first = await identityVerdict(probes, pid, expected, deadline);
+  if (first === "deadline") return "deadline";
+  if (first === "mismatch") {
     // Re-probe: the identity may have failed to read BECAUSE the process exited between the
     // group probe above and here, which is a `gone`, not an unreachable.
     return probes.groupState(pid) === "gone" ? "gone" : "unreachable";
   }
-  if (await probes.groupId(pid) !== pid) return "unreachable";
+  const leader = await bounded(probes.groupId(pid), deadline);
+  if (leader === undefined) return "deadline";
+  if (leader.value !== pid) return "unreachable";
   // Verify the start-time identity a second time immediately before the only signal.
-  if (!await identityMatches(probes, pid, expected)) return "unreachable";
+  const second = await identityVerdict(probes, pid, expected, deadline);
+  if (second === "deadline") return "deadline";
+  if (second === "mismatch") return "unreachable";
+  // The LAST word before the signal is the clock (F6). A SIGTERM sent after the caller's
+  // deadline has no grace window left to run in and no reap pass left to confirm it: it is a
+  // signal delivered to a child nobody is waiting on.
+  if (Date.now() >= deadline) return "deadline";
   try { probes.kill(pid, "SIGTERM"); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unreachable"; }
   return "signalled";
@@ -305,12 +342,26 @@ async function escalateGroup(
   probes: ProcessProbes,
   pid: number,
   expected: string | undefined,
-): Promise<"escalated" | "gone" | "unreachable"> {
+  deadline: number,
+): Promise<"escalated" | "gone" | "unreachable" | "deadline"> {
+  if (Date.now() >= deadline) return "deadline";
   if (probes.groupState(pid) === "gone") return "gone";
-  if (!await identityMatches(probes, pid, expected)) {
+  const first = await identityVerdict(probes, pid, expected, deadline);
+  if (first === "deadline") return "deadline";
+  if (first === "mismatch") {
     return probes.groupState(pid) === "gone" ? "gone" : "unreachable";
   }
-  if (await probes.groupId(pid) !== pid) return "unreachable";
+  const leader = await bounded(probes.groupId(pid), deadline);
+  if (leader === undefined) return "deadline";
+  if (leader.value !== pid) return "unreachable";
+  // F5: the identity is checked AGAIN after the group-leader probe, immediately before the
+  // SIGKILL — never inherited across that await. The whole reason the escalation re-runs the
+  // gates is that a pid can be reissued while they run; a check that stops one await short of
+  // the signal reintroduces exactly the window it was added to close.
+  const second = await identityVerdict(probes, pid, expected, deadline);
+  if (second === "deadline") return "deadline";
+  if (second === "mismatch") return "unreachable";
+  if (Date.now() >= deadline) return "deadline";
   try { probes.kill(pid, "SIGKILL"); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unreachable"; }
   return "escalated";
@@ -327,12 +378,16 @@ export async function killAndReapGroup(
   options: { startTime?: string; graceMs?: number; timeoutMs?: number; deadlineAt?: number; probes?: Partial<ProcessProbes> } & RegistryRootOptions = {},
 ): Promise<"reaped" | "gone" | "unreachable" | "timeout"> {
   const probes = resolveProbes(options);
-  const deadline = options.deadlineAt ?? Date.now() + (options.timeoutMs ?? cancelTimeoutMs());
-  const grace = options.graceMs ?? cancellationGraceMs();
+  const deadline = options.deadlineAt ?? Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs");
+  const grace = requireDuration(options.graceMs ?? cancellationGraceMs(), "graceMs");
   // No recorded identity, a mismatched one, a non-leader or a refused signal: there is no
   // group we can honestly claim to have killed (invariant 15b). A group already gone is a
   // different answer entirely, and a resolved one.
-  const signal = await signalGroup(probes, pid, options.startTime);
+  //
+  // The deadline goes IN (F6). Without it this call could send its SIGTERM after the caller's
+  // budget had already expired, then report a timeout for a signal it had just issued.
+  const signal = await signalGroup(probes, pid, options.startTime, deadline);
+  if (signal === "deadline") return "timeout";
   if (signal !== "signalled") return signal;
   // The grace clock starts at OUR SIGTERM, not at the top of the call.
   const escalateAt = Date.now() + grace;
@@ -344,7 +399,7 @@ export async function killAndReapGroup(
     last = state;
     if (!escalated && Date.now() >= escalateAt) {
       escalated = true;
-      const result = await escalateGroup(probes, pid, options.startTime);
+      const result = await escalateGroup(probes, pid, options.startTime, deadline);
       if (result === "gone") return "reaped";
       if (result === "unreachable") return "unreachable";
     }
@@ -358,6 +413,13 @@ export async function killAndReapGroup(
 export function cancelTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const value = Number(env.STRATUM_CANCEL_TIMEOUT_MS ?? 15000);
   if (!Number.isFinite(value) || value < 0) throw new Error("STRATUM_CANCEL_TIMEOUT_MS must be a nonnegative number");
+  return value;
+}
+
+/** A caller-supplied budget gets the same treatment as an env one (F6): `Date.now() + NaN` is
+ *  NaN, `Date.now() >= NaN` is false forever, and the reap loop that trusts it never ends. */
+function requireDuration(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a nonnegative finite number`);
   return value;
 }
 
@@ -426,8 +488,8 @@ export async function signalFlowAgents(
   // after the caller has given up waiting for anything to answer them.
   await sweepPass(resolveRoot(options), flowRunId, accumulated, {
     escalate: false,
-    deadline: options.deadlineAt ?? Date.now() + (options.timeoutMs ?? cancelTimeoutMs()),
-    graceMs: options.graceMs ?? cancellationGraceMs(),
+    deadline: options.deadlineAt ?? Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs"),
+    graceMs: requireDuration(options.graceMs ?? cancellationGraceMs(), "graceMs"),
     probes: resolveProbes(options),
   });
   return accumulated;
@@ -456,7 +518,10 @@ async function sweepPass(
         // left to run in and no reap pass left to confirm it. The group stays unresolved and
         // is reported as such, which is the honest answer.
         if (Date.now() >= options.deadline) continue;
-        const signal = await signalGroup(probes, pid, group.startTime);
+        const signal = await signalGroup(probes, pid, group.startTime, options.deadline);
+        // The deadline expired inside the gates: no signal was sent, so the group is left
+        // unresolved and reported as such rather than given a verdict nobody probed for.
+        if (signal === "deadline") continue;
         if (signal === "gone") { group.outcome = "gone"; delete group.lastProbe; continue; }
         if (signal === "unreachable") {
           // An identity mismatch means the pid is now some other process: the group we
@@ -479,7 +544,8 @@ async function sweepPass(
         // F6: the identity and group-leader gates are re-run here, immediately before the
         // SIGKILL. The grace window is long enough for the leader to exit and its pid to be
         // reissued, and a kill by bare pgid at the end of it lands on a stranger.
-        const result = await escalateGroup(probes, pid, group.startTime);
+        const result = await escalateGroup(probes, pid, group.startTime, options.deadline);
+        if (result === "deadline") continue;
         if (result === "gone") { group.outcome = "reaped"; delete group.lastProbe; continue; }
         if (result === "unreachable") { group.outcome = "unreachable"; delete group.lastProbe; }
       }
@@ -518,8 +584,8 @@ export async function reapFlowAgents(
   options: SweepOptions = {},
 ): Promise<AgentCancelSummary> {
   const root = resolveRoot(options);
-  const deadline = options.deadlineAt ?? Date.now() + (options.timeoutMs ?? cancelTimeoutMs());
-  const graceMs = options.graceMs ?? cancellationGraceMs();
+  const deadline = options.deadlineAt ?? Date.now() + requireDuration(options.timeoutMs ?? cancelTimeoutMs(), "timeoutMs");
+  const graceMs = requireDuration(options.graceMs ?? cancellationGraceMs(), "graceMs");
   const identity = options.identity ?? processIdentity;
   const probes = resolveProbes(options);
   while (true) {
@@ -527,7 +593,7 @@ export async function reapFlowAgents(
     // the pass decides per group rather than off one clock that started before some of them
     // had even been signalled.
     await sweepPass(root, flowRunId, signalled, { escalate: true, deadline, graceMs, probes });
-    await applyDeadOwnerException(root, signalled, identity);
+    await applyDeadOwnerException(root, signalled, identity, deadline);
     if ([...signalled.entries.values()].every(entryResolved)) break;
     if (Date.now() >= deadline) break;
     await delay(REAP_POLL_MS);
@@ -557,7 +623,7 @@ export async function cancelFlowAgents(
  *  required — an entry written without `serverProcStartTime` is never eligible. And the probe
  *  is the TRI-STATE one: `unknown` (EPERM, or a start time we could not read) is never a
  *  licence to reclaim another process's record. */
-async function applyDeadOwnerException(root: string, accumulated: SignalledGroups, identity: ProcessIdentity): Promise<void> {
+async function applyDeadOwnerException(root: string, accumulated: SignalledGroups, identity: ProcessIdentity, deadline: number): Promise<void> {
   for (const [id, entry] of accumulated.entries) {
     if (entry.settled || entry.state === "starting") continue;
     if (entry.serverPid === undefined || entry.serverProcStartTime === undefined) continue;
@@ -567,7 +633,11 @@ async function applyDeadOwnerException(root: string, accumulated: SignalledGroup
       if (!resolvedOutcome(group.outcome)) { resolved = false; break; }
     }
     if (!resolved) continue;
-    if (await identity(entry.serverPid, entry.serverProcStartTime) !== "dead") continue;
+    // Bounded like every other probe on this path (F6): the owner probe is a shell-out on
+    // darwin, and an unbounded one lets a single slow answer run the reap loop past the
+    // caller's deadline.
+    const owner = await bounded(identity(entry.serverPid, entry.serverProcStartTime), deadline);
+    if (owner === undefined || owner.value !== "dead") continue;
     try { await settleForegroundRun(id, { registryRoot: root }); entry.settled = true; }
     catch { /* a stale entry is reported as unsettled rather than claimed */ }
   }
@@ -578,6 +648,16 @@ function summarise(accumulated: SignalledGroups): AgentCancelSummary {
   for (const entry of accumulated.entries.values()) {
     if (entry.alreadySettled) { summary.alreadySettled += 1; continue; }
     for (const group of entry.groups.values()) {
+      // F7: the SAME exclusion `sweepPass` and `entryResolved` already apply. A group belonging
+      // to an entry that settled before we signalled it is not ours to tear down — the sweep
+      // deliberately never signals it and `entryResolved` deliberately ignores it — so counting
+      // its absent outcome as `unreaped` here contradicted both and turned an entry that went
+      // `starting → settled` mid-sweep into a teardown timeout for a group nobody touched.
+      //
+      // ONLY the outcome-less ones. A group that was probed and found `gone` on a settled entry
+      // is a real, reported verdict; dropping it too would hide the very counter that lets a
+      // flow whose agent exited on its own be acknowledged.
+      if (entry.settled && !group.everSignalled && group.outcome === undefined) continue;
       if (group.everSignalled) summary.signalled += 1;
       if (group.outcome === "reaped") summary.reaped += 1;
       else if (group.outcome === "gone") summary.gone += 1;

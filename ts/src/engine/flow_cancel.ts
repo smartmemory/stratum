@@ -74,8 +74,15 @@ function reasonOf(error: unknown): CancelFailure["reason"] | undefined {
     ? reason : undefined;
 }
 
+/** F6. `Number("soon")` is NaN, `Date.now() + NaN` is NaN, and every `Date.now() >= deadline`
+ *  test against it is false — so a mistyped budget did not shorten the teardown, it removed the
+ *  deadline entirely and let the reap loop run forever. A bad value fails here instead. */
 function timeoutBudgetMs(options: CancelFlowOptions): number {
-  return options.timeoutMs ?? Number(process.env.STRATUM_CANCEL_TIMEOUT_MS ?? 15000);
+  const value = options.timeoutMs ?? Number(process.env.STRATUM_CANCEL_TIMEOUT_MS ?? 15000);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${options.timeoutMs !== undefined ? "timeoutMs" : "STRATUM_CANCEL_TIMEOUT_MS"} must be a nonnegative finite number`);
+  }
+  return value;
 }
 
 /** The phases of a foreground cancel, shared by the MCP tool and the CLI. Both surfaces call

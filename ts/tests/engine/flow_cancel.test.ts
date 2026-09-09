@@ -784,17 +784,29 @@ describe("STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline", () => {
     const group = await stubbornGroup();
     await entry(root, "flow-slow-signal", { groups: [{ childPid: group.pid, procStartTime: group.startTime }] });
     const budget = 400;
+    const kills: Array<{ signal: NodeJS.Signals; at: number }> = [];
     const started = Date.now();
+    const deadline = started + budget;
     await expect(cancelFlow(settlingEngine("flow-slow-signal"), "flow-slow-signal", {
       registryRoot: root,
       timeoutMs: budget,
       graceMs: 10_000,
-      // The signal pass alone burns most of the budget.
-      probes: { startTime: async (pid) => { if (pid === group.pid) await delay(250); return group.startTime; } },
+      // One identity probe outlasts the whole budget, so an UNBOUNDED gate answers long after
+      // the caller has given up — and then sends its SIGTERM anyway.
+      probes: {
+        startTime: async (pid) => { if (pid === group.pid) await delay(800); return group.startTime; },
+        kill: (_pid, signal) => { kills.push({ signal, at: Date.now() }); },
+      },
     })).rejects.toMatchObject({ code: "CANCELLATION_TEARDOWN_TIMEOUT" });
     const elapsed = Date.now() - started;
     // Two phases, one deadline. Separate per-phase timeouts would put this at 2-3x the budget.
     expect(elapsed).toBeLessThan(budget * 2);
+    // The deadline bounds the SIGNAL, not just the wait (F6). Every probe on the gate path is
+    // bounded by it, so the call returns near the budget instead of at the probe's own pace.
+    expect(elapsed).toBeLessThan(budget + 200);
+    // And NOTHING is signalled after it. A SIGTERM sent past the deadline has no grace window
+    // left to run in and no reap pass left to confirm it.
+    expect(kills.filter((record) => record.at > deadline)).toEqual([]);
   }, 30_000);
 
   it("T-S01-17: an abortLocal timeout is recorded, not fatal — the reap still runs", async () => {
