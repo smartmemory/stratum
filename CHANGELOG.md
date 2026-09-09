@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **STRAT-FLOW-CANCEL-FG S01 (engine)**: cross-process run lock (`engine/run_lock.ts`: hard-link
+  publication, tri-state process identity, dead-only stale takeover), driver lease on pinned runs,
+  every persist under the lock, `cancelled` RunStatus, `flowCancel` settle transaction, resume /
+  commit / revert refuse a cancelled run, `flow_cancelled` event (events contract 3→4).
 - **STRAT-FLOW-CANCEL-FG blueprint** written and verified (`docs/features/STRAT-FLOW-CANCEL-FG/blueprint.md`):
   three slices, 134 refs verified, four Codex sol/high rounds (39 findings) folded. Design pivoted in
   review from a lockless sidecar to a cross-process run lock plus a driver lease; v1 boundary is

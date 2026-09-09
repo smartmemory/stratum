@@ -12,6 +12,7 @@ import {
 import { applyCandidate, reconcile, revertApply } from "../learn/apply.js";
 import { LearnEgress } from "../learn/smartmemory_egress.js";
 import { StateStore } from "../engine/state.js";
+import { lockedSave } from "../engine/run_lock.js";
 
 const USAGE =
   "Usage: stratum learn <harvest|list|apply|revert|reconcile|egress> [--root <dir>] [--stage] [--json]\n" +
@@ -184,23 +185,12 @@ async function egressCommand(args: string[]): Promise<number> {
   const [action, ...rest] = args;
   const runId = option(rest, "run");
   const store = new StateStore(process.env.STRATUM_STATE_ROOT || undefined);
-  const locks = new Map<string, Promise<unknown>>();
-  const withRunLock = <T>(id: string, operation: () => Promise<T>): Promise<T> => {
-    const previous = locks.get(id) ?? Promise.resolve();
-    const result = previous.then(operation);
-    const tail = result.catch(() => undefined);
-    locks.set(id, tail);
-    void tail.then(() => { if (locks.get(id) === tail) locks.delete(id); });
-    return result;
-  };
+  // R3-3c: this used to be a private Map-of-promises lock, local to one CLI invocation, so
+  // `stratum learn egress` mutating a run record excluded nothing — not another
+  // `stratum learn`, and certainly not a running engine. It takes the real cross-process lock.
   const egress = new LearnEgress({
     store,
-    withReceiptUpdate: (id, update) => withRunLock(id, async () => {
-      const run = await store.load(id);
-      const result = await update(run);
-      await store.save(run);
-      return result;
-    }),
+    withReceiptUpdate: (id, update) => lockedSave(store, id, update),
   });
 
   try {

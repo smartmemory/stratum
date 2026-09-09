@@ -101,8 +101,8 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
     })).rejects.toThrow("stratum_usage_report.request.receipt.extra is undeclared");
   });
 
-  it("freezes events 3 and validates every newly declared event shape strictly", async () => {
-    expect((await eventContract()).events).toBe(3);
+  it("freezes events 4 and validates every newly declared event shape strictly", async () => {
+    expect((await eventContract()).events).toBe(4);
     await expect(assertEvent({
       at: "2026-08-30T00:00:00.000Z",
       type: "usage_debit",
@@ -131,6 +131,11 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
         name: "wave", reason: "initial",
         provenance: { kind: "initial", sourceStep: "build", sourceEpoch: 0, at: "2026-08-30T00:00:00.000Z" },
       },
+    })).resolves.toBeUndefined();
+    await expect(assertEvent({
+      at: "2026-08-30T00:00:00.000Z",
+      type: "flow_cancelled",
+      detail: { by: "fg", reason: "abort", burned: { steps: ["build"], items: 2 } },
     })).resolves.toBeUndefined();
     await expect(assertEvent({
       at: "2026-08-30T00:00:00.000Z",

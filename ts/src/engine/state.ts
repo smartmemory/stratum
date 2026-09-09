@@ -5,7 +5,7 @@ import type { PolicyRuleMap, RuleVerdict } from "../policy/types.js";
 import type { Budget } from "./ledger.js";
 
 export type StepStatus = "pending" | "ready" | "running" | "waiting_gate" | "succeeded" | "failed" | "skipped";
-export type RunStatus = "running" | "completed" | "failed" | "budget_exhausted";
+export type RunStatus = "running" | "completed" | "failed" | "budget_exhausted" | "cancelled";
 
 export interface FailureContext {
   attempt: number;
@@ -198,7 +198,7 @@ export interface AuditEvent {
   type: "planned" | "ready" | "result" | "judged" | "routed" | "skipped" | "resumed" | "completed" | "failed" | "budget_exhausted"
     | "gate_waiting" | "gate_resolved" | "fanout_item_ready" | "fanout_item_dispatched" | "fanout_attempt_result"
     | "fanout_item_skipped" | "fanout_ledger_debit" | "fanout_merge"
-    | "usage_debit" | "step_reset" | "checkpoint_reverted" | "carry_updated";
+    | "usage_debit" | "step_reset" | "checkpoint_reverted" | "carry_updated" | "flow_cancelled";
   stepId?: string;
   detail?: unknown;
 }
@@ -258,6 +258,49 @@ export interface PersistedRun {
   carry?: Record<string, CarryEntry>;
 }
 
+const RUN_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
+
+/** One definition of what a run id may be. `StateStore.path` used to inline this regex, and
+ *  the run lock, the break-lock and the driver lease each build a path from a run id outside
+ *  it — a fourth copy of the pattern is how one of them ends up admitting a separator (R4-7).
+ *  Every lock and lease operation calls this BEFORE constructing any path. */
+export function assertRunId(runId: string): void {
+  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId)) throw new Error("invalid run id");
+}
+
+/** Burn every outstanding issuance at the cancel. `cancelRequested` is a CHECKPOINT_FIELD
+ *  (ts/src/engine/checkpoint.ts), so a later revert could restore `cancelRequested: false`;
+ *  a burned token is the durable half of the guarantee, because the dispatch fencing and the
+ *  gate-token check reject a stale issuance regardless of the flag. Pure and synchronous.
+ *
+ *  Returns the audit evidence recorded on the `flow_cancelled` event: the ids of steps whose
+ *  dispatch/gate token was deleted, and the count of fanout items whose token was deleted. */
+export function burnIssuances(run: PersistedRun): { steps: string[]; items: number } {
+  const steps: string[] = [];
+  let items = 0;
+  const walk = (states: Record<string, StepState>): void => {
+    for (const [id, state] of Object.entries(states)) {
+      if ((state.status === "ready" || state.status === "running") && state.dispatchToken !== undefined) {
+        delete state.dispatchToken;
+        steps.push(id);
+      }
+      if (state.status === "waiting_gate" && state.gateToken !== undefined) {
+        delete state.gateToken;
+        steps.push(id);
+      }
+      for (const item of state.fanout?.items ?? []) {
+        if ((item.status === "ready" || item.status === "running") && item.dispatchToken !== undefined) {
+          delete item.dispatchToken;
+          items += 1;
+        }
+      }
+      if (state.sub) walk(state.sub.steps);
+    }
+  };
+  walk(run.steps);
+  return { steps, items };
+}
+
 let temporarySequence = 0;
 
 export class StateStore {
@@ -294,7 +337,7 @@ export class StateStore {
   }
 
   private path(runId: string): string {
-    if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error("invalid run id");
+    assertRunId(runId);
     return join(this.root, `${runId}.json`);
   }
 }

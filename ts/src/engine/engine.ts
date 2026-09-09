@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { runAgent } from "../connectors/runner.js";
+import { processIdentity } from "../connectors/proc_identity.js";
+import { procStartTime } from "../connectors/proc_identity.js";
 import { extractReferences, type ExtractedReference, type PathSegment, type Reference } from "../ir/refs.js";
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
@@ -16,8 +18,9 @@ import { emitPolicyEvent as postPolicyEvent } from "../policy/smartmemory_client
 import type { EnforcementEvent, PolicyBundle, RuleVerdict } from "../policy/types.js";
 import { BUDGET_KEYS, BudgetLedger, type Budget, validConnectorTelemetry, validUsage } from "./ledger.js";
 import { commitCheckpoint, revertCheckpoint } from "./checkpoint.js";
+import { acquireRunLock, cancelLockWaitMs, readDriverLeaseSync, releaseDriverLeaseSync, unlinkDriverLeaseSync, writeDriverLeaseSync, type RunLockOptions } from "./run_lock.js";
 import { buildReceipt, findReceipt, ReceiptValidationError, spineSpent, type ReceiptInput } from "./receipts.js";
-import { type AttemptRecord, type AttemptTelemetry, type AuditEvent, type CarryEntry, type CarryProvenance, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, StateStore, type StepState } from "./state.js";
+import { assertRunId, type AttemptRecord, type AttemptTelemetry, type AuditEvent, burnIssuances, type CarryEntry, type CarryProvenance, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, type RunStatus, StateStore, type StepState } from "./state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -215,7 +218,10 @@ export type EngineResponse =
   | { status: "completed"; runId: string; output: unknown; ledger: LedgerInfo }
   | { status: "failed"; runId: string; failure: FailureContext; ledger: LedgerInfo }
   | { status: "budget_exhausted"; runId: string; failure: FailureContext; ledger: LedgerInfo }
-  | { status: "running"; runId: string; ledger: LedgerInfo };
+  | { status: "running"; runId: string; ledger: LedgerInfo }
+  // D3: NO `failure` on the cancelled variant. The status is honest, so a fabricated
+  // FailureContext would put a lie in the audit trail.
+  | { status: "cancelled"; runId: string; ledger: LedgerInfo };
 
 export type RevisionedEngineResponse = EngineResponse & { revisionDigest: string };
 
@@ -242,6 +248,25 @@ export interface BgFlowPollResponse extends FlowPollResponse {
   bg: { status: BgStatus; cancelRequested: boolean; pendingGates: string[] };
 }
 
+/** The engine half of a foreground cancel.
+ *
+ *  `flowSettled` is true when the run is durably `cancelled` — either because THIS call moved
+ *  it there, or because it already was. It is the flow-side fact, and it is deliberately
+ *  separate from the caller-facing `acknowledged`, which additionally requires every agent
+ *  claimed for the flow to be reaped or durably settled and is computed by `cancelFlow`.
+ *
+ *  `status` is the run's REAL status: `cancelled` after a settle, or the pre-existing terminal
+ *  status when the cancel arrived too late. `reason` carries `already_<status>` in that case. */
+export interface FlowCancelResult {
+  runId: string;
+  status: RunStatus;
+  flowSettled: boolean;
+  /** True only when this call performed the settle. */
+  settledByThisCall: boolean;
+  reason?: string;
+  ledger: LedgerInfo;
+}
+
 export interface AuditTrail {
   runId: string;
   status: PersistedRun["status"];
@@ -265,6 +290,8 @@ export interface StratumEngineOptions {
   learnEgress?: LearnEgressDriver;
   /** Runtime seams for the real LearnEgress driver. */
   learnEgressOptions?: LearnEgressRuntimeOptions;
+  /** Cross-process run-lock seams (timeouts, identity oracle). Tests inject here. */
+  lockOptions?: RunLockOptions;
 }
 
 export interface PlanOptions {
@@ -287,7 +314,7 @@ export interface CommitResponse {
 export type RevertResponse = EngineResponse & { reverted_to: string };
 
 export class CheckpointOperationError extends Error {
-  readonly errorType: "flow_not_found" | "invalid_label" | "checkpoint_not_found";
+  readonly errorType: "flow_not_found" | "invalid_label" | "checkpoint_not_found" | "flow_cancelled";
   readonly available?: string[];
 
   constructor(errorType: CheckpointOperationError["errorType"], message: string, available?: string[]) {
@@ -331,9 +358,26 @@ export class StratumEngine {
   // V1 loop ownership is in-process like runLocks; startup rehydrates ownership
   // for detached runs marked in their durable state.
   private readonly bgFlows = new Map<string, BgFlowState>();
+  // Run ids whose cross-process file lock this engine currently holds. `persist` asserts
+  // membership: every write to a run record happens inside a locked section, and this
+  // assertion is what makes that claim checkable rather than a comment.
+  private readonly heldLocks = new Set<string>();
+  // Driver-lease tokens for the runs this engine has pinned (R4-4). A lease naming another
+  // LIVE process means that process owns the in-memory copy of the run, and a cancel from
+  // here is refused rather than raced.
+  private readonly driverLeases = new Map<string, string>();
+  private readonly lockOptions: RunLockOptions;
+  private readonly identity: (pid: number, startTime: string) => Promise<"alive" | "dead" | "unknown">;
+  private selfStartTime?: string;
+  private readonly selfIdentityReady: Promise<void>;
 
   constructor(options: StratumEngineOptions) {
     this.store = new StateStore(options.stateRoot);
+    this.lockOptions = options.lockOptions ?? {};
+    this.identity = this.lockOptions.identity ?? processIdentity;
+    this.selfIdentityReady = (this.lockOptions.selfStartTime ?? (() => procStartTime(process.pid)))()
+      .then((value) => { if (value !== undefined) this.selfStartTime = value; })
+      .catch(() => undefined);
     this.evaluator = options.evaluator;
     if (options.judge) this.judge = options.judge;
     if (options.evaluateRunner) this.evaluateRunner = options.evaluateRunner;
@@ -356,22 +400,47 @@ export class StratumEngine {
     return this.store.load(runId);
   }
 
+  /** Pinning is SYNCHRONOUS by design (see scheduleFanout), so the lease it declares is
+   *  written synchronously too — a deferred async write would leave a window in which a
+   *  pinned run looks unowned to a second process. */
   private retainRun(runId: string, run: PersistedRun): void {
     const active = this.activeRuns.get(runId);
-    if (active) active.refs += 1;
-    else this.activeRuns.set(runId, { run, refs: 1 });
+    if (active) { active.refs += 1; return; }
+    this.activeRuns.set(runId, { run, refs: 1 });
+    if (this.selfStartTime === undefined) return;
+    try { this.driverLeases.set(runId, writeDriverLeaseSync(this.store.root, runId, this.selfStartTime)); }
+    catch (error) { process.stderr.write(`stratum: unable to declare driver lease for ${runId}: ${message(error)}\n`); }
   }
 
   private releaseRun(runId: string): void {
     const active = this.activeRuns.get(runId);
     if (!active) return;
     active.refs -= 1;
-    if (active.refs <= 0) this.activeRuns.delete(runId);
+    if (active.refs > 0) return;
+    this.activeRuns.delete(runId);
+    const token = this.driverLeases.get(runId);
+    this.driverLeases.delete(runId);
+    if (token === undefined) return;
+    try { releaseDriverLeaseSync(this.store.root, runId, token); }
+    catch { /* the lease is advisory; a stale one is reclaimed by identity */ }
   }
 
-  private withRunLock<T>(runId: string, action: () => Promise<T>): Promise<T> {
+  /** The in-process promise chain still serialises same-process callers cheaply; the file
+   *  lock is what makes the exclusion cross-process. */
+  private withRunLock<T>(runId: string, action: () => Promise<T>, options?: { timeoutMs?: number }): Promise<T> {
+    assertRunId(runId);
     const previous = this.runLocks.get(runId) ?? Promise.resolve();
-    const result = previous.then(action);
+    const result = previous.then(async () => {
+      await this.selfIdentityReady;
+      const release = await acquireRunLock(this.store.root, runId, { ...this.lockOptions, ...options });
+      this.heldLocks.add(runId);
+      try {
+        return await action();
+      } finally {
+        this.heldLocks.delete(runId);
+        await release();
+      }
+    });
     const tail = result.catch(() => undefined);
     this.runLocks.set(runId, tail);
     void tail.then(() => {
@@ -442,8 +511,14 @@ export class StratumEngine {
       // different process cwd after restart.
       ...(options.workspaceRoot !== undefined ? { workspaceRoot: resolve(options.workspaceRoot) } : {}),
     };
-    await this.persist(run);
-    return this.withRevisionDigest(await this.advance(run, effectiveValidation.value, effectiveValidation.contracts), run);
+    // R3-3a: the initial persist AND the first advance are inside the lock. The run id is
+    // minted above, and acquireRunLock mkdir -p's the state root, so the lock may legitimately
+    // precede the run file's existence. The advance must be inside too: it is what issues the
+    // first dispatch tokens.
+    return this.withRunLock(run.id, async () => {
+      await this.persist(run);
+      return this.withRevisionDigest(await this.advance(run, effectiveValidation.value, effectiveValidation.contracts), run);
+    });
   }
 
   async flowRunBg(specInput: unknown, input: unknown, options: PlanOptions = {}): Promise<{ runId: string; status: "running" }> {
@@ -481,6 +556,9 @@ export class StratumEngine {
   }
 
   async rehydrateBgFlows(): Promise<void> {
+    // The pins below are synchronous and write a driver lease, which needs this process's
+    // identity resolved first.
+    await this.selfIdentityReady;
     for (const runId of await this.store.list()) {
       let run: PersistedRun;
       try {
@@ -730,6 +808,7 @@ export class StratumEngine {
     this.assertExternalMutationAllowed(runId, "commit");
     return await this.withRunLock(runId, async () => {
       const run = await this.loadCheckpointRun(runId);
+      this.assertCancelledCheckpointRefusal(run, "commit");
       this.assertNoForegroundFanout(run, "commit");
       const normalized = label.trim();
       if (!normalized) throw new CheckpointOperationError("invalid_label", "label must be a non-empty string");
@@ -752,6 +831,7 @@ export class StratumEngine {
     this.assertExternalMutationAllowed(runId, "revert");
     return await this.withRunLock(runId, async () => {
       const run = await this.loadCheckpointRun(runId);
+      this.assertCancelledCheckpointRefusal(run, "revert");
       this.assertNoForegroundFanout(run, "revert");
       const normalized = label.trim();
       // Money spent is spent: a revert restores state, never spend. Capture the live
@@ -811,6 +891,12 @@ export class StratumEngine {
 
   private async resumeLocked(runId: string): Promise<EngineResponse> {
     const run = await this.loadRun(runId);
+    // D5. Without this a cancelled run re-emits `resumed`, re-arms every in-flight fanout
+    // below, and lands in advance's {status:"running"} limbo. assertExternalMutationAllowed
+    // cannot cover it: a foreground run has no bgFlows entry.
+    if (run.cancelRequested === true || run.status === "cancelled") {
+      throw new Error(`run ${runId} is cancelled; resume is not permitted`);
+    }
     const computedDigest = digest(run.spec);
     if (run.revisionDigest !== undefined && run.revisionDigest !== computedDigest) {
       throw new Error("persisted revision digest does not match the effective specification");
@@ -883,6 +969,76 @@ export class StratumEngine {
     // the hand-off here instead of wedging at paused_gate forever.
     if (bg.status === "paused_gate") { bg.status = "cancelled"; bg.pendingGates = []; }
     return { status: bg.status };
+  }
+
+  /** R4-4. A live lease held by ANOTHER process means that process owns the in-memory copy of
+   *  this run: refuse rather than race it. A provably dead owner's lease is removed and we
+   *  proceed, because the crashed driver's memory is gone and disk is truth again. An
+   *  `unknown` identity is never reclaimed — we do not break a lease we cannot disprove. */
+  private async claimDriverLease(runId: string): Promise<void> {
+    const lease = readDriverLeaseSync(this.store.root, runId);
+    if (lease === undefined) return;
+    if (this.driverLeases.get(runId) === lease.token) return;   // ours
+    const state = await this.identity(lease.pid, lease.startTime);
+    if (state === "dead") { unlinkDriverLeaseSync(this.store.root, runId); return; }
+    throw Object.assign(
+      new Error(`run ${runId} is driven by pid ${lease.pid}; cancel must be issued from that process`),
+      { code: "CANCELLATION_UNCONFIRMED", reason: "engine_dispatch_active", holderPid: lease.pid },
+    );
+  }
+
+  /** R3-7. Admission for a foreground agent about to be spawned against this flow.
+   *
+   *  Deliberately NOT a boolean: `false` would conflate "healthy", "does not exist" and
+   *  "could not read the record", and only the first is a reason to start an agent. An
+   *  unreadable record fails CLOSED, because admitting an uncancellable agent is the failure
+   *  this check exists to prevent. */
+  async admitFlowAgent(runId: string): Promise<void> {
+    let run: PersistedRun;
+    try {
+      run = await this.withRunLock(runId, () => this.loadRun(runId));
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+        throw Object.assign(new Error(`flow ${runId} is not running`), { code: "FLOW_NOT_RUNNING" });
+      }
+      throw Object.assign(new Error(`flow ${runId} admission check failed: ${message(error)}`), { code: "FLOW_ADMISSION_FAILED" });
+    }
+    if (run.status !== "running" || run.cancelRequested === true) {
+      throw Object.assign(new Error(`flow ${runId} is ${run.status === "running" ? "cancelled" : run.status}`), { code: "FLOW_NOT_RUNNING" });
+    }
+  }
+
+  /** Foreground cancel, addressable by flow id from any process (STRAT-FLOW-CANCEL-FG).
+   *  Unlike flowCancelBg this SETTLES the run rather than abandoning it, and it works with no
+   *  bgFlows entry — which is the whole point: a compose team build is a foreground
+   *  consumer-fanout run, and `compose build --abort` runs in a different process.
+   *
+   *  One locked section, one persist. No mark-then-settle two-phase: under the lock there is
+   *  nothing to race, so the durable mark and the settle ARE the same write. */
+  async flowCancel(runId: string, reason?: string): Promise<FlowCancelResult> {
+    return this.withRunLock(runId, async () => {
+      await this.claimDriverLease(runId);
+      // The terminal decision is read from DISK, not from a pinned object: another process
+      // may have completed this run.
+      const persisted = await this.store.load(runId);
+      if (persisted.status !== "running") {
+        return {
+          runId,
+          status: persisted.status,
+          flowSettled: persisted.status === "cancelled",
+          settledByThisCall: false,
+          reason: `already_${persisted.status}`,
+          ledger: this.ledgerInfo(persisted),
+        };
+      }
+      // Mutate the object the rest of the engine is using. When a fanout of OURS holds a pin,
+      // loadRun returns that instance, so its cooperative brake and its item settle see the
+      // burn on the very same object — which is the whole reason the lease restricts this
+      // path to the driving process (R4-4).
+      const run = await this.loadRun(runId);
+      await this.terminalCancel(run, reason);
+      return { runId, status: run.status, flowSettled: true, settledByThisCall: true, ledger: this.ledgerInfo(run) };
+    }, { timeoutMs: cancelLockWaitMs() });
   }
 
   async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken: string, userId?: string): Promise<EngineResponse> {
@@ -1125,6 +1281,19 @@ export class StratumEngine {
         }
         if (response.status === "completed" || response.status === "failed" || response.status === "budget_exhausted") {
           bg.status = response.status;
+          return;
+        }
+        // R2-11: bg.cancelRequested above is IN-MEMORY, and a second process cannot set it.
+        // Without this a bg run cancelled cross-process settles durably while flowBgPoll
+        // reports `running` forever — the two halves disagreeing is exactly the hazard
+        // rehydrateBgFlows exists to prevent across restarts.
+        // Deliberately store.load, NOT loadRun: a bg-driven run is PINNED by flowRunBg, so
+        // loadRun would hand back this driver's own in-memory object and could never observe
+        // a settle performed anywhere else. The durable record is the only source that can.
+        if (response.status === "cancelled" || (await this.store.load(runId).catch(() => undefined))?.status === "cancelled") {
+          bg.cancelRequested = true;
+          bg.status = "cancelled";
+          bg.pendingGates = [];
           return;
         }
         // Pause on gates only when the run is QUIESCENT: no in-flight fanout can
@@ -1796,131 +1965,196 @@ export class StratumEngine {
     fanoutRef: FanoutState,
   ): Promise<void> {
     if (!step.fanout) throw new Error("fanout missing after validation");
+    const fanout = step.fanout;
     // A revise can invalidate this fanout at any await point; once stale, the
     // item belongs to a dead epoch — stop recording into it (already-reserved
-    // dispatch costs stay in the flow ledger: they were really spent).
-    const stale = (): boolean => run.cancelRequested === true || state.fanout !== fanoutRef;
+    // dispatch costs stay in the flow ledger: they were really spent). A cancel
+    // is the other way in: the settle sets both `cancelRequested` and `status`.
+    const stale = (): boolean => run.cancelRequested === true || run.status === "cancelled" || state.fanout !== fanoutRef;
+    // R2-2/R4-5: the connector await is the ONE thing outside the lock. Everything that
+    // ADMITS, ACCEPTS or RECORDS an attempt runs inside a locked transaction, so a cancel
+    // landing during the await is seen at the one point where its answer becomes durable.
+    const lock = <T>(action: () => Promise<T>): Promise<T> => this.withRunLock(run.id, action);
     item.status = "running";
     let cwd = run.workspaceRoot;
     try {
-      if (step.fanout.isolation === "worktree") {
-        if (!cwd) throw new Error("worktree fanout requires workspaceRoot");
-        const previousWorktree = item.worktree;
-        const directory = await mkdtemp(join(tmpdir(), `stratum-${run.id.slice(0, 8)}-${item.index}-`));
-        await rm(directory, { recursive: true, force: true });
-        await execFileAsync("git", ["-C", cwd, "worktree", "add", "--detach", directory, "HEAD"]);
-        if (previousWorktree && previousWorktree !== directory) {
-          await this.teardownWorktree(cwd, previousWorktree);
-        }
-        item.worktree = directory;
-        cwd = directory;
+      if (fanout.isolation === "worktree") {
+        const prepared = await lock(async (): Promise<string | undefined> => {
+          if (stale()) return undefined;
+          if (!cwd) throw new Error("worktree fanout requires workspaceRoot");
+          const previousWorktree = item.worktree;
+          const directory = await mkdtemp(join(tmpdir(), `stratum-${run.id.slice(0, 8)}-${item.index}-`));
+          await rm(directory, { recursive: true, force: true });
+          await execFileAsync("git", ["-C", cwd, "worktree", "add", "--detach", directory, "HEAD"]);
+          if (previousWorktree && previousWorktree !== directory) {
+            await this.teardownWorktree(cwd, previousWorktree);
+          }
+          item.worktree = directory;
+          return directory;
+        });
+        if (prepared === undefined) return;
+        cwd = prepared;
       }
       let previous: unknown = undefined;
       let finalStageSkipped = false;
-      for (const [stageIndex, stage] of step.fanout.steps.entries()) {
+      for (const [stageIndex, stage] of fanout.steps.entries()) {
         if (stale()) return;
-        item.stage = stageIndex;
-        item.epoch = state.epoch ?? 0;
-        delete item.dispatchToken;
-        delete item.acceptedDispatchToken;
-        if (stage.when !== undefined) {
-          const enabled = this.evaluateFanout(stage.when, run, value, previous, cwd);
-          if (enabled !== true) {
-            this.event(run, "fanout_item_skipped", step.id, { itemIndex: item.index, stage: stageIndex });
-            if (stageIndex === step.fanout.steps.length - 1) finalStageSkipped = true;
-            continue;
+        const gate = await lock(async (): Promise<"abandon" | "skip" | "run"> => {
+          if (stale()) return "abandon";
+          item.stage = stageIndex;
+          item.epoch = state.epoch ?? 0;
+          delete item.dispatchToken;
+          delete item.acceptedDispatchToken;
+          if (stage.when !== undefined) {
+            const enabled = this.evaluateFanout(stage.when, run, value, previous, cwd);
+            if (enabled !== true) {
+              this.event(run, "fanout_item_skipped", step.id, { itemIndex: item.index, stage: stageIndex });
+              return "skip";
+            }
           }
+          return "run";
+        });
+        if (gate === "abandon") return;
+        if (gate === "skip") {
+          if (stageIndex === fanout.steps.length - 1) finalStageSkipped = true;
+          continue;
         }
         let success = false;
         let lastFailure: FailureContext | undefined;
         const maximum = stage.attempts ?? step.attempts ?? 2;
         for (let stageAttempt = 1; stageAttempt <= maximum; stageAttempt += 1) {
-          const attempt = item.attempts.length + 1;
-          let prompt: string;
-          try { prompt = this.renderFanout(stage.do, run, value, previous); }
-          catch (error) { lastFailure = { attempt, reason: message(error) }; this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", lastFailure); continue; }
-          const reserve = this.debit(run, step, state, { dispatches: 1 }, "reserve");
-          if (reserve) {
-            lastFailure = { attempt, reason: `${reserve} budget exhausted` };
-            this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "budget", lastFailure);
-            // Flow-ledger exhaustion is TERMINAL for the run — it must never be
-            // absorbed as one failed item that a tolerant `require` outweighs.
-            if (reserve === "flow") await this.terminalBudget(run, lastFailure);
-            break;
-          }
-          item.dispatchToken = randomUUID();
-          this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: { dispatches: 1 } });
-          this.event(run, "fanout_item_dispatched", step.id, { itemIndex: item.index, stage: stageIndex, attempt });
-          // Durable BEFORE the (possibly long) connector await: a restart or a
-          // fresh poller must see the dispatched lifecycle event, not a
-          // pending item — the event spine is restart-proof.
-          await this.persist(run);
-          let result: StepResult;
+          // R3-3b: the whole admission and reservation stretch — render, debit, token mint,
+          // both lifecycle events and the pre-dispatch persist — is one locked transaction,
+          // re-entered on every stage attempt rather than held across the whole retry loop,
+          // so a cancel between attempts is seen at the next acquire.
+          type Admission =
+            | { kind: "abandon" }
+            | { kind: "continue" }
+            | { kind: "break" }
+            | { kind: "dispatch"; prompt: string; attempt: number; previousFailure?: FailureContext };
+          const admission = await lock(async (): Promise<Admission> => {
+            if (stale()) return { kind: "abandon" };
+            const attempt = item.attempts.length + 1;
+            const carried = lastFailure;
+            let prompt: string;
+            try { prompt = this.renderFanout(stage.do, run, value, previous); }
+            catch (error) {
+              lastFailure = { attempt, reason: message(error) };
+              this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", lastFailure);
+              return { kind: "continue" };
+            }
+            const reserve = this.debit(run, step, state, { dispatches: 1 }, "reserve");
+            if (reserve) {
+              lastFailure = { attempt, reason: `${reserve} budget exhausted` };
+              this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "budget", lastFailure);
+              // Flow-ledger exhaustion is TERMINAL for the run — it must never be
+              // absorbed as one failed item that a tolerant `require` outweighs.
+              if (reserve === "flow") await this.terminalBudget(run, lastFailure);
+              return { kind: "break" };
+            }
+            item.dispatchToken = randomUUID();
+            this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: { dispatches: 1 } });
+            this.event(run, "fanout_item_dispatched", step.id, { itemIndex: item.index, stage: stageIndex, attempt });
+            // Durable BEFORE the (possibly long) connector await: a restart or a
+            // fresh poller must see the dispatched lifecycle event, not a
+            // pending item — the event spine is restart-proof.
+            await this.persist(run);
+            return { kind: "dispatch", prompt, attempt, ...(carried ? { previousFailure: carried } : {}) };
+          });
+          if (admission.kind === "abandon") return;
+          if (admission.kind === "continue") continue;
+          if (admission.kind === "break") break;
+          const { prompt, attempt } = admission;
           const rawContract = stage.out !== undefined ? (spec.contracts as Record<string, Record<string, unknown>>)[stage.out] : undefined;
+          // R4-5: capture, do not act. Neither arm touches the run — the failure path used to
+          // call recordFanoutAttempt in a bare catch, recording an attempt against a run that
+          // may already have been cancelled.
+          let outcome: { ok: true; result: StepResult } | { ok: false; error: unknown };
           try {
-            result = await this.connector({
+            outcome = { ok: true, result: await this.connector({
               agent: stage.agent ?? "claude", prompt, ...(cwd !== undefined ? { cwd } : {}), attempt,
-              ...(lastFailure ? { previousFailure: lastFailure } : {}),
+              ...(admission.previousFailure ? { previousFailure: admission.previousFailure } : {}),
               ...(rawContract !== undefined ? { outSchema: rawContract } : {}),
-              sandbox: step.fanout.isolation === "worktree" ? "workspace-write" : "read-only",
-            });
+              sandbox: fanout.isolation === "worktree" ? "workspace-write" : "read-only",
+            }) };
           }
-          catch (error) {
-            if (stale()) return;
-            lastFailure = { attempt, reason: message(error) }; this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", lastFailure); continue;
-          }
-          if (stale()) return;
-          const outcome = await this.settleFanoutAttempt(
-            run, spec, contracts, step, state, item, value, previous, stageIndex, attempt, result, cwd,
-          );
-          if (stale()) return;
-          if (!outcome.success) {
-            lastFailure = outcome.failure;
-            continue;
-          }
-          previous = result.output;
+          catch (error) { outcome = { ok: false, error }; }
+          const disposition = await lock(async (): Promise<"abandon" | "retry" | "accepted"> => {
+            if (stale()) return "abandon";
+            if (!outcome.ok) {
+              lastFailure = { attempt, reason: message(outcome.error) };
+              this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", lastFailure);
+              return "retry";
+            }
+            const settled = await this.settleFanoutAttempt(
+              run, spec, contracts, step, state, item, value, previous, stageIndex, attempt, outcome.result, cwd,
+            );
+            if (stale()) return "abandon";
+            if (!settled.success) {
+              lastFailure = settled.failure;
+              return "retry";
+            }
+            return "accepted";
+          });
+          if (disposition === "abandon") return;
+          if (disposition === "retry") continue;
+          previous = outcome.ok ? outcome.result.output : undefined;
           success = true;
           break;
         }
         if (!success) {
-          item.status = "failed";
-          item.failure = lastFailure ?? { attempt: item.attempts.length + 1, reason: "fanout stage failed" };
-          delete item.dispatchToken;
+          const abandoned = await lock(async () => {
+            if (stale()) return true;
+            item.status = "failed";
+            item.failure = lastFailure ?? { attempt: item.attempts.length + 1, reason: "fanout stage failed" };
+            delete item.dispatchToken;
+            return false;
+          });
+          void abandoned;
           return undefined;
         }
       }
-      if (finalStageSkipped) {
-        // The fanout output element type is the LAST stage's contract; an item
-        // whose final stage was `when`-skipped has no such value — it is a
-        // skipped item (null in the output array), never a success `require`
-        // can count, and its partial worktree work is never merged.
-        item.status = "skipped";
+      await lock(async () => {
+        if (stale()) return;
+        if (finalStageSkipped) {
+          // The fanout output element type is the LAST stage's contract; an item
+          // whose final stage was `when`-skipped has no such value — it is a
+          // skipped item (null in the output array), never a success `require`
+          // can count, and its partial worktree work is never merged.
+          item.status = "skipped";
+          delete item.dispatchToken;
+          return;
+        }
+        if (item.worktree) {
+          // Include newly-created files in the patch without staging their contents.
+          // Persisted on the item BEFORE it turns succeeded, so a restart between
+          // item completion and merge still has every patch.
+          await execFileAsync("git", ["-C", item.worktree, "add", "-N", "."]);
+          // Diff against HEAD so STAGED changes are captured too — an agent that
+          // ran `git add` in its worktree must not have its work silently lost.
+          // Node's default 1 MiB maxBuffer would fail any item touching a large
+          // or binary file; 64 MiB bounds the patch without breaking real work.
+          const patch = (await execFileAsync("git", ["-C", item.worktree, "diff", "--binary", "HEAD"], { maxBuffer: 64 * 1024 * 1024 })).stdout;
+          if (patch) item.patch = patch;
+        }
+        item.output = previous;
+        item.status = "succeeded";
+        if (item.dispatchToken !== undefined) item.acceptedDispatchToken = item.dispatchToken;
         delete item.dispatchToken;
-        return;
-      }
-      if (item.worktree) {
-        // Include newly-created files in the patch without staging their contents.
-        // Persisted on the item BEFORE it turns succeeded, so a restart between
-        // item completion and merge still has every patch.
-        await execFileAsync("git", ["-C", item.worktree, "add", "-N", "."]);
-        // Diff against HEAD so STAGED changes are captured too — an agent that
-        // ran `git add` in its worktree must not have its work silently lost.
-        // Node's default 1 MiB maxBuffer would fail any item touching a large
-        // or binary file; 64 MiB bounds the patch without breaking real work.
-        const patch = (await execFileAsync("git", ["-C", item.worktree, "diff", "--binary", "HEAD"], { maxBuffer: 64 * 1024 * 1024 })).stdout;
-        if (patch) item.patch = patch;
-      }
-      item.output = previous;
-      item.status = "succeeded";
-      if (item.dispatchToken !== undefined) item.acceptedDispatchToken = item.dispatchToken;
-      delete item.dispatchToken;
+      });
     } finally {
-      if (run.cancelRequested === true) delete item.dispatchToken;
-      if (item.worktree && run.workspaceRoot) {
-        await this.teardownWorktree(run.workspaceRoot, item.worktree);
-        delete item.worktree;
-      }
-      await this.persist(run);
+      await lock(async () => {
+        if (run.cancelRequested === true) delete item.dispatchToken;
+        // Worktree teardown still runs on the abandon path: a cancelled run must not leak
+        // worktrees just because it may not write.
+        if (item.worktree && run.workspaceRoot) {
+          await this.teardownWorktree(run.workspaceRoot, item.worktree);
+          delete item.worktree;
+        }
+        // R4-1/R4-4: the settle already wrote the final record — and on the same object,
+        // since the lease guarantees this process performed it. Nothing to add.
+        if (run.status !== "cancelled") await this.persist(run);
+      });
     }
   }
 
@@ -2818,6 +3052,14 @@ export class StratumEngine {
 
   private assertExternalMutationAllowed(runId: string, operation: "stepDone" | "commit" | "revert" | "resume"): void {
     const bg = this.bgFlows.get(runId);
+    // R4-6: commit and revert take this pre-check BEFORE the lock, and "cancelled" is not in
+    // the terminal allowlist below — so a cancelled BG run would report `is background-driven`
+    // while a cancelled FOREGROUND run reported `flow_cancelled`. Two errors for one
+    // condition, neither of them true. Let a cancelled run through to
+    // assertCancelledCheckpointRefusal, which runs inside the lock and is the truth.
+    // stepDone and resume keep refusing here: both have their own cancelled refusal further in,
+    // and a bg-driven run must not be externally pumped whatever its status.
+    if (bg?.status === "cancelled" && (operation === "commit" || operation === "revert")) return;
     if (bg !== undefined && bg.status !== "completed" && bg.status !== "failed" && bg.status !== "budget_exhausted") {
       throw new Error(`run ${runId} is background-driven; external ${operation} is not permitted (poll via flow_bg_poll)`);
     }
@@ -2891,6 +3133,23 @@ export class StratumEngine {
   // it settles onto the restored state. Refuse both while a fanout is in flight (a fanout
   // step stays `running` from dispatch through settlement), the same quiescence the
   // detached driver already requires. bg-driven runs are covered by the ownership guard.
+  /** D5/R2-10. A cancelled run is terminal. `cancelRequested` is a CHECKPOINT_FIELD, so a
+   *  revert could otherwise restore `cancelRequested: false` and resurrect a run whose agents
+   *  have already been killed; and a commit would snapshot a half-torn-down run as if it were
+   *  a recovery point. Round 0's carve-out for commit ("snapshotting a terminal run is the
+   *  documented recovery case") does not survive: that case is a run that failed on its own,
+   *  whose state is coherent — a cancelled run's is mid-teardown by construction.
+   *
+   *  R4-6: this runs INSIDE the lock, and it is the first thing that can report on a
+   *  cancelled run. assertExternalMutationAllowed's terminal allowlist does not contain
+   *  "cancelled", so a cancelled BG run would otherwise report `is background-driven` while a
+   *  cancelled foreground run reported `flow_cancelled` — two errors for one condition,
+   *  neither of them true. */
+  private assertCancelledCheckpointRefusal(run: PersistedRun, operation: "commit" | "revert"): void {
+    if (run.status !== "cancelled" && run.cancelRequested !== true) return;
+    throw new CheckpointOperationError("flow_cancelled", `Flow '${run.id}' is cancelled; ${operation} is not permitted`);
+  }
+
   private assertNoForegroundFanout(run: PersistedRun, operation: "commit" | "revert"): void {
     if (run.status !== "running") return;
     const spec = this.validationFor(run).value;
@@ -2936,6 +3195,29 @@ export class StratumEngine {
     this.event(run, "budget_exhausted", undefined, failure);
     await this.persist(run);
     this.emitFlowTerminal(run);
+    return this.response(run);
+  }
+
+  /** D3. `failure` stays UNSET: the status is honest, so inventing a FailureContext would put
+   *  a lie in the audit trail (and requiredFailure would invent a worse one).
+   *
+   *  Cancel is exempt from both mutation guards, DELIBERATELY: not assertNoForegroundFanout —
+   *  cancel exists precisely to break the stuck consumer-fanout lifecycle that guard protects
+   *  — and not assertExternalMutationAllowed, because a bg-driven run is cancellable from
+   *  outside. Do not "fix" the omission; it reintroduces the wedge this feature exists to
+   *  break. Assumes the run lock is held: every caller is inside a locked section. */
+  private async terminalCancel(run: PersistedRun, reason?: string): Promise<EngineResponse> {
+    run.cancelRequested = true;
+    const burned = burnIssuances(run);
+    run.status = "cancelled";
+    this.event(run, "flow_cancelled", undefined, { by: "fg", ...(reason !== undefined ? { reason } : {}), burned });
+    // R4-1: the ONE sanctioned write of a cancelled record.
+    await this.persistTerminalCancel(run);
+    this.emitFlowTerminal(run);
+    // A bg run cancelled through the fg surface must report consistently to flowBgPoll — but
+    // only in THIS process; another engine's bgFlows map is reached by driveBg's own check.
+    const bg = this.bgFlows.get(run.id);
+    if (bg) { bg.cancelRequested = true; bg.status = "cancelled"; bg.pendingGates = []; }
     return this.response(run);
   }
 
@@ -2993,6 +3275,10 @@ export class StratumEngine {
     const ledger = this.ledgerInfo(run);
     if (run.status === "completed") return { status: "completed", runId: run.id, output: run.output, ledger };
     if (run.status === "budget_exhausted") return { status: "budget_exhausted", runId: run.id, failure: requiredFailure(run), ledger };
+    // Above the failed fallthrough: requiredFailure would otherwise INVENT
+    // {attempt: 0, reason: "run failed without context"} and report a cancelled run as a
+    // failure with a fabricated reason (C15).
+    if (run.status === "cancelled") return { status: "cancelled", runId: run.id, ledger };
     return { status: "failed", runId: run.id, failure: requiredFailure(run), ledger };
   }
 
@@ -3010,7 +3296,29 @@ export class StratumEngine {
     run.events.push({ at: now(), type, ...(stepId ? { stepId } : {}), ...(detail !== undefined ? { detail } : {}) });
   }
 
-  private persist(run: PersistedRun): Promise<void> {
+  /** Every persist happens inside a locked section. A persist outside one is a lost update
+   *  waiting to happen, and the three write paths this assertion caught (plan's initial
+   *  persist, the engine-fanout admission writes, and `stratum learn egress`) are why it is a
+   *  check rather than a comment. */
+  private assertLockHeld(runId: string): void {
+    if (this.heldLocks.has(runId)) return;
+    const detail = `run ${runId}: persist outside a locked section`;
+    if (process.env.NODE_ENV === "production") { process.stderr.write(`stratum: ${detail}\n`); return; }
+    throw new Error(detail);
+  }
+
+  /** The single sanctioned save of a cancelled run: terminalCancel's own. */
+  private persistTerminalCancel(run: PersistedRun): Promise<void> { return this.persist(run, true); }
+
+  private persist(run: PersistedRun, sanctioned = false): Promise<void> {
+    this.assertLockHeld(run.id);
+    // R4-1: after a settle the durable record is final. Refusing is right; refusing SILENTLY
+    // is not — a swallowed usageReport or receipt update is indistinguishable from one that
+    // succeeded, so every unsanctioned caller reaching here surfaces instead of vanishing.
+    if (run.status === "cancelled" && !sanctioned) {
+      throw Object.assign(new Error(`run ${run.id} is cancelled; no further writes are accepted`),
+        { code: "PERSIST_ON_CANCELLED_RUN" });
+    }
     const previous = this.persistLocks.get(run.id) ?? Promise.resolve();
     const result = previous
       .then(() => this.store.save(run))
