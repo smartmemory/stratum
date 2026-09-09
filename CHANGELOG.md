@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **STRAT-LOOP-CARRY blueprint** written and verified (`docs/features/STRAT-LOOP-CARRY/blueprint.md`):
+  four slices, 154 refs verified, three Codex sol/high rounds folded (24 findings). Round-3 fixes
+  not re-reviewed; see its Review log.
+
 ### Two tickets filed as prerequisites for compose COMP-FABLE-ASTRA
 
 - **STRAT-LOOP-CARRY** (PLANNED, M): a declared `carry:` flow variable with an `initial`
