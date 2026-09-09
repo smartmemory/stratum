@@ -469,12 +469,19 @@ export class StratumEngine {
     if (active.refs > 0) return;
     this.activeRuns.delete(runId);
     const token = this.driverLeases.get(runId);
-    this.driverLeases.delete(runId);
     if (token === undefined) return;
     // Reached from `finally` blocks, so it must not throw — but it must not go quiet either:
     // a lease left behind wedges every other process off this run.
-    try { releaseDriverLeaseSync(this.store.root, runId, token); }
-    catch (error) { process.stderr.write(`stratum: unable to release driver lease for ${runId}: ${message(error)}\n`); }
+    //
+    // The token is forgotten only once the release has actually SUCCEEDED (F5). Deleting it
+    // first meant a transient unlink failure left a lease on disk that this engine no longer
+    // recognised: `prepareLease` and `claimDriverLease` compare by token, so their own leftover
+    // read back as a live foreign lease naming this very pid, and the run became unpinnable and
+    // uncancellable from the one process that owned it. Retaining it keeps the reclaim path open.
+    try {
+      releaseDriverLeaseSync(this.store.root, runId, token);
+      this.driverLeases.delete(runId);
+    } catch (error) { process.stderr.write(`stratum: unable to release driver lease for ${runId}: ${message(error)}\n`); }
   }
 
   /** The in-process promise chain still serialises same-process callers cheaply; the file
@@ -1182,62 +1189,84 @@ export class StratumEngine {
   }
 
   async gateResolve(runId: string, stepId: string, decision: "approve" | "revise" | "kill", gateToken: string, userId?: string): Promise<EngineResponse> {
-    const response = await this.withRunLock(runId, () => this.gateResolveLocked(runId, stepId, decision, gateToken));
-    const resolvedRun = await this.loadRun(runId);
-    if (resolvedRun.bundle_id !== undefined) {
-      const round = resolvedRun.events.filter((event) => event.type === "gate_resolved" && event.stepId === stepId).length;
+    // A PAUSED background flow resolves its gate and re-kicks its driver in ONE locked
+    // transaction, and the driver lease is claimed FIRST (F1). Resolving the gate first —
+    // even in its own earlier locked section — consumed and PERSISTED the gate token before
+    // this process knew it could drive the run at all: a refused claim then left a run whose
+    // successor step was ready, whose durable gate token was already spent, and whose loop had
+    // never started. Nothing could resolve the gate again to produce a driver. Claiming first
+    // means a refusal leaves the durable gate exactly as it was, so the SAME token retries.
+    const bg = this.bgFlows.get(runId);
+    const rekick = bg !== undefined && bg.status === "paused_gate";
+    if (rekick) await this.hooks.beforePin?.(runId);
+    let policy: { bundleId: string; round: number } | undefined;
+    const response = await this.withRunLock(runId, async () => {
+      if (!rekick || bg === undefined) {
+        const plain = await this.gateResolveLocked(runId, stepId, decision, gateToken);
+        policy = await this.gatePolicySnapshot(runId, stepId);
+        return plain;
+      }
+      // Claim and pin BEFORE the gate is touched. A throw here has mutated nothing.
+      await this.prepareLease(runId);
+      this.retainRun(runId, await this.loadRun(runId));
+      let resolved: EngineResponse;
+      try { resolved = await this.gateResolveLocked(runId, stepId, decision, gateToken); }
+      catch (error) { this.releaseRun(runId); throw error; }
+      policy = await this.gatePolicySnapshot(runId, stepId);
+      const durable = await this.store.load(runId);
+      if (resolved.status !== "ready" && resolved.status !== "running") {
+        bg.status = resolved.status;
+        bg.pendingGates = [];
+        this.releaseRun(runId);
+        return resolved;
+      }
+      if (durable.status !== "running" || durable.cancelRequested === true) {
+        bg.status = durable.status === "running" ? "cancelled" : durable.status;
+        bg.pendingGates = [];
+        this.releaseRun(runId);
+        return resolved;
+      }
+      const priorStatus = bg.status;
+      const priorGates = bg.pendingGates;
+      bg.status = "running";
+      bg.pendingGates = [];
+      let loop: Promise<void>;
+      try { loop = this.driveBg(runId, resolved); }
+      catch (error) {
+        bg.status = priorStatus;
+        bg.pendingGates = priorGates;
+        this.releaseRun(runId);
+        throw error;
+      }
+      bg.loop = loop;
+      void loop.finally(() => {
+        this.releaseRun(runId);
+        if (bg.loop === loop) delete bg.loop;
+      });
+      return resolved;
+    });
+    if (policy !== undefined) {
       this.firePolicyEvent(buildGateResolutionEvent({
         runId,
-        bundleId: resolvedRun.bundle_id,
+        bundleId: policy.bundleId,
         stepId,
-        round,
+        round: policy.round,
         outcome: decision,
         ...(userId !== undefined ? { resolvedByUserId: userId } : {}),
       }));
     }
-    const bg = this.bgFlows.get(runId);
-    if (bg?.status === "paused_gate" && response.status !== "ready" && response.status !== "running") {
-      bg.status = response.status;
-      bg.pendingGates = [];
-    } else if (bg?.status === "paused_gate") {
-      await this.hooks.beforePin?.(runId);
-      // The re-kick is its OWN locked transaction (load, lease, pin, launch) rather than four
-      // unlocked statements after gateResolve released the lock. stepDone still interleaves:
-      // this section is short and does not await the loop, which queues behind it.
-      await this.withRunLock(runId, async () => {
-        const durable = await this.store.load(runId);
-        if (durable.status !== "running" || durable.cancelRequested === true) {
-          bg.status = durable.status === "running" ? "cancelled" : durable.status;
-          bg.pendingGates = [];
-          return;
-        }
-        const run = await this.loadRun(runId);
-        // The gate is CONSUMED only once the driver is provably ours to start (F2). Clearing
-        // `pendingGates` and flipping the status first meant a refused lease left the flow with
-        // no pending gate and no loop: the gate could not be resolved again and nothing was
-        // running to resolve it.
-        await this.prepareLease(runId);
-        this.retainRun(runId, run);
-        const priorStatus = bg.status;
-        const priorGates = bg.pendingGates;
-        bg.status = "running";
-        bg.pendingGates = [];
-        let loop: Promise<void>;
-        try { loop = this.driveBg(runId, response); }
-        catch (error) {
-          bg.status = priorStatus;
-          bg.pendingGates = priorGates;
-          this.releaseRun(runId);
-          throw error;
-        }
-        bg.loop = loop;
-        void loop.finally(() => {
-          this.releaseRun(runId);
-          if (bg.loop === loop) delete bg.loop;
-        });
-      });
-    }
     return response;
+  }
+
+  /** The bundle/round pair the policy event needs, read INSIDE the gate's locked transaction.
+   *  Read afterwards it could count a later round appended by the loop this call just launched. */
+  private async gatePolicySnapshot(runId: string, stepId: string): Promise<{ bundleId: string; round: number } | undefined> {
+    const run = await this.loadRun(runId);
+    if (run.bundle_id === undefined) return undefined;
+    return {
+      bundleId: run.bundle_id,
+      round: run.events.filter((event) => event.type === "gate_resolved" && event.stepId === stepId).length,
+    };
   }
 
   /** Every on_revise write this gate declares, resolved against the UN-RESET scope.

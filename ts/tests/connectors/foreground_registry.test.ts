@@ -470,4 +470,75 @@ describe("STRAT-FLOW-CANCEL-FG signal gating", () => {
     expect(kill!.at - term!.at).toBeGreaterThanOrEqual(280);
     try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
   }, 20_000);
+
+  it("F3: a non-finite deadlineAt is refused by every entry point instead of looping forever", async () => {
+    const root = await tempRoot();
+    // `Date.now() >= NaN` is false forever, so a NaN deadline did not shorten the teardown —
+    // it removed it, and the reap loop that trusted it never ended.
+    await expect(killAndReapGroup(1234, { registryRoot: root, deadlineAt: Number.NaN, startTime: "x" }))
+      .rejects.toThrow(/deadlineAt/);
+    await expect(signalFlowAgents("flow-nan", { registryRoot: root, deadlineAt: Number.NaN }))
+      .rejects.toThrow(/deadlineAt/);
+    await expect(reapFlowAgents("flow-nan", { entries: new Map() }, { registryRoot: root, deadlineAt: Number.NaN }))
+      .rejects.toThrow(/deadlineAt/);
+  });
+
+  it("F6: a group that exits during the escalation's second identity check reads as reaped, not unreachable", async () => {
+    const pid = 987654;
+    let termed = false;
+    let gone = false;
+    let probesAfterTerm = 0;
+    const signals: string[] = [];
+    const outcome = await killAndReapGroup(pid, {
+      startTime: "start-1",
+      timeoutMs: 4000,
+      graceMs: 10,
+      probes: {
+        // The second identity probe of the escalation is where the leader finally exits: the
+        // start time can no longer be read (undefined, i.e. a "mismatch") while the group probe
+        // now answers `gone`. That is a completed teardown, not an unreachable stranger.
+        startTime: async () => {
+          if (!termed) return "start-1";
+          probesAfterTerm += 1;
+          if (probesAfterTerm >= 2) { gone = true; return undefined; }
+          return "start-1";
+        },
+        groupId: async () => pid,
+        groupState: () => (gone ? "gone" : "alive"),
+        kill: (_target, signal) => { signals.push(signal); if (signal === "SIGTERM") termed = true; },
+      },
+    });
+    expect(signals).toEqual(["SIGTERM"]);
+    expect(outcome).toBe("reaped");
+  });
+
+  it("F7: cancelFlowAgents spends ONE budget across both phases, so a slow signal pass does not double it", async () => {
+    const root = await tempRoot();
+    const pid = 876543;
+    await writeMeta(root, "eeee5555eeee", baseMeta("flow-budget", {
+      state: "running",
+      serverPid: process.pid,
+      serverProcStartTime: await selfIdentity(),
+      groups: [{ childPid: pid, procStartTime: "start-1" }],
+    }));
+    const started = Date.now();
+    const summary = await cancelFlowAgents("flow-budget", {
+      registryRoot: root,
+      timeoutMs: 600,
+      // Long enough that no escalation ever fires: the reap simply polls a group that never
+      // dies until the shared deadline answers for it.
+      graceMs: 60_000,
+      probes: {
+        // Two slow identity probes: the signal pass alone eats ~400ms of the 600ms budget.
+        startTime: async () => { await delay(200); return "start-1"; },
+        groupId: async () => pid,
+        groupState: () => "alive",
+        kill: () => { /* the group is synthetic; nothing is really signalled */ },
+      },
+    });
+    const elapsed = Date.now() - started;
+    expect(summary).toMatchObject({ signalled: 1, reaped: 0 });
+    // A reap that computed its own fresh deadline ran the total to ~1000ms.
+    expect(elapsed).toBeLessThan(850);
+  }, 20_000);
 });

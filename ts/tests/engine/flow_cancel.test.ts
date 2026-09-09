@@ -856,3 +856,30 @@ describe("STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline", () => {
     expect(result.agents).toMatchObject({ signalled: 0, reaped: 0, gone: 1, unreachable: 0, unreaped: 0, unsettled: 0 });
   }, 30_000);
 });
+
+describe("STRAT-FLOW-CANCEL-FG F2: budgets are validated before anything is settled", () => {
+  it("a non-finite timeoutMs is refused at entry, so flowCancel is never invoked", async () => {
+    let invoked = 0;
+    const engine = { flowCancel: async () => { invoked += 1; throw new Error("must not be reached"); } };
+    await expect(cancelFlow(engine as never, "run-budget", { timeoutMs: Number.NaN }))
+      .rejects.toThrow(/timeoutMs must be a nonnegative finite number/);
+    // Validating after the settle meant the run was already durably cancelled by the time the
+    // bad budget was noticed: the caller got an error AND a cancelled run.
+    expect(invoked).toBe(0);
+  });
+
+  it("a non-finite graceMs is refused at entry too, so flowCancel is never invoked", async () => {
+    let invoked = 0;
+    const engine = { flowCancel: async () => { invoked += 1; throw new Error("must not be reached"); } };
+    await expect(cancelFlow(engine as never, "run-budget", { graceMs: Number.NaN }))
+      .rejects.toThrow(/graceMs must be a nonnegative finite number/);
+    expect(invoked).toBe(0);
+  });
+
+  it("a live run survives a refused budget: nothing was settled", async () => {
+    const { engine, store } = await subject(echo);
+    const planned = await engine.plan(consumerFlow, { goal: "g" });
+    await expect(cancelFlow(engine, planned.runId, { timeoutMs: Number.NaN })).rejects.toThrow(/timeoutMs/);
+    expect((await store.load(planned.runId)).status).toBe("running");
+  });
+});

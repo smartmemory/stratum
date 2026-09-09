@@ -14,7 +14,7 @@ import {
   readDriverLeaseSync,
   writeDriverLeaseSync,
 } from "../../src/engine/run_lock.js";
-import { StateStore } from "../../src/engine/state.js";
+import { StateStore, type PersistedRun } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
@@ -182,6 +182,43 @@ describe("F6 — a cancel budget that is not a number is refused, never treated 
   });
 });
 
+describe("F5 — a driver lease whose release FAILS is not a lease this engine has forgotten", () => {
+  it("keeps the token so the same engine can reclaim its own lease after a transient failure", async () => {
+    const stateRoot = await tempRoot("stratum-f5-release-");
+    const runId = await plannedRun(stateRoot);
+    const engine = new StratumEngine({ stateRoot, evaluator: createEvaluator() });
+    const store = new StateStore(stateRoot);
+    const internals = engine as unknown as {
+      selfIdentityReady: Promise<void>;
+      retainRun(runId: string, run: PersistedRun): void;
+      releaseRun(runId: string): void;
+    };
+    await internals.selfIdentityReady;
+    const run = await store.load(runId);
+    internals.retainRun(runId, run);
+    const token = readDriverLeaseSync(stateRoot, runId)?.token;
+    expect(token).toBeDefined();
+
+    // A transient unlink failure: the lease is readable and ours, but the directory refuses the
+    // removal. Forgetting the token first left the engine with a lease still on disk that still
+    // names its own pid — which `prepareLease` and `claimDriverLease` then read as a LIVE
+    // foreign lease, so this process could never pin the run again.
+    await chmod(stateRoot, 0o500);
+    restores.push(async () => { await chmod(stateRoot, 0o700); });
+    internals.releaseRun(runId);
+    await chmod(stateRoot, 0o700);
+    expect(readDriverLeaseSync(stateRoot, runId)?.token).toBe(token);
+
+    // The retry: the same engine reclaims the lease it never lost, by token.
+    expect(() => internals.retainRun(runId, run)).not.toThrow();
+    const reclaimed = readDriverLeaseSync(stateRoot, runId)?.token;
+    expect(reclaimed).toBeDefined();
+    expect(reclaimed).not.toBe(token);
+    internals.releaseRun(runId);
+    expect(readDriverLeaseSync(stateRoot, runId)).toBeUndefined();
+  });
+});
+
 describe("F2 — a pin site that fails leaves no bookkeeping behind", () => {
   it("flowRunBg does not durably mark bgDriven when the lease write fails", async () => {
     const stateRoot = await tempRoot("stratum-f2-bg-");
@@ -232,10 +269,22 @@ describe("F2 — a pin site that fails leaves no bookkeeping behind", () => {
     // this is where the claim now fails.
     await blockLeaseWrites(stateRoot, started.runId);
 
-    await expect(engine.gateResolve(started.runId, "review", "approve")).rejects.toBeDefined();
+    const token = (await engine.audit(started.runId)).steps["review"]?.gateToken;
+    expect(token).toBeDefined();
+    await expect(engine.gateResolve(started.runId, "review", "approve", token)).rejects.toBeDefined();
     const after = await engine.flowBgPoll(started.runId);
     expect(after.bg.status).toBe("paused_gate");
     expect(after.bg.pendingGates).toEqual(["review"]);
+    // The DURABLE gate is untouched too, which is the whole point: the same token must still
+    // resolve the same gate once the claim can succeed. Consuming the gate before claiming the
+    // lease spent the token on a re-kick that never launched, so the successor step was ready
+    // with no driver and the gate could never be resolved again to produce one.
+    expect((await engine.audit(started.runId)).steps["review"]?.gateToken).toBe(token);
+    await unblockLeaseWrites(stateRoot, started.runId);
+    await engine.gateResolve(started.runId, "review", "approve", token);
+    const store = new StateStore(stateRoot);
+    for (let tick = 0; tick < 400 && (await store.load(started.runId)).status === "running"; tick += 1) await delay(5);
+    expect((await store.load(started.runId)).status).toBe("completed");
   });
 
   it("a refused fanout pin does not burn the epoch key that lets the fanout be scheduled", async () => {

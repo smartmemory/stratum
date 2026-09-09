@@ -204,6 +204,15 @@ describe("STRAT-FLOW-CANCEL-FG run lock protocol", () => {
       .rejects.toMatchObject({ code: "RUN_LOCK_TIMEOUT", holderPid: 4242 });
   });
 
+  it("F4: a caller-supplied non-finite timeoutMs is refused instead of retrying forever", async () => {
+    const dir = await root();
+    await writeLockRecord(dir, { pid: 4242, startTime: "held", token: "held" });
+    // `nowMs() >= NaN` is false forever, so the acquire loop never reached its RUN_LOCK_TIMEOUT
+    // and a mistyped budget became an unbounded wait on a lock somebody else holds.
+    await expect(acquireRunLock(dir, RUN, options({ timeoutMs: Number.NaN, identity: async () => "alive" })))
+      .rejects.toThrow(/timeoutMs must be a nonnegative finite number/);
+  });
+
   it("T-S01-L10: an unavailable process identity refuses the acquire and creates NO lock file", async () => {
     const dir = await root();
     await expect(acquireRunLock(dir, RUN, { selfStartTime: () => Promise.resolve(undefined) }))
