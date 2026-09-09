@@ -34,6 +34,24 @@ const simpleFlow = {
   } },
 };
 
+/** An ENGINE-dispatch fanout: the connector call happens inside the engine, so a blocked
+ *  connector leaves the run pinned and its driver lease held. */
+const fanoutFlow = {
+  version: 1,
+  contracts: { Result: { value: "string" }, Batch: { items: "string[]" } },
+  flows: { entry: "main", main: {
+    input: { name: "string" },
+    output: { from: "${fan.output[0]}", contract: "Result" },
+    steps: [
+      { id: "prep", do: "prep", out: "Batch" },
+      { id: "fan", after: ["prep"], fanout: {
+        over: "${prep.output.items}", concurrency: 1, isolation: "none",
+        require: "all", merge: "sequential", steps: [{ do: "fan ${item}", out: "Result" }],
+      } },
+    ],
+  } },
+};
+
 interface Harness {
   dispatcher: ToolDispatcher;
   engine: StratumEngine;
@@ -119,6 +137,17 @@ async function waitForRecordedGroup(registryRoot: string, flowRunId: string): Pr
     await delay(10);
   }
   throw new Error("no foreground registry entry ever recorded a group");
+}
+
+async function onlyEntry(registryRoot: string): Promise<ForegroundRunMeta> {
+  const names = await readdir(registryRoot).catch(() => [] as string[]);
+  const found: ForegroundRunMeta[] = [];
+  for (const name of names) {
+    const raw = await readFile(join(registryRoot, name, "meta.json"), "utf8").catch(() => undefined);
+    if (raw !== undefined) found.push(JSON.parse(raw) as ForegroundRunMeta);
+  }
+  expect(found).toHaveLength(1);
+  return found[0]!;
 }
 
 function errorData(error: unknown): Record<string, unknown> {
@@ -254,6 +283,91 @@ describe("STRAT-FLOW-CANCEL-FG stratum_flow_cancel", () => {
       await release();
       if (previous === undefined) delete process.env.STRATUM_CANCEL_LOCK_WAIT_MS;
       else process.env.STRATUM_CANCEL_LOCK_WAIT_MS = previous;
+    }
+  });
+
+  it("T-S03-4e: a refused cancel sweeps NOTHING — the run lock case leaves the agent alive", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "stratum-fgc-alive-")), "writes");
+    roots.push(path);
+    const subject = await harness({ runAgent: spawningAgent(path) });
+    const cancellationId = randomUUID();
+    const agentCall = subject.dispatcher.call("stratum_agent_run", {
+      agent: "codex", prompt: "p", cwd: process.cwd(), cancellationId, flow: { runId: subject.runId },
+    }).catch((error: unknown) => error);
+    await waitForDescendant(path);
+    await waitForRecordedGroup(subject.registryRoot, subject.runId);
+
+    const previous = process.env.STRATUM_CANCEL_LOCK_WAIT_MS;
+    process.env.STRATUM_CANCEL_LOCK_WAIT_MS = "60";
+    const release = await acquireRunLock(subject.stateRoot, subject.runId);
+    try {
+      const failure = await subject.dispatcher.call("stratum_flow_cancel", { runId: subject.runId }).catch((error: unknown) => error);
+      expect(errorData(failure)).toMatchObject({
+        code: "CANCELLATION_UNCONFIRMED", reason: "run_lock_held", flowSettled: false, agents: ZERO_AGENTS,
+      });
+      // Settle-first is absolute: the flow is still running, so its agent must still be running
+      // too. A dead agent under a live flow is the hazard the ordering exists to prevent.
+      expect((await subject.store.load(subject.runId)).status).toBe("running");
+      const seen = await readFile(path, "utf8");
+      await delay(120);
+      expect((await readFile(path, "utf8")).length).toBeGreaterThan(seen.length);
+      expect((await onlyEntry(subject.registryRoot)).state).toBe("running");
+    } finally {
+      await release();
+      if (previous === undefined) delete process.env.STRATUM_CANCEL_LOCK_WAIT_MS;
+      else process.env.STRATUM_CANCEL_LOCK_WAIT_MS = previous;
+      await subject.dispatcher.call("stratum_cancel_agent_run", { runId: cancellationId }).catch(() => undefined);
+      await agentCall;
+    }
+  });
+
+  it("T-S03-4f: a pinned run refuses a cross-process cancel and leaves its agent alive", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "stratum-fgc-pinned-")), "writes");
+    const stateRoot = await mkdtemp(join(tmpdir(), "stratum-fgc-pin-state-"));
+    const registryRoot = await mkdtemp(join(tmpdir(), "stratum-fgc-pin-reg-"));
+    roots.push(path, stateRoot, registryRoot);
+    let connectorCalls = 0;
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const engineA = new StratumEngine({
+      stateRoot, evaluator: createEvaluator(),
+      connector: async ({ prompt }) => { connectorCalls += 1; await blocked; return { output: { value: prompt } }; },
+    });
+    const dispatcherA = createToolDispatcher({ engine: engineA, foregroundRegistryRoot: registryRoot, runAgent: spawningAgent(path) });
+    const planned = await dispatcherA.call("stratum_plan", { spec: fanoutFlow, input: { name: "Ada" } });
+    const runId = planned.runId as string;
+    await dispatcherA.call("stratum_step_done", {
+      runId, stepId: "prep", result: { output: { items: ["a", "b"] } },
+      dispatchToken: (planned.ready as Array<{ dispatchToken: string }>)[0]!.dispatchToken,
+    });
+    // The engine-dispatch fanout is inside the connector, so engine A holds the pin and the
+    // driver lease for this run.
+    for (let tick = 0; tick < 400 && connectorCalls === 0; tick += 1) await delay(5);
+    expect(connectorCalls).toBe(1);
+
+    const cancellationId = randomUUID();
+    const agentCall = dispatcherA.call("stratum_agent_run", {
+      agent: "codex", prompt: "p", cwd: process.cwd(), cancellationId, flow: { runId },
+    }).catch((error: unknown) => error);
+    try {
+      await waitForDescendant(path);
+      await waitForRecordedGroup(registryRoot, runId);
+
+      const engineB = new StratumEngine({ stateRoot, evaluator: createEvaluator() });
+      const dispatcherB = createToolDispatcher({ engine: engineB, foregroundRegistryRoot: registryRoot });
+      const failure = await dispatcherB.call("stratum_flow_cancel", { runId }).catch((error: unknown) => error);
+      expect(errorData(failure)).toMatchObject({
+        code: "CANCELLATION_UNCONFIRMED", runId, reason: "engine_dispatch_active",
+        holderPid: process.pid, status: "running", flowSettled: false, agents: ZERO_AGENTS,
+      });
+      expect((await new StateStore(stateRoot).load(runId)).status).toBe("running");
+      const seen = await readFile(path, "utf8");
+      await delay(120);
+      expect((await readFile(path, "utf8")).length).toBeGreaterThan(seen.length);
+    } finally {
+      await dispatcherA.call("stratum_cancel_agent_run", { runId: cancellationId }).catch(() => undefined);
+      release?.();
+      await agentCall;
     }
   });
 
