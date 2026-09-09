@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **STRAT-LOOP-CARRY S01 (IR)**: `carry:` flow block, `${name}` carry reference kind, and the
+  validation passes (13 new error codes incl. `FANOUT_OVER_SINGLE_REF`); collectors tagged by
+  field language and mirrored (`referencesInStep` / `stringLeaves`), `resetClosure` exported.
+
 - **STRAT-LOOP-CARRY blueprint** written and verified (`docs/features/STRAT-LOOP-CARRY/blueprint.md`):
   four slices, 154 refs verified, three Codex sol/high rounds folded (24 findings). Round-3 fixes
   not re-reviewed; see its Review log.

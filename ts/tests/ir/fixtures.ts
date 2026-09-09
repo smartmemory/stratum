@@ -74,6 +74,31 @@ const simple: Spec = {
 
 const err = (code: string, path: string) => [{ code, path }];
 
+/** Builds a fresh carry-bearing variant of `designExample`: carry.wave is initialised from
+ *  `build` (unconditional, non-gate, non-routed), consumed by `fixups`'s fanout `over`
+ *  (explicit `after: [build]` so ordering is proved statically, not via routing), and
+ *  revised by a new `assess_gate` step placed after `fixups` whose `on_revise` resets back
+ *  to `build` (whose reset closure covers `fixups`). Each call returns an independent clone. */
+export const buildCarryExample = (): Spec => {
+  const s = clone(designExample);
+  const main = (s.flows as any).main;
+  main.carry = {
+    wave: {
+      initial: "${build.output.items}",
+      on_revise: { assess_gate: "${check.output.items}" },
+    },
+  };
+  const fixups = main.steps.find((step: any) => step.id === "fixups");
+  fixups.after = ["build"];
+  fixups.fanout.over = "${wave}";
+  main.steps.push({
+    id: "assess_gate",
+    after: ["fixups"],
+    gate: { on_approve: "wrap", on_revise: "build", on_kill: null, max_rounds: 2 },
+  });
+  return s;
+};
+
 export const REVIEW_REGRESSIONS = {
   agentNoneOnDoRejected: (() => { const s = clone(simple); (s.flows as any).main.steps[0].agent = "none"; return s; })(),
   nestedTypedArrayAccepted: (() => { const s = clone(simple); (s.contracts as any).Result.grid = "string[][]"; return s; })(),
@@ -121,6 +146,7 @@ export const validFixtures = [
       return s;
     })(),
   },
+  { name: "a carry flow", spec: buildCarryExample() },
 ];
 
 export const invalidFixtures = [
@@ -273,5 +299,196 @@ export const invalidFixtures = [
   {
     name: "unrecognized flow field", spec: (() => { const s = clone(simple); (s.flows as any).main.extra = true; return s; })(),
     errors: err("E2_UNKNOWN_FIELD", "flows.main.extra"),
+  },
+  {
+    // main's own (valid) carry declaration is left in place; summarize gains an
+    // ADDITIONAL carry block, which trips CARRY_ROOT_ONLY as soon as validateSpec
+    // reaches the summarize flow. Moving main's carry instead would leave fixups's
+    // "${wave}" reference undeclared and misfire REF_UNKNOWN_CARRY on main first.
+    name: "carry on a non-entry flow",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.summarize.carry = {}; return s; })(),
+    errors: err("CARRY_ROOT_ONLY", "flows.summarize.carry"),
+  },
+  {
+    name: "carry name collides with a step",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.check = s.flows.main.carry.wave; delete s.flows.main.carry.wave; return s; })(),
+    errors: err("CARRY_NAME_CONFLICT", "flows.main.carry.check"),
+  },
+  {
+    name: "carry name shadows item",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.item = s.flows.main.carry.wave; delete s.flows.main.carry.wave; return s; })(),
+    errors: err("CARRY_NAME_CONFLICT", "flows.main.carry.item"),
+  },
+  {
+    name: "carry name is not lowercase", // R3-2 — the strict record's key regex fails at the schema layer, before any carry pass runs
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.Wave = s.flows.main.carry.wave; delete s.flows.main.carry.wave; return s; })(),
+    errors: err("SCHEMA_INVALID", "flows.main.carry.Wave"),
+  },
+  {
+    name: "carry name starts with an underscore", // R3-2 — same path shape as above
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry._wave = s.flows.main.carry.wave; delete s.flows.main.carry.wave; return s; })(),
+    errors: err("SCHEMA_INVALID", "flows.main.carry._wave"),
+  },
+  {
+    name: "carry initial is not a full reference",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.initial = "wave is ${build.output.items}"; return s; })(),
+    errors: err("CARRY_REF_INVALID", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial names an unknown step",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.initial = "${nope.output.tasks}"; return s; })(),
+    errors: err("REF_UNKNOWN_STEP", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial source has no out contract", // R1-3
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.unshift({ id: "seed", do: "seed" }); s.flows.main.carry.wave.initial = "${seed.output}"; return s; })(),
+    errors: err("REF_OUTPUT_CONTRACT_REQUIRED", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial names an unknown output path", // R1-3
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.initial = "${build.output.missing}"; return s; })(),
+    errors: err("REF_UNKNOWN_PATH", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial names an unknown input path", // R1-3
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.initial = "${input.missing}"; return s; })(),
+    errors: err("REF_UNKNOWN_PATH", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial source is when-guarded", // R1-4
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "build").when = "true"; return s; })(),
+    errors: err("CARRY_INITIAL_SOURCE_CONDITIONAL", "flows.main.carry.wave.initial"),
+  },
+  {
+    // Pointing `initial` at a gate step deviates from the blueprint's expected
+    // CARRY_INITIAL_SOURCE_CONDITIONAL: a gate step has no `out` contract at all
+    // (contractForStep returns undefined for gate kind), so referenceTypeError's
+    // REF_OUTPUT_CONTRACT_REQUIRED check — shared via carryReference — fires first,
+    // before the conditional-source check is ever reached. Confirmed empirically.
+    name: "carry initial source is a gate",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.initial = "${approve.output}"; return s; })(),
+    errors: err("REF_OUTPUT_CONTRACT_REQUIRED", "flows.main.carry.wave.initial"),
+  },
+  {
+    // A routing edge terminating at `build` (the carry initial source) must not create
+    // a ROUTING_CYCLE — build already has forward edges to everything downstream of it —
+    // so the routing step is an independent branch with no path back from build.
+    name: "carry initial source is an on_fail target", // R2-2
+    spec: (() => {
+      const s: any = buildCarryExample();
+      s.flows.main.steps.push({ id: "audit", do: "audit", on_fail: "build" });
+      return s;
+    })(),
+    errors: err("CARRY_INITIAL_SOURCE_CONDITIONAL", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial source is a gate route target", // R2-2
+    spec: (() => {
+      const s: any = buildCarryExample();
+      s.flows.main.steps.push({ id: "audit", do: "audit" });
+      s.flows.main.steps.push({ id: "sidecheck", after: ["audit"], gate: { on_approve: "build", on_revise: null, on_kill: null } });
+      return s;
+    })(),
+    errors: err("CARRY_INITIAL_SOURCE_CONDITIONAL", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry initial source is an on_kill target", // R3-4 — on_kill is in the routed set, and must be covered by its own fixture
+    spec: (() => {
+      const s: any = buildCarryExample();
+      s.flows.main.steps.push({ id: "audit", do: "audit" });
+      s.flows.main.steps.push({ id: "killcheck", after: ["audit"], gate: { on_approve: null, on_revise: null, on_kill: "build" } });
+      return s;
+    })(),
+    errors: err("CARRY_INITIAL_SOURCE_CONDITIONAL", "flows.main.carry.wave.initial"),
+  },
+  {
+    name: "carry on_revise key is not a gate",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.on_revise = { check: "${check.output.items}" }; return s; })(),
+    errors: err("CARRY_UNKNOWN_GATE", "flows.main.carry.wave.on_revise.check"),
+  },
+  {
+    name: "carry revise gate has no target", // R1-1a
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "assess_gate").gate.on_revise = null; return s; })(),
+    errors: err("CARRY_REVISE_TARGET_NULL", "flows.main.carry.wave.on_revise.assess_gate"),
+  },
+  {
+    name: "carry revise target does not reset the consumer", // R1-1b
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "assess_gate").gate.on_revise = "wrap"; return s; })(),
+    errors: err("CARRY_REVISE_MISSES_CONSUMER", "flows.main.carry.wave.on_revise.assess_gate"),
+  },
+  {
+    name: "carry revise gate is a sibling of the consumer", // R1-1c
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "assess_gate").after = ["build"]; return s; })(),
+    errors: err("CARRY_REVISE_GATE_NOT_AFTER_CONSUMER", "flows.main.carry.wave.on_revise.assess_gate"),
+  },
+  {
+    name: "undeclared carry reference",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "fixups").fanout.over = "${surge}"; return s; })(),
+    errors: err("REF_UNKNOWN_CARRY", "flows.main.steps[3].fanout.over"),
+  },
+  {
+    name: "inherited property is not a carry name", // R1-11
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "fixups").fanout.over = "${constructor}"; return s; })(),
+    errors: err("REF_UNKNOWN_CARRY", "flows.main.steps[3].fanout.over"),
+  },
+  {
+    name: "carry referenced before its initial source",
+    spec: (() => { const s: any = buildCarryExample(); delete s.flows.main.steps.find((step: any) => step.id === "fixups").after; return s; })(),
+    errors: err("CARRY_REF_BEFORE_INITIAL", "flows.main.steps[3].fanout.over"),
+  },
+  {
+    name: "carry source reachable only by on_fail", // R1-4 — routing edges don't count toward carry ordering
+    spec: (() => {
+      const s: any = buildCarryExample();
+      s.flows.main.steps.find((step: any) => step.id === "build").on_fail = "fixups";
+      delete s.flows.main.steps.find((step: any) => step.id === "fixups").after;
+      return s;
+    })(),
+    errors: err("CARRY_REF_BEFORE_INITIAL", "flows.main.steps[3].fanout.over"),
+  },
+  {
+    name: "carry in a step when", // R1-5
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "check").when = "${wave}"; return s; })(),
+    errors: err("CARRY_REF_IN_EXPRESSION", "flows.main.steps[1].when"),
+  },
+  {
+    name: "carry in a set expression", // R1-5
+    spec: (() => {
+      const s: any = buildCarryExample();
+      const steps = s.flows.main.steps;
+      steps[steps.findIndex((step: any) => step.id === "check")] = { id: "check", after: ["build"], set: { flag: "${wave}" }, out: "Review" };
+      return s;
+    })(),
+    errors: err("CARRY_REF_IN_EXPRESSION", "flows.main.steps[1].set.flag"),
+  },
+  {
+    name: "carry in a fanout stage when", // R1-5
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "fixups").fanout.steps[0].when = "${wave}"; return s; })(),
+    errors: err("CARRY_REF_IN_EXPRESSION", "flows.main.steps[3].fanout.steps[0].when"),
+  },
+  {
+    name: "carry in iterate.until", // R2-4
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "check").iterate = { max: 2, until: "${wave}" }; return s; })(),
+    errors: err("CARRY_REF_IN_EXPRESSION", "flows.main.steps[1].iterate.until"),
+  },
+  {
+    name: "carry in a step ensure expr", // R2-4
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "check").ensure = [{ expr: "${wave}" }]; return s; })(),
+    errors: err("CARRY_REF_IN_EXPRESSION", "flows.main.steps[1].ensure[0].expr"),
+  },
+  {
+    name: "carry in a fanout stage ensure expr", // R2-4
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "fixups").fanout.steps[0].ensure = [{ expr: "${wave}" }]; return s; })(),
+    errors: err("CARRY_REF_IN_EXPRESSION", "flows.main.steps[3].fanout.steps[0].ensure[0].expr"),
+  },
+  {
+    name: "carry path may not start with output", // R1-8
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "fixups").fanout.over = "${wave.output}"; return s; })(),
+    errors: err("CARRY_PATH_RESERVED", "flows.main.steps[3].fanout.over"),
+  },
+  {
+    name: "fanout over is not a single reference",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "fixups").fanout.over = "${wave} and ${wave}"; return s; })(),
+    errors: err("FANOUT_OVER_SINGLE_REF", "flows.main.steps[3].fanout.over"),
   },
 ];
