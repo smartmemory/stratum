@@ -1,10 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StratumEngine, SpecValidationError, type EngineResponse } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
-import { StateStore } from "../../src/engine/state.js";
+import { StateStore, type PersistedRun } from "../../src/engine/state.js";
 import { tokenEchoingEngine, type TokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 
 // §7 of the STRAT-LOOP-CARRY blueprint: the COMP-FABLE-ASTRA loop in miniature, run
@@ -133,8 +133,39 @@ describe("STRAT-LOOP-CARRY golden flow (blueprint §7)", () => {
     await engine.commit(start.runId, "wave1");
 
     // 5. Assess-gate revise rewrites the wave.
-    const assessGateToken = (await store.load(start.runId)).steps.assess_gate?.gateToken;
-    const revisedAssess = await engine.gateResolve(start.runId, "assess_gate", "revise", assessGateToken!);
+    // F3: the carry write and the reset must land in ONE durable snapshot. Asserting the
+    // final state and the in-memory event order cannot see a crash window, so spy on the
+    // real store and inspect every snapshot written during the revise: no snapshot may
+    // carry the revised value without the reset that invalidates its readers.
+    const preRevise = await store.load(start.runId);
+    const assessGateToken = preRevise.steps.assess_gate?.gateToken;
+    const resetsBefore = preRevise.events.filter((event) => event.type === "step_reset").length;
+    const executeEpochBefore = preRevise.steps.execute?.epoch ?? 0;
+    const snapshots: PersistedRun[] = [];
+    const originalSave = StateStore.prototype.save;
+    const saveSpy = vi.spyOn(StateStore.prototype, "save").mockImplementation(async function (this: StateStore, run: PersistedRun) {
+      snapshots.push(structuredClone(run));
+      return originalSave.call(this, run);
+    });
+    let revisedAssess: EngineResponse;
+    try {
+      revisedAssess = await engine.gateResolve(start.runId, "assess_gate", "revise", assessGateToken!);
+    } finally {
+      saveSpy.mockRestore();
+    }
+
+    const carryRevised = (snapshot: PersistedRun) => snapshot.carry?.wave?.provenance.kind === "revise";
+    const resetLanded = (snapshot: PersistedRun) => snapshot.events.filter((event) => event.type === "step_reset").length > resetsBefore;
+    expect(snapshots.length).toBeGreaterThan(0);
+    // No carry-only intermediate snapshot: every durable state that shows the new wave also
+    // shows the reset. A `persist` inserted between the two would break exactly this.
+    expect(snapshots.filter(carryRevised).map(resetLanded)).not.toContain(false);
+    const firstRevised = snapshots.find(carryRevised);
+    expect(firstRevised).toBeDefined();
+    expect(firstRevised!.carry?.wave?.value).toEqual(["t3"]);
+    expect(firstRevised!.steps.execute?.epoch ?? 0).toBe(executeEpochBefore + 1);
+    const firstResetDetail = firstRevised!.events.filter((event) => event.type === "step_reset").at(-1)!.detail as { reset: Array<{ stepId: string }> };
+    expect(firstResetDetail.reset.map((entry) => entry.stepId).sort()).toEqual(["assess", "assess_gate", "execute", "execute_merge", "verify"]);
     if (revisedAssess.status !== "ready") throw new Error(`expected a re-fan, got ${JSON.stringify(revisedAssess)}`);
     const run3 = await store.load(start.runId);
     expect(run3.carry?.wave).toMatchObject({

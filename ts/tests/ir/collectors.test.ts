@@ -7,6 +7,7 @@ import { stringLeaves } from "../../src/engine/engine.js";
 import { StateStore, type AuditEvent } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { referencesInStep, resetClosure } from "../../src/ir/validate.js";
+import { extractReferences } from "../../src/ir/refs.js";
 import type { Flow } from "../../src/ir/schema.js";
 import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 import { buildCarryExample } from "./fixtures.js";
@@ -33,6 +34,22 @@ describe("collector mirror (referencesInStep vs stringLeaves)", () => {
     const engineLeaves = stringLeaves(fixups);
     expect(validatorLeaves.some((leaf) => leaf.value === "${wave}")).toBe(true);
     expect(engineLeaves.some((leaf) => leaf.value === "${wave}")).toBe(true);
+
+    // F5: collecting the literal is not the claim under test — the claim is that the token
+    // PARSES as a carry reference and never as a step reference, since a `kind === "step"`
+    // classification is what would reintroduce the dependency edge (and the ROUTING_CYCLE).
+    let sawCarry = false;
+    for (const leaf of [...validatorLeaves, ...engineLeaves]) {
+      for (const extracted of extractReferences(leaf.value) ?? []) {
+        if (leaf.value === "${wave}") {
+          expect(extracted.reference.kind).toBe("carry");
+          expect(extracted.fullValue).toBe(true);
+          sawCarry = true;
+        }
+        expect(extracted.reference.kind === "step" && extracted.reference.stepId === "wave").toBe(false);
+      }
+    }
+    expect(sawCarry).toBe(true);
   });
 });
 

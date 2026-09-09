@@ -322,8 +322,9 @@ carry:
 
 `initial` and every `on_revise` value must be one full `${...}` reference, exactly like a
 step-output reference — no interpolation, no expression syntax. The `initial` source must be an
-unconditional, non-gate step that is not itself a gate's routing target. Materialisation happens
-once, the moment that source step succeeds.
+unconditional, non-gate step that is not the target of any routing edge (`on_fail`, `on_approve`,
+or `on_kill`). Materialisation happens once per source epoch: the value is written the moment that
+source step succeeds, and is written again if a revise resets the source and it succeeds anew.
 
 Each `on_revise` key names a gate step id. When that gate resolves with `revise`, the engine
 resolves the declared reference against the run's pre-reset scope and writes the result as the
@@ -343,8 +344,8 @@ step-output grammar and is rejected, while `${wave.outputs}` (or any other field
 Carry creates **no dependency edge**. A step that reads `${wave}` needs an explicit `after` to
 order it after the variable's `initial` source, and a gate that declares an `on_revise` for a
 variable must have a revise target whose reset closure covers every step that reads that
-variable, and the gate itself must be ordered (by `after`/routing, not merely mentioned) after
-those steps.
+variable. The gate itself must be ordered after those steps through `after` or step-output
+dependencies — a routing edge into the gate does not count as ordering.
 
 Carry is entry-flow only — a subflow's spec may not declare `carry`, and a carry variable is not
 visible inside a subflow. Carry values are snapshotted with checkpoints (`stratum_commit` /

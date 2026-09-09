@@ -360,14 +360,12 @@ export const invalidFixtures = [
     errors: err("CARRY_INITIAL_SOURCE_CONDITIONAL", "flows.main.carry.wave.initial"),
   },
   {
-    // Pointing `initial` at a gate step deviates from the blueprint's expected
-    // CARRY_INITIAL_SOURCE_CONDITIONAL: a gate step has no `out` contract at all
-    // (contractForStep returns undefined for gate kind), so referenceTypeError's
-    // REF_OUTPUT_CONTRACT_REQUIRED check — shared via carryReference — fires first,
-    // before the conditional-source check is ever reached. Confirmed empirically.
+    // A gate step is conditional by construction, so the conditional-source check must run
+    // BEFORE output-contract/path typing — otherwise a gate `initial` reports the incidental
+    // REF_OUTPUT_CONTRACT_REQUIRED (a gate has no `out`) instead of the real rule.
     name: "carry initial source is a gate",
     spec: (() => { const s: any = buildCarryExample(); s.flows.main.carry.wave.initial = "${approve.output}"; return s; })(),
-    errors: err("REF_OUTPUT_CONTRACT_REQUIRED", "flows.main.carry.wave.initial"),
+    errors: err("CARRY_INITIAL_SOURCE_CONDITIONAL", "flows.main.carry.wave.initial"),
   },
   {
     // A routing edge terminating at `build` (the carry initial source) must not create
@@ -410,6 +408,19 @@ export const invalidFixtures = [
     name: "carry revise gate has no target", // R1-1a
     spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "assess_gate").gate.on_revise = null; return s; })(),
     errors: err("CARRY_REVISE_TARGET_NULL", "flows.main.carry.wave.on_revise.assess_gate"),
+  },
+  {
+    // F2: an invalid revise target must be reported as the routing error it is; the carry
+    // closure check must not run resetClosure over a target that does not exist.
+    name: "carry revise target is unknown",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "assess_gate").gate.on_revise = "nope"; return s; })(),
+    errors: err("ROUTING_UNKNOWN_TARGET", "flows.main.steps[5].gate.on_revise"),
+  },
+  {
+    // F2: likewise a self-target — CARRY_REVISE_MISSES_CONSUMER would otherwise mask it.
+    name: "carry revise target is the gate itself",
+    spec: (() => { const s: any = buildCarryExample(); s.flows.main.steps.find((step: any) => step.id === "assess_gate").gate.on_revise = "assess_gate"; return s; })(),
+    errors: err("ROUTING_SELF_TARGET", "flows.main.steps[5].gate.on_revise"),
   },
   {
     name: "carry revise target does not reset the consumer", // R1-1b
