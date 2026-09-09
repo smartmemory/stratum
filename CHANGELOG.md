@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.5.0] — 2026-09-10
 
 - **STRAT-FLOW-CANCEL-FG S03 (surfaces)**: `stratum_flow_cancel` MCP tool and `stratum flow cancel <runId>`
   CLI over one shared orchestrator (`engine/flow_cancel.ts`): settle first, then signal, local abort,
