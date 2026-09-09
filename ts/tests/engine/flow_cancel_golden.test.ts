@@ -194,7 +194,7 @@ describe("STRAT-FLOW-CANCEL-FG golden flow (blueprint §6)", () => {
     // 9. The acknowledgement is contract-shaped and positive on both facts.
     await assertToolResponse("stratum_flow_cancel", payload);
     expect(payload).toMatchObject({ runId, status: "cancelled", flowSettled: true, acknowledged: true });
-    expect(payload.agents).toEqual({ signalled: 1, reaped: 1, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0 });
+    expect(payload.agents).toEqual({ signalled: 1, reaped: 1, gone: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0, unreaped: 0 });
 
     // 10. Engine A observes the cancel without being told, and the poll is contract-valid —
     //     which is what the status-enum extension of §2.7 exists for.

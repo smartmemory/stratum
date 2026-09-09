@@ -239,4 +239,113 @@ describe("STRAT-FLOW-CANCEL-FG run lock protocol", () => {
     }
     expect(await readdir(dir)).toEqual([]);
   });
+
+  it("T-S01-L13: the break-lock is published atomically — a crash before the link leaves litter, never a lock", async () => {
+    const dir = await root();
+    const dead = await deadIdentity();
+    await writeLockRecord(dir, { pid: dead.pid, startTime: dead.startTime, token: "stale" });
+    // What a crash between the break-lock's write and its link leaves: a tmp under the
+    // break-lock's own name, and NO break-lock. Aged, so the sweep is entitled to it.
+    const orphan = `${breakFile(dir)}.abandoned-break-token`;
+    await writeFile(orphan, JSON.stringify({ pid: 1, startTime: "x", token: "abandoned-break-token", at: "now" }), "utf8");
+    const old = new Date(Date.now() - 10 * 60_000);
+    await utimes(orphan, old, old);
+    const release = await acquireRunLock(dir, RUN, options({ timeoutMs: 5_000, identity: async (pid) => pid === dead.pid ? "dead" : "alive" }));
+    expect((await readRunLock(dir, RUN))?.pid).toBe(process.pid);
+    await expect(stat(orphan)).rejects.toThrow();
+    await expect(stat(breakFile(dir))).rejects.toThrow();
+    await release();
+  });
+
+  it("T-S01-L13b: a FRESH break-lock tmp belongs to a breaker one link() away and is not swept", async () => {
+    const dir = await root();
+    const fresh = `${breakFile(dir)}.in-flight-break-token`;
+    await writeFile(fresh, JSON.stringify({ pid: 1, startTime: "x", token: "in-flight-break-token", at: "now" }), "utf8");
+    const release = await acquireRunLock(dir, RUN, options());
+    await expect(stat(fresh)).resolves.toBeDefined();
+    await release();
+  });
+
+  it("T-S01-L14: an OPAQUE break-lock is reclaimed by age only — fresh wedges nothing away, aged is cleared", async () => {
+    const dir = await root();
+    const dead = await deadIdentity();
+    await writeLockRecord(dir, { pid: dead.pid, startTime: dead.startTime, token: "stale" });
+    const oracle: ProcessIdentityOracle = async (pid) => pid === dead.pid ? "dead" : "alive";
+    // The empty file the old non-atomic publish left behind: parses to nothing, so there is no
+    // identity to judge. FRESH, it may still belong to a breaker mid-write: never reclaimed.
+    await writeFile(breakFile(dir), "", "utf8");
+    await expect(acquireRunLock(dir, RUN, options({ timeoutMs: 200, identity: oracle })))
+      .rejects.toMatchObject({ code: "RUN_LOCK_TIMEOUT" });
+    expect(await readFile(breakFile(dir), "utf8")).toBe("");
+    // AGED past the opaque TTL, it is litter and nothing else: reclaim it, or the run is
+    // wedged forever by a file no identity can ever clear.
+    const old = new Date(Date.now() - 10 * 60_000);
+    await utimes(breakFile(dir), old, old);
+    const release = await acquireRunLock(dir, RUN, options({ timeoutMs: 5_000, identity: oracle }));
+    expect((await readRunLock(dir, RUN))?.pid).toBe(process.pid);
+    await expect(stat(breakFile(dir))).rejects.toThrow();
+    await release();
+  });
+
+  it("T-S01-L14b: a PARSEABLE break-lock is never aged out — identity still decides", async () => {
+    const dir = await root();
+    const dead = await deadIdentity();
+    await writeLockRecord(dir, { pid: dead.pid, startTime: dead.startTime, token: "stale" });
+    await writeFile(breakFile(dir), JSON.stringify({ pid: process.pid, startTime: "live-breaker", token: "breaker", at: "now" }), "utf8");
+    const ancient = new Date(Date.now() - 60 * 60_000);
+    await utimes(breakFile(dir), ancient, ancient);
+    await expect(acquireRunLock(dir, RUN, options({
+      timeoutMs: 200, identity: async (pid) => pid === dead.pid ? "dead" : "alive",
+    }))).rejects.toMatchObject({ code: "RUN_LOCK_TIMEOUT" });
+    expect(JSON.parse(await readFile(breakFile(dir), "utf8")).token).toBe("breaker");
+  });
+
+  it("T-S01-L15: a delayed reclaimer never deletes the live break-lock that replaced the one it judged", async () => {
+    const dir = await root();
+    const dead = await deadIdentity();
+    const deadBreaker = await deadIdentity();
+    await writeLockRecord(dir, { pid: dead.pid, startTime: dead.startTime, token: "stale" });
+    // A DEAD breaker's break-lock. Our acquire reads it, judges it dead, and is then
+    // descheduled; meanwhile the breaker is reclaimed and a LIVE one takes its place. The
+    // delayed reclaim must compare the inode it actually judged, not the path.
+    await writeFile(breakFile(dir), JSON.stringify({ pid: deadBreaker.pid, startTime: deadBreaker.startTime, token: "dead-breaker", at: "now" }), "utf8");
+    let replaced = false;
+    const beforeOwnUnlink = async (): Promise<void> => {
+      if (replaced) return;
+      replaced = true;
+      await rm(breakFile(dir), { force: true });
+      await writeFile(breakFile(dir), JSON.stringify({ pid: process.pid, startTime: "live-breaker", token: "live-breaker", at: "now" }), "utf8");
+    };
+    await expect(acquireRunLock(dir, RUN, options({
+      timeoutMs: 200,
+      beforeOwnUnlink,
+      identity: async (pid) => pid === dead.pid || pid === deadBreaker.pid ? "dead" : "alive",
+    }))).rejects.toMatchObject({ code: "RUN_LOCK_TIMEOUT" });
+    expect(replaced).toBe(true);
+    expect(JSON.parse(await readFile(breakFile(dir), "utf8")).token).toBe("live-breaker");
+  });
+
+  it("T-S01-L16: two breakers race one dead lock — exactly one reclaims, and the winner's lock survives", async () => {
+    const dir = await root();
+    const dead = await deadIdentity();
+    await writeLockRecord(dir, { pid: dead.pid, startTime: dead.startTime, token: "stale" });
+    const oracle: ProcessIdentityOracle = async (pid) => pid === dead.pid ? "dead" : "alive";
+    const held: string[] = [];
+    const order: string[] = [];
+    const run = async (name: string): Promise<void> => {
+      const release = await acquireRunLock(dir, RUN, options({ timeoutMs: 10_000, identity: oracle }));
+      order.push(name);
+      const mine = (await readRunLock(dir, RUN))!;
+      held.push(mine.token);
+      // While we hold it, the lock file must name US — never a second breaker's replacement.
+      await delay(60);
+      expect((await readRunLock(dir, RUN))?.token).toBe(mine.token);
+      await release();
+    };
+    await Promise.all([run("A"), run("B")]);
+    expect(order).toHaveLength(2);
+    expect(new Set(held).size).toBe(2);          // two distinct acquisitions, never one shared
+    await expect(stat(breakFile(dir))).rejects.toThrow();
+    await expect(stat(lockFile(dir))).rejects.toThrow();
+  });
 });

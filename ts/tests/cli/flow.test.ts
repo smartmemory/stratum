@@ -82,7 +82,7 @@ describe("STRAT-FLOW-CANCEL-FG `stratum flow cancel`", () => {
       expect(JSON.parse(first.stdout)).toEqual({
         _schema_version: "1", ok: true, flow_id: subject.runId, status: "cancelled",
         flowSettled: true, acknowledged: true,
-        agents: { signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0 },
+        agents: { signalled: 0, reaped: 0, gone: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0, unreaped: 0 },
       });
       expect((await subject.store.load(subject.runId)).status).toBe("cancelled");
 

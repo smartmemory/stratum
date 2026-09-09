@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +10,8 @@ import { createEvaluator } from "../../src/eval/expr.js";
 import { acquireRunLock, lockedSave } from "../../src/engine/run_lock.js";
 import { procStartTime, processIdentity } from "../../src/connectors/proc_identity.js";
 import { StateStore, type PersistedRun } from "../../src/engine/state.js";
+import { cancelFlow } from "../../src/engine/flow_cancel.js";
+import type { ForegroundRunMeta } from "../../src/connectors/foreground_registry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -463,6 +465,103 @@ describe("STRAT-FLOW-CANCEL-FG S01 — cross-process foreground cancel", () => {
     expect(after).toEqual(before);
     expect(after.events.filter((event) => event.type === "flow_cancelled")).toEqual([]);
   });
+
+  it("T-S01-18: an already-cancelled run reports already_cancelled even while the driver's lease is live", async () => {
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const first = await subject(async ({ prompt }) => { await blocked; return { output: { value: prompt } }; });
+    const bg = await first.engine.flowRunBg(taskFlow, { name: "Ada" });
+    // The driving process settles its own run. Its lease stays live: the loop is still
+    // unwinding the connector it has not been released from.
+    await first.engine.flowCancel(bg.runId);
+    expect((await first.store.load(bg.runId)).status).toBe("cancelled");
+
+    // A SECOND process retries — which is the documented recovery from a teardown timeout, and
+    // the only way an orchestrator gets its agents swept. The durable status is terminal, so
+    // nothing is mutated and nothing is refused: the lease never gets a vote.
+    const second = await subject(echo, first.root);
+    const retried = await second.engine.flowCancel(bg.runId);
+    expect(retried).toMatchObject({
+      status: "cancelled", flowSettled: true, settledByThisCall: false, reason: "already_cancelled",
+    });
+    const after = await first.store.load(bg.runId);
+    expect(after.events.filter((event) => event.type === "flow_cancelled")).toHaveLength(1);
+    release();
+  });
+
+  it("T-S01-19: a receipt against a cancelled pinned run is refused BEFORE it mutates anything", async () => {
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const first = await subject(async ({ prompt }) => { await blocked; return { output: { value: prompt } }; });
+    const bg = await first.engine.flowRunBg(taskFlow, { name: "Ada" });
+    await first.engine.flowCancel(bg.runId);
+    const settled = await first.store.load(bg.runId);
+
+    const receipt = { dispatchId: "late-dispatch-1", usage: { tokens: 10 }, usdSource: "connector" };
+    await expect(first.engine.usageReport(bg.runId, receipt))
+      .rejects.toMatchObject({ code: "PERSIST_ON_CANCELLED_RUN" });
+    // The RETRY is the tell. A first call that mutated the shared object before throwing leaves
+    // its own receipt behind, so the second call finds a duplicate and reports SUCCESS for a
+    // receipt that was never durably recorded.
+    await expect(first.engine.usageReport(bg.runId, receipt))
+      .rejects.toMatchObject({ code: "PERSIST_ON_CANCELLED_RUN" });
+    expect(await first.store.load(bg.runId)).toEqual(settled);
+    await expect(first.engine.withReceiptUpdate(bg.runId, (run) => { run.receiptCounter = 99; return 1; }))
+      .rejects.toMatchObject({ code: "PERSIST_ON_CANCELLED_RUN" });
+    expect(await first.store.load(bg.runId)).toEqual(settled);
+    release();
+  });
+
+  it("T-S01-20: a cancel that lands during the pin gap is observed, never overwritten", async () => {
+    const first = await subject(echo);
+    const planned = await first.engine.plan(taskFlow, { name: "Ada" });
+    await lockedSave(first.store, planned.runId, (run) => { run.bgDriven = true; });
+
+    // A second process cancels in the window between the rehydration scan enumerating this run
+    // and the driver claiming it. The driver must re-read under its own lock and abandon.
+    const canceller = await subject(echo, first.root);
+    let cancelled = false;
+    const driver = new StratumEngine({
+      stateRoot: first.root,
+      evaluator: createEvaluator(),
+      connector: echo,
+      hooks: { beforePin: async (runId) => {
+        if (cancelled || runId !== planned.runId) return;
+        cancelled = true;
+        await canceller.engine.flowCancel(runId);
+      } },
+    });
+    await driver.rehydrateBgFlows();
+    expect(cancelled).toBe(true);
+    await delay(150);
+    const after = await first.store.load(planned.runId);
+    expect(after.status).toBe("cancelled");
+    expect(after.events.filter((event) => event.type === "flow_cancelled")).toHaveLength(1);
+    expect((await driver.flowBgPoll(planned.runId)).bg.status).toBe("cancelled");
+  });
+
+  it("T-S01-21: a live FOREIGN driver lease refuses the pin instead of overwriting it", async () => {
+    const first = await subject(echo);
+    const planned = await first.engine.plan(taskFlow, { name: "Ada" });
+    await lockedSave(first.store, planned.runId, (run) => { run.bgDriven = true; });
+    // A lease naming a live process that is not us. Rehydration used to rename straight over
+    // it, leaving two processes each believing they owned the run's in-memory copy.
+    const foreign = JSON.stringify({ pid: process.pid, startTime: "a-live-foreign-boot", token: "foreign-token", at: new Date().toISOString() });
+    await writeFile(join(first.root, `${planned.runId}.driver`), foreign, "utf8");
+
+    const warnings: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => { warnings.push(String(chunk)); return true; });
+    const driver = new StratumEngine({
+      stateRoot: first.root, evaluator: createEvaluator(), connector: echo,
+      lockOptions: { identity: async () => "alive" },
+    });
+    await driver.rehydrateBgFlows();
+    spy.mockRestore();
+    expect(warnings.join("")).toMatch(/not rehydrating/);
+    expect(JSON.parse(await readFile(join(first.root, `${planned.runId}.driver`), "utf8")).token).toBe("foreign-token");
+    expect((await first.store.load(planned.runId)).status).toBe("running");
+  });
+
 });
 
 describe("STRAT-FLOW-CANCEL-FG S01 — the driver lease", () => {
@@ -607,4 +706,141 @@ describe("STRAT-FLOW-CANCEL-FG S01 — every write path is locked", () => {
     await pending;
     expect(entered).toBe(true);
   });
+});
+
+describe("STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline", () => {
+  const strays: number[] = [];
+  afterEach(() => {
+    for (const pid of strays.splice(0)) { try { process.kill(-pid, "SIGKILL"); } catch { /* gone */ } }
+  });
+
+  /** A settle that always succeeds, so every assertion below is about the TEARDOWN phases. */
+  function settlingEngine(runId: string) {
+    return { flowCancel: async () => ({
+      runId, status: "cancelled" as const, flowSettled: true, settledByThisCall: true, ledger: { spent: {} },
+    }) };
+  }
+
+  function refusingEngine(code: string, extra: Record<string, unknown> = {}) {
+    return { flowCancel: async () => { throw Object.assign(new Error("refused"), { code, ...extra }); } };
+  }
+
+  async function registry(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "stratum-cancel-deadline-"));
+    roots.push(root);
+    return root;
+  }
+
+  async function entry(root: string, flowRunId: string, meta: Partial<ForegroundRunMeta>): Promise<string> {
+    const id = Math.random().toString(16).slice(2, 14).padEnd(12, "0");
+    await mkdir(join(root, id), { recursive: true });
+    const record = {
+      runId: id, foreground: true, state: "running", agent: "codex", cancellationId: "c",
+      serverPid: process.pid, flow: { runId: flowRunId }, cwd: process.cwd(),
+      createdAt: new Date().toISOString(), groups: [], ...meta,
+    };
+    await writeFile(join(root, id, "meta.json"), JSON.stringify(record), "utf8");
+    return id;
+  }
+
+  /** A real detached group leader that ignores SIGTERM, so the ladder is exercised for real. */
+  async function stubbornGroup(): Promise<{ pid: number; startTime: string }> {
+    const script = "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 50)";
+    const child = spawn(process.execPath, ["-e", script], { detached: true, stdio: "ignore" });
+    const pid = child.pid!;
+    strays.push(pid);
+    child.unref();
+    await delay(150);
+    const startTime = await procStartTime(pid);
+    if (startTime === undefined) throw new Error("no start time for the spawned leader");
+    return { pid, startTime };
+  }
+
+  it("T-S01-15: the lock wait and the teardown budget are independent — one settles and fails late, one fails before settling", async () => {
+    // Row 1: a generous lock wait, a tiny teardown budget. The flow IS settled; only the
+    // teardown fails, and the failure carries the completed settle.
+    const root = await registry();
+    const group = await stubbornGroup();
+    await entry(root, "flow-late", { groups: [{ childPid: group.pid, procStartTime: group.startTime }] });
+    await expect(cancelFlow(settlingEngine("flow-late"), "flow-late", {
+      registryRoot: root, timeoutMs: 150, graceMs: 10_000,
+    })).rejects.toMatchObject({
+      code: "CANCELLATION_TEARDOWN_TIMEOUT", flowSettled: true, status: "cancelled",
+    });
+
+    // Row 2: the lock wait expires first. Nothing is settled, so NO agent phase runs at all
+    // and the summary is all-zero — a teardown verdict about a run we never took the lock on
+    // would be an invention.
+    await expect(cancelFlow(refusingEngine("RUN_LOCK_TIMEOUT", { holderPid: 4242 }), "flow-late", {
+      registryRoot: root, timeoutMs: 150,
+    })).rejects.toMatchObject({
+      code: "CANCELLATION_UNCONFIRMED", reason: "run_lock_held", holderPid: 4242,
+      flowSettled: false, agents: { signalled: 0, reaped: 0, gone: 0, unreachable: 0, unreaped: 0 },
+    });
+  }, 30_000);
+
+  it("T-S01-16: a slow signal pass eats the SAME budget the reap spends — never 3x it", async () => {
+    const root = await registry();
+    const group = await stubbornGroup();
+    await entry(root, "flow-slow-signal", { groups: [{ childPid: group.pid, procStartTime: group.startTime }] });
+    const budget = 400;
+    const started = Date.now();
+    await expect(cancelFlow(settlingEngine("flow-slow-signal"), "flow-slow-signal", {
+      registryRoot: root,
+      timeoutMs: budget,
+      graceMs: 10_000,
+      // The signal pass alone burns most of the budget.
+      probes: { startTime: async (pid) => { if (pid === group.pid) await delay(250); return group.startTime; } },
+    })).rejects.toMatchObject({ code: "CANCELLATION_TEARDOWN_TIMEOUT" });
+    const elapsed = Date.now() - started;
+    // Two phases, one deadline. Separate per-phase timeouts would put this at 2-3x the budget.
+    expect(elapsed).toBeLessThan(budget * 2);
+  }, 30_000);
+
+  it("T-S01-17: an abortLocal timeout is recorded, not fatal — the reap still runs", async () => {
+    const root = await registry();
+    const group = await stubbornGroup();
+    await entry(root, "flow-abort-slow", { groups: [{ childPid: group.pid, procStartTime: group.startTime }] });
+    let reached = false;
+    await expect(cancelFlow(settlingEngine("flow-abort-slow"), "flow-abort-slow", {
+      registryRoot: root,
+      timeoutMs: 400,
+      graceMs: 10_000,
+      abortLocal: async () => {
+        reached = true;
+        throw Object.assign(new Error("local teardown timed out"), { code: "CANCELLATION_TEARDOWN_TIMEOUT" });
+      },
+    })).rejects.toMatchObject({
+      code: "CANCELLATION_TEARDOWN_TIMEOUT",
+      reason: "local_teardown_timeout",
+      flowSettled: true,
+      agents: { signalled: 1 },
+    });
+    expect(reached).toBe(true);
+  }, 30_000);
+
+  it("T-S01-22: an agent that exited before the cancel arrived is ACKNOWLEDGED", async () => {
+    const root = await registry();
+    const departed = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    const gonePid = departed.pid!;
+    await new Promise<void>((resolve) => departed.once("exit", () => resolve()));
+    await delay(30);
+    const owner = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    const ownerPid = owner.pid!;
+    await new Promise<void>((resolve) => owner.once("exit", () => resolve()));
+    await delay(30);
+    await entry(root, "flow-gone", {
+      serverPid: ownerPid,
+      serverProcStartTime: "0.0",
+      groups: [{ childPid: gonePid, procStartTime: "0.0" }],
+    });
+    // The old rule was `signalled === reaped`. A group that was already gone is never
+    // `signalled`, so a flow whose agent had exited on its own could never be acknowledged —
+    // even though the teardown it asked for had demonstrably already happened.
+    const result = await cancelFlow(settlingEngine("flow-gone"), "flow-gone", {
+      registryRoot: root, timeoutMs: 2000, graceMs: 0,
+    });
+    expect(result.acknowledged).toBe(true);
+    expect(result.agents).toMatchObject({ signalled: 0, reaped: 0, gone: 1, unreachable: 0, unreaped: 0, unsettled: 0 });
+  }, 30_000);
 });

@@ -292,6 +292,10 @@ export interface StratumEngineOptions {
   learnEgressOptions?: LearnEgressRuntimeOptions;
   /** Cross-process run-lock seams (timeouts, identity oracle). Tests inject here. */
   lockOptions?: RunLockOptions;
+  /** Test seams for the pin transaction. `beforePin` runs after a candidate run is enumerated
+   *  and BEFORE its locked load/pin/lease/launch section, which is the only place a competing
+   *  cancel can legitimately land. */
+  hooks?: { beforePin?: (runId: string) => Promise<void> };
 }
 
 export interface PlanOptions {
@@ -367,6 +371,7 @@ export class StratumEngine {
   // here is refused rather than raced.
   private readonly driverLeases = new Map<string, string>();
   private readonly lockOptions: RunLockOptions;
+  private readonly hooks: NonNullable<StratumEngineOptions["hooks"]>;
   private readonly identity: (pid: number, startTime: string) => Promise<"alive" | "dead" | "unknown">;
   private selfStartTime?: string;
   private readonly selfIdentityReady: Promise<void>;
@@ -374,6 +379,7 @@ export class StratumEngine {
   constructor(options: StratumEngineOptions) {
     this.store = new StateStore(options.stateRoot);
     this.lockOptions = options.lockOptions ?? {};
+    this.hooks = options.hooks ?? {};
     this.identity = this.lockOptions.identity ?? processIdentity;
     this.selfIdentityReady = (this.lockOptions.selfStartTime ?? (() => procStartTime(process.pid)))()
       .then((value) => { if (value !== undefined) this.selfStartTime = value; })
@@ -406,10 +412,45 @@ export class StratumEngine {
   private retainRun(runId: string, run: PersistedRun): void {
     const active = this.activeRuns.get(runId);
     if (active) { active.refs += 1; return; }
+    // An UNLEASED pin is the exact state the lease exists to make impossible: this process
+    // holds the run's in-memory object, and nothing on disk says so, so a second process reads
+    // "unowned", cancels against its own copy, and the two diverge. Refusing to pin is the
+    // only safe answer to "we cannot declare ownership" — the previous `return` pinned anyway.
+    if (this.selfStartTime === undefined) {
+      throw Object.assign(
+        new Error(`cannot establish process identity; run ${runId} cannot be pinned`),
+        { code: "RUN_LOCK_IDENTITY_UNAVAILABLE" },
+      );
+    }
+    // Lease FIRST, then register the pin: a throwing claim must leave no pin behind. The error
+    // propagates — a swallowed one produced precisely the unleased pin above, and reported
+    // success while doing it.
+    const token = writeDriverLeaseSync(this.store.root, runId, this.selfStartTime);
     this.activeRuns.set(runId, { run, refs: 1 });
-    if (this.selfStartTime === undefined) return;
-    try { this.driverLeases.set(runId, writeDriverLeaseSync(this.store.root, runId, this.selfStartTime)); }
-    catch (error) { process.stderr.write(`stratum: unable to declare driver lease for ${runId}: ${message(error)}\n`); }
+    this.driverLeases.set(runId, token);
+  }
+
+  /** Resolve any INCUMBENT driver lease, immediately before a pin claims one (R4-4).
+   *
+   *  `writeDriverLeaseSync` now claims with `link()` and refuses to overwrite, so the identity
+   *  question has to be ANSWERED rather than papered over by a `rename()`. It is answered here
+   *  because it is async — a probe of another process — while `retainRun` is synchronous by
+   *  design. Every async pin site runs this inside its own locked section, so the answer cannot
+   *  go stale between the probe and the claim. */
+  private async prepareLease(runId: string): Promise<void> {
+    const lease = readDriverLeaseSync(this.store.root, runId);
+    if (lease === undefined) return;
+    if (this.driverLeases.get(runId) === lease.token) return;                        // ours
+    if (lease.pid === process.pid && lease.startTime === this.selfStartTime) {       // our own leftover
+      unlinkDriverLeaseSync(this.store.root, runId);
+      return;
+    }
+    const state = await this.identity(lease.pid, lease.startTime);
+    if (state === "dead") { unlinkDriverLeaseSync(this.store.root, runId); return; }
+    throw Object.assign(
+      new Error(`run ${runId} is driven by pid ${lease.pid}; it cannot be pinned from this process`),
+      { code: "DRIVER_LEASE_HELD", holderPid: lease.pid },
+    );
   }
 
   private releaseRun(runId: string): void {
@@ -421,8 +462,10 @@ export class StratumEngine {
     const token = this.driverLeases.get(runId);
     this.driverLeases.delete(runId);
     if (token === undefined) return;
+    // Reached from `finally` blocks, so it must not throw — but it must not go quiet either:
+    // a lease left behind wedges every other process off this run.
     try { releaseDriverLeaseSync(this.store.root, runId, token); }
-    catch { /* the lease is advisory; a stale one is reclaimed by identity */ }
+    catch (error) { process.stderr.write(`stratum: unable to release driver lease for ${runId}: ${message(error)}\n`); }
   }
 
   /** The in-process promise chain still serialises same-process callers cheaply; the file
@@ -432,7 +475,11 @@ export class StratumEngine {
     const previous = this.runLocks.get(runId) ?? Promise.resolve();
     const result = previous.then(async () => {
       await this.selfIdentityReady;
-      const release = await acquireRunLock(this.store.root, runId, { ...this.lockOptions, ...options });
+      // The cached identity, not a fresh probe: `procStartTime` shells out to python/ps on
+      // darwin, and every locked section on the hot path would otherwise pay for it again.
+      const release = await acquireRunLock(this.store.root, runId, {
+        ...this.lockOptions, ...options, selfStartTime: () => Promise.resolve(this.selfStartTime),
+      });
       this.heldLocks.add(runId);
       try {
         return await action();
@@ -455,6 +502,15 @@ export class StratumEngine {
   ): Promise<T> {
     return this.withRunLock(runId, async () => {
       const run = await this.loadRun(runId);
+      // Same reason as `usageReport`: refuse BEFORE `update` touches the shared object, not
+      // after, at the persist. The run object is pinned and shared, so a mutation applied and
+      // then rejected is a mutation the rest of the engine can still see.
+      if (run.status === "cancelled" || run.cancelRequested === true) {
+        throw Object.assign(
+          new Error(`run ${runId} is cancelled; no further receipt updates are accepted`),
+          { code: "PERSIST_ON_CANCELLED_RUN" },
+        );
+      }
       const result = await update(run);
       await this.persist(run);
       return result;
@@ -536,21 +592,27 @@ export class StratumEngine {
       }
     }
     const first = await this.plan(validation.value, input, options);
-    const run = await this.withRunLock(first.runId, async () => {
+    await this.hooks.beforePin?.(first.runId);
+    // ONE locked transaction: load, mark, claim the lease, pin, launch. Splitting it — as this
+    // did, pinning after the lock was released — leaves a window in which the run is loaded,
+    // unpinned and unleased, so a cancel from anywhere settles it durably and the driver then
+    // pins the stale object it loaded before that and writes `running` back over the settle.
+    // The launch is INSIDE too: `driveBg` is not awaited, and its own first `withRunLock`
+    // queues behind this section, so it observes whatever the durable record says afterwards.
+    await this.withRunLock(first.runId, async () => {
       const current = await this.loadRun(first.runId);
       current.bgDriven = true;
       await this.persist(current);
-      return current;
-    });
-    const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
-    this.bgFlows.set(first.runId, bg);
-    // Pin before launch so the loop and any fanout always share one run object.
-    this.retainRun(first.runId, run);
-    const loop = this.driveBg(first.runId, first);
-    bg.loop = loop;
-    void loop.finally(() => {
-      this.releaseRun(first.runId);
-      if (bg.loop === loop) delete bg.loop;
+      await this.prepareLease(first.runId);
+      const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
+      this.bgFlows.set(first.runId, bg);
+      this.retainRun(first.runId, current);
+      const loop = this.driveBg(first.runId, first);
+      bg.loop = loop;
+      void loop.finally(() => {
+        this.releaseRun(first.runId);
+        if (bg.loop === loop) delete bg.loop;
+      });
     });
     return { runId: first.runId, status: "running" };
   }
@@ -582,25 +644,48 @@ export class StratumEngine {
       // its own (background) driver, not abort the whole scan. driveBg self-discovers
       // the live state via reAdvance (which also re-schedules any in-flight fanout),
       // so no explicit resume is needed; the synthesized initial's ledger is never
-      // read (driveBg re-derives it). retainRun and the launch are adjacent with no
-      // throwing await between them, so the retain can never leak.
+      // read (driveBg re-derives it).
+      //
+      // The load above is only a FILTER. Everything that decides ownership — the
+      // authoritative re-load, the lease claim, the pin and the launch — happens inside one
+      // locked section below, because the scan is long and a cancel that lands during it must
+      // be observed rather than overwritten by a driver pinning a pre-cancel snapshot.
       //
       // AT-LEAST-ONCE across restart: an in-flight connector was durable as `ready`,
       // so the driver re-dispatches it — a step may run twice, and that second
       // physical dispatch is NOT re-ledgered (a dispatch budget may under-count by the
       // in-flight-at-crash count). Callers doing writes must be idempotent. A worktree
-      // fanout merge retains its pre-existing crash window (accepted residual). This
-      // assumes SINGLE-PROCESS ownership — the prior engine is gone; two live engines
-      // on one state root are unsupported in v1 (same single-owner model as runLocks).
-      const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
-      this.bgFlows.set(run.id, bg);
-      this.retainRun(run.id, run);
-      const loop = this.driveBg(run.id, { status: "running", runId: run.id, ledger: { spent: {} } });
-      bg.loop = loop;
-      void loop.finally(() => {
-        this.releaseRun(run.id);
-        if (bg.loop === loop) delete bg.loop;
-      });
+      // fanout merge retains its pre-existing crash window (accepted residual).
+      await this.hooks.beforePin?.(run.id);
+      try {
+        await this.withRunLock(run.id, async () => {
+          const current = await this.store.load(run.id);
+          // Re-read under the lock: `current`, not the snapshot the scan filtered on.
+          if (!current.bgDriven || this.bgFlows.has(current.id)) return;
+          if (current.status !== "running") {
+            this.bgFlows.set(current.id, { status: current.status, cancelRequested: false, pendingGates: [] });
+            return;
+          }
+          if (current.cancelRequested === true) {
+            this.bgFlows.set(current.id, { status: "cancelled", cancelRequested: true, pendingGates: [] });
+            return;
+          }
+          await this.prepareLease(current.id);
+          const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
+          this.bgFlows.set(current.id, bg);
+          this.retainRun(current.id, current);
+          const loop = this.driveBg(current.id, { status: "running", runId: current.id, ledger: { spent: {} } });
+          bg.loop = loop;
+          void loop.finally(() => {
+            this.releaseRun(current.id);
+            if (bg.loop === loop) delete bg.loop;
+          });
+        });
+      } catch (error) {
+        // A live lease elsewhere means another process owns this run: leave it alone rather
+        // than aborting the whole scan. Everything else is equally per-run.
+        process.stderr.write(`stratum: not rehydrating flow '${run.id}': ${message(error)}\n`);
+      }
     }
   }
 
@@ -746,6 +831,18 @@ export class StratumEngine {
         throw new ReceiptValidationError('usdSource "legacy" is reserved for engine-synthesized receipts');
       }
       const run = await this.loadRun(runId);
+      // R4-1 BEFORE duplicate detection and before any mutation. `persist` refuses a cancelled
+      // record, but by the time it does, this method has already advanced `receiptCounter`,
+      // debited the ledger and appended the receipt and its events to the in-memory object the
+      // rest of the engine shares — so the throw leaves the pinned run mutated, and an
+      // automatic retry finds its own receipt, takes the duplicate branch, and reports SUCCESS
+      // for a receipt that was never durably recorded.
+      if (run.status === "cancelled" || run.cancelRequested === true) {
+        throw Object.assign(
+          new Error(`run ${runId} is cancelled; no further receipts are accepted`),
+          { code: "PERSIST_ON_CANCELLED_RUN" },
+        );
+      }
       const candidate = input as Partial<ReceiptInput> | null;
       if (typeof input !== "object" || input === null || Array.isArray(input)
         || typeof candidate?.dispatchId !== "string" || candidate.dispatchId.length === 0) {
@@ -1017,9 +1114,16 @@ export class StratumEngine {
    *  nothing to race, so the durable mark and the settle ARE the same write. */
   async flowCancel(runId: string, reason?: string): Promise<FlowCancelResult> {
     return this.withRunLock(runId, async () => {
-      await this.claimDriverLease(runId);
-      // The terminal decision is read from DISK, not from a pinned object: another process
-      // may have completed this run.
+      // DURABLE STATUS FIRST, and BEFORE the lease decision. Two reasons, both load-bearing:
+      //
+      // A terminal run must not be MUTATED at all, and a lease refusal is a mutation refusal
+      // for a mutation nobody asked for. Worse, an already-cancelled run whose driver's lease
+      // is still live would raise `engine_dispatch_active` — so the orchestrator's re-sweep,
+      // which is the documented recovery from a CANCELLATION_TEARDOWN_TIMEOUT, would fail on
+      // the very run it just cancelled. `already_cancelled` is what lets that sweep run.
+      //
+      // The decision is read from DISK, not from a pinned object: another process may have
+      // completed this run.
       const persisted = await this.store.load(runId);
       if (persisted.status !== "running") {
         return {
@@ -1031,6 +1135,9 @@ export class StratumEngine {
           ledger: this.ledgerInfo(persisted),
         };
       }
+      // Only NOW, with the run known to be durably running, does the lease decide whether this
+      // process may apply the cancel at all.
+      await this.claimDriverLease(runId);
       // Mutate the object the rest of the engine is using. When a fanout of OURS holds a pin,
       // loadRun returns that instance, so its cooperative brake and its item settle see the
       // burn on the very same object — which is the whole reason the lease restricts this
@@ -1060,16 +1167,28 @@ export class StratumEngine {
       bg.status = response.status;
       bg.pendingGates = [];
     } else if (bg?.status === "paused_gate") {
-      bg.status = "running";
-      bg.pendingGates = [];
-      const run = await this.loadRun(runId);
-      // Re-kick only after gateResolve releases the run lock; stepDone must interleave.
-      this.retainRun(runId, run);
-      const loop = this.driveBg(runId, response);
-      bg.loop = loop;
-      void loop.finally(() => {
-        this.releaseRun(runId);
-        if (bg.loop === loop) delete bg.loop;
+      await this.hooks.beforePin?.(runId);
+      // The re-kick is its OWN locked transaction (load, lease, pin, launch) rather than four
+      // unlocked statements after gateResolve released the lock. stepDone still interleaves:
+      // this section is short and does not await the loop, which queues behind it.
+      await this.withRunLock(runId, async () => {
+        const durable = await this.store.load(runId);
+        if (durable.status !== "running" || durable.cancelRequested === true) {
+          bg.status = durable.status === "running" ? "cancelled" : durable.status;
+          bg.pendingGates = [];
+          return;
+        }
+        bg.status = "running";
+        bg.pendingGates = [];
+        const run = await this.loadRun(runId);
+        await this.prepareLease(runId);
+        this.retainRun(runId, run);
+        const loop = this.driveBg(runId, response);
+        bg.loop = loop;
+        void loop.finally(() => {
+          this.releaseRun(runId);
+          if (bg.loop === loop) delete bg.loop;
+        });
       });
     }
     return response;
