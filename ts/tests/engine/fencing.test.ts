@@ -276,7 +276,8 @@ describe("engine issuance fencing", () => {
     await first.store.save(state);
     const restarted = await subject(undefined, first.root);
     await expect(restarted.engine.stepDone(planned.runId, "work", { output: { value: "late" } }, token)).rejects.toThrow(/cancelled/);
-    expect(await restarted.engine.resume(planned.runId)).toMatchObject({ status: "running" });
+    // S01-7: a cancelled run is refused, not resumed into advance's {status:"running"} limbo.
+    await expect(restarted.engine.resume(planned.runId)).rejects.toThrow(/cancelled/);
     expect((await restarted.engine.audit(planned.runId)).steps.work?.acceptedDispatchToken).toBeUndefined();
   });
 

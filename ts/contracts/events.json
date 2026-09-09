@@ -1,5 +1,5 @@
 {
-  "events": 3,
+  "events": 4,
   "shapeLanguage": "Each kind maps to the full event payload shape minus the implicit {at: string, type: string}. Leaf types: number|string|boolean|object|array|null|any, unions with '|', optional keys end in '?', nested objects are declared inline. Undeclared keys are contract violations.",
   "kinds": {
     "planned": {},
@@ -107,6 +107,16 @@
           "gateToken?": "string",
           "round?": "number",
           "at": "string"
+        }
+      }
+    },
+    "flow_cancelled": {
+      "detail": {
+        "by": "string",
+        "reason?": "string",
+        "burned": {
+          "steps": { "$array": "string" },
+          "items": "number"
         }
       }
     }

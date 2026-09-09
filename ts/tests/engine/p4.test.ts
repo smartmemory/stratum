@@ -222,9 +222,16 @@ describe("P4 fanout", () => {
     // queue behind it on the run lock.
     expect((await e.stepDone(planned.runId, "solo", { output: { value: "s" } })).status).toBe("running");
     // The dispatched lifecycle event is durable BEFORE the connector returns:
-    // a fresh engine reading only the persisted state must already see it.
+    // a fresh engine reading only the persisted state must already see it. The item's
+    // admission transaction is serialised against this stepDone by the run lock
+    // (STRAT-FLOW-CANCEL-FG S01-9), so it may land just after it — but it must land while
+    // the connector is still blocked, which is what `releaseFanout` below still proves.
     const observer = new StratumEngine({ stateRoot: (e as unknown as { store: { root: string } }).store.root, evaluator: createEvaluator(), connector });
-    const observed = await observer.flowPoll(planned.runId, 0);
+    let observed = await observer.flowPoll(planned.runId, 0);
+    for (let tick = 0; tick < 200 && !observed.events.some((event) => event.type === "fanout_item_dispatched"); tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      observed = await observer.flowPoll(planned.runId, 0);
+    }
     expect(observed.events.map((event) => event.type)).toContain("fanout_item_dispatched");
     releaseFanout();
     expect(await waitForTerminal(e, planned.runId)).toMatchObject({ status: "completed", output: { value: "done" } });
@@ -978,7 +985,7 @@ describe("P4 frozen contracts", () => {
   it("every emitted event and engine response validates against the frozen contract payload shapes", async () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
-    expect(eventsContract.events).toBe(3);
+    expect(eventsContract.events).toBe(4);
     expect(surface.surface).toBe(18);
     expect(Object.keys(surface.tools)).toHaveLength(24);
 
@@ -1155,6 +1162,10 @@ describe("P4 frozen contracts", () => {
       {
         at: "2026-08-30T00:00:00.000Z", type: "checkpoint_reverted",
         detail: { label: "before", receiptsAtRevert: 1, stepsRestored: ["build"] },
+      },
+      {
+        at: "2026-08-30T00:00:00.000Z", type: "flow_cancelled",
+        detail: { by: "fg", reason: "abort", burned: { steps: ["work"], items: 0 } },
       },
     ];
 

@@ -81,3 +81,27 @@ export async function processIdentityMatches(pid: number, expectedStartTime: str
   if (!expectedStartTime) return false;
   return (await procStartTime(pid)) === expectedStartTime;
 }
+
+/** Tri-state process identity (R4-3). `processIdentityMatches` collapses "this process is
+ *  gone" and "I could not tell" into the same `false`, so every reclaim built on it breaks a
+ *  live holder's resource the moment a probe hits EPERM.
+ *
+ *  "dead" is a POSITIVE finding: ESRCH on the signal-0 probe, or a readable start time that
+ *  does not match the recorded one. "unknown" is EPERM, or a start time we could not read at
+ *  all. Nothing that reclaims another process's resource may act on "unknown". */
+export async function processIdentity(pid: number, startTime: string): Promise<"alive" | "dead" | "unknown"> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return "unknown";
+  if (typeof startTime !== "string" || startTime.length === 0) return "unknown";
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ESRCH") return "dead";
+    // EPERM means the process exists but belongs to another user: alive, but we cannot read
+    // its start time either, so we must not claim identity. Anything else is equally opaque.
+    return "unknown";
+  }
+  const actual = await procStartTime(pid);
+  if (actual === undefined) return "unknown";
+  return actual === startTime ? "alive" : "dead";
+}
