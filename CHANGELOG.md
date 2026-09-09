@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **STRAT-LOOP-CARRY S03 (runtime)**: carry scope shared with the run, `${name}` resolution,
+  staged atomic `materialiseCarry` (top of advance + after in-loop set/evaluate settles),
+  mutation-free revise preflight then carry write + reset + single persist.
 - **STRAT-LOOP-CARRY S02 (state)**: `CarryEntry`/`CarryProvenance`, `PersistedRun.carry` as a
   checkpoint field, `carry_updated` event kind (events contract 2→3).
 - **STRAT-LOOP-CARRY S01 (IR)**: `carry:` flow block, `${name}` carry reference kind, and the
