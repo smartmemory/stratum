@@ -12,6 +12,9 @@
 - **STRAT-FLOW-CANCEL-FG** (PLANNED, M): a foreground flow cancel keyed by flow id, since
   consumer fanout is foreground-only and the per-call cancellation id lives in the starting
   MCP server process, which leaves a second process unable to cancel a running build.
+- **STRAT-AGENT-INTERP-TS** (PLANNED, M): TS successor to the Python-only STRAT-AGENT-INTERP,
+  whose interpolatable `agent` field was retired at the TS cutover (the TS IR is a literal
+  enum). Adds per-step and per-fanout-item executor resolution from recorded state.
 
 ## [0.4.6] — 2026-09-06
 
