@@ -6,7 +6,7 @@ import { createEvaluateRunner } from "../engine/evaluate.js";
 import { type Flow, type Step } from "../ir/schema.js";
 import { validateSpec } from "../ir/validate.js";
 
-type ProjectionStatus = "complete" | "running" | "awaiting_gate" | "failed" | "budget_exhausted" | "killed";
+type ProjectionStatus = "complete" | "running" | "awaiting_gate" | "failed" | "budget_exhausted" | "killed" | "cancelled";
 
 interface FlowSummary {
   _schema_version: "1";
@@ -49,6 +49,10 @@ export function projectStatus(run: Pick<PersistedRun, "status" | "failure" | "st
   if (run.status === "completed") return "complete";
   if (run.status === "budget_exhausted") return "budget_exhausted";
   if (isKilled(run)) return "killed";
+  // Above the waiting_gate check: a cancelled run can still hold a waiting_gate step, and a
+  // cancelled run reported as `running` or `awaiting_gate` is an aborted flow reported as live.
+  // NOT projected as `killed` — that word means "a human killed it at a gate" (isKilled).
+  if (run.status === "cancelled") return "cancelled";
   if (run.status === "failed") return "failed";
   if (Object.values(run.steps).some((step) => step.status === "waiting_gate")) return "awaiting_gate";
   return "running";
@@ -141,7 +145,7 @@ function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function writeJson(value: unknown): void {
+export function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
@@ -325,6 +329,6 @@ export async function gateCommand(args: string[]): Promise<number> {
   }
 }
 
-function message(error: unknown): string {
+export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

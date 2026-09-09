@@ -9,6 +9,8 @@ import { createForegroundRun, killAndReapGroup, recordForegroundGroup, settleFor
 import { procStartTime } from "../connectors/proc_identity.js";
 import type { ConnectorEventHandler } from "../connectors/base.js";
 import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
+import { cancelFlow } from "../engine/flow_cancel.js";
+import type { AgentCancelSummary } from "../connectors/foreground_registry.js";
 import { createEvaluator } from "../eval/expr.js";
 import { createEvaluateRunner } from "../engine/evaluate.js";
 import { validateSpec } from "../ir/validate.js";
@@ -29,7 +31,7 @@ const SERVER_VERSION: string = JSON.parse(
 ).version;
 
 export interface McpDependencies {
-  engine?: Pick<StratumEngine, "plan" | "stepDone" | "usageReport" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg" | "admitFlowAgent">;
+  engine?: Pick<StratumEngine, "plan" | "stepDone" | "usageReport" | "commit" | "revert" | "resume" | "audit" | "gateResolve" | "flowPoll" | "flowRunBg" | "flowBgPoll" | "flowCancelBg" | "flowCancel" | "admitFlowAgent">;
   runAgent?: typeof runAgent;
   pollBackgroundRun?: typeof pollBackgroundRun;
   cancelBackgroundRun?: typeof cancelBackgroundRun;
@@ -54,7 +56,7 @@ export interface McpDependencies {
 export type ToolName =
   | "stratum_validate" | "stratum_compile_speckit" | "stratum_plan" | "stratum_step_done" | "stratum_usage_report" | "stratum_resume" | "stratum_audit"
   | "stratum_commit" | "stratum_revert"
-  | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg"
+  | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg" | "stratum_flow_cancel"
   | "stratum_agent_run" | "stratum_agent_poll" | "stratum_cancel_agent_run"
   | "stratum_guard_register" | "stratum_guard_transition" | "stratum_guard_override" | "stratum_guard_migrate" | "stratum_guard_upgrade" | "stratum_guard_apply_upgrade" | "stratum_guard_history";
 
@@ -149,6 +151,9 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
   // Register before contract I/O: an immediate cancellation cannot overtake startup.
   // UUIDs cannot collide with durable background IDs.
   const foreground = new Map<string, { controller: AbortController; settled: Promise<void> }>();
+  // Keyed by cancellationId, holding the flow run id. It exists only so the same-process fast
+  // path can select controllers by flow; the durable registry remains the authority.
+  const foregroundFlows = new Map<string, string>();
   const completed = new Map<string, "already_complete" | "already_error" | "cancelled" | Error>();
   return {
     async call(tool, request, context = {}) {
@@ -199,6 +204,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
               ...(typeof request.flow.itemIndex === "number" ? { itemIndex: request.flow.itemIndex } : {}),
             };
             flowRunId = flow.runId;
+            foregroundFlows.set(cancellationId, flow.runId);
             const serverStartTime = await selfStartTime;
             // Throws on failure — a run whose record could not be written is an agent nobody
             // can cancel, the same hazard background.ts:191-196 refuses to accept.
@@ -273,6 +279,36 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         case "stratum_flow_run_bg": response = await engine.flowRunBg(request.spec, request.input, option(request, "workspaceRoot")); break;
         case "stratum_flow_bg_poll": response = bgFlowPollResponse(await engine.flowBgPoll(string(request, "runId"), optionalNumber(request, "cursor"))); break;
         case "stratum_flow_cancel_bg": response = await engine.flowCancelBg(string(request, "runId")); break;
+        case "stratum_flow_cancel": {
+          // R1-4: the dispatcher orchestrates NOTHING. It supplies the one capability the CLI
+          // cannot have — aborting controllers this process holds — and cancelFlow runs it in
+          // the right place. Any phase written here instead would be a phase `stratum flow
+          // cancel` silently lacks.
+          const ack = await cancelFlow(engine, string(request, "runId"), {
+            // R2-5: abort, then AWAIT each run's own `settled` promise — the one the finally
+            // resolves. Aborting only starts teardown; returning before it finishes makes the
+            // reap pass race the teardown this call began.
+            abortLocal: async (flowRunId, remainingMs) => {
+              const settling: Promise<void>[] = [];
+              for (const [id, entry] of foreground) {
+                if (foregroundFlows.get(id) !== flowRunId) continue;
+                entry.controller.abort(new Error("Flow cancelled"));
+                settling.push(entry.settled);
+              }
+              if (settling.length === 0) return;
+              // R3-5: the budget is what cancelFlow has left, not a fresh 15s of its own.
+              await teardownDeadline(Promise.all(settling).then(() => undefined), remainingMs,
+                "Foreground connector teardown did not settle");
+            },
+            ...(dependencies.cancellationTimeoutMs !== undefined ? { timeoutMs: dependencies.cancellationTimeoutMs } : {}),
+            ...(dependencies.foregroundRegistryRoot !== undefined ? { registryRoot: dependencies.foregroundRegistryRoot } : {}),
+          });
+          // `settledByThisCall` is engine-internal bookkeeping and is not on the wire; the
+          // default-deny response check would reject it.
+          const { settledByThisCall: _settledByThisCall, ...wire } = ack;
+          response = { ...wire };
+          break;
+        }
         case "stratum_agent_run": {
           const model = optionalString(request, "model");
           const sandboxMode = optionalString(request, "sandboxMode");
@@ -438,6 +474,22 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           await assertToolResponse(tool, response);
           return response;
         }
+        if (tool === "stratum_flow_cancel" && error instanceof Error && "code" in error
+          && ["CANCELLATION_TEARDOWN_TIMEOUT", "CANCELLATION_UNCONFIRMED"].includes(String(error.code))) {
+          const failure = error as Error & { status?: string; flowSettled?: boolean; reason?: string; holderPid?: number; agents?: AgentCancelSummary };
+          // R1-5: report the ENGINE'S status and the flow-side fact separately. A hardcoded
+          // "cancelled" here would claim a terminal state the run may not have — and a
+          // consumer that reads the code as "the cancel failed" will retry into a settled run.
+          throw await registryError("flow_cancel_unacknowledged", ErrorCode.InternalError, error.message, {
+            code: String(error.code),
+            runId: string(request, "runId"),
+            status: failure.status ?? "running",
+            flowSettled: failure.flowSettled ?? false,
+            ...(failure.reason !== undefined ? { reason: failure.reason } : {}),
+            ...(failure.holderPid !== undefined ? { holderPid: failure.holderPid } : {}),
+            agents: failure.agents ?? { signalled: 0, reaped: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0 },
+          });
+        }
         // A registry refusal is the cause; the connector's abort is its consequence (R3-8).
         if (registryFailure !== undefined) throw registryFailure;
         if (tool === "stratum_agent_run" || tool === "stratum_cancel_agent_run") {
@@ -472,6 +524,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         if (cancellationId !== undefined && controller) {
           completed.set(cancellationId, teardownFailure ?? (succeeded ? "already_complete" : controller.signal.aborted ? "cancelled" : "already_error"));
           foreground.delete(cancellationId);
+          foregroundFlows.delete(cancellationId);
           if (completed.size > 1024) completed.delete(completed.keys().next().value!);
           settle?.();
         }

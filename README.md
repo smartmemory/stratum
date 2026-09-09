@@ -480,9 +480,21 @@ Rehydrate a persisted flow into this server process (live-process reparenting) s
 
 Detached background flow execution: start a flow under a background driver, poll its progress, cancel it. Survives the launching session.
 
+### `stratum_flow_cancel`
+
+Cancel a running **foreground** flow by flow id, from any process. Unlike `stratum_flow_cancel_bg`, which abandons a background run, this settles the run to the terminal status `cancelled` under the per-run file lock, burns every outstanding step, gate and fanout-item issuance, and then terminates the foreground agents Stratum spawned for that flow.
+
+**Inputs:** `runId` (str)
+
+**Returns:** `{runId, status, flowSettled, acknowledged, reason?, ledger, agents}`. `flowSettled` says the run is durably `cancelled`; `acknowledged` additionally says every agent claimed for the flow was reaped or durably settled. A run that had already finished on its own returns success with `flowSettled: false` and `reason: "already_<status>"`, because nothing of ours was running and no teardown was attempted. An unconfirmed teardown is an error, not a caveat: `CANCELLATION_TEARDOWN_TIMEOUT` (a signalled group outlived the deadline) or `CANCELLATION_UNCONFIRMED` (an entry is unreachable, or the run lock was held, reported as `reason: "run_lock_held"` with `holderPid`). Both carry the engine's real `status`, `flowSettled`, and the partial `agents` summary, so a caller can tell "the flow is stopped but one group survived" from "we never even took the lock".
+
+Cancellation is split by ownership: foreground cancel settles the flow and kills the agents **Stratum** spawned, background cancel abandons the run, and a consumer's own in-process agents remain the consumer's to abort, because Stratum cannot reach them.
+
 ### `stratum_agent_run` / `stratum_agent_poll` / `stratum_cancel_agent_run`
 
 Dispatch Claude or Codex as part of a flow step, synchronously or in the background. Background runs return a durable `runId` for polling and cancellation.
+
+A foreground agent run may declare `flow: {runId, stepId?, itemIndex?}` alongside its `cancellationId`. That gives the run a durable record carrying its child pid and process start time, which is what lets `stratum_flow_cancel` terminate its process group from a different process. `flow` without a `cancellationId` is rejected: without an owned process group there is nothing to cancel.
 
 For acknowledged foreground cancellation, supply a fresh UUID as `cancellationId` on `stratum_agent_run`, then call `stratum_cancel_agent_run` with that UUID as `runId`. The cancellation response waits for connector teardown. Keep awaiting the original run response as well; cancellation reports an error there. MCP transport cancellation and disconnection also abort foreground work, but MCP cancellation notifications suppress the original response and do not acknowledge teardown. Foreground IDs are scoped to the current server process; recent terminal IDs return `already_complete`, `already_error`, or `cancelled`.
 
@@ -1056,6 +1068,7 @@ stratum gate approve <flow_id> <step_id> [--note "reason"]
 stratum gate reject  <flow_id> <step_id> [--note "reason"]
 stratum gate revise  <flow_id> <step_id> [--note "reason"]
 stratum guard <action>             # Guard ledger operations (see STRAT-GUARD)
+stratum flow cancel <flow_id>      # Cancel a running foreground flow (exit 0 ok, 1 unconfirmed, 2 unknown flow)
 stratum watch <flow_id>            # Follow a flow's progress
 stratum help                       # Show usage
 ```
