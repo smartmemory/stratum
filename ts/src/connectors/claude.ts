@@ -28,6 +28,11 @@ export interface ClaudeConnectorOptions {
    * spawn on Windows. */
   ownProcessGroup?: boolean;
   cancellationGraceMs?: number;
+  /** Group-leader pid of each cancellable child, reported as it spawns. Invoked only when
+   *  ownProcessGroup is true — without a process group there is nothing a cross-process
+   *  cancel could signal. Called synchronously; never awaited, so the connector never blocks
+   *  the spawn path on registry I/O (S02-1). */
+  onSpawn?: (pid: number) => void;
   env?: NodeJS.ProcessEnv;
   /** SDK-boundary test seam. */
   query?: QueryFunction;
@@ -84,6 +89,7 @@ export class ClaudeConnector {
             cwd: options.cwd, env: options.env, detached: process.platform !== "win32",
             stdio: ["pipe", "pipe", "pipe"],
           });
+          if (child.pid !== undefined) this.options.onSpawn?.(child.pid);
           const termination = processTermination(child, true, this.options.cancellationGraceMs);
           child.stderr.setEncoding("utf8");
           child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-16_384); });
