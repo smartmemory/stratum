@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Codex connector: successful runs now carry the reported cost.** Both success returns rebuilt
+  `usage`/`split` by hand and dropped the `usd`, `usdSource: "reported"` and `cacheRead` the stream
+  loop had accumulated from `turn.completed` (the failure path attached them), so every successful
+  codex dispatch reached the ledger and usage receipts as cost-unknown. One shared
+  `codexUsageFields` now feeds both paths. Found by compose's real-engine wave golden, whose
+  cost gate held every run at `WAVE_COST_UNVERIFIED`.
 - **MCP surface 20 — `stratum_usage_report` accepts `receipt.detail`**: the engine's `ReceiptInput.detail`
   (a plain object, `engine/receipts.ts`) was never declared in `contracts/mcp-surface.json`, so the
   default-deny request validator rejected every receipt that carried one with
