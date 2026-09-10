@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **MCP surface 20 — `stratum_usage_report` accepts `receipt.detail`**: the engine's `ReceiptInput.detail`
+  (a plain object, `engine/receipts.ts`) was never declared in `contracts/mcp-surface.json`, so the
+  default-deny request validator rejected every receipt that carried one with
+  `receipt.detail is undeclared`. Declared as optional; no engine change. First consumer: compose
+  COMP-FABLE-ASTRA slice 3 writes zero-usage metadata receipts (planned per-item model, gate decision,
+  wave checkpoint, ownership finding) through it so the run record carries that evidence.
+  Found by compose's real-engine wave golden (dispatch 3).
+
 ## [0.5.1] — 2026-09-10
 
 - **STRAT-FLOW-CANCEL-FG fast-exit fix**: a flow-tagged foreground agent whose child exited before

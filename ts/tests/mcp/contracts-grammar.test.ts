@@ -78,9 +78,9 @@ describe("tagged frozen-contract shape grammar", () => {
 });
 
 describe("STRAT-LEARN-COST frozen contract declarations", () => {
-  it("freezes surface 19 and rejects undeclared nested usage-report keys", async () => {
+  it("freezes surface 20 and rejects undeclared nested usage-report keys", async () => {
     const surface = await mcpSurface();
-    expect(surface.surface).toBe(19);
+    expect(surface.surface).toBe(20);
     expect(surface.tools.stratum_usage_report).toBeDefined();
     await expect(assertToolRequest("stratum_usage_report", {
       runId: "run-1",
@@ -93,6 +93,9 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
         split: { input: 2, output: 2 },
         usdSource: "reported",
         at: "2026-08-30T00:00:00.000Z",
+        // Surface 20: the engine's ReceiptInput.detail (receipts.ts) is now on the wire —
+        // compose writes zero-usage metadata receipts (COMP-FABLE-ASTRA slice 3) through it.
+        detail: { kind: "planned_dispatch", tier: "critical" },
       },
     })).resolves.toBeUndefined();
     await expect(assertToolRequest("stratum_usage_report", {
