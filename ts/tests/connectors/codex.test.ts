@@ -136,7 +136,7 @@ describe("CodexConnector", () => {
         kind: "step_usage",
         metadata: {
           input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 0,
-          cache_read_input_tokens: 0, cost_usd: 0, model: "gpt-5.3-codex-spark/low",
+          cache_read_input_tokens: 0, model: "gpt-5.3-codex-spark/low",
         },
       },
     ]);

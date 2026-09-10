@@ -460,6 +460,11 @@ function codexConnectorEvents(value: unknown, model: string, prompt: string): Co
     return [{ kind: "agent_started", metadata: { agent: "codex", model, prompt_chars: prompt.length } }];
   }
   if (value.type === "turn.completed" && isRecord(value.usage)) {
+    // Carry the provider-reported cost when the turn has one; OMIT the key when it does
+    // not. A hardcoded `cost_usd: 0` (until 2026-09-10) read as "reported: free" to a
+    // consumer that sums stream events, and beat the real usd on the final result.
+    const rawCost = value.usage.total_cost_usd ?? value.usage.cost_usd;
+    const cost = typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : undefined;
     return [{
       kind: "step_usage",
       metadata: {
@@ -467,7 +472,7 @@ function codexConnectorEvents(value: unknown, model: string, prompt: string): Co
         output_tokens: finiteNonnegative(value.usage.output_tokens),
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: finiteNonnegative(value.usage.cached_input_tokens),
-        cost_usd: 0,
+        ...(cost !== undefined ? { cost_usd: cost } : {}),
         model,
       },
     }];

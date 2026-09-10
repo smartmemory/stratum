@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Codex connector: `step_usage` events carry the real cost, or omit it.** The streamed event
+  hardcoded `cost_usd: 0`, which a consumer summing events read as "reported: free" and which
+  beat the real `usd` on the final result. Now the event carries the turn's reported cost when
+  present and omits the key otherwise.
 - **Codex connector: successful runs now carry the reported cost.** Both success returns rebuilt
   `usage`/`split` by hand and dropped the `usd`, `usdSource: "reported"` and `cacheRead` the stream
   loop had accumulated from `turn.completed` (the failure path attached them), so every successful
