@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.5.2] — 2026-09-10
 
 - **Codex connector: `step_usage` events carry the real cost, or omit it.** The streamed event
   hardcoded `cost_usd: 0`, which a consumer summing events read as "reported: free" and which
