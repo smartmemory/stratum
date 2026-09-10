@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { runAgent } from "../../src/connectors/runner.js";
+import * as identity from "../../src/connectors/proc_identity.js";
 import {
   reapFlowAgents,
   signalFlowAgents,
@@ -19,6 +20,7 @@ import { createToolDispatcher, type ToolDispatcher } from "../../src/mcp/server.
 const roots: string[] = [];
 const strays: number[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const pid of strays.splice(0)) { try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ } }
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined)));
 });
@@ -336,17 +338,17 @@ describe("STRAT-FLOW-CANCEL-FG registration failures are never swallowed", () =>
   }, 30_000);
 
   it("T-S02-0c2: a missing procStartTime is a registration failure, not a degraded success", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-fg-missing-identity-"));
+    roots.push(root);
+    let childPid: number | undefined;
+    const realStartTime = identity.procStartTime;
+    vi.spyOn(identity, "procStartTime").mockImplementation((pid) =>
+      pid === childPid ? Promise.resolve(undefined) : realStartTime(pid));
     const subject = await harness(spawningAgent({
-      path: "/dev/null",
-      // A pid that has already exited has no readable start time — the same observable
-      // condition as darwin's libproc failing closed (proc_identity.ts:50-58).
-      pid: async () => {
-        const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
-        const pid = child.pid!;
-        await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-        await delay(20);
-        return pid;
-      },
+      path: join(root, "writes"),
+      // Missing identity for a LIVE child is a failure. A departed pid is now a successful
+      // fast exit, so it cannot stand in for an unreachable libproc probe.
+      afterSpawn: (pid) => { childPid = pid; expect(process.kill(pid, 0)).toBe(true); },
     }));
     const failure = await subject.dispatcher.call("stratum_agent_run", agentRequest(subject.runId)).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);

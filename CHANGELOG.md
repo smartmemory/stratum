@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.1] — 2026-09-10
+
+- **STRAT-FLOW-CANCEL-FG fast-exit fix**: a flow-tagged foreground agent whose child exited before
+  process-identity registration (the darwin libproc probe takes ~40ms; a child gone by then has no
+  start time) was failed with `REGISTRY_WRITE_FAILED` "agent would be uncancellable" even though it
+  had already finished. `recordForegroundGroup` now retries the probe once after a short yield (macOS
+  zombies answer signal 0), omits a positively gone child (ESRCH) from the registry, and stays
+  fail-closed for a live or opaque pid without a start time. The flow admission check still runs
+  for an omitted child, so a fast agent on a flow cancelled meanwhile is still refused.
+  Found by compose's `build-abort-golden` (COMP-BUILD-CANCEL S07).
+- `tests/guard/store.test.ts`: the cache-busting dynamic import is typed so `npm run typecheck` is
+  clean again (pre-existing TS2307).
+
 ## [0.5.0] — 2026-09-10
 
 - **STRAT-FLOW-CANCEL-FG S03 (surfaces)**: `stratum_flow_cancel` MCP tool and `stratum flow cancel <runId>`
