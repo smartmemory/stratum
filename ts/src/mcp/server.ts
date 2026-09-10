@@ -332,13 +332,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
                 // unrecorded — an uncancellable orphan reported as success.
                 registryWrites = registryWrites.then(async () => {
                   const recorded = await recordForegroundGroup(registryId!, pid, registryOptions);
-                  // procStartTime returns undefined when libproc is unreachable
-                  // (proc_identity.ts:50-58, darwin fails closed). An entry without it can
-                  // NEVER be signalled (:80-83), so it is a registration FAILURE, not a
-                  // degraded success.
-                  if (recorded.procStartTime === undefined) {
-                    throw Object.assign(new Error("could not capture process start time; agent would be uncancellable"), { code: "REGISTRY_WRITE_FAILED" });
-                  }
+                  // The registry omits positively exited children (no procStartTime) and
+                  // throws for a live or opaque pid without identity. An omitted child has
+                  // nothing left to kill — but the admission check below still applies: a
+                  // fast agent on a flow cancelled meanwhile must not report success.
                   // R1-3 check 2: the cancel may have swept between the pre-spawn check and
                   // this pid landing. If so this group is ours to kill, right now.
                   try {
@@ -346,7 +343,9 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
                   } catch (error) {
                     // R3-8: the recorded identity is REQUIRED to signal a group. It was just
                     // written above, so pass it explicitly rather than re-reading the file.
-                    await killAndReapGroup(pid, { startTime: recorded.procStartTime });
+                    if (recorded.procStartTime !== undefined) {
+                      await killAndReapGroup(pid, { startTime: recorded.procStartTime });
+                    }
                     throw await admissionError(error, flowRunId!);
                   }
                 }).catch(async (error: unknown) => {

@@ -108,7 +108,9 @@ describe("guard store paths and registry", () => {
 
     try {
       process.env.STRATUM_GUARDS_DIR = tempRoot;
-      const module = await import("../../src/guard/store.js?env-override-cachebust");
+      // The query suffix defeats vitest's module cache so GUARDS_DIR re-reads the env.
+      const module: typeof import("../../src/guard/store.js") =
+        await import(/* @vite-ignore */ "../../src/guard/store.js?env-override-cachebust" as string);
       expect(module.GUARDS_DIR).toBe(tempRoot);
     } finally {
       if (originalEnv === undefined) delete process.env.STRATUM_GUARDS_DIR;

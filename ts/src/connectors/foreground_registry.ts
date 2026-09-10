@@ -216,9 +216,31 @@ export async function createForegroundRun(
   return runId;
 }
 
-/** Appends one spawned group and promotes the record to `running`. Serialised by the caller
- *  (one promise chain per run), so no lock is needed. Returns what it wrote so the caller can
- *  check `procStartTime` without re-reading the file (R3-8). Throws on failure. */
+/** Capture a registration identity, or return undefined ONLY for a positively gone pid.
+ *  A missing token plus ESRCH means the child finished before registration. Otherwise yield
+ *  once for Node to reap an exited child (macOS zombies can answer signal 0 successfully),
+ *  then retry both probes. A still-live or opaque pid fails closed, including libproc failure.
+ *  No signal other than the positive-pid existence probe is sent here. */
+async function registrationStartTime(pid: number): Promise<string | undefined> {
+  if (Number.isSafeInteger(pid) && pid > 0) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const startTime = await procStartTime(pid);
+      if (startTime !== undefined) return startTime;
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException | undefined)?.code === "ESRCH") return undefined;
+      }
+      if (attempt === 0) await delay(25);
+    }
+  }
+  throw Object.assign(new Error("could not capture process start time; agent would be uncancellable"), { code: "REGISTRY_WRITE_FAILED" });
+}
+
+/** Appends one identified group and promotes the record to `running`. Serialised by the
+ *  caller (one promise chain per run), so no lock is needed. A return without procStartTime
+ *  means the pid is positively gone: NOTHING was appended and the lifecycle is unchanged
+ *  until the dispatcher's finally settles it. Otherwise returns what it wrote (R3-8).
+ *  Throws on missing identity for a live/opaque pid or on registry I/O failure. */
 export async function recordForegroundGroup(
   registryId: string,
   pid: number,
@@ -227,8 +249,9 @@ export async function recordForegroundGroup(
   const root = resolveRoot(options);
   const meta = await readMeta(root, registryId);
   if (!meta) throw Object.assign(new Error(`foreground registry entry ${registryId} is missing or unreadable`), { code: "REGISTRY_WRITE_FAILED" });
-  const startTime = await procStartTime(pid);
+  const startTime = await registrationStartTime(pid);
   const group: ForegroundGroup = { childPid: pid, ...(startTime !== undefined ? { procStartTime: startTime } : {}) };
+  if (startTime === undefined) return group;
   const next: ForegroundRunMeta = { ...meta, state: "running", groups: [...meta.groups, group] };
   await atomicWriteJson(metaPath(root, registryId), next);
   return group;
