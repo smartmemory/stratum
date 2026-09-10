@@ -266,8 +266,7 @@ export class CodexConnector {
       const durationMs = Math.max(0, Date.now() - startedAt);
       return {
         text: text.join(""),
-        usage: { tokens: inputTokens + outputTokens, ms: durationMs },
-        split: { input: inputTokens, output: outputTokens },
+        ...codexUsageFields(inputTokens, outputTokens, cacheRead, costUsd, durationMs),
         telemetry: { durationMs, ...identity },
       };
     } catch (error) {
@@ -413,8 +412,7 @@ export class CodexConnector {
     const durationMs = Math.max(0, Date.now() - startedAt);
     return {
       text: text.join(""),
-      usage: { tokens: inputTokens + outputTokens, ms: durationMs },
-      split: { input: inputTokens, output: outputTokens },
+      ...codexUsageFields(inputTokens, outputTokens, cacheRead, costUsd, durationMs),
       telemetry: { durationMs, ...modelIdentity(this.model) },
     };
   }
@@ -567,11 +565,24 @@ export function resolveCodexCommand(env: NodeJS.ProcessEnv = process.env) {
   return command ? { command, prefix: [] } : bundledCodexCommand(env);
 }
 
+/**
+ * The ONE shape for codex usage, success or failure. Until 2026-09-10 the two success
+ * returns built their own `usage`/`split` and dropped `usd`, `usdSource` and `cacheRead`
+ * even though the stream loop had accumulated them, so every successful codex call reached
+ * the ledger as cost-unknown (compose's wave cost gate then held every run at
+ * WAVE_COST_UNVERIFIED). Found by compose's real-engine wave golden (COMP-FABLE-ASTRA d3).
+ */
+function codexUsageFields(input: number, output: number, cacheRead: number, usd: number, ms: number) {
+  return {
+    usage: { tokens: input + output, ms, ...(usd > 0 ? { usd } : {}) },
+    split: { input, output, ...(cacheRead > 0 ? { cacheRead } : {}) },
+    ...(usd > 0 ? { usdSource: "reported" as const } : {}),
+  };
+}
+
 function attachCodexUsage(error: unknown, input: number, output: number, cacheRead: number, usd: number, ms: number, model: string): Error {
   return Object.assign(error instanceof Error ? error : new Error(String(error)), {
     telemetry: { durationMs: ms, ...modelIdentity(model) },
-    usage: { tokens: input + output, ms, ...(usd > 0 ? { usd } : {}) },
-    split: { input, output, ...(cacheRead > 0 ? { cacheRead } : {}) },
-    ...(usd > 0 ? { usdSource: "reported" } : {}),
+    ...codexUsageFields(input, output, cacheRead, usd, ms),
   });
 }

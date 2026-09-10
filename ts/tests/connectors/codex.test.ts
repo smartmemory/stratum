@@ -142,6 +142,25 @@ describe("CodexConnector", () => {
     ]);
   });
 
+  it("carries the reported cost, provenance and cache split on the SDK success path", async () => {
+    // Regression (2026-09-10): the success returns rebuilt usage by hand and dropped the
+    // accumulated usd/usdSource/cacheRead that the failure path already attached, so every
+    // successful codex call reached the ledger cost-unknown.
+    async function* events() {
+      yield { type: "thread.started" as const, thread_id: "thread-1" };
+      yield { type: "item.completed" as const, item: { id: "m-1", type: "agent_message" as const, text: "done" } };
+      yield { type: "turn.completed" as const, usage: { input_tokens: 10, cached_input_tokens: 6, output_tokens: 5, reasoning_output_tokens: 0, total_cost_usd: 0.001 } as never };
+    }
+    const connector = new CodexConnector({
+      model: "gpt-6-astra/high", cwd: "/work", sandboxMode: "workspace-write", env: { PATH: "/definitely-missing" },
+      sdkFactory: vi.fn(() => ({ startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })) })),
+    });
+    const result = await connector.run("price me");
+    expect(result.usage).toMatchObject({ tokens: 15, usd: 0.001 });
+    expect(result.usdSource).toBe("reported");
+    expect(result.split).toEqual({ input: 10, output: 5, cacheRead: 6 });
+  });
+
   it("keeps four concurrent SDK turns owned until every turn settles", async () => {
     const releases: Array<() => void> = [];
     let active = 0;
