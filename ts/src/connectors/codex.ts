@@ -461,33 +461,41 @@ function codexConnectorEvents(value: unknown, model: string, prompt: string): Co
     return [{ kind: "agent_started", metadata: { agent: "codex", model, prompt_chars: prompt.length } }];
   }
   if (value.type === "turn.completed" && isRecord(value.usage)) {
-    // Carry the provider-reported cost when the turn has one; OMIT the key when it does
-    // not. A hardcoded `cost_usd: 0` (until 2026-09-10) read as "reported: free" to a
-    // consumer that sums stream events, and beat the real usd on the final result.
-    const rawCost = value.usage.total_cost_usd ?? value.usage.cost_usd;
-    const cost = typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : undefined;
-    // DIALECT WARNING (2026-09-12) — do NOT "normalize" these numbers here.
-    // OpenAI reports `input_tokens` INCLUDING `cached_input_tokens`, while Anthropic
-    // (and compose's calculateCost) treats input as the UNCACHED portion with the cache
-    // fields additional. That mismatch makes a consumer summing these events bill the
-    // cached part twice. It is REAL -- measured 2.76x on a live call -- but it MUST be
-    // fixed in the consumer's COST MATH, never by translating the numbers here.
+    // The event states BOTH the amount and how we know it. `usd_source` is explicit so a
+    // consumer never has to infer provenance from whether `cost_usd` is present -- that
+    // inference is what turned an honest estimate into a false "provider reported" figure.
     //
-    // Reason: compose's routing evidence guard (lib/routing-runtime.js:187-196) compares
-    // every forwarded field against this connector's own evidence and refuses with
-    // ROUTING_CALL_EVIDENCE_CONFLICT on ANY difference -- tokens, input, cacheRead. The
-    // event and the result are required to be the SAME raw numbers; that identity is what
-    // makes the routing ledger tamper-evident. Subtracting cached tokens here was tried
-    // and reverted: it broke 15 compose tests with "Forwarded tokens differs from original
-    // connector evidence". Emit raw provider numbers. Interpret them downstream.
+    // Codex reports no cost of its own (usage events carry token counts only), so in
+    // practice this is always `estimated` and computed by the SAME usdFromTokens the final
+    // result uses. Because that function is linear in tokens, summing the per-turn event
+    // amounts reproduces the result's single total, which is what compose's routing
+    // evidence guard compares. If the model is unpriced, usdFromTokens yields 0 and BOTH
+    // keys are omitted, so an unknown cost stays unknown rather than becoming a false $0.
+    const rawCost = value.usage.total_cost_usd ?? value.usage.cost_usd;
+    const reported = typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 && rawCost > 0
+      ? rawCost
+      : undefined;
+    // TOKENS STAY RAW. OpenAI reports `input_tokens` INCLUDING `cached_input_tokens`,
+    // which is NOT the consumer's pricing convention -- but translating here breaks the
+    // identity compose's evidence guard enforces between this event and the connector's
+    // own evidence (tried in d006278, reverted in 1c2646c after 15 failures with
+    // "Forwarded tokens differs from original connector evidence"). Emitting the amount
+    // above is what makes the dialect moot: the consumer no longer needs to price tokens.
+    const inputTokens = finiteNonnegative(value.usage.input_tokens);
+    const outputTokens = finiteNonnegative(value.usage.output_tokens);
+    const cachedInput = finiteNonnegative(value.usage.cached_input_tokens);
+    const estimated = reported === undefined
+      ? usdFromTokens(model, { inputTokens, cachedInputTokens: cachedInput, outputTokens })
+      : 0;
+    const usd = reported ?? (estimated > 0 ? estimated : undefined);
     return [{
       kind: "step_usage",
       metadata: {
-        input_tokens: finiteNonnegative(value.usage.input_tokens),
-        output_tokens: finiteNonnegative(value.usage.output_tokens),
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
         cache_creation_input_tokens: 0,
-        cache_read_input_tokens: finiteNonnegative(value.usage.cached_input_tokens),
-        ...(cost !== undefined ? { cost_usd: cost } : {}),
+        cache_read_input_tokens: cachedInput,
+        ...(usd !== undefined ? { cost_usd: usd, usd_source: reported !== undefined ? "reported" : "estimated" } : {}),
         model,
       },
     }];

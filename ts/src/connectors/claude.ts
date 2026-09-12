@@ -174,12 +174,16 @@ export class ClaudeConnector {
           outputTokens = finiteNonnegative(raw.usage.output_tokens);
           cacheRead = finiteNonnegative(raw.usage.cache_read_input_tokens);
           cacheCreation = finiteNonnegative(raw.usage.cache_creation_input_tokens);
+          // `usd_source` is stated, never inferred by the consumer from whether cost_usd
+          // is present. Claude DOES report a real cost, so this is "reported" -- and a
+          // 0 total means a genuinely free/cached-only turn, which is still a report.
           await this.emit({
             kind: "step_usage",
             metadata: {
               input_tokens: inputTokens,
               output_tokens: outputTokens,
               cost_usd: costUsd,
+              usd_source: "reported",
               cache_creation_input_tokens: cacheCreation,
               cache_read_input_tokens: cacheRead,
               model: requestedModel,
