@@ -142,6 +142,41 @@ describe("CodexConnector", () => {
     ]);
   });
 
+  it("step_usage speaks the CONSUMER dialect: input_tokens EXCLUDES cached", async () => {
+    // Regression (2026-09-12). OpenAI reports input_tokens INCLUDING cached_input_tokens;
+    // Anthropic (and therefore compose/lib/model-pricing.js `calculateCost`, and stratum's
+    // own claude.ts) treats input_tokens as the UNCACHED portion with the cache fields
+    // ADDITIONAL. Emitting the raw OpenAI numbers made the consumer bill the cached portion
+    // twice. Measured on the 2026-09-12 live-fire review call (216,385 input of which
+    // 179,200 cached): the consumer computed $0.4917 against the connector's $0.1781, 2.76x.
+    // The connector's OWN estimate keeps the raw totals -- usdFromTokens documents
+    // cachedInputTokens as a SUBSET -- so only the EVENT is translated.
+    const connectorEvents: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
+    async function* events() {
+      yield { type: "thread.started" as const, thread_id: "thread-1" };
+      yield { type: "item.completed" as const, item: { id: "m-1", type: "agent_message" as const, text: "done" } };
+      yield { type: "turn.completed" as const, usage: { input_tokens: 10, cached_input_tokens: 6, output_tokens: 5, reasoning_output_tokens: 0 } };
+    }
+    const connector = new CodexConnector({
+      model: "gpt-5.3-codex-spark/low", cwd: "/work", sandboxMode: "workspace-write", env: { PATH: "/definitely-missing" },
+      onEvent: async (event) => { connectorEvents.push(event); },
+      sdkFactory: vi.fn(() => ({ startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })) })),
+    });
+    const result = await connector.run("split me");
+
+    const usage = connectorEvents.find(e => e.kind === "step_usage");
+    expect(usage?.metadata).toMatchObject({
+      input_tokens: 4,              // 10 total - 6 cached, NOT the raw 10
+      cache_read_input_tokens: 6,
+      cache_creation_input_tokens: 0,
+      output_tokens: 5,
+    });
+    // Codex reports no cost, so the key is omitted rather than stamped as a false $0.
+    expect(usage?.metadata).not.toHaveProperty("cost_usd");
+    // The connector's own accounting is unchanged: raw totals, cached as a SUBSET.
+    expect(result.usage.tokens).toBe(15);
+  });
+
   it("carries the reported cost, provenance and cache split on the SDK success path", async () => {
     // Regression (2026-09-10): the success returns rebuilt usage by hand and dropped the
     // accumulated usd/usdSource/cacheRead that the failure path already attached, so every

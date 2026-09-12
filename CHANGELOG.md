@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+- **Codex `step_usage` events now speak the CONSUMER's token dialect.** OpenAI reports
+  `input_tokens` INCLUDING `cached_input_tokens`; Anthropic treats `input_tokens` as the UNCACHED
+  portion with the cache fields ADDITIONAL to it. compose's `calculateCost` documents the
+  Anthropic reading ("Standard prompt tokens", cacheRead billed separately at 0.1x), and this
+  repo's own `claude.ts` passes Anthropic's usage straight through — so `codex.ts` was the sole
+  outlier, and a consumer summing its events billed the cached portion TWICE: once at full rate
+  inside `input_tokens` and again at 0.1x. Measured against the retained 2026-09-12 live-fire
+  review call (216,385 input tokens of which 179,200 cached, 5,836 output): the consumer computed
+  **$0.49173775 against this connector's $0.17813775 — 2.76x over**. With the translation applied
+  the consumer's independent computation reproduces the connector's figure exactly
+  (0.17813774999999998 vs 0.17813775), which is the strongest available check that the two
+  pricing paths now agree.
+
+  Only the EVENT is translated. The accumulators feeding `codexUsageFields` keep the raw OpenAI
+  totals, because `usdFromTokens` documents `cachedInputTokens` as a SUBSET of `inputTokens` and
+  is the authoritative estimate the compose routing ledger reads. `cost_usd` is still OMITTED
+  rather than stamped as a false reported $0 — Codex reports no cost, structurally.
+
+  Pinned by a new `tests/connectors/codex.test.ts` case asserting `input_tokens: 4` for a turn of
+  10 total / 6 cached; reverting the subtraction fails it with
+  `expected { input_tokens: 10 } to match object { input_tokens: 4 }`. Full suite 1286 passed,
+  3 skipped, 0 failed.
+
 ## [0.5.2] — 2026-09-10
 
 - **Codex connector: `step_usage` events carry the real cost, or omit it.** The streamed event
