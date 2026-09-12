@@ -39,8 +39,17 @@ export interface ConnectorResult {
    * (`stratum_usage_report`) fails closed on an unlabelled dollar value — so a
    * connector that reports a provider-priced cost must say so here or the
    * receipt loses it (2026-08-30 census: local Claude receipts had no usd).
+   *
+   * "estimated" admitted 2026-09-12. Codex reports NO cost at all -- its usage events
+   * carry token counts only -- so a codex call could never label a dollar value and
+   * every one reached consumers as cost-unknown (measured: both codex rows of a live
+   * compose shadow build were `usd: null` / incomplete, against a complete
+   * provider-reported claude row). The connector now prices those calls from tokens and
+   * says `estimated`, which the persisted receipt state at engine/state.ts:30 has always
+   * admitted. "legacy" stays reserved for engine-synthesized receipts
+   * (engine.ts:863-864); a connector must never send it.
    */
-  usdSource?: "reported";
+  usdSource?: "reported" | "estimated";
   /**
    * Input/output token detail, reported BESIDE usage for the same reason as
    * usdSource: the ledger admits only budget keys inside `usage`, so the

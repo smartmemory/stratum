@@ -47,7 +47,9 @@ describe("judged predicates", () => {
       reason: "not enough evidence",
       stakes: "default",
       model: "gpt-5.6-terra/high",
-      usage: { tokens: 1_500, usd: 0.01 },
+      // 0.008, not the old 0.01: terra was cut from 2.5/15 to 2/12 on 2026-07-30 and
+      // this table was stale. 1_000 input * 2 + 500 output * 12 per MTok = 0.008.
+      usage: { tokens: 1_500, usd: 0.008 },
     });
   });
 

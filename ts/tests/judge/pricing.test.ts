@@ -10,13 +10,41 @@ describe("judge pricing", () => {
     ["gpt-6-astra/high", "gpt-6-astra"],
   ])("normalizes %s", (model, expected) => expect(baseModel(model)).toBe(expected));
 
-  it("ships only the three P2 judge tiers", () => {
-    expect(Object.keys(MODEL_PRICING).sort()).toEqual(["gpt-5.3-codex-spark", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"]);
+  // This table stopped being a judge-tier list on 2026-09-12: the codex connector now
+  // prices its own calls from it, because Codex reports no cost of its own and an
+  // unpriced model reaches a consumer as cost-unknown. Tier SELECTION still lives in
+  // judged.ts (JUDGE_TIERS cheap/default/paranoid), so extra entries here widen what can
+  // be priced, never what the judge may route to. Assert the judge tiers are all present
+  // and priced rather than pinning the table closed.
+  it("prices every judge tier", () => {
+    for (const model of ["gpt-5.3-codex-spark", "gpt-5.6-terra", "gpt-6-astra"]) {
+      expect(usdFromTokens(model, { inputTokens: 1_000, outputTokens: 1_000 })).toBeGreaterThan(0);
+    }
+  });
+
+  it("prices every model the codex connector may dispatch, so none reaches a consumer cost-unknown", () => {
+    for (const model of ["gpt-5.3-codex-spark", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]) {
+      expect(usdFromTokens(model, { inputTokens: 1_000, outputTokens: 1_000 })).toBeGreaterThan(0);
+    }
+  });
+
+  // Cached input bills at 0.1x, confirmed per-model against the LiteLLM registry. It is
+  // not a rounding detail: a real astra run carried 13.25M cached of 13.47M input tokens,
+  // so ignoring the discount overstates that call by roughly 10x.
+  it("bills cached input at the discounted rate, and never below zero", () => {
+    const full = usdFromTokens("gpt-6-astra", { inputTokens: 1_000_000, outputTokens: 0 });
+    const cached = usdFromTokens("gpt-6-astra", { inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 0 });
+    expect(full).toBeCloseTo(10, 10);
+    expect(cached).toBeCloseTo(1, 10);
+    // cached > input must clamp, never produce a negative charge
+    expect(usdFromTokens("gpt-6-astra", { inputTokens: 10, cachedInputTokens: 999, outputTokens: 0 })).toBeGreaterThanOrEqual(0);
   });
 
   it("prices input and output independently", () => {
     expect(usdFromTokens("gpt-5.3-codex-spark/low", { inputTokens: 1_000, outputTokens: 500 })).toBeCloseTo(0.00875, 10);
     expect(usdFromTokens("gpt-6-astra/high", { inputTokens: 1_000, outputTokens: 500 })).toBeCloseTo(0.035, 10);
+    // terra at its VERIFIED post-2026-07-30 rate (2/12): 1_000*2 + 500*12 per MTok
+    expect(usdFromTokens("gpt-5.6-terra/high", { inputTokens: 1_000, outputTokens: 500 })).toBeCloseTo(0.008, 10);
   });
 
   it("returns zero for an unknown model or invalid counts", () => {
