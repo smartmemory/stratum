@@ -466,13 +466,29 @@ function codexConnectorEvents(value: unknown, model: string, prompt: string): Co
     // consumer that sums stream events, and beat the real usd on the final result.
     const rawCost = value.usage.total_cost_usd ?? value.usage.cost_usd;
     const cost = typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : undefined;
+    // DIALECT (2026-09-12): the step_usage event speaks the CONSUMER's convention,
+    // which is Anthropic's -- `input_tokens` EXCLUDES cached tokens, and the cache
+    // fields are ADDITIONAL to it (compose/lib/model-pricing.js `calculateCost`:
+    // "Standard prompt tokens", cacheRead billed separately at 0.1x; stratum's own
+    // claude.ts passes Anthropic's usage straight through, so codex was the sole
+    // outlier). OpenAI reports the opposite: `input_tokens` INCLUDES
+    // `cached_input_tokens`. Emitting the raw OpenAI numbers made the consumer bill
+    // the cached portion TWICE -- once at full rate inside input_tokens and again at
+    // 0.1x -- which on a real call (216,385 input of which 214,016 cached) computed
+    // $0.498 against the connector's correct $0.178, ~4x over.
+    //
+    // This is the EVENT only. The accumulators feeding codexUsageFields keep the raw
+    // OpenAI totals, because usdFromTokens documents cachedInputTokens as a SUBSET of
+    // inputTokens and is the authoritative estimate the routing ledger reads.
+    const cachedInput = finiteNonnegative(value.usage.cached_input_tokens);
+    const totalInput = finiteNonnegative(value.usage.input_tokens);
     return [{
       kind: "step_usage",
       metadata: {
-        input_tokens: finiteNonnegative(value.usage.input_tokens),
+        input_tokens: Math.max(0, totalInput - cachedInput),
         output_tokens: finiteNonnegative(value.usage.output_tokens),
         cache_creation_input_tokens: 0,
-        cache_read_input_tokens: finiteNonnegative(value.usage.cached_input_tokens),
+        cache_read_input_tokens: cachedInput,
         ...(cost !== undefined ? { cost_usd: cost } : {}),
         model,
       },
