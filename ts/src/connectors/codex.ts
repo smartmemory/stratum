@@ -466,29 +466,27 @@ function codexConnectorEvents(value: unknown, model: string, prompt: string): Co
     // consumer that sums stream events, and beat the real usd on the final result.
     const rawCost = value.usage.total_cost_usd ?? value.usage.cost_usd;
     const cost = typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : undefined;
-    // DIALECT (2026-09-12): the step_usage event speaks the CONSUMER's convention,
-    // which is Anthropic's -- `input_tokens` EXCLUDES cached tokens, and the cache
-    // fields are ADDITIONAL to it (compose/lib/model-pricing.js `calculateCost`:
-    // "Standard prompt tokens", cacheRead billed separately at 0.1x; stratum's own
-    // claude.ts passes Anthropic's usage straight through, so codex was the sole
-    // outlier). OpenAI reports the opposite: `input_tokens` INCLUDES
-    // `cached_input_tokens`. Emitting the raw OpenAI numbers made the consumer bill
-    // the cached portion TWICE -- once at full rate inside input_tokens and again at
-    // 0.1x -- which on a real call (216,385 input of which 214,016 cached) computed
-    // $0.498 against the connector's correct $0.178, ~4x over.
+    // DIALECT WARNING (2026-09-12) — do NOT "normalize" these numbers here.
+    // OpenAI reports `input_tokens` INCLUDING `cached_input_tokens`, while Anthropic
+    // (and compose's calculateCost) treats input as the UNCACHED portion with the cache
+    // fields additional. That mismatch makes a consumer summing these events bill the
+    // cached part twice. It is REAL -- measured 2.76x on a live call -- but it MUST be
+    // fixed in the consumer's COST MATH, never by translating the numbers here.
     //
-    // This is the EVENT only. The accumulators feeding codexUsageFields keep the raw
-    // OpenAI totals, because usdFromTokens documents cachedInputTokens as a SUBSET of
-    // inputTokens and is the authoritative estimate the routing ledger reads.
-    const cachedInput = finiteNonnegative(value.usage.cached_input_tokens);
-    const totalInput = finiteNonnegative(value.usage.input_tokens);
+    // Reason: compose's routing evidence guard (lib/routing-runtime.js:187-196) compares
+    // every forwarded field against this connector's own evidence and refuses with
+    // ROUTING_CALL_EVIDENCE_CONFLICT on ANY difference -- tokens, input, cacheRead. The
+    // event and the result are required to be the SAME raw numbers; that identity is what
+    // makes the routing ledger tamper-evident. Subtracting cached tokens here was tried
+    // and reverted: it broke 15 compose tests with "Forwarded tokens differs from original
+    // connector evidence". Emit raw provider numbers. Interpret them downstream.
     return [{
       kind: "step_usage",
       metadata: {
-        input_tokens: Math.max(0, totalInput - cachedInput),
+        input_tokens: finiteNonnegative(value.usage.input_tokens),
         output_tokens: finiteNonnegative(value.usage.output_tokens),
         cache_creation_input_tokens: 0,
-        cache_read_input_tokens: cachedInput,
+        cache_read_input_tokens: finiteNonnegative(value.usage.cached_input_tokens),
         ...(cost !== undefined ? { cost_usd: cost } : {}),
         model,
       },

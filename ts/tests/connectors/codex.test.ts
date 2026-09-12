@@ -142,15 +142,15 @@ describe("CodexConnector", () => {
     ]);
   });
 
-  it("step_usage speaks the CONSUMER dialect: input_tokens EXCLUDES cached", async () => {
-    // Regression (2026-09-12). OpenAI reports input_tokens INCLUDING cached_input_tokens;
-    // Anthropic (and therefore compose/lib/model-pricing.js `calculateCost`, and stratum's
-    // own claude.ts) treats input_tokens as the UNCACHED portion with the cache fields
-    // ADDITIONAL. Emitting the raw OpenAI numbers made the consumer bill the cached portion
-    // twice. Measured on the 2026-09-12 live-fire review call (216,385 input of which
-    // 179,200 cached): the consumer computed $0.4917 against the connector's $0.1781, 2.76x.
-    // The connector's OWN estimate keeps the raw totals -- usdFromTokens documents
-    // cachedInputTokens as a SUBSET -- so only the EVENT is translated.
+  it("step_usage carries RAW provider numbers: input_tokens INCLUDES cached", async () => {
+    // Guardrail (2026-09-12). OpenAI's input_tokens includes cached_input_tokens, which does
+    // NOT match the consumer's pricing convention -- a consumer summing these events bills the
+    // cached portion twice (measured 2.76x on a real call). That is a genuine defect, but it
+    // MUST be fixed in the consumer's cost math, never by translating here: compose's routing
+    // evidence guard (lib/routing-runtime.js:187-196) refuses with ROUTING_CALL_EVIDENCE_CONFLICT
+    // when any forwarded field differs from this connector's own evidence. Subtracting cached
+    // tokens here was tried and reverted; it failed 15 compose tests with "Forwarded tokens
+    // differs from original connector evidence". This test pins the raw passthrough.
     const connectorEvents: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
     async function* events() {
       yield { type: "thread.started" as const, thread_id: "thread-1" };
@@ -162,19 +162,21 @@ describe("CodexConnector", () => {
       onEvent: async (event) => { connectorEvents.push(event); },
       sdkFactory: vi.fn(() => ({ startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })) })),
     });
-    const result = await connector.run("split me");
+    const result = await connector.run("raw me");
 
     const usage = connectorEvents.find(e => e.kind === "step_usage");
     expect(usage?.metadata).toMatchObject({
-      input_tokens: 4,              // 10 total - 6 cached, NOT the raw 10
+      input_tokens: 10,             // RAW: includes the 6 cached. Never 10 - 6.
       cache_read_input_tokens: 6,
       cache_creation_input_tokens: 0,
       output_tokens: 5,
     });
     // Codex reports no cost, so the key is omitted rather than stamped as a false $0.
     expect(usage?.metadata).not.toHaveProperty("cost_usd");
-    // The connector's own accounting is unchanged: raw totals, cached as a SUBSET.
+    // The event's numbers are IDENTICAL to the connector's own evidence -- that identity
+    // is what compose's routing evidence guard checks.
     expect(result.usage.tokens).toBe(15);
+    expect(result.split).toMatchObject({ input: 10, output: 5, cacheRead: 6 });
   });
 
   it("carries the reported cost, provenance and cache split on the SDK success path", async () => {
