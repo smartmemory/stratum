@@ -103,7 +103,7 @@ export interface RegistryOptions { registryRoot?: string }
 export type BackgroundPollResult =
   | { status: "not_found"; runId: string }
   | { status: "running"; runId: string; textTail: string; eventsSeen: number; streamPath: string }
-  | { status: "complete"; runId: string; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported"; exitCode: 0; telemetry: ConnectorTelemetry }
+  | { status: "complete"; runId: string; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode: 0; telemetry: ConnectorTelemetry }
   | { status: "error"; runId: string; reason?: string; exitCode?: number; textTail: string; stderrTail: string; eventsSeen?: number; streamPath?: string; telemetry?: ConnectorTelemetry };
 
 export function agentRunsRoot(): string {
@@ -500,7 +500,7 @@ async function loadMeta(runId: string, root: string): Promise<{ meta: Background
 }
 
 async function scanStream(path: string): Promise<{
-  text: string; usage: ConnectorUsage; split: ConnectorSplit; usdSource?: "reported"; exitCode?: number; error?: string; eventsSeen: number;
+  text: string; usage: ConnectorUsage; split: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode?: number; error?: string; eventsSeen: number;
 }> {
   let text = "";
   let inputTokens = 0;

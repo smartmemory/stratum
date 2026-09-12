@@ -152,7 +152,7 @@ export interface StepResult {
   /** Connector-owned wall time and resolved execution identity. */
   telemetry?: AttemptTelemetry;
   /** Provenance of usage.usd when the connector reported a provider price (ConnectorResult.usdSource). */
-  usdSource?: "reported";
+  usdSource?: "reported" | "estimated";
   /** Input/output token detail preserved beside the Budget-shaped usage (ConnectorResult.split). */
   split?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
 }
@@ -2746,7 +2746,7 @@ export class StratumEngine {
     source: "step_done" | "fanout" | "judged",
     telemetry: AttemptTelemetry | undefined,
     located: LocatedStep,
-    usdSource?: "reported",
+    usdSource?: "reported" | "estimated",
     split?: StepResult["split"],
   ): "flow" | "subflow" | "task" | undefined {
     const seq = (run.receiptCounter ?? 0) + 1;

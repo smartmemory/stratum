@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity, SMARTMEMORY_SCRUB_VARS } from "./base.js";
+import { usdFromTokens } from "../judge/pricing.js";
 
 import { linkAbort, cancellationGraceMs, processTermination, requireProcessGroups } from "./cancellation.js";
 
@@ -266,7 +267,7 @@ export class CodexConnector {
       const durationMs = Math.max(0, Date.now() - startedAt);
       return {
         text: text.join(""),
-        ...codexUsageFields(inputTokens, outputTokens, cacheRead, costUsd, durationMs),
+        ...codexUsageFields(inputTokens, outputTokens, cacheRead, costUsd, durationMs, this.model),
         telemetry: { durationMs, ...identity },
       };
     } catch (error) {
@@ -412,7 +413,7 @@ export class CodexConnector {
     const durationMs = Math.max(0, Date.now() - startedAt);
     return {
       text: text.join(""),
-      ...codexUsageFields(inputTokens, outputTokens, cacheRead, costUsd, durationMs),
+      ...codexUsageFields(inputTokens, outputTokens, cacheRead, costUsd, durationMs, this.model),
       telemetry: { durationMs, ...modelIdentity(this.model) },
     };
   }
@@ -577,17 +578,38 @@ export function resolveCodexCommand(env: NodeJS.ProcessEnv = process.env) {
  * the ledger as cost-unknown (compose's wave cost gate then held every run at
  * WAVE_COST_UNVERIFIED). Found by compose's real-engine wave golden (COMP-FABLE-ASTRA d3).
  */
-function codexUsageFields(input: number, output: number, cacheRead: number, usd: number, ms: number) {
+function codexUsageFields(input: number, output: number, cacheRead: number, usd: number, ms: number, model: string) {
+  // Codex reports NO cost of its own. Its usage events carry token counts only
+  // (input_tokens / cached_input_tokens / output_tokens / reasoning_output_tokens),
+  // the CLI has no built-in cost tracking, and OpenAI's billing views aggregate by day
+  // with no per-call attribution. So `usd` above is 0 on essentially every real call,
+  // and omitting it made every codex call reach a consumer as cost-unknown.
+  //
+  // Measured 2026-09-12 by a live compose shadow build: both codex rows in the routing
+  // ledger came back `usd: null, provenance: null` -> incomplete, while the claude row
+  // carried a provider-reported 0.129302 and was complete. Pricing on the CONSUMER side
+  // does not fix this: the ledger reads raw connector evidence by design, so the
+  // estimate has to originate here.
+  //
+  // Estimated is NOT reported, and the distinction is load-bearing -- a consumer may
+  // reasonably refuse to reconcile spend against an estimate. Label it honestly and
+  // never claim `reported` for a number we computed. An unpriced model yields 0 from
+  // usdFromTokens and we then omit usd entirely, so an unknown model still records as
+  // UNKNOWN cost rather than a false free call.
+  const estimated = usd > 0
+    ? 0
+    : usdFromTokens(model, { inputTokens: input, cachedInputTokens: cacheRead, outputTokens: output });
+  const effective = usd > 0 ? usd : estimated;
   return {
-    usage: { tokens: input + output, ms, ...(usd > 0 ? { usd } : {}) },
+    usage: { tokens: input + output, ms, ...(effective > 0 ? { usd: effective } : {}) },
     split: { input, output, ...(cacheRead > 0 ? { cacheRead } : {}) },
-    ...(usd > 0 ? { usdSource: "reported" as const } : {}),
+    ...(effective > 0 ? { usdSource: (usd > 0 ? "reported" : "estimated") as "reported" | "estimated" } : {}),
   };
 }
 
 function attachCodexUsage(error: unknown, input: number, output: number, cacheRead: number, usd: number, ms: number, model: string): Error {
   return Object.assign(error instanceof Error ? error : new Error(String(error)), {
     telemetry: { durationMs: ms, ...modelIdentity(model) },
-    ...codexUsageFields(input, output, cacheRead, usd, ms),
+    ...codexUsageFields(input, output, cacheRead, usd, ms, model),
   });
 }
