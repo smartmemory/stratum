@@ -137,20 +137,25 @@ describe("CodexConnector", () => {
         metadata: {
           input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 0,
           cache_read_input_tokens: 0, model: "gpt-5.3-codex-spark/low",
+          // Codex reports no cost, so the connector states its OWN estimate and says so.
+          // 3 uncached input @ 1.75/MTok + 4 output @ 14/MTok.
+          cost_usd: 0.00006125, usd_source: "estimated",
         },
       },
     ]);
   });
 
-  it("step_usage carries RAW provider numbers: input_tokens INCLUDES cached", async () => {
-    // Guardrail (2026-09-12). OpenAI's input_tokens includes cached_input_tokens, which does
-    // NOT match the consumer's pricing convention -- a consumer summing these events bills the
-    // cached portion twice (measured 2.76x on a real call). That is a genuine defect, but it
-    // MUST be fixed in the consumer's cost math, never by translating here: compose's routing
-    // evidence guard (lib/routing-runtime.js:187-196) refuses with ROUTING_CALL_EVIDENCE_CONFLICT
-    // when any forwarded field differs from this connector's own evidence. Subtracting cached
-    // tokens here was tried and reverted; it failed 15 compose tests with "Forwarded tokens
-    // differs from original connector evidence". This test pins the raw passthrough.
+  it("step_usage states the amount AND its provenance, with RAW token counts", async () => {
+    // Contract (2026-09-12): the event says what it cost and HOW WE KNOW. `usd_source` is
+    // explicit so no consumer infers provenance from whether cost_usd is present -- that
+    // inference is what turned an honest estimate into a false "provider reported" figure.
+    //
+    // Token counts stay RAW (input_tokens INCLUDES cached, OpenAI's dialect) because
+    // compose's routing evidence guard enforces identity between this event and the
+    // connector's own evidence; translating here was tried in d006278 and reverted in
+    // 1c2646c after 15 failures with "Forwarded tokens differs from original connector
+    // evidence". Stating the amount is what makes the dialect moot -- the consumer no
+    // longer has to price the tokens at all.
     const connectorEvents: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
     async function* events() {
       yield { type: "thread.started" as const, thread_id: "thread-1" };
@@ -162,7 +167,7 @@ describe("CodexConnector", () => {
       onEvent: async (event) => { connectorEvents.push(event); },
       sdkFactory: vi.fn(() => ({ startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })) })),
     });
-    const result = await connector.run("raw me");
+    const result = await connector.run("state it");
 
     const usage = connectorEvents.find(e => e.kind === "step_usage");
     expect(usage?.metadata).toMatchObject({
@@ -170,13 +175,18 @@ describe("CodexConnector", () => {
       cache_read_input_tokens: 6,
       cache_creation_input_tokens: 0,
       output_tokens: 5,
+      usd_source: "estimated",      // stated, never inferred from cost_usd's presence
     });
-    // Codex reports no cost, so the key is omitted rather than stamped as a false $0.
-    expect(usage?.metadata).not.toHaveProperty("cost_usd");
-    // The event's numbers are IDENTICAL to the connector's own evidence -- that identity
-    // is what compose's routing evidence guard checks.
+    // 4 uncached @ 1.75/MTok + 6 cached @ 0.175/MTok + 5 output @ 14/MTok.
+    expect(usage?.metadata.cost_usd).toBeCloseTo(0.00007805, 12);
+    // The event's TOKEN counts are identical to the connector's own evidence -- that
+    // identity is what compose's routing evidence guard checks.
     expect(result.usage.tokens).toBe(15);
     expect(result.split).toMatchObject({ input: 10, output: 5, cacheRead: 6 });
+    // And the per-turn event amount reproduces the result's total, because usdFromTokens
+    // is linear in tokens: one turn here, so they must be equal.
+    expect(usage?.metadata.cost_usd).toBeCloseTo(result.usage.usd as number, 12);
+    expect(result.usdSource).toBe("estimated");
   });
 
   it("carries the reported cost, provenance and cache split on the SDK success path", async () => {

@@ -2,26 +2,29 @@
 
 ## [Unreleased]
 
-- **Codex `step_usage` keeps RAW provider numbers — a dialect translation was tried and REVERTED.**
-  OpenAI reports `input_tokens` INCLUDING `cached_input_tokens`; Anthropic (and compose's
-  `calculateCost`, and this repo's own `claude.ts`) treats input as the UNCACHED portion with the
-  cache fields additional. A consumer summing these events therefore bills the cached portion
-  twice — measured at **2.76x** on a real call ($0.49173775 against the connector's $0.17813775
-  for 216,385 input of which 179,200 cached). The defect is real, but translating the numbers HERE
-  is the wrong fix and is now blocked by a test.
+- **`step_usage` events now state the amount AND its provenance (`usd_source`).** The consumer used
+  to infer provenance from whether `cost_usd` was present, so a producer sending an honest estimate
+  had it silently relabelled as provider-reported spend. Its only safe alternative was to omit the
+  cost entirely, which compose's stream validator then rejected outright — 6 dropped events per run,
+  measured. Both connectors now say how they know: `claude.ts` emits `usd_source: "reported"`
+  (Claude reports a real cost), and `codex.ts` emits its OWN estimate with `usd_source: "estimated"`,
+  computed by the same `usdFromTokens` the final result uses. Codex reports no cost structurally, so
+  in practice it is always an estimate — and it is labelled as one, never promoted.
 
-  Reason: compose's routing evidence guard (`lib/routing-runtime.js:187-196`) compares every
-  forwarded field against this connector's own evidence and refuses with
-  `ROUTING_CALL_EVIDENCE_CONFLICT` on ANY difference — `tokens`, `input`, `cacheRead`. The event
-  and the result are REQUIRED to carry the same raw numbers; that identity is what makes the
-  routing ledger tamper-evident. Subtracting cached tokens in the emitter broke **15 compose tests**
-  with `Forwarded tokens differs from original connector evidence` (usage-receipts, build-wave
-  goldens, build-model-route-outcomes), caught by the pre-push gate before it reached anyone.
+  This also makes the OpenAI/Anthropic cached-token dialect moot on the happy path: because the
+  connector states the amount, the consumer no longer prices tokens at all, so it never has to know
+  that OpenAI's `input_tokens` includes `cached_input_tokens` while Anthropic's excludes them. That
+  mismatch had been worth 2.76x on a real call ($0.49173775 against the correct $0.17813775).
 
-  The dialect mismatch must be fixed in the CONSUMER's cost math instead. `tests/connectors/
-  codex.test.ts` now pins the raw passthrough (`input_tokens: 10` for a turn of 10 total / 6
-  cached) and carries the reason, so the translation is not re-attempted.
+  **Token counts stay RAW** — `input_tokens` still includes the cached portion for Codex. compose's
+  routing evidence guard (`lib/routing-runtime.js:187-196`) enforces identity between this event and
+  the connector's own evidence; translating here was tried (d006278) and reverted (1c2646c) after
+  failing 15 compose tests with `Forwarded tokens differs from original connector evidence`. Because
+  `usdFromTokens` is linear in tokens, summing per-turn event amounts reproduces the result's single
+  total, so the guard's `usd` comparison holds too. An unpriced model yields 0 and BOTH keys are
+  omitted, so unknown cost stays unknown rather than becoming a false $0.
 
+  Full suite 1287 passed, 3 skipped, 0 failed.
 
 ## [0.5.2] — 2026-09-10
 

@@ -51,7 +51,8 @@ describe("ClaudeConnector", () => {
       {
         kind: "step_usage",
         metadata: {
-          input_tokens: 3, output_tokens: 4, cost_usd: 0.01, cache_creation_input_tokens: 2,
+          input_tokens: 3, output_tokens: 4, cost_usd: 0.01, usd_source: "reported",
+          cache_creation_input_tokens: 2,
           cache_read_input_tokens: 1, model: "claude-test",
         },
       },
