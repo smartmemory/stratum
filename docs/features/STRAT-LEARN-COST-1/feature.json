@@ -1,0 +1,17 @@
+{
+  "code": "STRAT-LEARN-COST-1",
+  "description": "Price-table freshness job (S4 transferred from COMP-COST-OWNER) + Claude connector stops emitting a labelled $0 when the SDK reported no cost",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-14",
+  "updated": "2026-09-14",
+  "complexity": "S",
+  "position": 3,
+  "parent": "STRAT-LEARN-COST",
+  "links": [
+    {
+      "kind": "surfaced_by",
+      "to_code": "STRAT-LEARN-COST"
+    }
+  ]
+}
