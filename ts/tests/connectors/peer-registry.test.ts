@@ -1,7 +1,9 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, symlink, lstat, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
 import * as registry from "../../src/connectors/peer-registry.js";
 const roots: string[] = [];
 async function root(): Promise<string> {
@@ -101,4 +103,39 @@ it("round trips the sidecar env contract and rejects invalid required values", a
   }
   const {firstLineDeadlineMs, ...defaultConfig} = config;
   expect(registry.sidecarEnv(defaultConfig).STRATUM_PEER_FIRST_LINE_MS).toBe("30000");
+});
+
+const hasMkfifo = !spawnSync("mkfifo", []).error;
+it.skipIf(!hasMkfifo)("ignores a numeric FIFO promptly without a writer", async () => {
+  const dir = await root();
+  await promisify(execFile)("mkfifo", [join(dir, "123.json")]);
+  const module = new URL("../../src/connectors/peer-registry.ts", import.meta.url).href;
+  const { stdout } = await promisify(execFile)(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e",
+    `const {shouldRegister} = await import(${JSON.stringify(module)}); console.log(JSON.stringify(await shouldRegister(${JSON.stringify(dir)}, {})));`], { timeout: 1000 });
+  expect(JSON.parse(stdout)).toEqual({ok:true});
+});
+it("ignores oversized numeric records including a live protocol guard", async () => {
+  const dir = await root();
+  const record = JSON.stringify({peerProtocol:2, padding:"x".repeat(262144)});
+  await writeFile(join(dir,"456.json"), record);
+  await writeFile(join(dir,`${process.pid}.json`), record);
+  expect(await registry.shouldRegister(dir, {})).toEqual({ok:true});
+});
+it("never follows or removes numeric record symlinks during sweep", async () => {
+  const dir = await root(); const socks = await root();
+  const target = join(dir,"target"); const record = JSON.stringify({entrypoint:"stratum-peer"});
+  await writeFile(target,record);
+  await symlink(target,join(dir,"789.json"));
+  await symlink(target,join(dir,"2147483647.json"));
+  expect(await registry.sweepDeadStratumPeers(dir,socks)).toBe(0);
+  expect((await lstat(join(dir,"789.json"))).isSymbolicLink()).toBe(true);
+  expect((await lstat(join(dir,"2147483647.json"))).isSymbolicLink()).toBe(true);
+  expect(await readFile(target,"utf8")).toBe(record);
+});
+it("ignores symlinked callback keys", async () => {
+  const dir = await root(); const sock = "/tmp/sp-own/123.sock";
+  const target = join(dir,"target");
+  await writeFile(target,JSON.stringify({peerToken:"a".repeat(32)}));
+  await symlink(target,join(dir,registry.keyFileName(123,sock)));
+  expect(await registry.readPeerToken(dir,sock)).toBeUndefined();
 });

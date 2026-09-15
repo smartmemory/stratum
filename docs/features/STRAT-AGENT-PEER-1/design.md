@@ -159,6 +159,8 @@ Invariant: the sidecar **reads** `stream.jsonl` and **writes only** `<sidecarPid
 
 ### Safety of writing into Claude Code's registry
 
+- Registry reads use `lstat` to skip non-regular files and symlinks, cap records at 262144 bytes (keys at 4096), and parent registration has a 2000 ms best-effort deadline.
+
 - Only files named with the sidecar's **own pid** are ever created, and only records carrying `entrypoint:"stratum-peer"` with a dead filename pid are ever removed by the sweep. Never `rm` a socket we did not bind.
 - Record 0644, key 0600, both written to a temp name in the same dir and renamed.
 - Refuse to start if `<pid>.json` already exists and is not ours (pid reuse against a stale foreign record), log and skip registration.

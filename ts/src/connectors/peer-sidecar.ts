@@ -224,6 +224,8 @@ async function main(): Promise<void> {
   });
   const start = async (): Promise<void> => {
     try {
+      const info = await lstat(recordPath);
+      if (!info.isFile() || info.size > 262144) throw new Error("foreign peer record: unsafe file");
       const existing: unknown = JSON.parse(await readFile(recordPath, "utf8"));
       if ((existing as {entrypoint?: unknown} | null)?.entrypoint !== "stratum-peer") throw new Error("foreign peer record");
     } catch (error) {

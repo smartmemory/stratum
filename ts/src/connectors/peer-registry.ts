@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { open, readFile, readdir, readlink, stat, unlink } from "node:fs/promises";
+import { lstat, open, readFile, readdir, readlink, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -67,7 +67,10 @@ export async function readPeerToken(sessionsDir: string, sockPath: string): Prom
   const suffix = `.${socketHash(sockPath)}.key`;
   for (const name of names.filter(name => /^\d+\./.test(name) && name.endsWith(suffix))) {
     try {
-      const file = await open(join(sessionsDir, name), "r");
+      const path = join(sessionsDir, name);
+      const info = await lstat(path);
+      if (!info.isFile() || info.size > 4096) continue;
+      const file = await open(path, "r");
       try {
         if (!(await file.stat()).isFile() || (await file.stat()).size > 4096) continue;
         const buffer = Buffer.alloc(4096);
@@ -96,7 +99,10 @@ export async function shouldRegister(sessionsDir: string, env: NodeJS.ProcessEnv
   for (const name of names) {
     if (!/^[1-9]\d*\.json$/.test(name)) continue;
     try {
-      const record: unknown = JSON.parse(await readFile(join(sessionsDir, name), "utf8"));
+      const path = join(sessionsDir, name);
+      const info = await lstat(path);
+      if (!info.isFile() || info.size > 262144) continue;
+      const record: unknown = JSON.parse(await readFile(path, "utf8"));
       const protocol = (record as { peerProtocol?: unknown } | null)?.peerProtocol;
       if (typeof protocol === "number" && protocol > 1 && !pidIsDead(Number(name.slice(0, -5)))) {
         return { ok: false, reason: "unsupported live peer protocol" };
@@ -113,7 +119,10 @@ export async function sweepDeadStratumPeers(sessionsDir: string, sockDir: string
     if (!/^[1-9]\d*\.json$/.test(name)) continue;
     const pid = Number(name.slice(0, -5));
     try {
-      const record: unknown = JSON.parse(await readFile(join(sessionsDir, name), "utf8"));
+      const path = join(sessionsDir, name);
+      const info = await lstat(path);
+      if (!info.isFile() || info.size > 262144) continue;
+      const record: unknown = JSON.parse(await readFile(path, "utf8"));
       if ((record as { entrypoint?: unknown } | null)?.entrypoint !== "stratum-peer" || !pidIsDead(pid)) continue;
       const files = [name, ...names.filter(key => key.startsWith(`${pid}.`) && key.endsWith(".key"))];
       for (const file of files) await unlink(join(sessionsDir, file)).catch(() => undefined);
