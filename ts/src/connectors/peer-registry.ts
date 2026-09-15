@@ -124,7 +124,13 @@ export async function sweepDeadStratumPeers(sessionsDir: string, _sockDir: strin
       if (!info.isFile() || info.size > 262144) continue;
       const record: unknown = JSON.parse(await readFile(path, "utf8"));
       if ((record as { entrypoint?: unknown } | null)?.entrypoint !== "stratum-peer" || !pidIsDead(pid)) continue;
-      await unlink(path).catch(() => undefined);
+      try { await unlink(path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          console.error("peer sweep left record and dependents alone:", path, error);
+          continue;
+        }
+      }
       const endpoint = (record as {messagingSocketPath?: unknown}).messagingSocketPath;
       if (typeof endpoint === "string" && isAbsolute(endpoint) && !endpoint.includes("\0")) {
         await unlink(join(sessionsDir, keyFileName(pid, endpoint))).catch(() => undefined);

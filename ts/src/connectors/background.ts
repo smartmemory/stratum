@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants, createReadStream } from "node:fs";
-import { appendFile, lstat, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -363,9 +363,13 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     peer = {name: peerName(loaded.meta.model, runId), registered: false};
     try {
       const peerPath = join(dirname(streamPath), "peer.json");
-      const info = await lstat(peerPath);
-      if (!info.isFile() || info.size > 65536) throw new Error("unsafe peer metadata");
-      const file: Partial<PeerRecordFile> | null = JSON.parse(await readFile(peerPath, "utf8"));
+      const handle = await open(peerPath, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+      let file: Partial<PeerRecordFile> | null;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > 65536) throw new Error("unsafe peer metadata");
+        file = JSON.parse(await handle.readFile("utf8"));
+      } finally { await handle.close(); }
       if (file && typeof file.name === "string" && typeof file.pid === "number" && Number.isSafeInteger(file.pid)
         && file.pid > 0 && typeof file.sock === "string" && typeof file.registeredAt === "string") {
         peer = {name: file.name, registered: true, pid: file.pid, sock: file.sock};

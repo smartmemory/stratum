@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, symlink, lstat, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, symlink, lstat, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { execFile, spawnSync } from "node:child_process";
@@ -9,7 +9,7 @@ const roots: string[] = [];
 async function root(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(dir); return dir;
 }
-afterEach(async () => { await Promise.all(roots.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => { await Promise.all(roots.splice(0).map(async dir => { await chmod(dir, 0o700); await rm(dir, { recursive: true, force: true }); })); });
 it("derives safe deterministic peer names", () => {
   for (const [model, short] of [["gpt-6-astra/medium", "astra"], ["gpt-5.3-codex-spark", "spark"], ["gpt-5.6-terra/high", "terra"], ["!!!/high", "codex"]]) {
     expect(registry.peerName(model!, "4c165babcdef")).toBe(`codex-${short}-4c165b`);
@@ -170,4 +170,18 @@ it("preserves live and foreign records and never unlinks a recorded symlink", as
   expect(await readdir(dir)).toEqual(before);
   expect((await lstat(endpoint)).isSymbolicLink()).toBe(true);
   expect(await readFile(target,"utf8")).toBe("foreign");
+});
+
+it("preserves key and socket when the dead record cannot be unlinked", async () => {
+  const dir = await root(); const socks = await mkdtemp("/tmp/sp-"); roots.push(socks);
+  const pid = 2147483647; const endpoint = join(socks,`${pid}.sock`);
+  const record = join(dir,`${pid}.json`); const key = join(dir,registry.keyFileName(pid,endpoint));
+  const made = spawnSync(process.execPath,["--input-type=module","-e",`import {createServer} from 'node:net'; createServer().listen(${JSON.stringify(endpoint)},()=>process.exit(0));`]);
+  expect(made.status).toBe(0);
+  await writeFile(record,JSON.stringify({entrypoint:"stratum-peer",messagingSocketPath:endpoint}));
+  await writeFile(key,"owned"); await chmod(dir,0o500);
+  expect(await registry.sweepDeadStratumPeers(dir,socks)).toBe(0);
+  expect((await lstat(record)).isFile()).toBe(true);
+  expect(await readFile(key,"utf8")).toBe("owned");
+  expect((await lstat(endpoint)).isSocket()).toBe(true);
 });
