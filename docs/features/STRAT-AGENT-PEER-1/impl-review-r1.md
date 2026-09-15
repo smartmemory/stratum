@@ -1,5 +1,13 @@
-# Implementation review r1 (Codex gpt-6-astra, run 798d549bbde5, 2026-09-15)
+# Implementation review r1 (Codex gpt-6-astra, run 798d549bbde5, 2026-09-15; full text — an earlier save was truncated by a controller-side false-positive sentinel match)
 
 I’ll read the spec, implementation, diff, and test fixtures, then check lifecycle and registry ownership paths. I won’t run tests or launch processes.
 
 The sidecar echoes `from_mode` and keeps its registry paths tied to its own PID. I’m checking shutdown ordering and legacy test isolation next; both can fail despite the new tests using temporary directories.
+
+1. **must-fix — `ts/tests/connectors/background.test.ts:69`; `ts/tests/connectors/background-codex-lifecycle.test.ts:81` — Legacy fixtures now mutate the real Claude registry.** These calls supply only a temporary `registryRoot`, with neither peer-directory overrides nor an explicit kill switch. With an existing `~/.claude/sessions` and registration enabled, `background.ts:207–214` sweeps the real registry and launches sidecars using `/tmp/cc-socks`. Their teardown only deletes temporary run directories; it never reaps sidecars. Ordinary test execution therefore creates real peer records, keys, and sockets and can remove real stale Stratum records. Isolate both peer directories or explicitly disable registration in every legacy fixture.
+
+2. **should-fix — `ts/src/connectors/peer-sidecar.ts:283` — Missing initial process identity can leave a dead run registered forever.** The sidecar passes `""` when `childProcStartTime` is absent, but `proc_identity.ts:94` returns `"unknown"` before checking whether the PID exists. Concrete scenario: the wrapper dies without a sentinel before `background.ts:180` captures its start time. Registration still proceeds, but every subsequent identity check remains unknown—even when signal-0 would return `ESRCH`. The sidecar stays busy indefinitely, retaining its watcher, intervals, socket, and registry files. Preserve unknown handling for live/unverifiable processes while allowing independently confirmed `ESRCH` to terminate this case. The current missing-identity test only checks a living PID.
+
+3. **should-fix — `ts/src/connectors/peer-sidecar.ts:102–104,208` — Runtime I/O failures can falsely announce that a running agent is idle.** Scheduled work errors invoke `cleanup()` without a terminal state; cleanup substitutes `state:"idle"` for pending subscriptions. Concrete scenario: after registration and subscription, the sessions directory becomes unwritable; another stream event triggers the record rewrite at line 146, which fails while Codex continues running. The sidecar sends `peer_idle_notice(state:"idle")` despite observing neither a sentinel nor child death. Use an explicit failure state such as `unavailable` and cover this post-registration failure path.
+
+Read-only review; no tests were run.

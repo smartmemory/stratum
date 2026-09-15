@@ -77,16 +77,30 @@ it("gates registration on kill switch, directory and live protocol", async () =>
   expect((await registry.shouldRegister(dir, {})).ok).toBe(false);
 });
 
-it("sweeps only dead owned filename pids and their files", async () => {
+it("sweeps only the recorded endpoint and matching key, preserving regular files", async () => {
   const dir = await root(); const socks = await root();
-  for (const [pid, entrypoint] of [[2147483647,"stratum-peer"], [2147483646,"foreign"], [process.pid,"stratum-peer"]] as const) {
-    await writeFile(join(dir,`${pid}.json`), JSON.stringify({pid:process.pid,entrypoint}));
-    await writeFile(join(dir,`${pid}.abc.key`), "key");
-    await writeFile(join(socks,`${pid}.sock`), "socket fixture");
-  }
+  const pid = 2147483647; const endpoint = join(socks,`${pid}.sock`);
+  await writeFile(join(dir,`${pid}.json`),JSON.stringify({entrypoint:"stratum-peer",messagingSocketPath:endpoint}));
+  const key = registry.keyFileName(pid,endpoint);
+  await writeFile(join(dir,key),"owned"); await writeFile(join(dir,`${pid}.other.key`),"foreign");
+  await writeFile(endpoint,"regular file");
   expect(await registry.sweepDeadStratumPeers(dir,socks)).toBe(1);
-  expect((await readdir(dir)).sort()).toEqual([`${process.pid}.abc.key`,`${process.pid}.json`,"2147483646.abc.key","2147483646.json"].sort());
-  expect((await readdir(socks)).sort()).toEqual([`${process.pid}.sock`,"2147483646.sock"].sort());
+  expect(await readdir(dir)).toEqual([`${pid}.other.key`]);
+  expect(await readFile(endpoint,"utf8")).toBe("regular file");
+});
+it("sweeps a recorded socket in directory A without touching directory B", async () => {
+  const dir = await root(); const a = await mkdtemp("/tmp/sp-"); roots.push(a);
+  const b = await root(); const pid = 2147483647; const endpoint = join(a,`${pid}.sock`);
+  const made = spawnSync(process.execPath,["--input-type=module","-e",`import {createServer} from 'node:net'; createServer().listen(${JSON.stringify(endpoint)},()=>process.exit(0));`]);
+  expect(made.status).toBe(0); expect((await lstat(endpoint)).isSocket()).toBe(true);
+  await writeFile(join(dir,`${pid}.json`),JSON.stringify({entrypoint:"stratum-peer",messagingSocketPath:endpoint}));
+  await writeFile(join(dir,registry.keyFileName(pid,endpoint)),"owned");
+  const foreignKey = registry.keyFileName(pid,join(b,`${pid}.sock`));
+  await writeFile(join(dir,foreignKey),"foreign"); await writeFile(join(b,`${pid}.sock`),"foreign");
+  expect(await registry.sweepDeadStratumPeers(dir,b)).toBe(1);
+  await expect(lstat(endpoint)).rejects.toMatchObject({code:"ENOENT"});
+  expect(await readdir(dir)).toEqual([foreignKey]);
+  expect(await readFile(join(b,`${pid}.sock`),"utf8")).toBe("foreign");
 });
 
 it("round trips the sidecar env contract and rejects invalid required values", async () => {
@@ -138,4 +152,22 @@ it("ignores symlinked callback keys", async () => {
   await writeFile(target,JSON.stringify({peerToken:"a".repeat(32)}));
   await symlink(target,join(dir,registry.keyFileName(123,sock)));
   expect(await registry.readPeerToken(dir,sock)).toBeUndefined();
+});
+
+it("preserves live and foreign records and never unlinks a recorded symlink", async () => {
+  const dir = await root(); const socks = await root();
+  for (const [pid,entrypoint] of [[process.pid,"stratum-peer"],[2147483646,"foreign"]] as const) {
+    const endpoint = join(socks,`${pid}.sock`);
+    await writeFile(join(dir,`${pid}.json`),JSON.stringify({entrypoint,messagingSocketPath:endpoint}));
+    await writeFile(join(dir,registry.keyFileName(pid,endpoint)),"foreign");
+    await writeFile(endpoint,"foreign");
+  }
+  const before = await readdir(dir);
+  const endpoint = join(socks,"2147483647.sock"); const target = join(socks,"target");
+  await writeFile(target,"foreign"); await symlink(target,endpoint);
+  await writeFile(join(dir,"2147483647.json"),JSON.stringify({entrypoint:"stratum-peer",messagingSocketPath:endpoint}));
+  expect(await registry.sweepDeadStratumPeers(dir,socks)).toBe(1);
+  expect(await readdir(dir)).toEqual(before);
+  expect((await lstat(endpoint)).isSymbolicLink()).toBe(true);
+  expect(await readFile(target,"utf8")).toBe("foreign");
 });
