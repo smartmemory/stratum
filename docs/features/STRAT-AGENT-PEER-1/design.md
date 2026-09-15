@@ -111,7 +111,7 @@ The sidecar is a **shadow**, never an authority: it only reads `stream.jsonl` an
 }
 ```
 
-- `name`: `codex-astra-4c165b` style, from `modelIdentity(model).model` with the `gpt-`/`-codex` noise stripped, plus the first 6 chars of the runId. Lowercase, `[a-z0-9-]`, no colons or slashes (address-like names can fail candidate construction). When `flow.stepId` is present it is appended: `codex-astra-4c165b-review`.
+- `name`: `codex-astra-4c165b` style, from `modelIdentity(model).model` with the `gpt-`/`-codex` noise stripped, plus the first 6 chars of the runId. Lowercase, `[a-z0-9-]`, no colons or slashes (address-like names can fail candidate construction). **Blueprint correction:** a background run can never carry `flow` (the server requires `cancellationId` with `flow` and rejects `cancellationId` for background runs), so there is no step label in v1; a caller-supplied label is a possible follow-up.
 - `pidDomain`: `"darwin"` on macOS. On Linux Claude Code computes `darwin:<machine-id>:<pidns>`; the sidecar reproduces that formula (`/etc/machine-id` + `readlink /proc/self/ns/pid`). On any other platform, or if the formula cannot be evaluated, omit `pidDomain` (the reader then skips process checks and still lists).
 - `status` transitions: `busy` at start; stays `busy` while lines arrive; **`idle` is written only at the sentinel**, immediately before the notices and cleanup. A codex run with no output for minutes is still `busy`, which is true.
 
