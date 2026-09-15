@@ -58,6 +58,7 @@ Bootstrap: establish the core structure and first working milestone.
 | # | Feature | Description | Status |
 |---|---------|-------------|--------|
 | 1 | STRAT-AGENT-BG-WRITE-1 | Workspace-write background agent mode (run/poll/cancel) + claude tool allowlists on the agent surface. Closes the two E3-probed capability gaps (gh #18): (1) bg agent runs are codex-only + read-only-only (background.ts:65/:68) and sync agent_run returns no runId so in-flight write items cannot be interrupted — GSD worktree consumer items fail post-hoc on timeout but the agent keeps mutating the worktree; (2) claude-family tool allowlists cannot be carried over the wire (availability restriction, not permission auto-approve), forcing compose's local-claude-connector workaround. Ask: agent_run background mode for workspace-write runs with runId + event streaming + death-confirmed cancellation, and tool allowlist/denylist params for claude agents. Compose-side wiring is a follow-on slice in the compose repo. | COMPLETE |
+| 2 | STRAT-AGENT-PEER-1 | Register Codex background agent runs as Claude Code peer sessions so `stratum_agent_run(agent="codex", background=true)` shows in the parent session's ListAgents / /list-agents, flips busy→idle from the durable stream, and (Phase 2) serves the peer socket so the parent wakes on notify_idle instead of polling. Per-run detached sidecar owns the `~/.claude/sessions/<pid>.json` record, `.key` file and `/tmp/cc-socks/<pid>.sock`; version-allowlisted against the installed Claude Code, fails silent-but-logged on drift. Slice of forge STRAT-AGENT-VIS (filed 2026-09-09 in forge ROADMAP.md). | IN_PROGRESS |
 
 ---
 
@@ -69,7 +70,7 @@ Bootstrap: establish the core structure and first working milestone.
 | 2 | **STRAT-USAGE-SPLIT** | **HIGH PRIORITY.** Input/output token split never reaches storage: connectors read it (`claude.ts:116-124`) then collapse it to `Budget.tokens` (`:135`), the TS route streams no `step_usage` to compose, and `result-normalizer.js:664` files the aggregate as `output_tokens`. Result: `input_tokens = 0` on every record ever written. Fix by populating the already-declared-but-never-populated `ReceiptRecord.split` (`engine/receipts.ts:10`) rather than widening `BUDGET_KEYS`. Unblocks STRAT-LEARN-COST §7. Not backfillable — the gap grows daily. | PLANNED |
 | 2 | STRAT-USAGE-SPLIT | Input/output token split never reaches storage: connectors read it, collapse it into Budget.tokens, and compose files the aggregate as output_tokens. Populate the already-declared ReceiptRecord.split instead of widening BUDGET_KEYS. Unblocks STRAT-LEARN-COST §7 (cost classifier) and all context-cost measurement. | PARTIAL |
 | 3 | STRAT-LEARN-COST-1 | Price-table freshness job (S4 transferred from COMP-COST-OWNER) + Claude connector stops emitting a labelled $0 when the SDK reported no cost | PLANNED |
-| 4 | STRAT-AGENT-RUN-MODEL-VALIDATE | stratum_agent_run validates model/effort against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400 | PLANNED |
+| 4 | STRAT-AGENT-RUN-MODEL-VALIDATE | stratum_agent_run validates model/effort/agent against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400 | PLANNED |
 
 ---
 
