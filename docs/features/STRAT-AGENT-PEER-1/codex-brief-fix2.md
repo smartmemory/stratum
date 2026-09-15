@@ -1,0 +1,12 @@
+# Codex brief — STRAT-AGENT-PEER-1 fix 2 (registry reads must never block the run)
+
+Context: docs/features/STRAT-AGENT-PEER-1/design.md ("Wiring": the parent waits only for the sidecar's spawn event; registration is best effort). Code: ts/src/connectors/peer-registry.ts (`shouldRegister`, `sweepDeadStratumPeers`, `readPeerToken`), ts/src/connectors/background.ts (codex path after `child.unref()`), ts/src/connectors/peer-sidecar.ts.
+
+Review finding (should-fix): `shouldRegister` (peer-registry.ts ~L99) and the sweep read arbitrary `<digits>.json` entries from the sessions dir with plain `readFile` and no type/size check. A numeric-named FIFO with no writer, or a huge file, in `~/.claude/sessions` would hang or bloat `startBackgroundRun` before it returns the already-spawned run.
+
+Fix (TDD, real fs, temp dirs only):
+1. In every registry read (`shouldRegister`, `sweepDeadStratumPeers`, `readPeerToken`, and the sidecar's foreign-record check): `lstat` first, skip anything that is not a regular file (`isFile()`), skip files larger than 262144 bytes (the same cap Claude Code's reader uses; keys stay at 4096), then read. Never follow symlinks (`O_NOFOLLOW` semantics via lstat + isFile is sufficient).
+2. In `background.ts`, wrap the whole registration block (gate + sweep + `spawnPeerSidecar`) in a hard deadline of 2000 ms using `Promise.race` with a timer that is cleared afterwards; on timeout log `stratum peer registration skipped: timeout` and return the unregistered `bg_started` shape. The run must be returned regardless.
+3. Tests: (a) a FIFO named `123.json` created with `mkfifo` in a temp sessions dir (skip the test on platforms without `mkfifo`) → `shouldRegister` resolves promptly with `ok: true` and `startBackgroundRun` returns within 3 s; (b) an oversized `456.json` is ignored by `shouldRegister`; (c) a symlink `789.json` pointing at a real record is ignored by the sweep (never unlinked, target untouched).
+
+Rules: no mocks of ps/sockets/spawn/fs; temp dirs only; `afterEach` kills sidecars and removes dirs; do not touch `cancelBackgroundRun`, the contract, or docs other than adding one line under design.md "Safety of writing into Claude Code's registry". Run from `ts/`: `npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts` and `npm run typecheck`. Do not run the full suite. Do not commit. Report under 200 words: files, commands, pass/fail counts, real-registry check.

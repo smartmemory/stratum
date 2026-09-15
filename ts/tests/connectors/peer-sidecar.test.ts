@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "vitest";
 import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, lstat, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,7 @@ afterEach(async () => {
     try { pids.add(Number((await json(join(config.runDir,"peer.json"))).pid)); } catch { /* startup may fail */ }
     for (const name of await readdir(config.sessionsDir).catch(() => [])) {
       if (!/^\d+\.json$/.test(name)) continue;
+      if (!(await lstat(join(config.sessionsDir,name)).catch(() => undefined))?.isFile()) continue;
       const record = await json(join(config.sessionsDir,name)).catch(() => null);
       if (record?.entrypoint === "stratum-peer") pids.add(Number(name.slice(0,-5)));
     }
@@ -574,3 +575,34 @@ it.each([
   }
   expect(await readFile(metaPath,"utf8")).toBe(meta);
 },30000);
+
+it.skipIf(!!spawnSync("mkfifo", []).error)("returns a background run within 3 s with a numeric FIFO in the registry", async () => {
+  const config = await fixture();
+  expect(spawnSync("mkfifo", [join(config.sessionsDir,"123.json")]).status).toBe(0);
+  const registryRoot = join(config.runDir,"runs");
+  const before = performance.now();
+  const started = await startBackgroundRun({agent:"codex",prompt:"x",cwd:config.cwd,registryRoot,
+    sessionsDir:config.sessionsDir,sockDir:config.sockDir,lingerMs:500,
+    env:{STRATUM_PEER_REGISTER:"1"},command:["sh","-c","sleep 10"]});
+  backgroundPids.add(started.pid!);
+  expect(performance.now() - before).toBeLessThan(3000);
+  expect(started.status).toBe("bg_started");
+  expect(started.peerName).toBeDefined();
+  await waitFor(() => readdir(config.sessionsDir), names => names.some(name => name !== "123.json" && /^\d+\.json$/.test(name)));
+});
+
+it.each(["oversized", "symlink"])("refuses an unsafe own-pid %s record without changing it", async kind => {
+  const config = await fixture();
+  const target = join(config.runDir,"foreign-target");
+  const record = JSON.stringify({entrypoint:"stratum-peer", padding:"x".repeat(kind === "oversized" ? 262144 : 0)});
+  await writeFile(target,record);
+  await launch(config, `import {copyFileSync, symlinkSync} from 'node:fs';
+    ${kind === "symlink" ? "symlinkSync" : "copyFileSync"}(${JSON.stringify(target)}, ${JSON.stringify(config.sessionsDir)} + '/' + process.pid + '.json');`);
+  await waitFor(() => readFile(`${config.streamPath}.peer.err`,"utf8"), text => text.includes("unsafe file"));
+  const pid = Number(await readFile(join(config.runDir,"test-pid"),"utf8"));
+  const path = join(config.sessionsDir,`${pid}.json`);
+  expect((await lstat(path)).isSymbolicLink()).toBe(kind === "symlink");
+  expect(await readFile(path,"utf8")).toBe(record);
+  expect(await readFile(target,"utf8")).toBe(record);
+  expect(existsSync(join(config.runDir,"peer.json"))).toBe(false);
+});

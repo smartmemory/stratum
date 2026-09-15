@@ -202,20 +202,37 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   child.unref();
   // Peer discovery is best effort and never enters the fatal metadata-write path.
   // cancelBackgroundRun intentionally stays unchanged: this shadow owns its own group.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   try {
-    const name = peerName(model, runId);
-    const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
-    const sockDir = options.sockDir ?? resolveSockDir(env);
-    const gate = await shouldRegister(sessionsDir, env);
-    if (gate.ok) {
+    const registration = async (): Promise<string | undefined> => {
+      const name = peerName(model, runId);
+      const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
+      const sockDir = options.sockDir ?? resolveSockDir(env);
+      const gate = await shouldRegister(sessionsDir, env);
+      if (timedOut) return;
+      if (!gate.ok) {
+        console.error("stratum peer registration skipped:", gate.reason);
+        return;
+      }
       await sweepDeadStratumPeers(sessionsDir, sockDir).catch(() => 0);
+      if (timedOut) return;
       await spawnPeerSidecar({runDir, streamPath, childPid: pid,
         ...(startTime ? {childProcStartTime: startTime} : {}), name, cwd: options.cwd, sessionsDir, sockDir,
         lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000)});
-      return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
-    }
-    console.error("stratum peer registration skipped:", gate.reason);
+      return timedOut ? undefined : name;
+    };
+    const timeout = new Promise<undefined>(resolve => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        console.error("stratum peer registration skipped: timeout");
+        resolve(undefined);
+      }, 2000);
+    });
+    const name = await Promise.race([registration(), timeout]);
+    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
   } catch (error) { console.error("stratum peer registration failed:", error); }
+  finally { if (timer !== undefined) clearTimeout(timer); }
   return { status: "bg_started", runId, pid, streamPath };
 }
 
