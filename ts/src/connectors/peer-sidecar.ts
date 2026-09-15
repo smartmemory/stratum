@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   const owned = new Set<string>();
   const connections = new Set<Socket>();
   const inFlight = new Set<Promise<void>>();
-  const subscriptions = new Map<string, {id: string; to: string; notified: boolean}>();
+  const subscriptions = new Map<string, {id: string; to: string; from_mode?: unknown; notified: boolean}>();
   let terminalReady = false;
   function notifyPending(state = terminalState): void {
     if (!state) return;
@@ -49,7 +49,8 @@ async function main(): Promise<void> {
       if (subscription.notified) continue;
       subscription.notified = true;
       sendControl(subscription.to, {type:"control", action:"peer_idle_notice", orig_msg_id:subscription.id,
-        state:state.state, finished_at:state.finishedAt, ...(state.detail ? {detail:state.detail} : {}), from:`uds:${sockPath}`});
+        state:state.state, finished_at:state.finishedAt, ...(state.detail ? {detail:state.detail} : {}), from:`uds:${sockPath}`,
+        ...(subscription.from_mode !== undefined ? {from_mode:subscription.from_mode} : {})});
     }
   }
   const peerToken = randomBytes(16).toString("hex");
@@ -77,11 +78,13 @@ async function main(): Promise<void> {
     if (frame.type === "user") {
       console.error("peer user message refused");
       sendControl(to, {type:"control", action:"peer_message_status", orig_msg_id:frame.msg_id,
-        status:"expired", status_detail:"refused", from:`uds:${sockPath}`});
+        status:"expired", status_detail:"refused", from:`uds:${sockPath}`,
+        ...(frame.from_mode !== undefined ? {from_mode:frame.from_mode} : {})});
     } else if (frame.type === "control" && frame.action === "notify_when_idle") {
       // At capacity even replacements are rejected, matching the specified acceptance rule.
       if (subscriptions.size >= 32) { console.error("peer subscription rejected: full"); return; }
-      subscriptions.set(frame.from as string, {id:frame.msg_id, to, notified:false});
+      // Claude admits the notice to the subscriber model only with its original permission mode.
+      subscriptions.set(frame.from as string, {id:frame.msg_id, to, from_mode:frame.from_mode, notified:false});
       if (terminalReady) notifyPending();
     } else { console.error("peer frame ignored"); }
   }
@@ -153,7 +156,7 @@ async function main(): Promise<void> {
     socket.on("close", () => connections.delete(socket));
     let input = Buffer.alloc(0);
     let first = true;
-    const deadline = setTimeout(() => socket.destroy(), 30000);
+    const deadline = setTimeout(() => socket.destroy(), config.firstLineDeadlineMs ?? 30000);
     socket.on("close", () => clearTimeout(deadline));
     socket.on("data", (data: Buffer) => {
       input = Buffer.concat([input, data]);

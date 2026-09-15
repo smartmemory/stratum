@@ -9,11 +9,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { claudeProcStart, keyFileName, type PeerRecordFile, type PeerSidecarConfig } from "../../src/connectors/peer-registry.js";
+import { claudeProcStart, keyFileName, resolveSessionsDir, type PeerRecordFile, type PeerSidecarConfig } from "../../src/connectors/peer-registry.js";
 import { procStartTime } from "../../src/connectors/proc_identity.js";
+import { startBackgroundRun, pollBackgroundRun, cancelBackgroundRun } from "../../src/connectors/background.js";
+import { peerName } from "../../src/connectors/peer-registry.js";
+import { assertToolResponse } from "../../src/mcp/contracts.js";
 import { spawnPeerSidecar } from "../../src/connectors/peer-sidecar.js";
 
 const roots: string[] = [];
+const backgroundPids = new Set<number>();
 const configs: PeerSidecarConfig[] = [];
 const children: ChildProcess[] = [];
 const servers: Server[] = [];
@@ -76,6 +80,12 @@ function subscription(sock: string, id = "subscription-1"): Record<string, unkno
   return {type:"control",action:"notify_when_idle",msg_id:id,from:`uds:${sock}`};
 }
 afterEach(async () => {
+  // Stop and reap durable wrappers before deleting files they can still write.
+  for (const pid of backgroundPids) {
+    try { process.kill(-pid,"SIGTERM"); } catch { continue; }
+    await waitFor(async () => { try { process.kill(pid,0); return false; } catch { return true; } },Boolean);
+  }
+  backgroundPids.clear();
   for (const config of configs.splice(0)) {
     await chmod(config.runDir,0o700).catch(() => undefined);
     const pids = new Set<number>();
@@ -105,6 +115,30 @@ afterEach(async () => {
   for (const socket of sockets) socket.destroy(); sockets.clear();
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))));
   await Promise.all(roots.splice(0).map(dir => rm(dir,{recursive:true,force:true})));
+});
+
+it("disables ambient background registration without directory or env overrides", async () => {
+  // Fail before spawning if the worker safety default disappears.
+  expect(process.env.STRATUM_PEER_REGISTER).toBe("0");
+  const sessionsDir = resolveSessionsDir(process.env);
+  const before = existsSync(sessionsDir) ? new Set(await readdir(sessionsDir)) : undefined;
+  const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runDir);
+  const registryRoot = join(runDir,"runs");
+  const started = await startBackgroundRun({agent:"codex",prompt:"x",cwd:runDir,registryRoot,
+    command:["sh","-c","sleep 0.1"]});
+  backgroundPids.add(started.pid!);
+  expect(started).not.toHaveProperty("peerName");
+  await waitFor(() => pollBackgroundRun(started.runId,{registryRoot}), result => result.status === "complete");
+  if (before) {
+    const after = await readdir(sessionsDir);
+    const addedPeers: string[] = [];
+    for (const name of after) {
+      if (before.has(name) || !/^\d+\.json$/.test(name)) continue;
+      const record = await json(join(sessionsDir,name));
+      if (record.entrypoint === "stratum-peer") addedPeers.push(name);
+    }
+    expect(addedPeers).toEqual([]);
+  }
 });
 
 it("launcher resolves when its stderr path cannot be opened", async () => {
@@ -177,18 +211,18 @@ it("detects a killed child group without a sentinel and never acts on unknown id
 it("refuses user messages with an authenticated dial-back and ignores malformed frames", async () => {
   const config = await fixture(); const recipient = await requester(config);
   await launch(config); const registered = await peer(config);
-  await send(registered.sock,[{type:"auth",token:"stale"},"not-json",{type:"user",msg_id:"user-1",from:`uds:${recipient.sock}`}]);
+  await send(registered.sock,[{type:"auth",token:"stale"},"not-json",{type:"user",msg_id:"user-1",from_mode:"bypass",from:`uds:${recipient.sock}`}]);
   await waitFor(async () => recipient.frames, frames => frames.length === 2);
-  expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},{type:"control",action:"peer_message_status",orig_msg_id:"user-1",status:"expired",status_detail:"refused",from:`uds:${registered.sock}`}]);
+  expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},{type:"control",action:"peer_message_status",orig_msg_id:"user-1",status:"expired",status_detail:"refused",from_mode:"bypass",from:`uds:${registered.sock}`}]);
 });
 it("golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger", async () => {
   const config = await fixture(); const recipient = await requester(config);
   await launch(config); const registered = await peer(config);
-  await send(registered.sock,[subscription(recipient.sock,"replaced"),subscription(recipient.sock,"keeper")]);
+  await send(registered.sock,[subscription(recipient.sock,"replaced"),{...subscription(recipient.sock,"keeper"),from_mode:"bypass"}]);
   await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
   await waitFor(async () => recipient.frames, frames => frames.length === 2);
   expect(recipient.frames[0]).toEqual({type:"auth",token:"a".repeat(32)});
-  expect(recipient.frames[1]).toMatchObject({type:"control",action:"peer_idle_notice",orig_msg_id:"keeper",state:"idle",from:`uds:${registered.sock}`});
+  expect(recipient.frames[1]).toMatchObject({type:"control",action:"peer_idle_notice",orig_msg_id:"keeper",state:"idle",from_mode:"bypass",from:`uds:${registered.sock}`});
   expect(typeof recipient.frames[1]!.finished_at).toBe("number");
   expect((await json(join(config.sessionsDir,`${registered.pid}.json`))).status).toBe("idle");
   await send(registered.sock,[subscription(recipient.sock,"late")]);
@@ -289,7 +323,8 @@ it("reports exited with cancellation detail to a real requester after group deat
   expect(recipient.frames[1]).toMatchObject({state:"exited",detail:"cancelled_or_died",orig_msg_id:"subscription-1"});
 });
 it("bounds oversized socket input while continuing to serve other connections", async () => {
-  const config = await fixture(); await launch(config); const registered = await peer(config);
+  const config = await fixture(); config.firstLineDeadlineMs = 300;
+  await launch(config); const registered = await peer(config);
   const socket = createConnection(registered.sock); sockets.add(socket); socket.on("error",() => undefined);
   await once(socket,"connect");
   const closed = new Promise<void>(resolve => socket.once("close",() => { sockets.delete(socket); resolve(); }));
@@ -318,16 +353,17 @@ it("writes the specified file modes even under a restrictive inherited umask", a
   expect((await stat(join(config.sessionsDir,`${registered.pid}.json`))).mode & 0o777).toBe(0o644);
   expect((await stat(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).mode & 0o777).toBe(0o600);
 });
-it("closes a connection that never supplies its first line within thirty seconds", async () => {
-  const config = await fixture(); await launch(config); const registered = await peer(config);
+it("closes a connection that never supplies its first line within the configured deadline", async () => {
+  const config = await fixture(); config.firstLineDeadlineMs = 300;
+  await launch(config); const registered = await peer(config);
   const socket = createConnection(registered.sock); sockets.add(socket); socket.on("error",() => undefined);
   await once(socket,"connect");
   const start = Date.now();
   await new Promise<void>(resolve => socket.once("close",() => { sockets.delete(socket); resolve(); }));
-  expect(Date.now()-start).toBeGreaterThanOrEqual(29000);
-  expect(Date.now()-start).toBeLessThan(33000);
+  expect(Date.now()-start).toBeGreaterThanOrEqual(250);
+  expect(Date.now()-start).toBeLessThan(1500);
   await send(registered.sock,[]);
-},35000);
+},2500);
 it("launches the emitted js fallback with no source files present", async () => {
   const config = await fixture(); const emitted = join(config.runDir,"dist","connectors");
   await mkdir(emitted,{recursive:true});
@@ -371,3 +407,170 @@ it("cleans partial registration when signalled during startup", async () => {
   expect(await readFile(join(config.runDir,"test-exit"),"utf8")).toBe("0");
   expect(await readFile(join(config.runDir,"test-startup"),"utf8")).toBe("true");
 });
+
+async function backgroundFixture(setup = "", env: NodeJS.ProcessEnv = {}, prepare?: (config: PeerSidecarConfig) => Promise<void>): Promise<{
+  config: PeerSidecarConfig; started: Awaited<ReturnType<typeof startBackgroundRun>>; registryRoot: string; release: string;
+}> {
+  const base = await fixture();
+  await prepare?.(base);
+  const registryRoot = join(base.runDir,"runs");
+  const release = join(base.runDir,"release");
+  let started!: Awaited<ReturnType<typeof startBackgroundRun>>;
+  await launch(base,setup,async () => {
+    started = await startBackgroundRun({agent:"codex",prompt:"x",model:"gpt-6-astra",cwd:base.runDir,
+      registryRoot,sessionsDir:base.sessionsDir,sockDir:base.sockDir,lingerMs:500,
+      command:["sh","-c",'until [ -e "$RELEASE" ]; do sleep 0.05; done'],
+      env:{...process.env,RELEASE:release,STRATUM_PEER_REGISTER:"1",...env}});
+    backgroundPids.add(started.pid!);
+  });
+  const config = {...base,runDir:join(registryRoot,started.runId),streamPath:started.streamPath};
+  configs.push(config);
+  return {config,started,registryRoot,release};
+}
+it("background golden flow registers busy, authenticates one notice, retains idle, and cleans up", async () => {
+  const {config,started,registryRoot,release} = await backgroundFixture();
+  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId),peer:"pending"});
+  await assertToolResponse("stratum_agent_run",started);
+  const metaPath = join(config.runDir,"meta.json");
+  const meta = await readFile(metaPath,"utf8");
+  const registered = await peer(config);
+  const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
+  const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
+  const record = await json(recordPath);
+  const recordStat = await stat(recordPath);
+  expect(recordStat.isFile()).toBe(true);
+  expect(recordStat.size).toBeLessThanOrEqual(262144);
+  expect(recordPath.endsWith(`/${registered.pid}.json`)).toBe(true);
+  expect(record).toMatchObject({pid:registered.pid,kind:"bg",status:"busy",entrypoint:"stratum-peer",
+    name:started.peerName,procStart:await claudeProcStart(registered.pid),messagingSocketPath:registered.sock});
+  expect(record.spare).not.toBe(true); expect(record.parkedJobId).toBeUndefined();
+  process.kill(registered.pid,0);
+  await send(registered.sock,[]);
+  expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
+  expect(await json(keyPath)).toMatchObject({procStart:record.procStart,pidDomain:record.pidDomain,peerToken:expect.stringMatching(/^[0-9a-f]{32}$/)});
+  const running = await pollBackgroundRun(started.runId,{registryRoot});
+  expect(running).toMatchObject({status:"running",peer:{name:started.peerName,registered:true,pid:registered.pid,sock:registered.sock}});
+  await assertToolResponse("stratum_agent_poll",running);
+  const recipient = await requester(config);
+  await send(registered.sock,[{...subscription(recipient.sock),from_mode:"bypass"}]);
+  await writeFile(release,"");
+  await waitFor(async () => recipient.frames,frames => frames.length === 2);
+  expect(recipient.frames[0]).toEqual({type:"auth",token:"a".repeat(32)});
+  expect(recipient.frames[1]).toMatchObject({action:"peer_idle_notice",orig_msg_id:"subscription-1",state:"idle",from_mode:"bypass"});
+  expect((await json(recordPath)).status).toBe("idle");
+  const complete = await pollBackgroundRun(started.runId,{registryRoot});
+  expect(complete).toMatchObject({status:"complete",peer:{registered:true}});
+  await assertToolResponse("stratum_agent_poll",complete);
+  await waitFor(async () => existsSync(recordPath),value => !value);
+  expect(existsSync(keyPath)).toBe(false); expect(existsSync(registered.sock)).toBe(false);
+  expect(recipient.frames).toHaveLength(2);
+  expect(await readFile(metaPath,"utf8")).toBe(meta);
+});
+
+it.each([
+  "cancel", "late subscription", "after linger", "user refusal", "malformed frame", "disallowed callback",
+  "kill switch", "missing sessions", "foreign record", "occupied socket", "read-only run directory",
+  "malformed peer metadata", "protocol gate", "peer metadata write failure",
+])("background error harness: %s", async scenario => {
+  const setup = scenario === "foreign record"
+    ? `writeFileSync(process.env.STRATUM_PEER_SESSIONS_DIR + '/' + process.pid + '.json', JSON.stringify({entrypoint:'foreign'}));`
+    : scenario === "occupied socket"
+      ? `writeFileSync(process.env.STRATUM_PEER_SOCK_DIR + '/' + process.pid + '.sock', 'foreign file');`
+      : scenario === "peer metadata write failure"
+        ? `const {chmodSync} = await import("node:fs"); chmodSync(process.env.STRATUM_PEER_RUN_DIR,0o500);` : "";
+  const {config,started,registryRoot,release} = await backgroundFixture(setup,
+    scenario === "kill switch" ? {STRATUM_PEER_REGISTER:"0"} : {}, async base => {
+      if (scenario === "missing sessions") await rm(base.sessionsDir,{recursive:true});
+      if (scenario === "protocol gate") await writeFile(join(base.sessionsDir,`${process.pid}.json`),JSON.stringify({peerProtocol:2}));
+    });
+  const metaPath = join(config.runDir,"meta.json"); const meta = await readFile(metaPath,"utf8");
+  const poll = () => pollBackgroundRun(started.runId,{registryRoot});
+  if (["kill switch","missing sessions","protocol gate"].includes(scenario)) {
+    expect(started).not.toHaveProperty("peerName"); expect(started).not.toHaveProperty("peer");
+    expect(existsSync(join(config.runDir,"peer.json"))).toBe(false);
+    expect(await readdir(config.sockDir)).toEqual([]);
+    expect((await readdir(config.sessionsDir).catch(() => [])).filter(name => name !== `${process.pid}.json`)).toEqual([]);
+    await writeFile(release,"");
+    expect(await waitFor(poll,result => result.status === "complete")).toMatchObject({peer:{registered:false}});
+  } else if (scenario === "foreign record" || scenario === "occupied socket" || scenario === "peer metadata write failure") {
+    const fixtureRoot = join(registryRoot,"..");
+    expect(await waitFor(() => readFile(join(fixtureRoot,"test-exit"),"utf8"),value => value === "2")).toBe("2");
+    expect((await readFile(`${config.streamPath}.peer.err`,"utf8")).length).toBeGreaterThan(0);
+    const pid = Number(await readFile(join(fixtureRoot,"test-pid"),"utf8"));
+    const recordPath = join(config.sessionsDir,`${pid}.json`);
+    if (scenario === "foreign record") expect(await json(recordPath)).toEqual({entrypoint:"foreign"});
+    else {
+      expect(existsSync(recordPath)).toBe(false);
+      if (scenario === "occupied socket") expect(await readFile(join(config.sockDir,`${pid}.sock`),"utf8")).toBe("foreign file");
+      else expect(existsSync(join(config.sockDir,`${pid}.sock`))).toBe(false);
+    }
+    expect(existsSync(join(config.sessionsDir,keyFileName(pid,join(config.sockDir,`${pid}.sock`))))).toBe(false);
+    await writeFile(release,"");
+    expect(await waitFor(poll,result => result.status === "complete")).toMatchObject({peer:{registered:false}});
+  } else {
+    const registered = await peer(config);
+    const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
+    const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
+    const recipient = await requester(config);
+    if (scenario === "cancel") {
+      await send(registered.sock,[{...subscription(recipient.sock),from_mode:"bypass"}]);
+      expect(await cancelBackgroundRun(started.runId,{registryRoot})).toMatchObject({status:"cancelled"});
+      await waitFor(async () => recipient.frames,frames => frames.length === 2);
+      expect(recipient.frames[1]).toMatchObject({state:"exited",detail:"cancelled_or_died",from_mode:"bypass"});
+      expect(await readFile(config.streamPath,"utf8")).not.toContain("__t2f5_done__");
+      const error = await poll();
+      expect(error).toMatchObject({status:"error",reason:"child_died_without_sentinel",peer:{registered:true}});
+      await assertToolResponse("stratum_agent_poll",error);
+    } else if (scenario === "late subscription" || scenario === "after linger") {
+      await writeFile(release,"");
+      await waitFor(() => json(recordPath),record => record.status === "idle");
+      if (scenario === "late subscription") {
+        await send(registered.sock,[subscription(recipient.sock)]);
+        await waitFor(async () => recipient.frames,frames => frames.length === 2);
+        expect(recipient.frames[1]).toMatchObject({state:"idle",orig_msg_id:"subscription-1"});
+      } else {
+        await waitFor(async () => existsSync(registered.sock),exists => !exists);
+        await expect(send(registered.sock,[subscription(recipient.sock)])).rejects.toMatchObject({code:expect.stringMatching(/ENOENT|ECONNREFUSED/)});
+      }
+      expect(await poll()).toMatchObject({status:"complete",peer:{registered:true}});
+    } else if (scenario === "malformed peer metadata") {
+      for (const value of ["bad", "null", '{}', '{"pid":"bad","name":"x","sock":"y","registeredAt":"z"}']) {
+        await writeFile(join(config.runDir,"peer.json"),value);
+        expect(await poll()).toMatchObject({status:"running",peer:{registered:false}});
+      }
+      await writeFile(release,"");
+    } else if (scenario === "read-only run directory") {
+      await chmod(config.runDir,0o500);
+      await writeFile(release,"");
+    } else {
+      if (scenario === "user refusal") {
+        await send(registered.sock,[{type:"user",msg_id:"refusal",from:`uds:${recipient.sock}`,from_mode:"bypass"}]);
+        await waitFor(async () => recipient.frames,frames => frames.length === 2);
+        expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},
+          {type:"control",action:"peer_message_status",orig_msg_id:"refusal",status:"expired",status_detail:"refused",from:`uds:${registered.sock}`,from_mode:"bypass"}]);
+      } else if (scenario === "malformed frame") {
+        await send(registered.sock,["{malformed"]);
+      } else {
+        const otherDir = await mkdtemp("/tmp/sp-"); roots.push(otherDir);
+        const forbidden = await requester({...config,sockDir:otherDir},987653);
+        await send(registered.sock,[subscription(forbidden.sock)]);
+        await waitFor(() => readFile(`${config.streamPath}.peer.err`,"utf8"),text => text.includes("invalid callback"));
+        await writeFile(release,"");
+        await waitFor(async () => existsSync(registered.sock),exists => !exists);
+        expect(forbidden.frames).toEqual([]);
+      }
+      if (scenario !== "disallowed callback") {
+        // A valid request after the bad frame proves the socket server is still serving.
+        const prior = recipient.frames.length;
+        await send(registered.sock,[subscription(recipient.sock)]);
+        await writeFile(release,"");
+        await waitFor(async () => recipient.frames,frames => frames.length === prior + 2);
+        expect(recipient.frames[prior + 1]).toMatchObject({state:"idle",orig_msg_id:"subscription-1"});
+      }
+    }
+    await waitFor(async () => existsSync(recordPath),exists => !exists);
+    expect(existsSync(keyPath)).toBe(false); expect(existsSync(registered.sock)).toBe(false);
+    if (scenario !== "cancel") expect(await waitFor(poll,result => result.status === "complete")).toMatchObject({status:"complete"});
+  }
+  expect(await readFile(metaPath,"utf8")).toBe(meta);
+},30000);

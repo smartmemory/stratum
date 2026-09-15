@@ -1,0 +1,14 @@
+# Codex brief — STRAT-AGENT-PEER-1 fix 1 (test isolation leak + slow test)
+
+Context: `docs/features/STRAT-AGENT-PEER-1/{design,plan}.md`; implementation in `ts/src/connectors/{peer-registry,peer-sidecar,background,runner}.ts` (slice 1 committed, slice 2 in the working tree — do not revert anything).
+
+**Defect 1 (must-fix, verified by the controller):** running `npx vitest run tests/connectors/background.test.ts tests/connectors/background-codex-lifecycle.test.ts` from `ts/` **without** `STRATUM_PEER_REGISTER=0` in the shell registered four sidecars in the real `~/.claude/sessions` and `/tmp/cc-socks` (they self-cleaned after the linger, but tests must never touch the real registry). Cause: those legacy fixtures call `startBackgroundRun` with default dirs and ambient env, and slice 2 only kept them clean by exporting the kill switch in the shell.
+
+Fix it structurally so a plain `npm test` is safe:
+- Add `ts/vitest.config.ts` (none exists) with `test.env = { STRATUM_PEER_REGISTER: "0" }` so every test worker starts with registration disabled, and keep the existing default behaviour (`vitest run` picks it up automatically; check `package.json` scripts need no change).
+- The peer tests that must register already pass `env: { ...process.env, STRATUM_PEER_REGISTER: "1", ... }` with temp `sessionsDir`/`sockDir`; confirm they still pass with the config in place and that no test relies on the shell env.
+- Add one regression test (in `peer-sidecar.test.ts`) that calls `startBackgroundRun` with a fake command and **no** `sessionsDir`/`sockDir`/`env` overrides, and asserts the response has no `peerName` and that `sweepDeadStratumPeers`-style scanning of `resolveSessionsDir(process.env)` finds no record with `entrypoint:"stratum-peer"` created during the test (snapshot the dir listing before/after; skip the assertion only if the real sessions dir does not exist).
+
+**Defect 2 (should-fix):** the test "closes a connection that never supplies its first line within thirty seconds" takes 30 s. Make the first-line deadline part of `PeerSidecarConfig` (`firstLineDeadlineMs`, default 30000, env `STRATUM_PEER_FIRST_LINE_MS`) so the test can use ~300 ms. Keep the default in the design doc's contract.
+
+Rules: TDD; no mocks of `ps`/sockets/`spawn`; temp dirs only; `afterEach` kills sidecars and removes temp dirs; do not touch `cancelBackgroundRun`, `meta.json` handling, or the MCP contract. Run from `ts/`: `npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts tests/mcp-surface-peer.test.ts` (WITHOUT any STRATUM_PEER env exported in your shell), then `npm run typecheck`. Do not commit. Report: files changed, exact commands + pass/fail counts, and whether the real `~/.claude/sessions` gained any `stratum-peer` record during your runs (check it). Under 250 words.

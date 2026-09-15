@@ -8,6 +8,7 @@ if (process.argv[2] === "--clean") {
 const sourceShebang = "#!/usr/bin/env -S node --experimental-strip-types";
 const distShebang = "#!/usr/bin/env node";
 const entries = [
+  new URL("../dist/connectors/peer-sidecar.js", import.meta.url),
   new URL("../dist/cli/stratum.js", import.meta.url),
   new URL("../dist/mcp/main.js", import.meta.url),
 ];

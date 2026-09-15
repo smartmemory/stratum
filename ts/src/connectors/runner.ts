@@ -24,6 +24,9 @@ export interface AgentRunOptions {
   effort?: string;
   sandboxMode?: CodexSandboxMode;
   registryRoot?: string;
+  sessionsDir?: string;
+  sockDir?: string;
+  lingerMs?: number;
   env?: NodeJS.ProcessEnv;
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -41,7 +44,7 @@ export interface AgentRunBoundaries {
 export async function runAgent(
   options: AgentRunOptions,
   boundaries: AgentRunBoundaries = {},
-): Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string }> {
+): Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending" }> {
   // 4c: discriminant validation — reject unknown agent and sandboxMode values before
   // either the background or foreground dispatch branch. Mirrors background.ts guards
   // (D11) but is intentionally independent (no cross-module import).
@@ -83,6 +86,9 @@ export async function runAgent(
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
       ...(options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {}),
+      ...(options.sessionsDir !== undefined ? { sessionsDir: options.sessionsDir } : {}),
+      ...(options.sockDir !== undefined ? { sockDir: options.sockDir } : {}),
+      ...(options.lingerMs !== undefined ? { lingerMs: options.lingerMs } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       ...(boundaries.backgroundCommand !== undefined ? { command: boundaries.backgroundCommand } : {}),
       ...(options.agent === "claude" && options.thinking !== undefined ? { thinking: options.thinking } : {}),

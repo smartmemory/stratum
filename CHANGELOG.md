@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- **Codex background runs register as Claude Code peer sessions.** The tentative `peerName`
+  lets callers subscribe with `notify_when_idle`; polling reports registration status. Set
+  `STRATUM_PEER_REGISTER=0` to disable registration. Terminal peers linger for 15 seconds
+  by default (`STRATUM_PEER_LINGER_MS`). The integration is coupled to Claude Code 2.1.272's
+  peer protocol and skips registration when a live peer advertises a newer protocol.
+
 - **chore(connectors): drop the dead `budgeted` guard on background agent runs
   (STRAT-AGENT-BG-BUDGET superseded).** Nothing in `ts/src` set the flag. Background run usage is
   debited by reporting a `stratum_usage_report` receipt: poll returns `usage`/`split`/`usdSource`,

@@ -1118,7 +1118,9 @@
         "bg_started": {
           "runId": "string",
           "pid?": "number",
-          "streamPath": "string"
+          "streamPath": "string",
+          "peerName?": "string",
+          "peer?": "string"
         }
       }
     },
@@ -1134,7 +1136,13 @@
           "runId": "string",
           "textTail": "string",
           "eventsSeen": "number",
-          "streamPath": "string"
+          "streamPath": "string",
+          "peer?": {
+            "name": "string",
+            "registered": "boolean",
+            "pid?": "number",
+            "sock?": "string"
+          }
         },
         "complete": {
           "runId": "string",
@@ -1152,6 +1160,12 @@
             "durationMs": "number",
             "model": "string",
             "effort?": "string"
+          },
+          "peer?": {
+            "name": "string",
+            "registered": "boolean",
+            "pid?": "number",
+            "sock?": "string"
           }
         },
         "error": {
@@ -1166,6 +1180,12 @@
             "durationMs": "number",
             "model": "string",
             "effort?": "string"
+          },
+          "peer?": {
+            "name": "string",
+            "registered": "boolean",
+            "pid?": "number",
+            "sock?": "string"
           }
         }
       }
