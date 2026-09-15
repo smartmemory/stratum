@@ -22,11 +22,25 @@ Observed 2026-09-15: a dispatch passed `model: "gpt-5.3-codex-spark"` and failed
 when using Codex with a ChatGPT account.
 ```
 
-The correct identifier under a ChatGPT-account auth is the subscription-billed registry entry
-`chatgpt/gpt-5.3-codex-spark`, which `ts/src/judge/pricing.ts:22` documents in a comment and
-nothing enforces. The caller then wrongly concluded the account lacked spark access. **A
-validation gap became a false capability conclusion** — the expensive failure here is the wrong
-inference, not the wasted call.
+**CORRECTED 2026-09-15 — the model id was NOT the cause.** The first diagnosis blamed the
+identifier (`ts/src/judge/pricing.ts:22` notes the registry carries spark as the
+subscription-billed `chatgpt/gpt-5.3-codex-spark`) and then blamed the auth mode. Both were
+wrong. Decoding `~/.codex/auth.json` showed the real cause: the cached token carries
+`chatgpt_plan_type: "pro"` but `chatgpt_subscription_active_until: 2026-08-18` — expired 28 days
+before the call — with `chatgpt_subscription_last_checked: 2026-07-27` and an `id_token` that
+itself expired 2026-09-05. A lapsed cached entitlement, fixed by re-authenticating; the account
+does hold a Pro subscription.
+
+The vendor message is what misled: "not supported when using Codex with a ChatGPT account" reads
+as a permanent statement about the auth MODE, when it reflects a transient entitlement state.
+A generally-available model (terra) succeeded from the same CLI seconds later, which is the
+control that should have been run first.
+
+**This is still the motivating case for validation, for a different reason.** The dispatch path
+offers the caller nothing to distinguish "you typed an invalid model" from "this model exists but
+your credentials lapsed" — both surface as the same opaque vendor 400. Validating the identifier
+locally separates the two: a name that fails the allowlist is the caller's typo, and a name that
+passes the allowlist but is refused upstream is an account/credential problem worth saying so.
 
 A second, related sharp edge: stratum parses `<model>/<effort>`, so passing a model identifier
 that legitimately contains a slash (`chatgpt/gpt-5.3-codex-spark`) is read as
