@@ -89,11 +89,16 @@ it("sweeps only dead owned filename pids and their files", async () => {
 
 it("round trips the sidecar env contract and rejects invalid required values", async () => {
   const dir = await root();
-  const config = {runDir:dir,streamPath:join(dir,"stream.jsonl"),childPid:process.pid,childProcStartTime:"123",name:"codex-astra-abcdef",cwd:dir,sessionsDir:dir,sockDir:dir,lingerMs:500};
+  const config = {runDir:dir,streamPath:join(dir,"stream.jsonl"),childPid:process.pid,childProcStartTime:"123",name:"codex-astra-abcdef",cwd:dir,sessionsDir:dir,sockDir:dir,lingerMs:500,firstLineDeadlineMs:300};
   expect(registry.configFromEnv(registry.sidecarEnv(config))).toEqual(config);
   expect(() => registry.configFromEnv({})).toThrow();
   const env = registry.sidecarEnv(config);
-  delete env.STRATUM_PEER_LINGER_MS; delete env.STRATUM_PEER_CHILD_START;
-  expect(registry.configFromEnv(env)).toEqual({...config,lingerMs:15000,childProcStartTime:undefined});
+  delete env.STRATUM_PEER_FIRST_LINE_MS; delete env.STRATUM_PEER_LINGER_MS; delete env.STRATUM_PEER_CHILD_START;
+  expect(registry.configFromEnv(env)).toEqual({...config,lingerMs:15000,firstLineDeadlineMs:30000,childProcStartTime:undefined});
   expect(() => registry.configFromEnv({...env,STRATUM_PEER_CHILD_PID:"0"})).toThrow();
+  for (const value of ["-1", "NaN", "1.5", "Infinity"]) {
+    expect(() => registry.configFromEnv({...env,STRATUM_PEER_FIRST_LINE_MS:value})).toThrow();
+  }
+  const {firstLineDeadlineMs, ...defaultConfig} = config;
+  expect(registry.sidecarEnv(defaultConfig).STRATUM_PEER_FIRST_LINE_MS).toBe("30000");
 });

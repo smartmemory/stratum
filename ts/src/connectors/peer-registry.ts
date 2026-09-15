@@ -135,6 +135,7 @@ export interface PeerSidecarConfig {
   sessionsDir: string;
   sockDir: string;
   lingerMs?: number;
+  firstLineDeadlineMs?: number;
 }
 export function sidecarEnv(config: PeerSidecarConfig): NodeJS.ProcessEnv {
   return {
@@ -144,6 +145,7 @@ export function sidecarEnv(config: PeerSidecarConfig): NodeJS.ProcessEnv {
     STRATUM_PEER_NAME: config.name, STRATUM_PEER_CWD: config.cwd,
     STRATUM_PEER_SESSIONS_DIR: config.sessionsDir, STRATUM_PEER_SOCK_DIR: config.sockDir,
     STRATUM_PEER_LINGER_MS: String(config.lingerMs ?? 15000),
+    STRATUM_PEER_FIRST_LINE_MS: String(config.firstLineDeadlineMs ?? 30000),
   };
 }
 export function configFromEnv(env: NodeJS.ProcessEnv): PeerSidecarConfig {
@@ -154,11 +156,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv): PeerSidecarConfig {
   };
   const childPid = Number(required("STRATUM_PEER_CHILD_PID"));
   const lingerMs = Number(env.STRATUM_PEER_LINGER_MS ?? 15000);
+  const firstLineDeadlineMs = Number(env.STRATUM_PEER_FIRST_LINE_MS ?? 30000);
   if (!Number.isSafeInteger(childPid) || childPid <= 0 || !Number.isSafeInteger(lingerMs) || lingerMs < 0) throw new Error("Invalid peer pid or linger");
+  if (!Number.isSafeInteger(firstLineDeadlineMs) || firstLineDeadlineMs < 0) throw new Error("Invalid peer first-line deadline");
   return {
     runDir: required("STRATUM_PEER_RUN_DIR"), streamPath: required("STRATUM_PEER_STREAM"),
     childPid, ...(env.STRATUM_PEER_CHILD_START ? {childProcStartTime: env.STRATUM_PEER_CHILD_START} : {}),
     name: required("STRATUM_PEER_NAME"), cwd: required("STRATUM_PEER_CWD"),
-    sessionsDir: required("STRATUM_PEER_SESSIONS_DIR"), sockDir: required("STRATUM_PEER_SOCK_DIR"), lingerMs,
+    sessionsDir: required("STRATUM_PEER_SESSIONS_DIR"), sockDir: required("STRATUM_PEER_SOCK_DIR"), lingerMs, firstLineDeadlineMs,
   };
 }

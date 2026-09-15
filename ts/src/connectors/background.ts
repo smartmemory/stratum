@@ -11,6 +11,8 @@ import { finiteNonnegative, modelIdentity } from "./base.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { applyHeadlessShellEnv, codexCommand, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
+import { peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
+import { spawnPeerSidecar } from "./peer-sidecar.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
 // Keyed by runId. Entry absent means "not running" (terminal). Deletion is the
@@ -90,6 +92,9 @@ export interface StartBackgroundRunOptions {
   effort?: string;
   sandboxMode?: CodexSandboxMode;
   registryRoot?: string;
+  sessionsDir?: string;
+  sockDir?: string;
+  lingerMs?: number;
   env?: NodeJS.ProcessEnv;
   /** Final-agent-argv process-boundary seam used by the ported Python scenarios. */
   command?: string[];
@@ -99,18 +104,20 @@ export interface StartBackgroundRunOptions {
 
 export interface RegistryOptions { registryRoot?: string }
 
+type BackgroundPeer = { name: string; registered: boolean; pid?: number; sock?: string };
+
 export type BackgroundPollResult =
   | { status: "not_found"; runId: string }
-  | { status: "running"; runId: string; textTail: string; eventsSeen: number; streamPath: string }
-  | { status: "complete"; runId: string; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode: 0; telemetry: ConnectorTelemetry }
-  | { status: "error"; runId: string; reason?: string; exitCode?: number; textTail: string; stderrTail: string; eventsSeen?: number; streamPath?: string; telemetry?: ConnectorTelemetry };
+  | { status: "running"; runId: string; peer?: BackgroundPeer; textTail: string; eventsSeen: number; streamPath: string }
+  | { status: "complete"; runId: string; peer?: BackgroundPeer; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode: 0; telemetry: ConnectorTelemetry }
+  | { status: "error"; runId: string; peer?: BackgroundPeer; reason?: string; exitCode?: number; textTail: string; stderrTail: string; eventsSeen?: number; streamPath?: string; telemetry?: ConnectorTelemetry };
 
 export function agentRunsRoot(): string {
   return join(homedir(), ".stratum", "ts", "agent_runs");
 }
 
 export async function startBackgroundRun(options: StartBackgroundRunOptions): Promise<{
-  status: "bg_started"; runId: string; pid?: number; streamPath: string;
+  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending";
 }> {
   // D11: explicit runtime validation — TypeScript casts at the MCP boundary do not
   // protect callers that bypass the MCP surface.
@@ -193,6 +200,22 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     throw error;
   }
   child.unref();
+  // Peer discovery is best effort and never enters the fatal metadata-write path.
+  // cancelBackgroundRun intentionally stays unchanged: this shadow owns its own group.
+  try {
+    const name = peerName(model, runId);
+    const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
+    const sockDir = options.sockDir ?? resolveSockDir(env);
+    const gate = await shouldRegister(sessionsDir, env);
+    if (gate.ok) {
+      await sweepDeadStratumPeers(sessionsDir, sockDir).catch(() => 0);
+      await spawnPeerSidecar({runDir, streamPath, childPid: pid,
+        ...(startTime ? {childProcStartTime: startTime} : {}), name, cwd: options.cwd, sessionsDir, sockDir,
+        lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000)});
+      return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
+    }
+    console.error("stratum peer registration skipped:", gate.reason);
+  } catch (error) { console.error("stratum peer registration failed:", error); }
   return { status: "bg_started", runId, pid, streamPath };
 }
 
@@ -317,6 +340,18 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
   if (!loaded) return { status: "not_found", runId };
   const { streamPath, stderrPath } = loaded;
+  let peer: BackgroundPeer | undefined;
+  if (loaded.meta.agent === "codex") {
+    peer = {name: peerName(loaded.meta.model, runId), registered: false};
+    try {
+      const file: Partial<PeerRecordFile> | null = JSON.parse(await readFile(join(dirname(streamPath), "peer.json"), "utf8"));
+      if (file && typeof file.name === "string" && typeof file.pid === "number" && Number.isSafeInteger(file.pid)
+        && file.pid > 0 && typeof file.sock === "string" && typeof file.registeredAt === "string") {
+        peer = {name: file.name, registered: true, pid: file.pid, sock: file.sock};
+      }
+    } catch { /* Missing or malformed discovery metadata cannot affect the durable run. */ }
+  }
+  const peerFields = peer ? {peer} : {};
   let scan = await scanStream(streamPath);
   let text = capText(scan.text, streamPath);
 
@@ -325,7 +360,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     // Registry deletion always happens AFTER sentinel write so poll never misses a sentinel.
     if (scan.exitCode === undefined) {
       if (claudeWorkerRegistry.has(runId)) {
-        return { status: "running", runId, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
+        return { status: "running", runId, ...peerFields, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
       }
       // TOCTOU: `scan` was taken before the registry check. If the worker wrote its
       // sentinel and deleted its registry entry in that window, the stale scan lacks
@@ -337,17 +372,17 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
         // Not in registry and still no sentinel: worker died unexpectedly (MCP server
         // restarted or process was killed externally). Surface as an error boundary.
         return {
-          status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
+          status: "error", runId, ...peerFields, reason: "child_died_without_sentinel", textTail: text,
           stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
         };
       }
     }
     const telemetry = await terminalTelemetry(loaded.meta, streamPath);
     if (scan.exitCode === 0 && scan.error === undefined) {
-      return { status: "complete", runId, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
+      return { status: "complete", runId, ...peerFields, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
     }
     return {
-      status: "error", runId, exitCode: scan.exitCode, textTail: text,
+      status: "error", runId, ...peerFields, exitCode: scan.exitCode, textTail: text,
       stderrTail: await tailText(stderrPath), ...(scan.error ? { reason: scan.error } : {}), telemetry,
     };
   }
@@ -355,7 +390,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   // Codex path:
   if (scan.exitCode === undefined) {
     if (await processIdentityMatches(loaded.meta.childPid, loaded.meta.procStartTime)) {
-      return { status: "running", runId, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
+      return { status: "running", runId, ...peerFields, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
     }
     // TOCTOU: `scan` predates the process-identity check. The wrapper appends its exit-code
     // sentinel and then exits, so between the stale scan and the child going away the sentinel
@@ -365,17 +400,17 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     text = capText(scan.text, streamPath);
     if (scan.exitCode === undefined) {
       return {
-        status: "error", runId, reason: "child_died_without_sentinel", textTail: text,
+        status: "error", runId, ...peerFields, reason: "child_died_without_sentinel", textTail: text,
         stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
       };
     }
   }
   const telemetry = await terminalTelemetry(loaded.meta, streamPath);
   if (scan.exitCode === 0 && scan.error === undefined) {
-    return { status: "complete", runId, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
+    return { status: "complete", runId, ...peerFields, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
   }
   return {
-    status: "error", runId, exitCode: scan.exitCode, textTail: text,
+    status: "error", runId, ...peerFields, exitCode: scan.exitCode, textTail: text,
     stderrTail: await tailText(stderrPath), ...(scan.error ? { reason: scan.error } : {}), telemetry,
   };
 }
