@@ -23,7 +23,6 @@ export interface AgentRunOptions {
   thinking?: Record<string, unknown>;
   effort?: string;
   sandboxMode?: CodexSandboxMode;
-  budgeted?: boolean;
   registryRoot?: string;
   env?: NodeJS.ProcessEnv;
   allowedTools?: string[];
@@ -83,7 +82,6 @@ export async function runAgent(
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
-      ...(options.budgeted !== undefined ? { budgeted: options.budgeted } : {}),
       ...(options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       ...(boundaries.backgroundCommand !== undefined ? { command: boundaries.backgroundCommand } : {}),

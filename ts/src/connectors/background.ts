@@ -89,7 +89,6 @@ export interface StartBackgroundRunOptions {
   thinking?: Record<string, unknown>;
   effort?: string;
   sandboxMode?: CodexSandboxMode;
-  budgeted?: boolean;
   registryRoot?: string;
   env?: NodeJS.ProcessEnv;
   /** Final-agent-argv process-boundary seam used by the ported Python scenarios. */
@@ -125,8 +124,6 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
       `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only" or "workspace-write"`,
     );
   }
-  if (options.budgeted) throw new Error("background agent runs cannot debit run budgets yet");
-
   if (options.agent === "claude") {
     return startClaudeBackgroundRun(options);
   }

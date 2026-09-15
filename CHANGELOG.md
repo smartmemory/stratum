@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- **chore(connectors): drop the dead `budgeted` guard on background agent runs
+  (STRAT-AGENT-BG-BUDGET superseded).** Nothing in `ts/src` set the flag. Background run usage is
+  debited by reporting a `stratum_usage_report` receipt: poll returns `usage`/`split`/`usdSource`,
+  and the caller reports it with the run id as `dispatchId`.
+
 - **Claude defaults updated to Sonnet 5.** Foreground, background, and app connector defaults now
   use `claude-sonnet-5`; living specifications and connector docs match. The workflow-budget design
   also seeds current Claude model pricing while retaining older model rows for historical cost lookup.

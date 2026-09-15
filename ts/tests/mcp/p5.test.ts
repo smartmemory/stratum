@@ -180,7 +180,7 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_resume", { runId: budget.runId });
 
       // gate_resolve: ready, running via a fanout target, completed, failed,
-      // and budget-exhausted via a gated, budgeted dispatch.
+      // and budget-exhausted via a gated dispatch.
       const gateReady = await gateWaiting(call, gateFlow);
       await call("stratum_gate_resolve", { runId: gateReady, stepId: "review", decision: "approve", gateToken: await currentGateToken(e, gateReady) });
       const gateRunning = await gateWaiting(call, gateFanoutFlow(), { name: "x", items: ["a"] });
