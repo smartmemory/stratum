@@ -154,7 +154,7 @@ function compileContracts(parsed: Record<string, ParsedContract>): Record<string
     else if (node.kind === "ref") schema = compile(node.name);
     else if (node.kind === "typed-array") schema = z.array(compileNode(node.item));
     else schema = z.never();
-    return node.optional ? schema.optional() : schema;
+    return node.optional ? schema.nullish() : schema;
   };
   const compile = (name: string): z.ZodObject<z.ZodRawShape, "strict"> => {
     if (cache[name]) return cache[name];
@@ -181,7 +181,7 @@ function compileFields(
     else if (node.kind === "ref") schema = contracts[node.name] ?? z.never();
     else if (node.kind === "typed-array") schema = z.array(compileNode(node.item));
     else schema = z.never();
-    return node.optional ? schema.optional() : schema;
+    return node.optional ? schema.nullish() : schema;
   };
   const shape: z.ZodRawShape = Object.create(null);
   for (const [field, node] of Object.entries(fields)) shape[field] = compileNode(node);

@@ -16,6 +16,33 @@ describe("STRAT-TS-PORT P0 IR validator", () => {
     expect(result.contracts.Result?.safeParse({ value: "ok", tags: ["blue"], extra: true }).success).toBe(false);
   });
 
+  it.each([
+    ["declared contracts", "contracts"],
+    ["flow inputs", "inputs"],
+  ] as const)("treats T? as nullish in %s without widening other types", (_name, source) => {
+    const result = validateSpec({
+      version: 1,
+      contracts: { Result: { required_field: "string", opt: "string?" } },
+      flows: {
+        entry: "main",
+        main: {
+          input: { required_field: "string", opt: "string?" },
+          output: { from: "${work.output}", contract: "Result" },
+          steps: [{ id: "work", do: "work", out: "Result" }],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const schema = source === "contracts" ? result.contracts.Result : result.inputs.main;
+    expect(schema?.safeParse({ required_field: "s", opt: null }).success).toBe(true);
+    expect(schema?.safeParse({ required_field: "s" }).success).toBe(true);
+    expect(schema?.safeParse({ required_field: "s", opt: "s" }).success).toBe(true);
+    expect(schema?.safeParse({ required_field: "s", opt: 5 }).success).toBe(false);
+    expect(schema?.safeParse({ required_field: null, opt: "s" }).success).toBe(false);
+  });
+
   it.each(invalidFixtures)("rejects $name", ({ spec, errors }) => {
     const result = validateSpec(spec);
     expect(result.ok).toBe(false);
