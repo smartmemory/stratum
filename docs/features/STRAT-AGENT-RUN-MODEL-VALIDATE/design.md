@@ -22,19 +22,38 @@ Observed 2026-09-15: a dispatch passed `model: "gpt-5.3-codex-spark"` and failed
 when using Codex with a ChatGPT account.
 ```
 
-**CORRECTED 2026-09-15 — the model id was NOT the cause.** The first diagnosis blamed the
-identifier (`ts/src/judge/pricing.ts:22` notes the registry carries spark as the
-subscription-billed `chatgpt/gpt-5.3-codex-spark`) and then blamed the auth mode. Both were
-wrong. Decoding `~/.codex/auth.json` showed the real cause: the cached token carries
-`chatgpt_plan_type: "pro"` but `chatgpt_subscription_active_until: 2026-08-18` — expired 28 days
-before the call — with `chatgpt_subscription_last_checked: 2026-07-27` and an `id_token` that
-itself expired 2026-09-05. A lapsed cached entitlement, fixed by re-authenticating; the account
-does hold a Pro subscription.
+**CORRECTED TWICE 2026-09-15 — record of both wrong diagnoses, then the evidence.**
 
-The vendor message is what misled: "not supported when using Codex with a ChatGPT account" reads
-as a permanent statement about the auth MODE, when it reflects a transient entitlement state.
-A generally-available model (terra) succeeded from the same CLI seconds later, which is the
-control that should have been run first.
+Diagnosis 1 (wrong): the model identifier. `ts/src/judge/pricing.ts:22` notes the registry
+carries spark as the subscription-billed `chatgpt/gpt-5.3-codex-spark`, so the bare name looked
+like the fault.
+
+Diagnosis 2 (wrong): a lapsed entitlement. `~/.codex/auth.json` carries
+`chatgpt_plan_type: "pro"` with `chatgpt_subscription_active_until: 2026-08-18` and
+`last_checked: 2026-07-27`. That date is a STALE SNAPSHOT of a billing period that has since
+renewed — not an expiry. The refutation was already in hand and went unnoticed: astra, sol and
+terra all dispatched successfully the same session. A lapsed subscription cannot fail one model
+and serve three others.
+
+What the evidence actually shows (`~/.codex/sessions`, 2026-09-15):
+
+| Probe | Result |
+|---|---|
+| Sessions with spark as the ACTUAL model | 294, 2026-04-27 → 2026-09-12 |
+| The 2026-09-12 spark session | 3 spark model refs, 0 request errors — it worked |
+| codex CLI 0.153.3 | installed 2026-09-05, unchanged since |
+| Auth token `last_refresh` | 2026-09-05, unchanged since |
+| `codex doctor` | auth configured, healthy, mode `chatgpt` |
+
+**Spark worked on 2026-09-12 with this exact CLI and these exact credentials, and is refused on
+2026-09-15.** Same client, same auth, three days apart. That leaves a server-side change at
+OpenAI as the only explanation consistent with the data. The vendor string
+("not supported when using Codex with a ChatGPT account") reads as a permanent statement about
+the auth MODE, which is what drew two successive wrong conclusions out of it.
+
+Unresolved: whether this is a permanent withdrawal of spark from subscription auth or a
+transient gate. Decisive test would be a dispatch under API-key auth, which this machine has no
+key for (`OPENAI_API_KEY` is unset; `auth_mode: chatgpt`).
 
 **This is still the motivating case for validation, for a different reason.** The dispatch path
 offers the caller nothing to distinguish "you typed an invalid model" from "this model exists but
