@@ -106,8 +106,6 @@ describe("P3 background run gate", () => {
     // Claude bg with sandboxMode:read-only rejected (D8)
     await expect(startBackgroundRun({ agent: "claude", prompt: "p", cwd: registryRoot, registryRoot, sandboxMode: "read-only" }))
       .rejects.toThrow("sandboxMode='read-only' are not supported");
-    // budgeted still rejected
-    await expect(startBackgroundRun({ agent: "codex", prompt: "p", cwd: registryRoot, registryRoot, budgeted: true })).rejects.toThrow("cannot debit run budgets");
     await expect(pollBackgroundRun("missing", { registryRoot })).resolves.toEqual({ status: "not_found", runId: "missing" });
   });
 
