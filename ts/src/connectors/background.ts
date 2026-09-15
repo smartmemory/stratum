@@ -117,7 +117,7 @@ export function agentRunsRoot(): string {
 }
 
 export async function startBackgroundRun(options: StartBackgroundRunOptions): Promise<{
-  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending";
+  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string;
 }> {
   // D11: explicit runtime validation — TypeScript casts at the MCP boundary do not
   // protect callers that bypass the MCP surface.
@@ -231,7 +231,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
       }, 2000);
     });
     const name = await Promise.race([registration(), timeout]);
-    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
+    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name };
   } catch (error) { console.error("stratum peer registration failed:", error); }
   finally { if (timer !== undefined) clearTimeout(timer); }
   return { status: "bg_started", runId, pid, streamPath };

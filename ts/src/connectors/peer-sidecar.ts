@@ -53,6 +53,9 @@ async function main(): Promise<void> {
   const recordPath = join(config.sessionsDir, `${process.pid}.json`);
   const keyPath = join(config.sessionsDir, keyFileName(process.pid, sockPath));
   const owned = new Set<string>();
+  const sessionId = randomUUID();
+  let boundSocket: Awaited<ReturnType<typeof lstat>> | undefined;
+  let serverFailed = false;
   const connections = new Set<Socket>();
   const inFlight = new Set<Promise<void>>();
   type Callback = {to: string; frame: Record<string, unknown>; notice: boolean};
@@ -242,6 +245,35 @@ async function main(): Promise<void> {
     });
     socket.on("end", () => socket.end());
   });
+  server.on("error", error => { serverFailed = true; console.error("peer socket error:", error); });
+  async function removeOwnedJson(path: string): Promise<void> {
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.size > 262144) throw new Error("unsafe file");
+      const value = JSON.parse(await readFile(path, "utf8"));
+      const matches = path === keyPath ? value?.peerToken === peerToken
+        : value?.pid === process.pid && value?.sessionId === sessionId;
+      if (!matches) throw new Error("identity mismatch");
+      await unlink(path);
+    } catch (error) { console.error("peer cleanup left path alone:", path, error); }
+  }
+  async function closeOwnedSocket(): Promise<void> {
+    if (!owned.has(sockPath)) return;
+    try {
+      const info = await lstat(sockPath);
+      if (!info.isSocket() || !boundSocket || info.dev !== boundSocket.dev || info.ino !== boundSocket.ino
+        || !server.listening || serverFailed) throw new Error("socket listener identity mismatch");
+      // Node unlinks the Unix socket itself when closing. Never close a replaced path.
+      await new Promise<void>(resolve => {
+        server.close(error => {
+          if (error) console.error("peer socket close failed:", error);
+          resolve();
+        });
+        for (const socket of connections) socket.destroy();
+      });
+    } catch (error) { console.error("peer cleanup left path alone:", sockPath, error); }
+    owned.delete(sockPath);
+  }
   async function atomicJson(path: string, value: unknown, mode: number, retain = true): Promise<void> {
     const temp = `${path}.${process.pid}.tmp`;
     try {
@@ -263,18 +295,16 @@ async function main(): Promise<void> {
   function cleanup(signal = false): Promise<void> {
     cleanupPromise ??= (async () => {
       stopping = true;
-      if (server.listening) server.close();
       // Startup can be between bind and publishing its files when a signal arrives.
       await startupDone;
       watcher?.close();
       for (const timer of timers) clearTimeout(timer);
-      const closed = new Promise<void>(resolve => server.close(() => resolve()));
       for (const socket of connections) socket.destroy();
       await work.drain();
       notifyPending(signal ? {state:"exited", finishedAt:Date.now()} : terminalState ?? {state:"unavailable", finishedAt:Date.now(), detail:"peer stopped before completion"});
       await drainCallbacks();
-      await closed;
-      for (const path of owned) await unlink(path).catch(() => undefined);
+      await closeOwnedSocket();
+      for (const path of owned) await removeOwnedJson(path);
       owned.clear();
     })();
     return cleanupPromise;
@@ -314,6 +344,8 @@ async function main(): Promise<void> {
       await unlink(sockPath);
       await listen();
     }
+    boundSocket = await lstat(sockPath);
+    serverFailed = false;
     owned.add(sockPath);
     if (stopping) return;
     const procStart = await claudeProcStart(process.pid);
@@ -325,7 +357,7 @@ async function main(): Promise<void> {
     const {version} = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as {version: string};
     await scan();
     record = {
-      pid:process.pid, sessionId:randomUUID(), cwd:config.cwd, startedAt:now, ...identity,
+      pid:process.pid, sessionId, cwd:config.cwd, startedAt:now, ...identity,
       version, peerProtocol:1, peerFeatures:["notify_idle"], kind:"bg", entrypoint:"stratum-peer",
       messagingSocketPath:sockPath, name:config.name, nameSource:"derived", status:terminalState ? "idle" : "busy", updatedAt:now, statusUpdatedAt:now,
     };
