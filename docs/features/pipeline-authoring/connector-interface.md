@@ -89,8 +89,8 @@ specifies a model — it specifies a capability and trusts the connector to reso
 class ClaudeConnector:
     _capability_map = {
         Capability.SCOUT:   {"model": "claude-haiku-4-5"},
-        Capability.BUILDER: {"model": "claude-sonnet-4-6"},
-        Capability.CRITIC:  {"model": "claude-sonnet-4-6"},
+        Capability.BUILDER: {"model": "claude-sonnet-5"},
+        Capability.CRITIC:  {"model": "claude-sonnet-5"},
     }
 
     async def run(self, prompt: str, capability: Capability, opts: RunOpts | None = None) -> str:

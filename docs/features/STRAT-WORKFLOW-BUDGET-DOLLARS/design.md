@@ -38,7 +38,7 @@ table, then promote `usd` to an enforced axis.
   cap-check structure for the three enforced axes. The dollars plumbing exists
   end-to-end — only the *pricing source* and the *usd cap-check* are missing.
 - **Usage events carry the model id.** Claude: `meta["model"] = active_model`
-  (`claude.py:216`), default `claude-sonnet-4-6` (`CLAUDE_MODEL` env,
+  (`claude.py:216`), default `claude-sonnet-5` (`CLAUDE_MODEL` env,
   `claude.py:23`). Codex: `meta["model"] = resolved_model_id` (`codex.py:562`),
   which **includes the `/effort` suffix** (`gpt-5.4/high`, `gpt-5.2-codex/medium`
   — `codex.py:224,229`). Both carry `input_tokens`/`output_tokens`.
@@ -76,6 +76,10 @@ and import-free of pricing constants; `run_budget.py` imports from `pricing`):
 # USD per 1M tokens, by BASE model id (effort suffix stripped). Approximate,
 # hand-maintained — see STRATUM_MODEL_PRICING_JSON to override without a release.
 MODEL_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-5":         {"input": 5.0,  "output": 25.0},
+    "claude-sonnet-5":       {"input": 2.0,  "output": 10.0},
+    "claude-fable-5-1":      {"input": 10.0, "output": 50.0},
+    "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0},
     "claude-sonnet-4-6":     {"input": 3.0,  "output": 15.0},
     "claude-opus-4-8":       {"input": 15.0, "output": 75.0},
     "claude-opus-4-7":       {"input": 15.0, "output": 75.0},
@@ -309,7 +313,10 @@ will never get. So child cleanup is the only branch work that must be preserved.
 
 - [ ] `pricing.py` with `MODEL_PRICING`, `cost_from_tokens(model, in, out)`, base-model normalization (strip `/effort`), unknown-model → `0.0`.
 - [ ] `STRATUM_MODEL_PRICING_JSON` env override merges over the built-in table; malformed JSON degrades to built-in (no crash); cached after first parse.
-- [ ] Pricing seeded for claude-sonnet-4-6, claude-opus-4-{6,7,8}, claude-haiku-4-5, gpt-5.4, gpt-5.2-codex, gpt-5.1-codex-max, gpt-5.1-codex, gpt-5.1-codex-mini.
+- [ ] Pricing seeded for claude-opus-5, claude-sonnet-5, claude-fable-5-1,
+  claude-haiku-4-5-20251001, claude-sonnet-4-6, claude-opus-4-{6,7,8},
+  claude-haiku-4-5, gpt-5.4, gpt-5.2-codex, gpt-5.1-codex-max,
+  gpt-5.1-codex, gpt-5.1-codex-mini.
 - [ ] `accumulate_usage` computes dollars from tokens when `cost_usd ≤ 0`; trusts `cost_usd` when `> 0`; prices input/output separately.
 - [ ] `budget_exhausted` trips on `usd` when `consumed["dollars"] >= caps["usd"]`; docstring updated.
 - [ ] `init_budget_state` yields a ledger for a `usd`-only budget; docstring updated.

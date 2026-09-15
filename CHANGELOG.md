@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- **Claude defaults updated to Sonnet 5.** Foreground, background, and app connector defaults now
+  use `claude-sonnet-5`; living specifications and connector docs match. The workflow-budget design
+  also seeds current Claude model pricing while retaining older model rows for historical cost lookup.
+
 - **Optional contract fields now accept explicit `null`.** `T?` now means `T | null | undefined`
   rather than only `T | undefined`, widening both declared-contract and flow-input validation while
   leaving required fields and type checks unchanged. The canonical case is an agent reporting that
