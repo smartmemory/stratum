@@ -1,0 +1,16 @@
+{
+  "code": "STRAT-AGENT-PEER-1",
+  "description": "Register Codex background agent runs as Claude Code peer sessions so `stratum_agent_run(agent=\"codex\", background=true)` shows in the parent session's ListAgents / /list-agents, flips busy→idle from the durable stream, and (Phase 2) serves the peer socket so the parent wakes on notify_idle instead of polling. Per-run detached sidecar owns the `~/.claude/sessions/<pid>.json` record, `.key` file and `/tmp/cc-socks/<pid>.sock`; version-allowlisted against the installed Claude Code, fails silent-but-logged on drift. Slice of forge STRAT-AGENT-VIS (filed 2026-09-09 in forge ROADMAP.md).",
+  "status": "IN_PROGRESS",
+  "phase": "STRAT-AGENT: Agent Surface",
+  "created": "2026-09-15",
+  "updated": "2026-09-15",
+  "complexity": "L",
+  "position": 2,
+  "tags": [
+    "agent-surface",
+    "background",
+    "claude-code-interop"
+  ],
+  "impact": "medium"
+}
