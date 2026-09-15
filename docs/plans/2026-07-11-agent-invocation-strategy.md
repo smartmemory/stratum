@@ -84,6 +84,10 @@ should be treated as replaceable adapters.
   — glue, not a feature. Do not build until a real consumer exists; inside a
   Claude Code session the harness's own subagent/background tooling already
   covers the need.
+  **Closed 2026-09-15:** a real consumer did arrive (compose-in-stratum dogfood),
+  and `STRAT-AGENT-BG-WRITE-1` (`c44e08e`, 07-19) shipped claude bg runs as a
+  Worker Thread in-process — not the asyncio tee, not the `claude --bg` adapter.
+  Forge-top row archived as COMPLETE under WRITE-1 (`ROADMAP-ARCHIVE.md`).
 - **D3 — STRAT-FLOW-DETACH: detached stratum pipelines. REVISED after design +
   codex review 2026-07-11 (see `docs/features/STRAT-FLOW-DETACH/design.md`).**
   The premise was that this composition is unbuilt. It is mostly built:
@@ -144,7 +148,7 @@ build-loop from step 3 (VERIFY) onward:
       the architecture one-connector-away from remote execution (codex cloud
       `exec/status/diff/apply`, Routines) instead of one-rewrite-away. Build no
       distributed anything in v1.
-- [ ] Decide budget attribution for detached runs (the STRAT-AGENT-BG-BUDGET gap blocks bg debits today — server.py:496)
+- [x] Decide budget attribution for detached runs (the STRAT-AGENT-BG-BUDGET gap blocks bg debits today — server.py:496) — **RESOLVED 2026-09-15:** `stratum_usage_report` receipts (surface 15) are the attribution path for any run, fg or bg; the dead `budgeted` guard was removed in `bb42239`. Row SUPERSEDED in the forge-top archive.
 - [ ] Gate the design through the standard codex review loop before any build
 - [ ] Check entry dependencies: does v1 need TS-engine flows, or is the Python driver (already shipped) the v1 substrate? Recommendation: Python driver now (it exists), TS parity later via the retire roadmap
 
