@@ -1,0 +1,10 @@
+{
+  "code": "STRAT-AGENT-RUN-MODEL-VALIDATE",
+  "description": "stratum_agent_run validates model/effort/agent against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-15",
+  "updated": "2026-09-15",
+  "complexity": "S",
+  "position": 4
+}

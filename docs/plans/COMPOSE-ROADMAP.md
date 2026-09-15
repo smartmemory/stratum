@@ -69,6 +69,7 @@ Bootstrap: establish the core structure and first working milestone.
 | 2 | **STRAT-USAGE-SPLIT** | **HIGH PRIORITY.** Input/output token split never reaches storage: connectors read it (`claude.ts:116-124`) then collapse it to `Budget.tokens` (`:135`), the TS route streams no `step_usage` to compose, and `result-normalizer.js:664` files the aggregate as `output_tokens`. Result: `input_tokens = 0` on every record ever written. Fix by populating the already-declared-but-never-populated `ReceiptRecord.split` (`engine/receipts.ts:10`) rather than widening `BUDGET_KEYS`. Unblocks STRAT-LEARN-COST §7. Not backfillable — the gap grows daily. | PLANNED |
 | 2 | STRAT-USAGE-SPLIT | Input/output token split never reaches storage: connectors read it, collapse it into Budget.tokens, and compose files the aggregate as output_tokens. Populate the already-declared ReceiptRecord.split instead of widening BUDGET_KEYS. Unblocks STRAT-LEARN-COST §7 (cost classifier) and all context-cost measurement. | PARTIAL |
 | 3 | STRAT-LEARN-COST-1 | Price-table freshness job (S4 transferred from COMP-COST-OWNER) + Claude connector stops emitting a labelled $0 when the SDK reported no cost | PLANNED |
+| 4 | STRAT-AGENT-RUN-MODEL-VALIDATE | stratum_agent_run validates model/effort against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400 | PLANNED |
 
 ---
 
