@@ -747,7 +747,7 @@ Span attributes conform to [OpenTelemetry Semantic Conventions for AI](https://o
 ```python
 {
     "gen_ai.system":                "anthropic",
-    "gen_ai.request.model":         "claude-sonnet-4-6",
+    "gen_ai.request.model":         "claude-sonnet-5",
     "gen_ai.usage.input_tokens":    312,
     "gen_ai.usage.output_tokens":   48,
     "stratum.function":             "classify_sentiment",
@@ -823,7 +823,7 @@ stratum.configure(
     client: LLMClient | None = None,          # LiteLLM default
     review_sink: ReviewSink | None = None,    # ConsoleReviewSink default
     tracer: OTLPEmitter | None = None,        # None = no export
-    default_model: str = "claude-sonnet-4-6",
+    default_model: str = "claude-sonnet-5",
     test_mode: bool = False,                  # enables sampling for Probabilistic[T]
     sample_n: int = 5,                        # samples per @infer call in test mode
 )

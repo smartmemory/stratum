@@ -153,7 +153,7 @@ app.get('/api/agent/session/status', (_req, res) => {
 function _buildOptions(prompt, resumeId) {
   return {
     cwd: PROJECT_ROOT,
-    model: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-5',
     permissionMode: 'acceptEdits',
     settingSources: ['project'],
     tools: { type: 'preset', preset: 'claude_code' },

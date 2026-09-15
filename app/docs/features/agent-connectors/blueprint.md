@@ -86,7 +86,7 @@ Import: { HOOK_OPTIONS } from '../agent-hooks.js'
 
 Class: ClaudeSDKConnector extends AgentConnector
 Private fields:
-  #model     = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6'
+  #model     = process.env.CLAUDE_MODEL || 'claude-sonnet-5'
   #queryIter = null
 
 Constructor({ model, cwd } = {}):

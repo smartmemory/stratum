@@ -232,7 +232,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600 }),
     writeFile(inputPath, options.prompt, { encoding: "utf8", mode: 0o600 }),
   ]);
-  const model = options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
+  const model = options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
   // D4: default sandboxMode for claude bg = workspace-write (the primary use case)
   const sandboxMode = options.sandboxMode ?? "workspace-write";
   const workerInput: WorkerInput = {

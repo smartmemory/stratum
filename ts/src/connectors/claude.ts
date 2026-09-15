@@ -61,7 +61,7 @@ export class ClaudeConnector {
     if (ownProcessGroup) requireProcessGroups();
     const children: Array<ReturnType<typeof processTermination>> = [];
     let stderr = "";
-    const requestedModel = this.options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
+    const requestedModel = this.options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
     let resolvedModel = requestedModel;
     let durationMs = 0;
     let inputTokens = 0;

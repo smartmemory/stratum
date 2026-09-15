@@ -264,7 +264,7 @@ The interface is identical. The async generator vs promise distinction is handle
 
 | Connector | Auth | Default model | Env overrides | Status |
 |-----------|------|---------------|---------------|--------|
-| `ClaudeSDKConnector` | Claude Code session | `claude-sonnet-4-6` | `CLAUDE_MODEL` | In scope |
+| `ClaudeSDKConnector` | Claude Code session | `claude-sonnet-5` | `CLAUDE_MODEL` | In scope |
 | `CodexConnector` | ChatGPT OAuth via `opencode-openai-codex-auth` | `providerID: openai`, `modelID: gpt-5.2-codex` | `CODEX_MODEL` (modelID only) | In scope |
 | `OpencodeConnector` | Provider-specific via OpenCode | — | `OPENCODE_MODEL` (modelID) | Base only, not exposed |
 | `AnthropicAPIConnector` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` | `ANTHROPIC_INFER_MODEL` | Deferred |
