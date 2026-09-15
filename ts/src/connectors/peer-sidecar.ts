@@ -13,7 +13,7 @@ function moduleUrl(name: string): URL {
   return existsSync(source) ? source : new URL(`./${name}.js`, import.meta.url);
 }
 const { claudeProcStart, configFromEnv, isAllowedCallback, keyFileName, pidDomain, readPeerToken, sidecarEnv }: typeof import("./peer-registry.js") = await import(moduleUrl("peer-registry").href);
-const { processIdentity }: typeof import("./proc_identity.js") = await import(moduleUrl("proc_identity").href);
+const { processIdentity, procStartTime }: typeof import("./proc_identity.js") = await import(moduleUrl("proc_identity").href);
 
 export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<void> {
   let stderr: Awaited<ReturnType<typeof open>> | undefined;
@@ -104,18 +104,30 @@ async function main(): Promise<void> {
       });
     }
   }
-  async function dialBack({to, frame}: Callback): Promise<void> {
-    const token = await readPeerToken(config.sessionsDir, to);
-    await new Promise<void>(resolve => {
-      const socket = createConnection(to);
-      const abort = () => socket.destroy();
-      abortCallbacks.add(abort);
-      const timeout = setTimeout(abort, callbackBudget);
-      socket.once("connect", () => socket.end(
-        (token ? JSON.stringify({type:"auth", token}) + "\n" : "") + JSON.stringify(frame) + "\n",
-      ));
-      socket.once("error", abort);
-      socket.once("close", () => { clearTimeout(timeout); abortCallbacks.delete(abort); resolve(); });
+  function dialBack({to, frame}: Callback): Promise<void> {
+    return new Promise<void>(resolve => {
+      let socket: Socket | undefined;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        abortCallbacks.delete(finish);
+        socket?.destroy();
+        resolve();
+      };
+      // Token lookup, connect and write share one slot deadline, including shutdown aborts.
+      const timeout = setTimeout(finish, callbackBudget);
+      abortCallbacks.add(finish);
+      void readPeerToken(config.sessionsDir, to).then(token => {
+        if (settled) return; // A late lookup must not open an untracked connection.
+        socket = createConnection(to);
+        socket.once("connect", () => socket!.end(
+          (token ? JSON.stringify({type:"auth", token}) + "\n" : "") + JSON.stringify(frame) + "\n",
+        ));
+        socket.once("error", finish);
+        socket.once("close", finish);
+      }).catch(error => { console.error("peer callback failed:", error); finish(); });
     });
   }
   async function drainCallbacks(): Promise<void> {
@@ -312,7 +324,25 @@ async function main(): Promise<void> {
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => {
     void cleanup(true).then(() => process.exit(0));
   });
+  let childProcStartTime = config.childProcStartTime;
   const start = async (): Promise<void> => {
+    if (!childProcStartTime) {
+      let dead = false;
+      try { process.kill(config.childPid, 0); }
+      catch (error) { dead = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+      if (dead) await terminal("exited", "cancelled_or_died");
+      else {
+        childProcStartTime = await procStartTime(config.childPid);
+        if (childProcStartTime) console.error(`peer child identity captured: ${config.childPid} ${childProcStartTime}`);
+        else {
+          // The child may have exited while its start time was being read.
+          try { process.kill(config.childPid, 0); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") await terminal("exited", "cancelled_or_died");
+          }
+        }
+      }
+    }
     try {
       const info = await lstat(recordPath);
       if (!info.isFile() || info.size > 262144) throw new Error("foreign peer record: unsafe file");
@@ -375,7 +405,7 @@ async function main(): Promise<void> {
         if (terminalState) return;
         // Cancellation kills the child's group, never this detached shadow's group.
         let identity: "alive" | "dead" | "unknown" = "unknown";
-        if (config.childProcStartTime) identity = await processIdentity(config.childPid, config.childProcStartTime);
+        if (childProcStartTime) identity = await processIdentity(config.childPid, childProcStartTime);
         else {
           try { process.kill(config.childPid, 0); }
           catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") identity = "dead"; }

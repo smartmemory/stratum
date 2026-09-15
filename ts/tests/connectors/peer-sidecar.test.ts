@@ -53,6 +53,11 @@ async function launch(config: PeerSidecarConfig, setup = "", launcher = spawnPee
 async function peer(config: PeerSidecarConfig): Promise<PeerRecordFile> {
   return await waitFor(() => json(join(config.runDir,"peer.json")), value => typeof value.pid === "number") as PeerRecordFile;
 }
+async function waitForCleanup(config: PeerSidecarConfig, registered: PeerRecordFile, timeout = 6000): Promise<void> {
+  const paths = [join(config.sessionsDir,`${registered.pid}.json`),
+    join(config.sessionsDir,keyFileName(registered.pid,registered.sock)),registered.sock];
+  await waitFor(async () => paths.every(path => !existsSync(path)), Boolean, timeout);
+}
 async function send(sock: string, frames: unknown[]): Promise<void> {
   const connection = createConnection(sock); sockets.add(connection);
   connection.on("close", () => sockets.delete(connection));
@@ -189,9 +194,7 @@ it("tails complete lines, updates busy timestamps, ignores partial and oversized
   expect((await json(recordPath)).status).toBe("busy");
   await appendFile(config.streamPath,'\n');
   await waitFor(() => json(recordPath), value => value.status === "idle");
-  await waitFor(async () => existsSync(recordPath), value => !value);
-  expect(existsSync(registered.sock)).toBe(false);
-  expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+  await waitForCleanup(config,registered);
   expect(existsSync(join(config.runDir,"peer.json"))).toBe(true);
 },10000);
 it("registers an already completed stream idle on its first scan", async () => {
@@ -230,7 +233,7 @@ it("golden flow delivers exactly one authenticated notice and accepts late subsc
   await send(registered.sock,[subscription(recipient.sock,"late")]);
   await waitFor(async () => recipient.frames, frames => frames.length === 4);
   expect(recipient.frames[3]).toMatchObject({orig_msg_id:"late",state:"idle",finished_at:recipient.frames[1]!.finished_at});
-  await waitFor(async () => existsSync(registered.sock), value => !value);
+  await waitForCleanup(config,registered);
   expect(recipient.frames).toHaveLength(4);
   await expect(send(registered.sock,[subscription(recipient.sock,"too-late")])).rejects.toMatchObject({code:expect.stringMatching(/ENOENT|ECONNREFUSED/)});
 });
@@ -241,9 +244,7 @@ it.each(["SIGTERM","SIGINT"] as const)("drains accepted subscriptions on %s and 
   process.kill(registered.pid,signal);
   await waitFor(async () => recipient.frames, frames => frames.length === 2);
   expect(recipient.frames[1]).toMatchObject({orig_msg_id:"subscription-1",state:"exited"});
-  await waitFor(async () => existsSync(registered.sock), value => !value);
-  expect(existsSync(join(config.sessionsDir,`${registered.pid}.json`))).toBe(false);
-  expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+  await waitForCleanup(config,registered);
   expect(existsSync(recipient.sock)).toBe(true);
   expect(existsSync(join(config.sessionsDir,keyFileName(987654,recipient.sock)))).toBe(true);
   expect(await readFile(config.streamPath,"utf8")).toBe("");
@@ -277,9 +278,7 @@ it.each(["regular socket file", "live socket", "missing sessions", "key write fa
   if (scenario === "read-only run directory") {
     const registered = await peer(config); await chmod(config.runDir,0o500);
     await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
-    await waitFor(async () => existsSync(join(config.sessionsDir,`${registered.pid}.json`)), value => !value);
-    expect(existsSync(registered.sock)).toBe(false);
-    expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+    await waitForCleanup(config,registered);
   } else {
     expect(await waitFor(() => readFile(join(config.runDir,"test-exit"),"utf8"), value => value === "2")).toBe("2");
     expect((await readFile(`${config.streamPath}.peer.err`,"utf8")).length).toBeGreaterThan(0);
@@ -310,7 +309,7 @@ it("caps subscriptions at 32, rejects invalid callbacks, and omits auth when no 
   await waitFor(async () => recipients.slice(0,32).every(recipient => recipient.frames.some(frame => frame.action === "peer_idle_notice")), Boolean);
   expect(first.frames).toHaveLength(1);
   expect(first.frames[0]).toMatchObject({orig_msg_id:"id-0",state:"idle",detail:"rc=9"});
-  await waitFor(async () => existsSync(registered.sock), value => !value);
+  await waitForCleanup(config,registered);
   for (let i = 1; i < 32; i++) expect(recipients[i]!.frames).toHaveLength(2);
   expect(recipients[32]!.frames).toEqual([]);
 });
@@ -346,7 +345,7 @@ it("drains in-flight callbacks for at most five seconds when a requester holds i
   await waitFor(async () => attempts, count => count === 1);
   await delay(800);
   expect(existsSync(join(config.sessionsDir,`${registered.pid}.json`))).toBe(true);
-  await waitFor(async () => existsSync(join(config.sessionsDir,`${registered.pid}.json`)), value => !value,6000);
+  await waitForCleanup(config,registered,6000);
   expect(Date.now()-start).toBeLessThan(6500);
   expect(attempts).toBe(1);
 },10000);
@@ -464,8 +463,7 @@ it("background golden flow registers busy, authenticates one notice, retains idl
   const complete = await pollBackgroundRun(started.runId,{registryRoot});
   expect(complete).toMatchObject({status:"complete",peer:{registered:true}});
   await assertToolResponse("stratum_agent_poll",complete);
-  await waitFor(async () => existsSync(recordPath),value => !value);
-  expect(existsSync(keyPath)).toBe(false); expect(existsSync(registered.sock)).toBe(false);
+  await waitForCleanup(config,registered);
   expect(recipient.frames).toHaveLength(2);
   expect(await readFile(metaPath,"utf8")).toBe(meta);
 });
@@ -513,7 +511,6 @@ it.each([
   } else {
     const registered = await peer(config);
     const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
-    const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
     const recipient = await requester(config);
     if (scenario === "cancel") {
       await send(registered.sock,[{...subscription(recipient.sock),from_mode:"bypass"}]);
@@ -532,7 +529,7 @@ it.each([
         await waitFor(async () => recipient.frames,frames => frames.length === 2);
         expect(recipient.frames[1]).toMatchObject({state:"idle",orig_msg_id:"subscription-1"});
       } else {
-        await waitFor(async () => existsSync(registered.sock),exists => !exists);
+        await waitForCleanup(config,registered);
         await expect(send(registered.sock,[subscription(recipient.sock)])).rejects.toMatchObject({code:expect.stringMatching(/ENOENT|ECONNREFUSED/)});
       }
       expect(await poll()).toMatchObject({status:"complete",peer:{registered:true}});
@@ -559,7 +556,7 @@ it.each([
         await send(registered.sock,[subscription(forbidden.sock)]);
         await waitFor(() => readFile(`${config.streamPath}.peer.err`,"utf8"),text => text.includes("invalid callback"));
         await writeFile(release,"");
-        await waitFor(async () => existsSync(registered.sock),exists => !exists);
+        await waitForCleanup(config,registered);
         expect(forbidden.frames).toEqual([]);
       }
       if (scenario !== "disallowed callback") {
@@ -571,8 +568,7 @@ it.each([
         expect(recipient.frames[prior + 1]).toMatchObject({state:"idle",orig_msg_id:"subscription-1"});
       }
     }
-    await waitFor(async () => existsSync(recordPath),exists => !exists);
-    expect(existsSync(keyPath)).toBe(false); expect(existsSync(registered.sock)).toBe(false);
+    await waitForCleanup(config,registered);
     if (scenario !== "cancel") expect(await waitFor(poll,result => result.status === "complete")).toMatchObject({status:"complete"});
   }
   expect(await readFile(metaPath,"utf8")).toBe(meta);
@@ -616,9 +612,7 @@ it("reports exited and cleans up a dead background child without a recorded star
   process.kill(-started.pid!,"SIGKILL");
   await waitFor(async () => recipient.frames, frames => frames.some(frame => frame.state === "exited"));
   expect(recipient.frames[1]).toMatchObject({state:"exited",detail:"cancelled_or_died"});
-  await waitFor(async () => existsSync(registered.sock), value => !value);
-  expect(existsSync(join(config.sessionsDir,`${registered.pid}.json`))).toBe(false);
-  expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+  await waitForCleanup(config,registered);
 },10000);
 it("reports unavailable on a non-terminal registry rewrite failure", async () => {
   const config = await fixture(); await launch(config); const registered = await peer(config);
@@ -754,8 +748,7 @@ it("attempts all 32 queued idle notices within the shutdown window with held soc
   await waitFor(async () => refusals.held.length,value=>value === 8);
   await send(registered.sock,recipients.map((recipient,i)=>subscription(recipient.sock,`n-${i}`)));
   const start = Date.now(); await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
-  await waitFor(async () => existsSync(join(config.sessionsDir,`${registered.pid}.json`)),value=>!value,6500);
-  expect(existsSync(registered.sock)).toBe(false);
+  await waitForCleanup(config,registered,6500);
   expect(Date.now()-start).toBeLessThan(6500);
   for (let i=0;i<32;i++) {
     expect(recipients[i]!.held).toHaveLength(1);
@@ -783,4 +776,92 @@ it.each(["pid", "sessionId", "key", "socket"])("preserves a foreign %s replaceme
   if (kind === "socket") expect((await lstat(target)).isSocket()).toBe(true);
   else expect(await json(target)).toEqual(foreign);
   for (const path of [recordPath,keyPath,registered.sock]) if (path !== target) expect(existsSync(path)).toBe(false);
+});
+
+it("captures a live child's missing start identity once at startup", async () => {
+  const config = await fixture(); delete config.childProcStartTime;
+  const expected = await procStartTime(config.childPid); expect(expected).toBeTruthy();
+  await launch(config); await peer(config);
+  const log = await readFile(`${config.streamPath}.peer.err`,"utf8");
+  expect(log).toContain(`peer child identity captured: ${config.childPid} ${expected}`);
+});
+it("registers an already dead child without a start identity as exited immediately", async () => {
+  const config = await fixture(); delete config.childProcStartTime;
+  config.childPid = 2147483647; config.lingerMs = 1000;
+  await launch(config); const registered = await peer(config);
+  expect(await json(join(config.sessionsDir,`${registered.pid}.json`))).toMatchObject({status:"idle"});
+  const recipient = await requester(config); await send(registered.sock,[subscription(recipient.sock)]);
+  await waitFor(async () => recipient.frames,frames => frames.some(frame => frame.state === "exited"));
+  await waitForCleanup(config,registered);
+});
+
+it.each([false,true])("bounds slow token lookup and drains queued idle notices (shutdown=%s)", async shutdown => {
+  const config = await fixture(); config.lingerMs = shutdown ? 100 : 15000;
+  const slow = await Promise.all(Array.from({length:8},(_,i)=>requester(config,930000+i)));
+  const fast = await requester(config,940000);
+  const gate = join(config.runDir,"key-gate");
+  expect(spawnSync("mkfifo",[gate]).status).toBe(0);
+  // Process-local fault injection delays production fs.open with real writerless FIFO I/O;
+  // it does not mock the token-lookup or socket seams.
+  const keys = slow.map((recipient,i)=>join(config.sessionsDir,keyFileName(930000+i,recipient.sock)));
+  const previousPool = process.env.UV_THREADPOOL_SIZE; process.env.UV_THREADPOOL_SIZE = "32";
+  try {
+    await launch(config,`
+      import fs from 'node:fs/promises';
+      import {syncBuiltinESMExports} from 'node:module';
+      const originalOpen = fs.open;
+      const slowKeys = new Set(${JSON.stringify(keys)});
+      fs.open = async (path,...args) => {
+        if (slowKeys.has(String(path))) {
+          console.error('test slow key lookup');
+          const gate = await originalOpen(${JSON.stringify(gate)},'r'); await gate.close();
+        }
+        return originalOpen(path,...args);
+      };
+      syncBuiltinESMExports();
+    `);
+  } finally {
+    if (previousPool === undefined) delete process.env.UV_THREADPOOL_SIZE; else process.env.UV_THREADPOOL_SIZE = previousPool;
+  }
+  const registered = await peer(config);
+  await send(registered.sock,[...slow.map((recipient,i)=>subscription(recipient.sock,`slow-${i}`)),subscription(fast.sock,"fast")]);
+  const start = Date.now(); await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(()=>readFile(`${config.streamPath}.peer.err`,"utf8"),log=>log.split("test slow key lookup").length === 9);
+  await waitFor(async () => fast.frames,frames=>frames.some(frame=>frame.orig_msg_id === "fast"),5500);
+  expect(Date.now()-start).toBeLessThan(5500);
+  expect(fast.frames.filter(frame=>frame.action === "peer_idle_notice")).toEqual([expect.objectContaining({orig_msg_id:"fast",state:"idle"})]);
+  // Release the real blocked I/O even during shutdown so Node can reap its worker threads.
+  const writer = spawn("sh",["-c",'printf x > "$1"',"sh",gate],{stdio:"ignore"}); children.push(writer);
+  await once(writer,"exit"); await delay(150);
+  expect(slow.every(recipient=>recipient.frames.length === 0)).toBe(true);
+  if (!shutdown) process.kill(registered.pid,"SIGTERM");
+  await waitForCleanup(config,registered);
+},12000);
+
+it("poll survives peer metadata replaced by a FIFO at file acquisition", async () => {
+  const {config,started,registryRoot} = await backgroundFixture(); await peer(config);
+  const path = join(config.runDir,"peer.json"); const script = join(config.runDir,"race-poll.mjs");
+  await writeFile(script,`
+    import fs from 'node:fs/promises';
+    import {unlinkSync} from 'node:fs';
+    import {spawnSync} from 'node:child_process';
+    import {syncBuiltinESMExports} from 'node:module';
+    const path = ${JSON.stringify(path)};
+    let swapped = false;
+    function swap(target) {
+      if (String(target) !== path || swapped) return;
+      swapped = true; unlinkSync(path);
+      if (spawnSync('mkfifo',[path]).status !== 0) throw new Error('mkfifo failed');
+    }
+    const originalLstat = fs.lstat, originalOpen = fs.open;
+    fs.lstat = async (target,...args) => { const info = await originalLstat(target,...args); swap(target); return info; };
+    fs.open = async (target,...args) => { swap(target); return originalOpen(target,...args); };
+    syncBuiltinESMExports();
+    const {pollBackgroundRun} = await import(${JSON.stringify(new URL("../../src/connectors/background.ts",import.meta.url).href)});
+    const result = await pollBackgroundRun(${JSON.stringify(started.runId)},{registryRoot:${JSON.stringify(registryRoot)}});
+    console.log(JSON.stringify({swapped,result}));
+  `);
+  const result = spawnSync(process.execPath,["--import",new URL("../helpers/source-loader.mjs",import.meta.url).href,script],{timeout:2500,encoding:"utf8",env:{...process.env,NODE_OPTIONS:""}});
+  expect(result.error).toBeUndefined(); expect(result.status,result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({swapped:true,result:{status:"running",peer:{registered:false}}});
 });

@@ -164,6 +164,8 @@ Invariant: the sidecar **reads** `stream.jsonl` and **writes only** `<sidecarPid
 - Only files named with the sidecar's **own pid** are ever created, and only records carrying `entrypoint:"stratum-peer"` with a dead filename pid are ever removed by the sweep. Never `rm` a socket we did not bind.
 - Record 0644, key 0600, both written to a temp name in the same dir and renamed.
 - Refuse to start if `<pid>.json` already exists and is not ours (pid reuse against a stale foreign record), log and skip registration.
+- Cleanup (linger end or signal) re-verifies each file before unlinking: record pid + sessionId, key `peerToken`, socket identity and our listener state. Sweep removes the dead record first and only then its correlated key and recorded socket.
+- **Accepted limitation (review r4-3):** `unlink` is by pathname, so a process running as the same user could swap a verified file in the microseconds between check and unlink. The trust boundary is the user account, the same one Claude Code assumes for this directory. Not mitigated further.
 
 ---
 

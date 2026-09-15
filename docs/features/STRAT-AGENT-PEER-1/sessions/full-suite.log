@@ -1,0 +1,313 @@
+
+ RUN  v3.2.7 /Users/ruze/reg/my/forge/stratum/ts
+
+stderr | tests/connectors/peer-sidecar.test.ts > disables ambient background registration without directory or env overrides
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/peer-sidecar.test.ts > launcher resolves when its stderr path cannot be opened
+stratum peer spawn failed: Error: ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-86LHkM/missing/stream.jsonl.peer.err'
+[90m    at open (node:internal/fs/promises:639:25)[39m
+    at spawnPeerSidecar [90m(/Users/ruze/reg/my/forge/stratum/ts/[39msrc/connectors/peer-sidecar.ts:22:14[90m)[39m
+    at [90m/Users/ruze/reg/my/forge/stratum/ts/[39mtests/connectors/peer-sidecar.test.ts:148:3
+    at [90mfile:///Users/ruze/reg/my/forge/stratum/ts/[39mnode_modules/[4m.pnpm[24m/@vitest+runner@3.2.7/node_modules/[4m@vitest/runner[24m/dist/chunk-hooks.js:752:20 {
+  errno: [33m-2[39m,
+  code: [32m'ENOENT'[39m,
+  syscall: [32m'open'[39m,
+  path: [32m'/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-86LHkM/missing/stream.jsonl.peer.err'[39m
+}
+
+stratum: not rehydrating flow '13d6cc97-ebdd-46fc-b347-da92330b9784': run 13d6cc97-ebdd-46fc-b347-da92330b9784 is driven by pid 88090; it cannot be pinned from this process
+stderr | tests/learn/egress.test.ts > LearnEgress > dead-letters 422 and continues to the next receipt
+SmartMemory egress dead-lettered 4ed100b4-e202-49b4-9b8d-b774b8db3adf:1: HTTP 422
+
+ ✓ tests/mcp/stdio-planning.test.ts (1 test) 937ms
+   ✓ plans through real stdio with clean JSON-RPC, rejects bad inputs without files, and exposes the run to the native CLI  937ms
+stratum: unable to release driver lease for 23e46579-4120-476b-b34c-d1a35be68fb7: EACCES: permission denied, unlink '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/stratum-f5-release-zFBqGy/23e46579-4120-476b-b34c-d1a35be68fb7.driver'
+stderr | tests/learn/egress.test.ts > LearnEgress > keeps 503 backoff per run so run A never blocks run B
+SmartMemory egress stopped at 3ff6a0e0-56f6-494a-8313-ed3a0ef5e465:1: HTTP 503
+
+ ✓ tests/connectors/cancellation.test.ts (8 tests) 1160ms
+   ✓ foreground cancellation at the real OS process boundary > codex kills descendant writers before settling cancellation  319ms
+   ✓ foreground cancellation at the real OS process boundary > claude kills descendant writers before settling cancellation  303ms
+stratum: not rehydrating flow '3c4b3ce1-ea21-47b9-beb1-561b316af17b': EISDIR: illegal operation on a directory, read
+stderr | tests/learn/egress.test.ts > LearnEgress > retryDead flips only dead rows to pending and drains them
+SmartMemory egress dead-lettered c267f96d-d756-4caf-b00c-2f9a1fa6be5b:1: HTTP 422
+
+ ✓ tests/engine/review-round2.test.ts (10 tests) 1813ms
+   ✓ F3 — lockedSave is lease-aware and honours cancelled finality > writes a plain run, refuses one under a live foreign lease, and refuses a cancelled one  469ms
+   ✓ F2 — a pin site that fails leaves no bookkeeping behind > a refused gate re-kick leaves the gate pending instead of consuming it  488ms
+ ✓ tests/engine/flow_bg_rehydrate.test.ts (11 tests) 2471ms
+   ✓ STRAT-TS-FLOW-BG-REHYDRATE > rehydrates a paused gate without driving past it  374ms
+   ✓ STRAT-TS-FLOW-BG-REHYDRATE > keeps refusing gate decisions and resume on a cancelled run after restart  405ms
+ ✓ tests/learn/egress.test.ts (19 tests | 1 skipped) 2593ms
+ ✓ tests/engine/fencing.test.ts (14 tests) 2809ms
+   ✓ engine issuance fencing > mints a fresh gate token each waiting round and rejects prior-round and missing decisions while accepting the current echo  332ms
+   ✓ engine issuance fencing > keeps generations monotonic across checkpoint revert and re-enumeration  592ms
+   ✓ engine issuance fencing > advances generations again after gate revise re-enumerates a fanout  350ms
+ ✓ tests/mcp/flow_cancel.test.ts (11 tests) 2856ms
+   ✓ STRAT-FLOW-CANCEL-FG stratum_flow_cancel > T-S03-3: the same-process fast path aborts a live controller and its descendant stops writing  541ms
+   ✓ STRAT-FLOW-CANCEL-FG stratum_flow_cancel > T-S03-4e: a refused cancel sweeps NOTHING — the run lock case leaves the agent alive  692ms
+   ✓ STRAT-FLOW-CANCEL-FG stratum_flow_cancel > T-S03-4f: a pinned run refuses a cross-process cancel and leaves its agent alive  558ms
+ ✓ tests/engine/subflow.test.ts (17 tests) 1789ms
+ ✓ tests/engine/carry.test.ts (14 tests) 2352ms
+   ✓ STRAT-LOOP-CARRY S03 runtime > T-S03-2 re-fans over the same list when a gate declares nothing  386ms
+   ✓ STRAT-LOOP-CARRY S03 runtime > T-S03-3/4/12 rewrites the list at a declaring gate, keeps it across later advances, and adds no reset edge  338ms
+   ✓ STRAT-LOOP-CARRY S03 runtime > T-S03-11 checkpoint revert restores the older carry beside the older outputs  335ms
+ ✓ tests/guard/transition.test.ts (63 tests) 3370ms
+ ✓ tests/engine/run_lock.test.ts (20 tests) 3888ms
+   ✓ STRAT-FLOW-CANCEL-FG run lock protocol > T-S01-L7: an unparseable lock record is treated as LIVE and never guessed away  381ms
+   ✓ STRAT-FLOW-CANCEL-FG run lock protocol > T-S01-L8: break-lock reclaim is identity-only — a live breaker is never evicted by age  465ms
+   ✓ STRAT-FLOW-CANCEL-FG run lock protocol > T-S01-L11: processIdentity is tri-state, and neither reclaim path acts on unknown  414ms
+   ✓ STRAT-FLOW-CANCEL-FG run lock protocol > T-S01-L14: an OPAQUE break-lock is reclaimed by age only — fresh wedges nothing away, aged is cleared  405ms
+   ✓ STRAT-FLOW-CANCEL-FG run lock protocol > T-S01-L14b: a PARSEABLE break-lock is never aged out — identity still decides  370ms
+   ✓ STRAT-FLOW-CANCEL-FG run lock protocol > T-S01-L15: a delayed reclaimer never deletes the live break-lock that replaced the one it judged  375ms
+ ✓ tests/cli/query_gate.test.ts (14 tests) 1528ms
+ ✓ tests/parity/p6.test.ts (6 tests) 705ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > runs the golden flow through running, complete, usage, and persisted process identity
+stratum peer registration skipped: disabled
+
+ ✓ tests/engine/engine.test.ts (39 tests) 3974ms
+ ✓ tests/connectors/review-fixes.test.ts (16 tests) 1151ms
+stderr | tests/learn/apply.test.ts > recovery > finds a pre-version legacy ledger receipt for apply recovery
+guard learn-apply-legacy-receipt: matched legacy payload digest version 1
+
+ ✓ tests/engine/flow_cancel_golden.test.ts (2 tests) 942ms
+   ✓ STRAT-FLOW-CANCEL-FG golden flow (blueprint §6) > cancels a live consumer-fanout run from a SECOND process, reaps its agent, and refuses every late write  692ms
+ ✓ tests/engine/receipts.test.ts (16 tests) 1397ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > polls a nonzero wrapper result as error with stderr
+stratum peer registration skipped: disabled
+
+ ✓ tests/engine/flow_bg.test.ts (27 tests) 4399ms
+   ✓ STRAT-TS-FLOW-BG engine driver > pauses at a top-level gate and resumes driving after approval  404ms
+   ✓ STRAT-TS-FLOW-BG engine driver > exposes every sibling-subflow gate, then re-pauses on only the unresolved gate  364ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > cancels only the verified process group and then polls terminal
+stratum peer registration skipped: disabled
+
+ ✓ tests/policy/engine.test.ts (6 tests) 593ms
+ ✓ tests/mcp/flow_cancel_fast_exit.test.ts (6 tests) 839ms
+ ✓ tests/guard/evidence.test.ts (11 tests) 1374ms
+   ✓ git_commit_exists > uses a real repository and treats bad revisions and non-repositories as unmet  303ms
+   ✓ command_exit_zero > kills background descendants when a command times out  1005ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > creates the run registry private to the invoking user (0700 dirs, 0600 files)
+stratum peer registration skipped: disabled
+
+stderr | tests/mcp/agent-run.test.ts > stratum_agent_run MCP surface — agent-run.test.ts (T7d) > 1. starts a codex workspace-write background run via MCP (backgroundCommand stub)
+stratum peer registration skipped: disabled
+
+stderr | tests/mcp/agent-run.test.ts > stratum_agent_run MCP surface — agent-run.test.ts (T7d) > 2. polls a codex background run to completion via MCP
+stratum peer registration skipped: disabled
+
+ ✓ tests/engine/carry-edges.test.ts (6 tests) 832ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > reports durationMs and resolved model/effort telemetry on terminal polls
+stratum peer registration skipped: disabled
+
+ ✓ tests/learn/apply.test.ts (30 tests) 4781ms
+   ✓ apply > appends a second lesson under the same section  414ms
+   ✓ revert is compare-and-swap (G3) > REFUSES when the target changed out of band, rather than clobbering it  301ms
+   ✓ revert is compare-and-swap (G3) > REFUSES to revert under a stacked apply  628ms
+   ✓ review regressions > appends inside the harvested section, not under a later heading  420ms
+   ✓ round-2 review regressions > lets the same revision be applied again after a revert  469ms
+(node:91401) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:91401) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/engine/flowctl.test.ts (11 tests) 915ms
+(node:91401) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/engine/evaluate.test.ts (13 tests) 753ms
+ ✓ tests/mcp/agent-run.test.ts (17 tests) 502ms
+ ✓ tests/guard/descriptors.test.ts (35 tests) 1016ms
+ ✓ tests/cli/flow.test.ts (5 tests) 841ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > refuses to signal after a process start-time mismatch
+stratum peer registration skipped: disabled
+
+ ✓ tests/engine/evaluate-runner.test.ts (7 tests) 945ms
+   ✓ createEvaluateRunner (default spawn-based runner) > kills backgrounded grandchildren when the command times out  805ms
+ ✓ tests/engine/flow_cancel_edges.test.ts (3 tests) 535ms
+stderr | tests/policy/guard.test.ts > guard policy seam > backfills bundle_id on a checksum-equal legacy registration
+guard resource-backfill-bundle: refreshed bundle_id from <unset> to 4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+
+ ✓ tests/connectors/background.test.ts (12 tests) 1922ms
+   ✓ P3 background run gate > runs the golden flow through running, complete, usage, and persisted process identity  573ms
+   ✓ P3 background run gate > reports durationMs and resolved model/effort telemetry on terminal polls  541ms
+ ✓ tests/engine/carry-golden.test.ts (1 test) 372ms
+   ✓ STRAT-LOOP-CARRY golden flow (blueprint §7) > carries a re-planned wave through a merge-gate retry, an assess-gate revise, a restart, and a checkpoint revert  372ms
+ ✓ tests/ir/collectors.test.ts (7 tests) 678ms
+ ✓ tests/policy/guard.test.ts (9 tests) 741ms
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/mcp/progress-heartbeat.test.ts (4 tests) 560ms
+   ✓ progress heartbeats during tool calls > keeps resetting the client timeout across a run longer than one timeout window  304ms
+ ✓ tests/judge/fixture_judged.test.ts (5 tests) 425ms
+stderr | tests/engine/input-validation.test.ts > entry input boundary > validates and snapshots nested entry input using the policy-merged specification
+policy bundle 56136bf4b55b4e6ab2c23b2b48cc22e3fab55116242dd623876c83c9b5398dfd: 1 rules bound to 1 step-predicate pairs
+
+ ✓ tests/engine/checkpoint-receipts.test.ts (3 tests) 379ms
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/engine/input-validation.test.ts (11 tests) 189ms
+ ✓ tests/guard/lock.test.ts (10 tests) 454ms
+ ✓ tests/guard/store.test.ts (13 tests) 199ms
+ ✓ tests/mcp/flow_cancel_edges.test.ts (4 tests) 413ms
+ ✓ tests/connectors/review-round2.test.ts (5 tests) 512ms
+   ✓ F5 — the SIGKILL gates are re-run after the group-leader probe, not before it > still escalates when the identity holds all the way to the signal  302ms
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/connectors/background-claude-interleavings.test.ts (21 tests) 1196ms
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:92607) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/policy/smartmemory_client.test.ts (13 tests) 143ms
+ ✓ tests/connectors/background-claude.test.ts (16 tests) 687ms
+stderr | tests/mcp/p5.test.ts > P5 frozen MCP surface > validates real engine, registry, and connector responses against every frozen status shape
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/proc_identity.test.ts (3 tests) 125ms
+ ✓ tests/learn/candidate.test.ts (13 tests) 99ms
+ ✓ tests/mcp-install.test.ts (7 tests) 170ms
+stderr | tests/mcp/p5.test.ts > P5 frozen MCP surface > validates real engine, registry, and connector responses against every frozen status shape
+stratum peer registration skipped: disabled
+
+ ✓ tests/learn/classify.test.ts (11 tests) 86ms
+stderr | tests/mcp/p5.test.ts > P5 frozen MCP surface > validates real engine, registry, and connector responses against every frozen status shape
+stratum peer registration skipped: disabled
+
+ ✓ tests/mcp/flow_bg.test.ts (2 tests) 355ms
+ ✓ tests/guard/mcp.test.ts (2 tests) 353ms
+ ✓ tests/speckit/compiler.test.ts (38 tests) 190ms
+ ✓ tests/guard/compose-wire.test.ts (10 tests) 348ms
+ ✓ tests/guard/cli.test.ts (7 tests) 430ms
+ ✓ tests/migrate/check.test.ts (6 tests) 82ms
+ ✓ tests/learn/harvest.test.ts (7 tests) 33ms
+ ✓ tests/connectors/codex.test.ts (17 tests) 73ms
+ ✓ tests/ir/validate.test.ts (99 tests) 28ms
+ ✓ tests/eval/files.test.ts (13 tests) 149ms
+ ✓ tests/guard/cross-engine.test.ts (2 tests) 161ms
+ ✓ tests/mcp/contracts-grammar.test.ts (25 tests) 9ms
+ ✓ tests/ir/carry-edges.test.ts (4 tests) 11ms
+stderr | tests/connectors/background-codex-lifecycle.test.ts > Codex background start lifecycle > frames the background prompt file with the sandbox preamble
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background-codex-lifecycle.test.ts (2 tests) 166ms
+ ✓ tests/connectors/runner.test.ts (10 tests) 14ms
+ ✓ tests/policy/bundle.test.ts (14 tests) 8ms
+ ✓ tests/policy/mcp_contract.test.ts (2 tests) 7ms
+ ✓ tests/engine/flow_cancel.test.ts (38 tests) 7520ms
+   ✓ STRAT-FLOW-CANCEL-FG S01 — cross-process foreground cancel > T-S01-8b: an abandoned WORKTREE item captures no patch — the most expensive wrong accept  573ms
+   ✓ STRAT-FLOW-CANCEL-FG S01 — cross-process foreground cancel > T-S01-20: a cancel that lands during the pin gap is observed, never overwritten  333ms
+   ✓ STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline > T-S01-15: the lock wait and the teardown budget are independent — one settles and fails late, one fails before settling  356ms
+   ✓ STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline > T-S01-16: a slow signal pass eats the SAME budget the reap spends — never 3x it  613ms
+   ✓ STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline > T-S01-17: an abortLocal timeout is recorded, not fatal — the reap still runs  618ms
+ ✓ tests/connectors/round3.test.ts (4 tests) 69ms
+ ✓ tests/policy/events.test.ts (2 tests) 26ms
+ ✓ tests/ir/refs.test.ts (4 tests) 2ms
+ ✓ tests/connectors/peer-registry.test.ts (28 tests) 418ms
+ ✓ tests/eval/expr.test.ts (104 tests) 8ms
+ ✓ tests/guard/sshsig.test.ts (27 tests) 8ms
+ ✓ tests/guard/canonical.test.ts (7 tests) 3ms
+ ✓ tests/judge/codex_judged.test.ts (12 tests) 8ms
+ ✓ tests/eval/fuzz.test.ts (45 tests) 14ms
+ ✓ tests/parallel/contracts.test.ts (3 tests) 35ms
+ ✓ tests/judge/judged.test.ts (11 tests) 4ms
+ ✓ tests/connectors/claude.test.ts (4 tests) 6ms
+ ✓ tests/parallel/evaluate.test.ts (16 tests) 3ms
+ ✓ tests/engine/default_connector.test.ts (3 tests) 3ms
+ ✓ tests/connectors/credential-scrub.test.ts (8 tests) 3ms
+ ✓ tests/mcp/review-round2.test.ts (1 test) 10ms
+ ✓ tests/judge/pricing.test.ts (10 tests) 2ms
+ ✓ tests/mcp-surface-peer.test.ts (2 tests) 8ms
+ ✓ tests/parallel/certificate.test.ts (3 tests) 2ms
+ ↓ tests/connectors/codex.live.test.ts (1 test | 1 skipped)
+ ↓ tests/judge/judged.live.test.ts (1 test | 1 skipped)
+ ✓ tests/mcp/schema-grammar.test.ts (15 tests) 5ms
+ ✓ tests/mcp/p5.test.ts (23 tests) 3917ms
+   ✓ P5 frozen MCP surface > validates real engine, registry, and connector responses against every frozen status shape  1539ms
+   ✓ P5 CLI and MCP process boundaries > validates files through the executable CLI bin under the current Node  343ms
+   ✓ P5 CLI and MCP process boundaries > answers an initialize handshake from the executable MCP bin  876ms
+ ✓ tests/engine/p4.test.ts (28 tests) 9566ms
+   ✓ P4 gates (E3) > resolves approve, revise, and kill; revise restarts only through a bounded ancestor route  323ms
+   ✓ P4 revise vs live fanout > a revise invalidates a live fanout — stale workers never pollute the fresh epoch  375ms
+   ✓ P4 fanout > engine-dispatches staged items with a cap, one event spine, require semantics, and persisted polling  373ms
+   ✓ P4 fanout > tears down a persisted worktree before redispatching the item into a new one  781ms
+   ✓ P4 fanout > leaves the parent workspace untouched when require fails under worktree isolation  517ms
+   ✓ P4 fanout > evaluates stage when-predicates against the item's worktree and merges staged changes  441ms
+   ✓ P4 fanout > jails stage file ensures to the item's worktree before merge  594ms
+   ✓ P4 fanout > creates, applies, and cleans up real local-git worktrees in sequential merge order  849ms
+   ✓ P4 fanout > retains all four worktrees until four parallel connector turns settle  1208ms
+   ✓ P4 fanout > turns a sequential worktree merge conflict into a flow error  687ms
+   ✓ P4 frozen contracts > every emitted event and engine response validates against the frozen contract payload shapes  545ms
+ ✓ tests/mcp/agent_registry.test.ts (10 tests) 21012ms
+   ✓ STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher > T-S02-1: writes starting, stamps running with a real identity, and settles  338ms
+   ✓ STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher > T-S02-9: two spawns record two groups  8693ms
+   ✓ STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher > T-S02-2: a second dispatcher's sweep kills the group over the same roots  10480ms
+   ✓ STRAT-FLOW-CANCEL-FG registration failures are never swallowed > T-S02-0b/T-S02-0a3: a cancel landing between spawn and stamp kills the group and fails the call  435ms
+   ✓ STRAT-FLOW-CANCEL-FG registration failures are never swallowed > T-S02-0c: a group-write failure aborts the run, kills the child and fails the call  341ms
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: kill switch
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: missing sessions
+stratum peer registration skipped: unreadable sessions directory
+
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: protocol gate
+stratum peer registration skipped: unsupported live peer protocol
+
+ ✓ tests/connectors/peer-sidecar.test.ts (60 tests) 49968ms
+   ✓ tails complete lines, updates busy timestamps, ignores partial and oversized lines, then lingers idle  3187ms
+   ✓ detects a killed child group without a sentinel and never acts on unknown identity  4762ms
+   ✓ golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger  656ms
+   ✓ error harness: read-only run directory  660ms
+   ✓ caps subscriptions at 32, rejects invalid callbacks, and omits auth when no key exists  670ms
+   ✓ reports exited with cancellation detail to a real requester after group death  2187ms
+   ✓ drains in-flight callbacks for at most five seconds when a requester holds its half open  5156ms
+   ✓ closes a connection that never supplies its first line within the configured deadline  468ms
+   ✓ creates a missing socket directory with mode 0700 and watches a stream created later  676ms
+   ✓ background golden flow registers busy, authenticates one notice, retains idle, and cleans up  793ms
+   ✓ background error harness: cancel  2680ms
+   ✓ background error harness: late subscription  738ms
+   ✓ background error harness: after linger  743ms
+   ✓ background error harness: user refusal  730ms
+   ✓ background error harness: malformed frame  726ms
+   ✓ background error harness: disallowed callback  745ms
+   ✓ background error harness: read-only run directory  732ms
+   ✓ background error harness: malformed peer metadata  876ms
+   ✓ reports exited and cleans up a dead background child without a recorded start time  2690ms
+   ✓ forwards the first-line deadline through startBackgroundRun  518ms
+   ✓ poll rejects unsafe peer metadata: fifo  331ms
+   ✓ poll rejects unsafe peer metadata: symlink  332ms
+   ✓ poll rejects unsafe peer metadata: oversized  335ms
+   ✓ bounds refusal callbacks to eight active and 32 queued attempts  830ms
+   ✓ replaces queued terminal re-subscriptions to one address  387ms
+   ✓ attempts all 32 queued idle notices within the shutdown window with held sockets  5492ms
+   ✓ preserves a foreign pid replacement during linger  1674ms
+   ✓ preserves a foreign sessionId replacement during linger  1682ms
+   ✓ preserves a foreign key replacement during linger  1668ms
+   ✓ preserves a foreign socket replacement during linger  1667ms
+ ✓ tests/connectors/foreground_registry.test.ts (26 tests) 54017ms
+   ✓ STRAT-FLOW-CANCEL-FG cross-process kill > T-S02-2: signals and reaps a real group recorded by another process  8439ms
+   ✓ STRAT-FLOW-CANCEL-FG cross-process kill > T-S02-3: a stubborn group that outlives the deadline is not reported reaped  452ms
+   ✓ STRAT-FLOW-CANCEL-FG cross-process kill > T-S02-4: an identity mismatch is unreachable, not killed  507ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0d: the rescan catches a starting → running transition  374ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0f: no double counting across at least three passes  8236ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0g: ESRCH is reaped, a recycled pid is unreachable  8279ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0h: a reaped-but-unsettled entry with a live owner does not settle  3198ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0i: the dead-owner exception settles when the owner is provably gone  308ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0i2: an owner probed alive never triggers the dead-owner exception  2145ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0i2: an owner probed unknown never triggers the dead-owner exception  2172ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0i3: an entry without serverProcStartTime is never eligible for the exception  2160ms
+   ✓ STRAT-FLOW-CANCEL-FG rescan accounting > T-S02-0j: a two-group entry settles only when both pids are resolved  5658ms
+   ✓ STRAT-FLOW-CANCEL-FG signal gating > T-S02-12: an identity that goes stale during the grace window is never SIGKILLed  2177ms
+   ✓ STRAT-FLOW-CANCEL-FG signal gating > T-S02-14: each group's grace is clocked from its OWN SIGTERM, not from the sweep's start  8164ms
+   ✓ STRAT-FLOW-CANCEL-FG signal gating > F7: cancelFlowAgents spends ONE budget across both phases, so a slow signal pass does not double it  642ms
+
+ Test Files  92 passed | 2 skipped (94)
+      Tests  1379 passed | 3 skipped (1382)
+   Start at  22:01:44
+   Duration  60.62s (transform 1.97s, setup 0ms, collect 15.14s, tests 212.46s, environment 7ms, prepare 4.04s)
+
