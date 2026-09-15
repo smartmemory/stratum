@@ -33,6 +33,20 @@ export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<void>
   } finally { await stderr?.close().catch(() => undefined); }
 }
 
+/** Serializes sidecar scans and identity checks. */
+export class PeerWorkQueue {
+  private work = Promise.resolve();
+  private readonly pending = new Set<"scan" | "identity">();
+  private readonly onError: (error: unknown) => void;
+  constructor(onError: (error: unknown) => void) { this.onError = onError; }
+  schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+    if (this.pending.has(kind)) return;
+    this.pending.add(kind);
+    this.work = this.work.then(task).catch(this.onError).finally(() => { this.pending.delete(kind); });
+  }
+  drain(): Promise<void> { return this.work; }
+}
+
 async function main(): Promise<void> {
   const config = configFromEnv(process.env);
   const sockPath = join(config.sockDir, `${process.pid}.sock`);
@@ -41,6 +55,11 @@ async function main(): Promise<void> {
   const owned = new Set<string>();
   const connections = new Set<Socket>();
   const inFlight = new Set<Promise<void>>();
+  type Callback = {to: string; frame: Record<string, unknown>; notice: boolean};
+  const callbacks: Callback[] = [];
+  const activeNotices = new Set<string>();
+  const abortCallbacks = new Set<() => void>();
+  let callbackBudget = 5000;
   const subscriptions = new Map<string, {id: string; to: string; from_mode?: unknown; notified: boolean}>();
   let terminalReady = false;
   function notifyPending(state = terminalState): void {
@@ -50,25 +69,71 @@ async function main(): Promise<void> {
       subscription.notified = true;
       sendControl(subscription.to, {type:"control", action:"peer_idle_notice", orig_msg_id:subscription.id,
         state:state.state, finished_at:state.finishedAt, ...(state.detail ? {detail:state.detail} : {}), from:`uds:${sockPath}`,
-        ...(subscription.from_mode !== undefined ? {from_mode:subscription.from_mode} : {})});
+        ...(subscription.from_mode !== undefined ? {from_mode:subscription.from_mode} : {})}, true);
     }
   }
   const peerToken = randomBytes(16).toString("hex");
-  function sendControl(toSockPath: string, frame: Record<string, unknown>): void {
-    const attempt = (async () => {
-      const token = await readPeerToken(config.sessionsDir, toSockPath);
-      await new Promise<void>(resolve => {
-        const socket = createConnection(toSockPath);
-        const timeout = setTimeout(() => { socket.destroy(); resolve(); }, 5000);
-        socket.once("connect", () => socket.end(
-          (token ? JSON.stringify({type:"auth", token}) + "\n" : "") + JSON.stringify(frame) + "\n",
-        ));
-        socket.once("error", () => { socket.destroy(); });
-        socket.once("close", () => { clearTimeout(timeout); resolve(); });
+  function sendControl(to: string, frame: Record<string, unknown>, notice = false): void {
+    const replacement = notice ? callbacks.findIndex(item => item.notice && item.to === to) : -1;
+    if (replacement >= 0) callbacks.splice(replacement, 1);
+    if (callbacks.length >= 32) {
+      // The subscription table reserves at most 32 notices. Refusals yield their slots.
+      const refusal = notice ? callbacks.findIndex(item => !item.notice) : -1;
+      if (refusal < 0) { console.error("peer callback dropped: full"); return; }
+      callbacks.splice(refusal, 1);
+      console.error("peer callback dropped: full (reserved for idle notice)");
+    }
+    callbacks.push({to, frame, notice});
+    pumpCallbacks();
+  }
+  function pumpCallbacks(): void {
+    while (inFlight.size < 8) {
+      const index = callbacks.findIndex(item => !item.notice || !activeNotices.has(item.to));
+      if (index < 0) return;
+      const callback = callbacks.splice(index, 1)[0]!;
+      if (callback.notice) activeNotices.add(callback.to);
+      const attempt = dialBack(callback).catch(error => { console.error("peer callback failed:", error); });
+      inFlight.add(attempt);
+      void attempt.finally(() => {
+        inFlight.delete(attempt);
+        if (callback.notice) activeNotices.delete(callback.to);
+        pumpCallbacks();
       });
-    })().catch(error => { console.error("peer callback failed:", error); });
-    inFlight.add(attempt);
-    void attempt.finally(() => inFlight.delete(attempt));
+    }
+  }
+  async function dialBack({to, frame}: Callback): Promise<void> {
+    const token = await readPeerToken(config.sessionsDir, to);
+    await new Promise<void>(resolve => {
+      const socket = createConnection(to);
+      const abort = () => socket.destroy();
+      abortCallbacks.add(abort);
+      const timeout = setTimeout(abort, callbackBudget);
+      socket.once("connect", () => socket.end(
+        (token ? JSON.stringify({type:"auth", token}) + "\n" : "") + JSON.stringify(frame) + "\n",
+      ));
+      socket.once("error", abort);
+      socket.once("close", () => { clearTimeout(timeout); abortCallbacks.delete(abort); resolve(); });
+    });
+  }
+  async function drainCallbacks(): Promise<void> {
+    // Only accepted notices must survive shutdown; queued user refusals are best effort.
+    for (let i = callbacks.length - 1; i >= 0; i--) {
+      if (!callbacks[i]!.notice) { callbacks.splice(i, 1); console.error("peer callback dropped: shutdown"); }
+    }
+    // Share the five-second shutdown window across the bounded remaining waves.
+    callbackBudget = Math.floor(4800 / (1 + Math.ceil(callbacks.length / 8)));
+    const active = [...abortCallbacks];
+    const release = setTimeout(() => { for (const abort of active) abort(); }, callbackBudget);
+    let deadline: NodeJS.Timeout | undefined;
+    const drain = async () => {
+      while (inFlight.size || callbacks.length) {
+        pumpCallbacks();
+        await Promise.all([...inFlight]);
+      }
+    };
+    try {
+      await Promise.race([drain(), new Promise<void>(resolve => { deadline = setTimeout(resolve, 5000); })]);
+    } finally { clearTimeout(release); clearTimeout(deadline); }
   }
   function receive(value: unknown): void {
     if (stopping || !value || typeof value !== "object" || Array.isArray(value)) return;
@@ -89,20 +154,21 @@ async function main(): Promise<void> {
     } else { console.error("peer frame ignored"); }
   }
   let record: Record<string, unknown> | undefined;
-  let terminalState: {state: "idle" | "exited"; finishedAt: number; detail?: string} | undefined;
+  let terminalState: {state: "idle" | "exited" | "unavailable"; finishedAt: number; detail?: string} | undefined;
   let stopping = false;
   let watcher: FSWatcher | undefined;
   const timers = new Set<NodeJS.Timeout>();
-  let work = Promise.resolve();
+  const work = new PeerWorkQueue(error => {
+    console.error(error);
+    terminalState ??= {state:"unavailable", finishedAt:Date.now(), detail:String(error)};
+    void cleanup().then(() => process.exit(2));
+  });
   let startupDone = Promise.resolve();
   let offset = 0;
   let pending = Buffer.alloc(0);
   let discarding = false;
-  function schedule(task: () => Promise<void>): void {
-    work = work.then(async () => { if (!stopping) await task(); }).catch(error => {
-      console.error(error);
-      void cleanup().then(() => process.exit(2));
-    });
+  function schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+    work.schedule(kind, async () => { if (!stopping) await task(); });
   }
   async function terminal(state: "idle" | "exited", detail?: string): Promise<void> {
     if (terminalState) return;
@@ -204,15 +270,9 @@ async function main(): Promise<void> {
       for (const timer of timers) clearTimeout(timer);
       const closed = new Promise<void>(resolve => server.close(() => resolve()));
       for (const socket of connections) socket.destroy();
-      await work;
-      notifyPending(signal ? {state:"exited", finishedAt:Date.now()} : terminalState ?? {state:"idle", finishedAt:Date.now()});
-      // A peer that never half-closes must not hold the shadow alive indefinitely.
-      let deadline: NodeJS.Timeout | undefined;
-      await Promise.race([
-        Promise.all([...inFlight]),
-        new Promise<void>(resolve => { deadline = setTimeout(resolve, 5000); }),
-      ]);
-      clearTimeout(deadline);
+      await work.drain();
+      notifyPending(signal ? {state:"exited", finishedAt:Date.now()} : terminalState ?? {state:"unavailable", finishedAt:Date.now(), detail:"peer stopped before completion"});
+      await drainCallbacks();
       await closed;
       for (const path of owned) await unlink(path).catch(() => undefined);
       owned.clear();
@@ -276,13 +336,19 @@ async function main(): Promise<void> {
     } satisfies PeerRecordFile, 0o600, false);
     if (terminalState) { terminalReady = true; notifyPending(); linger(); }
     else {
-      try { watcher = watch(config.streamPath, () => schedule(scan)); watcher.on("error", error => console.error(error)); }
+      try { watcher = watch(config.streamPath, () => schedule("scan", scan)); watcher.on("error", error => console.error(error)); }
       catch { /* The fallback also handles a stream created after registration. */ }
-      timers.add(setInterval(() => schedule(scan), 500));
-      timers.add(setInterval(() => schedule(async () => {
+      timers.add(setInterval(() => schedule("scan", scan), 500));
+      timers.add(setInterval(() => schedule("identity", async () => {
         if (terminalState) return;
         // Cancellation kills the child's group, never this detached shadow's group.
-        if (await processIdentity(config.childPid, config.childProcStartTime ?? "") === "dead") {
+        let identity: "alive" | "dead" | "unknown" = "unknown";
+        if (config.childProcStartTime) identity = await processIdentity(config.childPid, config.childProcStartTime);
+        else {
+          try { process.kill(config.childPid, 0); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") identity = "dead"; }
+        }
+        if (identity === "dead") {
           await scan();
           if (!terminalState) await terminal("exited", "cancelled_or_died");
         }

@@ -112,7 +112,7 @@ export async function shouldRegister(sessionsDir: string, env: NodeJS.ProcessEnv
   return { ok: true };
 }
 
-export async function sweepDeadStratumPeers(sessionsDir: string, sockDir: string): Promise<number> {
+export async function sweepDeadStratumPeers(sessionsDir: string, _sockDir: string): Promise<number> {
   const names = await readdir(sessionsDir);
   let removed = 0;
   for (const name of names) {
@@ -124,9 +124,14 @@ export async function sweepDeadStratumPeers(sessionsDir: string, sockDir: string
       if (!info.isFile() || info.size > 262144) continue;
       const record: unknown = JSON.parse(await readFile(path, "utf8"));
       if ((record as { entrypoint?: unknown } | null)?.entrypoint !== "stratum-peer" || !pidIsDead(pid)) continue;
-      const files = [name, ...names.filter(key => key.startsWith(`${pid}.`) && key.endsWith(".key"))];
-      for (const file of files) await unlink(join(sessionsDir, file)).catch(() => undefined);
-      await unlink(join(sockDir, `${pid}.sock`)).catch(() => undefined);
+      await unlink(path).catch(() => undefined);
+      const endpoint = (record as {messagingSocketPath?: unknown}).messagingSocketPath;
+      if (typeof endpoint === "string" && isAbsolute(endpoint) && !endpoint.includes("\0")) {
+        await unlink(join(sessionsDir, keyFileName(pid, endpoint))).catch(() => undefined);
+        if ((await lstat(endpoint).catch(() => undefined))?.isSocket()) {
+          await unlink(endpoint).catch(() => undefined);
+        }
+      }
       removed++;
     } catch { /* A concurrent sweep or malformed record must not affect other peers. */ }
   }

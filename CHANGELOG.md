@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Codex peer reliability:** detect dead children without start times, report runtime I/O failures as `unavailable`, bound callback and scan queues, honor first-line deadlines, and restrict registry cleanup and metadata reads.
+
 - **Codex background runs register as Claude Code peer sessions.** The tentative `peerName`
   lets callers subscribe with `notify_when_idle`; polling reports registration status. Set
   `STRATUM_PEER_REGISTER=0` to disable registration. Terminal peers linger for 15 seconds

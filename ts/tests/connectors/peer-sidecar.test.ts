@@ -3,7 +3,7 @@ import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { appendFile, lstat, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, lstat, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,9 +88,10 @@ afterEach(async () => {
   backgroundPids.clear();
   for (const config of configs.splice(0)) {
     await chmod(config.runDir,0o700).catch(() => undefined);
+    await chmod(config.sessionsDir,0o700).catch(() => undefined);
     const pids = new Set<number>();
     try { pids.add(Number(await readFile(join(config.runDir,"test-pid"),"utf8"))); } catch { /* spawn may fail */ }
-    try { pids.add(Number((await json(join(config.runDir,"peer.json"))).pid)); } catch { /* startup may fail */ }
+    try { if ((await lstat(join(config.runDir,"peer.json"))).isFile()) pids.add(Number((await json(join(config.runDir,"peer.json"))).pid)); } catch { /* startup may fail */ }
     for (const name of await readdir(config.sessionsDir).catch(() => [])) {
       if (!/^\d+\.json$/.test(name)) continue;
       if (!(await lstat(join(config.sessionsDir,name)).catch(() => undefined))?.isFile()) continue;
@@ -606,3 +607,157 @@ it.each(["oversized", "symlink"])("refuses an unsafe own-pid %s record without c
   expect(await readFile(target,"utf8")).toBe(record);
   expect(existsSync(join(config.runDir,"peer.json"))).toBe(false);
 });
+
+it("reports exited and cleans up a dead background child without a recorded start time", async () => {
+  const {config,started} = await backgroundFixture('delete process.env.STRATUM_PEER_CHILD_START;');
+  const registered = await peer(config); const recipient = await requester(config);
+  await send(registered.sock,[subscription(recipient.sock)]);
+  process.kill(-started.pid!,"SIGKILL");
+  await waitFor(async () => recipient.frames, frames => frames.some(frame => frame.state === "exited"));
+  expect(recipient.frames[1]).toMatchObject({state:"exited",detail:"cancelled_or_died"});
+  await waitFor(async () => existsSync(registered.sock), value => !value);
+  expect(existsSync(join(config.sessionsDir,`${registered.pid}.json`))).toBe(false);
+  expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+},10000);
+it("reports unavailable on a non-terminal registry rewrite failure", async () => {
+  const config = await fixture(); await launch(config); const registered = await peer(config);
+  const recipient = await requester(config); await send(registered.sock,[subscription(recipient.sock)]);
+  await chmod(config.sessionsDir,0o500);
+  await appendFile(config.streamPath,'{"event":"progress"}\n');
+  await waitFor(async () => recipient.frames, frames => frames.some(frame => frame.action === "peer_idle_notice"));
+  const notice = recipient.frames.find(frame => frame.action === "peer_idle_notice");
+  expect(notice).toMatchObject({state:"unavailable",detail:expect.any(String)});
+  expect(notice!.detail).not.toBe("");
+  process.kill(config.childPid,0);
+});
+it("forwards the first-line deadline through startBackgroundRun", async () => {
+  const {config} = await backgroundFixture("",{STRATUM_PEER_FIRST_LINE_MS:"300"});
+  const registered = await peer(config);
+  const socket = createConnection(registered.sock); sockets.add(socket); socket.on("error",() => undefined);
+  await once(socket,"connect");
+  const start = Date.now();
+  await waitFor(async () => socket.destroyed, Boolean,1500);
+  expect(Date.now()-start).toBeGreaterThanOrEqual(200);
+  expect(Date.now()-start).toBeLessThan(1500);
+});
+it.each(["fifo","symlink","oversized"])("poll rejects unsafe peer metadata: %s", async kind => {
+  const {config,started,registryRoot} = await backgroundFixture();
+  const registered = await peer(config); const path = join(config.runDir,"peer.json");
+  const original = await readFile(path,"utf8"); await rm(path);
+  if (kind === "fifo") expect(spawnSync("mkfifo",[path]).status).toBe(0);
+  else if (kind === "symlink") {
+    const target = join(config.runDir,"target.json"); await writeFile(target,original); await symlink(target,path);
+  } else await writeFile(path,JSON.stringify({...JSON.parse(original),padding:"x".repeat(65536)}));
+  // A subprocess timeout makes a blocking FIFO regression fail without hanging Vitest.
+  const script = join(config.runDir,"poll.mjs");
+  await writeFile(script,`import {pollBackgroundRun} from ${JSON.stringify(new URL("../../src/connectors/background.ts",import.meta.url).href)};
+    console.log(JSON.stringify(await pollBackgroundRun(${JSON.stringify(started.runId)},{registryRoot:${JSON.stringify(registryRoot)}})));`);
+  // background.ts has .js imports; use the repository source loader for source execution.
+  const result = spawnSync(process.execPath,["--import",new URL("../helpers/source-loader.mjs",import.meta.url).href,script],{cwd:process.cwd(),timeout:2500,encoding:"utf8",env:{...process.env,NODE_OPTIONS:""}});
+  expect(result.error).toBeUndefined(); expect(result.status,result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({status:"running",peer:{registered:false}});
+  process.kill(registered.pid,"SIGTERM");
+});
+
+it("coalesces stream scans and identity probes while real socket work is pending", async () => {
+  const module = await import("../../src/connectors/peer-sidecar.js");
+  expect(module).toHaveProperty("PeerWorkQueue");
+  const config = await fixture(); const held: Socket[] = [];
+  const server = createServer(socket => { held.push(socket); sockets.add(socket); socket.on("close",()=>sockets.delete(socket)); });
+  servers.push(server); const path = join(config.sockDir,"987611.sock"); server.listen(path); await once(server,"listening");
+  const errors: unknown[] = [];
+  const queue = new module.PeerWorkQueue(error => { errors.push(error); });
+  let scans = 0; let probes = 0;
+  const block = () => {
+    const socket = createConnection(path); sockets.add(socket); socket.on("close",()=>sockets.delete(socket));
+    return once(socket,"close").then(()=>undefined);
+  };
+  const scanGate = block(); const probeGate = block();
+  await waitFor(async () => held.length, value => value === 2);
+  queue.schedule("scan",async () => { scans++; await scanGate; });
+  await waitFor(async () => scans, value => value === 1);
+  for (let i=0;i<10000;i++) {
+    queue.schedule("scan",async () => { scans++; });
+    queue.schedule("identity",async () => { probes++; await probeGate; });
+  }
+  held[0]!.end();
+  await waitFor(async () => probes, value => value === 1);
+  for (let i=0;i<10000;i++) queue.schedule("identity",async () => { probes++; });
+  held[1]!.end(); await queue.drain();
+  expect(scans).toBe(1); expect(probes).toBe(1); expect(errors).toEqual([]);
+  queue.schedule("scan",async () => { scans++; }); await queue.drain(); expect(scans).toBe(2);
+});
+
+async function heldRequester(config: PeerSidecarConfig, pid = 987610): Promise<{sock: string; held: Socket[]; frames: Record<string,unknown>[]}> {
+  const sock = join(config.sockDir,`${pid}.sock`); const held: Socket[] = []; const frames: Record<string,unknown>[] = [];
+  const server = createServer({allowHalfOpen:true}, socket => {
+    held.push(socket); sockets.add(socket); socket.on("close",()=>sockets.delete(socket));
+    let pending = ""; socket.on("data",data => {
+      pending += data.toString(); let end: number;
+      while ((end = pending.indexOf("\n")) >= 0) { frames.push(JSON.parse(pending.slice(0,end))); pending = pending.slice(end+1); }
+    });
+  });
+  servers.push(server); server.listen(sock); await once(server,"listening");
+  return {sock,held,frames};
+}
+it("bounds refusal callbacks to eight active and 32 queued attempts", async () => {
+  const config = await fixture(); const recipient = await heldRequester(config);
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,Array.from({length:100},(_,i)=>({type:"user",msg_id:`u-${i}`,from:`uds:${recipient.sock}`})));
+  await waitFor(async () => recipient.held.length, value => value >= 8); await delay(150);
+  expect(recipient.held).toHaveLength(8);
+  expect(await readFile(`${config.streamPath}.peer.err`,"utf8")).toContain("callback dropped: full");
+  // Release each wave before its real five-second timeout.
+  for (let wave=0;wave<5;wave++) {
+    for (const socket of recipient.held) socket.end();
+    await delay(100);
+  }
+  expect(recipient.held).toHaveLength(40);
+},10000);
+it("preserves every idle notice when refusals saturate callbacks", async () => {
+  const config = await fixture(); const held = await heldRequester(config);
+  const recipients = await Promise.all(Array.from({length:32},(_,i)=>requester(config,910000+i)));
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,Array.from({length:100},(_,i)=>({type:"user",msg_id:`u-${i}`,from:`uds:${held.sock}`})));
+  await waitFor(async () => held.held.length, value => value >= 8);
+  await send(registered.sock,recipients.map((recipient,i)=>subscription(recipient.sock,`n-${i}`)));
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(()=>json(join(config.sessionsDir,`${registered.pid}.json`)),value=>value.status === "idle");
+  for (const socket of held.held) socket.end();
+  await waitFor(async () => recipients.every(recipient=>recipient.frames.some(frame=>frame.action === "peer_idle_notice")),Boolean);
+  for (let i=0;i<32;i++) expect(recipients[i]!.frames.filter(frame=>frame.action === "peer_idle_notice")).toEqual([
+    expect.objectContaining({orig_msg_id:`n-${i}`,state:"idle"}),
+  ]);
+  expect(held.held.length).toBeLessThanOrEqual(8);
+},10000);
+it("replaces queued terminal re-subscriptions to one address", async () => {
+  const config = await fixture(); config.lingerMs = 2000;
+  const recipient = await heldRequester(config); await launch(config); const registered = await peer(config);
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(()=>json(join(config.sessionsDir,`${registered.pid}.json`)),value=>value.status === "idle");
+  await send(registered.sock,[subscription(recipient.sock,"first")]);
+  await waitFor(async () => recipient.frames.length,value=>value === 1);
+  await send(registered.sock,Array.from({length:100},(_,i)=>subscription(recipient.sock,`replacement-${i}`)));
+  await delay(150); expect(recipient.held).toHaveLength(1);
+  recipient.held[0]!.end();
+  await waitFor(async () => recipient.frames.length,value=>value >= 2);
+  expect(recipient.frames.map(frame=>frame.orig_msg_id)).toEqual(["first","replacement-99"]);
+  recipient.held[1]!.end();
+});
+
+it("attempts all 32 queued idle notices within the shutdown window with held sockets", async () => {
+  const config = await fixture(); const refusals = await heldRequester(config);
+  const recipients = await Promise.all(Array.from({length:32},(_,i)=>heldRequester(config,920000+i)));
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,Array.from({length:40},(_,i)=>({type:"user",msg_id:`u-${i}`,from:`uds:${refusals.sock}`})));
+  await waitFor(async () => refusals.held.length,value=>value === 8);
+  await send(registered.sock,recipients.map((recipient,i)=>subscription(recipient.sock,`n-${i}`)));
+  const start = Date.now(); await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(async () => existsSync(join(config.sessionsDir,`${registered.pid}.json`)),value=>!value,6500);
+  expect(existsSync(registered.sock)).toBe(false);
+  expect(Date.now()-start).toBeLessThan(6500);
+  for (let i=0;i<32;i++) {
+    expect(recipients[i]!.held).toHaveLength(1);
+    expect(recipients[i]!.frames).toEqual([expect.objectContaining({orig_msg_id:`n-${i}`,state:"idle"})]);
+  }
+},10000);

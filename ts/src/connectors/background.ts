@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants, createReadStream } from "node:fs";
-import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -219,7 +219,8 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
       if (timedOut) return;
       await spawnPeerSidecar({runDir, streamPath, childPid: pid,
         ...(startTime ? {childProcStartTime: startTime} : {}), name, cwd: options.cwd, sessionsDir, sockDir,
-        lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000)});
+        lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000),
+        firstLineDeadlineMs: Number(env.STRATUM_PEER_FIRST_LINE_MS ?? 30000)});
       return timedOut ? undefined : name;
     };
     const timeout = new Promise<undefined>(resolve => {
@@ -361,7 +362,10 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   if (loaded.meta.agent === "codex") {
     peer = {name: peerName(loaded.meta.model, runId), registered: false};
     try {
-      const file: Partial<PeerRecordFile> | null = JSON.parse(await readFile(join(dirname(streamPath), "peer.json"), "utf8"));
+      const peerPath = join(dirname(streamPath), "peer.json");
+      const info = await lstat(peerPath);
+      if (!info.isFile() || info.size > 65536) throw new Error("unsafe peer metadata");
+      const file: Partial<PeerRecordFile> | null = JSON.parse(await readFile(peerPath, "utf8"));
       if (file && typeof file.name === "string" && typeof file.pid === "number" && Number.isSafeInteger(file.pid)
         && file.pid > 0 && typeof file.sock === "string" && typeof file.registeredAt === "string") {
         peer = {name: file.name, registered: true, pid: file.pid, sock: file.sock};
