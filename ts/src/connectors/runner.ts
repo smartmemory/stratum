@@ -44,7 +44,7 @@ export interface AgentRunBoundaries {
 export async function runAgent(
   options: AgentRunOptions,
   boundaries: AgentRunBoundaries = {},
-): Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending" }> {
+): Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string }> {
   // 4c: discriminant validation — reject unknown agent and sandboxMode values before
   // either the background or foreground dispatch branch. Mirrors background.ts guards
   // (D11) but is intentionally independent (no cross-module import).

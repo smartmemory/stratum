@@ -431,7 +431,8 @@ async function backgroundFixture(setup = "", env: NodeJS.ProcessEnv = {}, prepar
 }
 it("background golden flow registers busy, authenticates one notice, retains idle, and cleans up", async () => {
   const {config,started,registryRoot,release} = await backgroundFixture();
-  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId),peer:"pending"});
+  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId)});
+  expect(started).not.toHaveProperty("peer");
   await assertToolResponse("stratum_agent_run",started);
   const metaPath = join(config.runDir,"meta.json");
   const meta = await readFile(metaPath,"utf8");
@@ -761,3 +762,25 @@ it("attempts all 32 queued idle notices within the shutdown window with held soc
     expect(recipients[i]!.frames).toEqual([expect.objectContaining({orig_msg_id:`n-${i}`,state:"idle"})]);
   }
 },10000);
+
+it.each(["pid", "sessionId", "key", "socket"])("preserves a foreign %s replacement during linger", async (kind) => {
+  const config = await fixture(); config.lingerMs = 1500;
+  await launch(config); const registered = await peer(config);
+  const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
+  const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(() => json(recordPath), value => value.status === "idle");
+  const target = kind === "key" ? keyPath : kind === "socket" ? registered.sock : recordPath;
+  const foreign = kind === "key" ? {peerToken:"foreign"} : {...await json(recordPath),[kind]:kind === "pid" ? process.pid : "foreign"};
+  await rm(target);
+  let replacement: Server | undefined;
+  if (kind === "socket") {
+    replacement = createServer(socket => socket.end()); servers.push(replacement);
+    await new Promise<void>(resolve => replacement!.listen(target, resolve));
+  } else await writeFile(target,JSON.stringify(foreign));
+  await waitFor(async () => { try { process.kill(registered.pid,0); return false; } catch { return true; } }, Boolean);
+  expect(await readFile(`${config.streamPath}.peer.err`,"utf8")).toContain("peer cleanup left path alone:");
+  if (kind === "socket") expect((await lstat(target)).isSocket()).toBe(true);
+  else expect(await json(target)).toEqual(foreign);
+  for (const path of [recordPath,keyPath,registered.sock]) if (path !== target) expect(existsSync(path)).toBe(false);
+});

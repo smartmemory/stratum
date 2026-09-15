@@ -1,0 +1,18 @@
+{
+  "code": "STRAT-AGENT-PEER-2",
+  "description": "Register Claude background runs (worker threads inside the MCP server, `claude-bg-worker.ts`) as Claude Code peer sessions. Follow-up split out of STRAT-AGENT-PEER-1, whose per-run detached sidecar assumes a detached child process; claude bg runs live in-process and need their own owner decision (sidecar per worker, or one MCP-server row multiplexing runs). Also candidate home for a caller-supplied peer label (background runs cannot carry `flow`).",
+  "status": "PLANNED",
+  "phase": "STRAT-AGENT: Agent Surface",
+  "created": "2026-09-15",
+  "updated": "2026-09-15",
+  "complexity": "M",
+  "position": 3,
+  "parent": "STRAT-AGENT-PEER-1",
+  "tags": [
+    "agent-surface",
+    "background",
+    "claude-code-interop",
+    "follow-up"
+  ],
+  "impact": "low"
+}

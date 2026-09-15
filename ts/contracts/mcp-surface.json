@@ -1119,8 +1119,7 @@
           "runId": "string",
           "pid?": "number",
           "streamPath": "string",
-          "peerName?": "string",
-          "peer?": "string"
+          "peerName?": "string"
         }
       }
     },

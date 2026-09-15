@@ -4,7 +4,7 @@ import { assertToolResponse } from "../src/mcp/contracts.js";
 const peer = {name:"codex-astra-abcdef",registered:true,pid:123,sock:"/tmp/sp-example/123.sock"};
 const started = {status:"bg_started",runId:"abcdef123456",streamPath:"/tmp/stream.jsonl"};
 it("accepts old and peer-bearing background responses while rejecting undeclared keys", async () => {
-  for (const response of [started, {...started,peerName:peer.name,peer:"pending"}]) {
+  for (const response of [started, {...started,peerName:peer.name}]) {
     await expect(assertToolResponse("stratum_agent_run",response)).resolves.toBeUndefined();
   }
   const variants = [
@@ -19,5 +19,11 @@ it("accepts old and peer-bearing background responses while rejecting undeclared
     await expect(assertToolResponse("stratum_agent_poll",{...response,peer:{...peer,undeclared:true}})).rejects.toThrow();
     await expect(assertToolResponse("stratum_agent_poll",{...response,peer,undeclared:true})).rejects.toThrow();
   }
-  await expect(assertToolResponse("stratum_agent_run",{...started,peerName:peer.name,peer:"pending",undeclared:true})).rejects.toThrow();
+  await expect(assertToolResponse("stratum_agent_run",{...started,peerName:peer.name,undeclared:true})).rejects.toThrow();
+});
+
+it("rejects the removed peer field on background start responses", async () => {
+  for (const peer of ["pending", "failed", {registered:false}]) {
+    await expect(assertToolResponse("stratum_agent_run", {...started,peerName:"codex-astra-abcdef",peer})).rejects.toThrow();
+  }
 });

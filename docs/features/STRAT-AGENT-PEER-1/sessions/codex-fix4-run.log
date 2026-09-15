@@ -1,0 +1,2407 @@
+Reading additional input from stdin...
+OpenAI Codex v0.153.3
+--------
+workdir: /Users/ruze/reg/my/forge/stratum
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a0a559-7ec0-7e00-b1b5-d7a38f5724b5
+--------
+user
+Read and execute the brief at docs/features/STRAT-AGENT-PEER-1/codex-brief-fix4.md exactly. Print the final report it asks for as your last message.
+warning: Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+hook: SessionStart
+hook: SessionStart Completed
+hook: UserPromptSubmit
+hook: UserPromptSubmit Completed
+2026-09-15T13:55:06.494135Z ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server smartmemory-2: OAuth refresh token was rejected: Server returned error response: invalid_grant: refresh token does not exist
+codex
+I’ll read the brief and applicable repository instructions, then carry out the work and return its required final report.
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "pwd && rg --files -g AGENTS.md -g 'codex-brief-fix4.md' -g 'SKILL.md' docs .claude 2>/dev/null; rg -n 'stratum|STRAT-AGENT-PEER' /Users/ruze/.codex/memories/MEMORY.md" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+/Users/ruze/reg/my/forge/stratum
+docs/features/STRAT-AGENT-PEER-1/codex-brief-fix4.md
+288:applies_to: cwd=/Users/ruze/reg/my/forge, primarily `compose` and `stratum`; reuse_rule=safe for planning and feature filing patterns; provider identities, YAML support, roadmap position, and implementation status need live verification.
+294:- rollout_summaries/2026-09-05T06-29-29-kEpF-compose_stratum_fable_astra_feature_filing.md (cwd=/Users/ruze/reg/my/forge, rollout_path=/Users/ruze/.codex/sessions/2026/09/05/rollout-2026-09-05T14-29-29-01a07042-04a6-7512-9f38-b7c44dcc5fb7.jsonl, updated_at=2026-09-09T07:38:38+00:00, thread_id=01a07042-04a6-7512-9f38-b7c44dcc5fb7, successful design-only filing)
+298:- COMP-FABLE-ASTRA, Fable, Astra, consumer fanout, team-feature, worktree isolation, bounded waves, task graph, PLANNED, roadmap add, gpt-6-astra, `team-feature.stratum.yaml`
+310:- Reuse `compose/presets/team-feature.stratum.yaml`, `team-feature.profiles.json`, `lib/consumer-fanout.js`, `lib/build.js`, and `lib/gsd.js`; existing TS v1 consumer fanout already provides decomposition, worktree isolation, sequential merge, and merge gates. Compose resolves `provider:template:tier` in `lib/agent-string.js`, whereas Stratum's `stratum_agent_run` receives provider/model/sandbox fields. [Task 1]
+534:applies_to: cwd=/Users/ruze/reg/my/forge with primary repos `compose` and `stratum`; reuse_rule=safe for similar integration audits; dependency versions, contracts, and test counts are checkout-specific and need live verification.
+540:- rollout_summaries/2026-09-05T06-29-29-kEpF-compose_stratum_fable_astra_feature_filing.md (cwd=/Users/ruze/reg/my/forge, rollout_path=/Users/ruze/.codex/sessions/2026/09/05/rollout-2026-09-05T14-29-29-01a07042-04a6-7512-9f38-b7c44dcc5fb7.jsonl, updated_at=2026-09-09T07:38:38+00:00, thread_id=01a07042-04a6-7512-9f38-b7c44dcc5fb7, Task 1 is the strongest source for cross-boundary defects that survive targeted checks)
+544:- compose, stratum, Compose Lab excluded, package-lock, Stratum 0.3.3, npm ci, `stratum_agent_run`, mcp-surface.json, localExecution, process tree, cancellation, usage, telemetry, result-normalizer.js, listTools, deadline, StratumMcpClient
+548:- when the user clarified "it's mainly just compose and stratum" -> focus the audit on Compose and Stratum; exclude Compose Lab unless explicitly requested [Task 1]
+553:- A local sibling symlink can mask an installed-package compatibility fault: Compose’s inspected lockfile pins Stratum 0.3.3 while the changed MCP surface needs newer `stratum_agent_run` fields. Treat `npm ci` plus a real dispatch probe as required clean-install evidence. [Task 1]
+554:- Compose selects `localExecution` for isolation-free consumer reviews in `compose/lib/build.js`; unlike `stratum/ts/src/connectors/claude.ts`, its local Claude connector does not own and await the SDK process tree. [Task 1]
+1765:- rollout_summaries/2026-07-20T07-54-03-C1vE-comp_stratum_ts_engine_cutover_verification.md (cwd=/Users/ruze/reg/my/forge/compose, rollout_path=/Users/ruze/.codex/sessions/2026/07/20/rollout-2026-07-20T15-54-03-019f7e84-8cfe-73b2-b6e2-8b18041027be.jsonl, updated_at=2026-07-20T07:56:03+00:00, thread_id=019f7e84-8cfe-73b2-b6e2-8b18041027be, strongest source for the scoped completion verdict and TS-default seam evidence)
+1769:- COMP-STRATUM-TS, ROADMAP.md, stratum-client, stratum-engine, TS engine, COMPOSE_STRATUM_ENGINE, python-legacy, resolveStratumBin, @smartmemory/stratum
+1793:- The compose-side stratum seam already defaults to TS: env override first, then project capability, then `"ts"`; `"python"` is now a retired value that throws loudly [Task 2]
+1828:- The fatal boundary lived in `lib/build.js` around the per-item `stratum.stepDone(...)` calls; the engine was already fencing duplicates, but the consumer fanout path was treating that rejection as build-fatal [Task 1]
+1837:# Task Group: forge/stratum TS background connector diagnosis and connector audits
+1839:scope: July 19-20, 2026 `forge/stratum/ts` read-only diagnosis and narrow audit memory for background-run terminal-state races, connector verification paths, and mechanical no-op migrations.
+1840:applies_to: cwd=/Users/ruze/reg/my/forge/stratum and cwd=/Users/ruze/reg/my/forge/stratum/ts; reuse_rule=safe for similar TS connector investigations in this checkout; exact temp-dir permissions and file layout should be revalidated each run.
+1846:- rollout_summaries/2026-07-20T07-53-55-qlpI-stratum_bg_exitcode_race_readonly_diagnosis.md (cwd=/Users/ruze/reg/my/forge/stratum, rollout_path=/Users/ruze/.codex/sessions/2026/07/20/rollout-2026-07-20T15-53-55-019f7e84-6caf-7d43-8cd6-bcdac92ebcfe.jsonl, updated_at=2026-07-20T07:57:07+00:00, thread_id=019f7e84-6caf-7d43-8cd6-bcdac92ebcfe, strongest source for the stale-scan diagnosis and sandbox-blocked Vitest evidence)
+1856:- rollout_summaries/2026-07-19T03-33-24-4ZDu-stratum_ts_module_register_deprecation_audit_no_op.md (cwd=/Users/ruze/reg/my/forge/stratum/ts, rollout_path=/Users/ruze/.codex/sessions/2026/07/19/rollout-2026-07-19T11-33-24-019f786f-8bf1-7d10-a119-b00c71afa974.jsonl, updated_at=2026-07-19T03:34:02+00:00, thread_id=019f786f-8bf1-7d10-a119-b00c71afa974, strongest source for zero-hit audit handling and the correct typecheck/vitest verification path)
+1874:- From `/Users/ruze/reg/my/forge/stratum/ts`, the correct connector-focused test scope is `tests/connectors`, not `ts/tests/connectors` [Task 2]
+1880:- Symptom: a DEP0205 migration run reports the wrong failure. Cause: the test path was invoked relative to the wrong cwd. Fix: run `npm run typecheck` and `./node_modules/.bin/vitest run tests/connectors` from `.../stratum/ts` [Task 2]
+2113:# Task Group: stratum Codex write-mode policy, sandbox threading, and task-scoped review gates
+2115:scope: July 2026 `stratum` memory for Codex write-mode design review, connector/factory sandbox threading, `stratum_agent_run(write=...)`, and diff-scoped review rules.
+2116:applies_to: cwd=/Users/ruze/reg/my/forge/stratum; reuse_rule=safe for similar `stratum-mcp` Codex sandbox/write tasks in this checkout; exact test counts and review diff line numbers are checkout-specific.
+2122:- rollout_summaries/2026-07-09T09-16-23-iriS-codex_write_mode_design_review.md (cwd=/Users/ruze/reg/my/forge/stratum, rollout_path=/Users/ruze/.codex/sessions/2026/07/09/rollout-2026-07-09T17-16-23-019f4629-f91b-7d21-bc3a-159c64aa868e.jsonl, updated_at=2026-07-09T09:20:46+00:00, thread_id=019f4629-f91b-7d21-bc3a-159c64aa868e, strongest source for connector-boundary policy, Docker-jail caveats, and direct-call-path risks)
+2132:- rollout_summaries/2026-07-09T10-09-45-VgPy-task_2_factory_thread_sandbox_mode_to_codex_connector.md (cwd=/Users/ruze/reg/my/forge/stratum, rollout_path=/Users/ruze/.codex/sessions/2026/07/09/rollout-2026-07-09T18-09-45-019f465a-d3ca-7d63-b7da-e5a19222a844.jsonl, updated_at=2026-07-09T10:10:59+00:00, thread_id=019f465a-d3ca-7d63-b7da-e5a19222a844, strongest source for the factory review contract and diff-anchored verification)
+2146:- `stratum_agent_run` is not the only Codex call path in this repo; `parallel_exec.py` also constructs `CodexConnector` directly, so write-mode policy cannot live only in `server.py` [Task 1]
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "cat docs/features/STRAT-AGENT-PEER-1/codex-brief-fix4.md; rg --files -g AGENTS.md -g '"'!node_modules'"' -g '"'!vendor'"' . .." in /Users/ruze/reg/my/forge/stratum
+ exited 1 in 0ms:
+# Codex brief — STRAT-AGENT-PEER-1 fix 4 (review r3 leftovers)
+
+Context: docs/features/STRAT-AGENT-PEER-1/design.md, impl-review-r3.md. Fix 3 (dead-child-without-start-time, unavailable-not-idle, sweep correlation, bounded queue/callbacks, first-line forwarding, guarded peer.json read) is already applied; build on it, do not redo it.
+
+1. **Cleanup must verify identity, not pathnames** (r3-3, `peer-sidecar.ts` `owned` set ~L191 and cleanup ~L214): before unlinking at shutdown/linger end, re-check each path: the record must parse as JSON with `pid === process.pid` and our own `sessionId`; the key file must parse with `peerToken` equal to the token this process generated; the socket path must `lstat` as a socket AND our `net.Server` must still be the listener (skip unlink if the server already closed with an error indicating the path was taken over). Anything that fails the check is left alone and logged. Test: during linger, replace the record file with a foreign record (different pid), then let cleanup run; assert the foreign file survives and the key/socket we own are removed.
+2. **Drop the stringly `peer: "pending"` field** (r3-6): the contract grammar has no literal type, so `"peer?": "string"` accepts any string. Remove `peer` from the `bg_started` response and from `startBackgroundRun`/`runAgent` return types and `mcp-surface.json`; `peerName` alone means "registration attempted, poll for `peer.registered`". Update the contract test, README sentence and CHANGELOG line accordingly. The poll-side `peer` object is unchanged.
+
+Rules as before: TDD, real fs/sockets/processes, temp dirs only, never the real registry, `cancelBackgroundRun` untouched. Run from `ts/`: `npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts tests/mcp-surface-peer.test.ts`, then `npm run typecheck`. No full suite. Do not commit. Report under 200 words: per-item change + test name, commands with counts, real-registry check.
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'cat /Users/ruze/.codex/skills/bug-fix/SKILL.md; cat docs/features/STRAT-AGENT-PEER-1/impl-review-r3.md; cat docs/features/STRAT-AGENT-PEER-1/design.md' in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+---
+name: bug-fix
+description: Use for bug reports, test failures, and production issues — triages severity, selects the right investigation/fix path, and ensures proper test coverage before shipping.
+---
+
+# Bug Fix Lifecycle
+
+## When to Use
+
+- Bug report (from user, tests, monitoring, code review)
+- Test failure with unknown cause
+- Production issue or hotfix
+- Regression after a deploy or merge
+
+**Skip this for:** typos, obvious one-liners where you can see the fix immediately. Just fix those.
+
+**Use `/forge` instead when:** the "bug" is actually a missing feature, or the fix requires architectural changes spanning 3+ files with design decisions.
+
+## Gate Protocol
+
+Same as `/forge`. Every phase transition is a gate. The agent always proposes with rationale — gates are "block until human approves," not "block until human initiates."
+
+- **Gate:** Agent proposes, human decides
+- **Flag:** Agent decides, human gets notified with rationale
+- **Skip:** Agent decides silently
+
+Default mode: **Gate** for triage and investigation conclusions, **Flag** for fix and verify, **Gate** for ship. Projects can override per the 3-mode dial.
+
+## Paths
+
+Triage determines the path. The agent proposes the path; the human approves.
+
+| Path | When | Phases |
+|------|------|--------|
+| **Quick** | Clear reproduction, obvious root cause, single file | Triage → Fix → Ship |
+| **Standard** | Non-trivial root cause, multi-file, needs investigation | Triage → Investigate → Fix → Verify → Ship |
+| **Hotfix** | Production-critical, time-sensitive | Triage → Investigate (time-boxed) → Fix → Verify → Ship (+cleanup) |
+
+## Phases
+
+### Phase 1: Triage
+
+Gather enough information to select a path. Ask (or determine from context):
+
+1. **What broke?** — Observed behavior vs expected behavior
+2. **Reproduction** — Steps to reproduce, or failing test
+3. **Severity** — Trivial (cosmetic), Normal (broken but workaround exists), Critical (production down, data loss, security)
+4. **Scope** — Single file, multi-file, unknown
+5. **Root cause hypothesis** — Do you already know what's wrong?
+
+**Path selection:**
+- Known root cause + single file → **Quick**
+- Unknown root cause OR multi-file → **Standard**
+- Severity is Critical → **Hotfix** (regardless of scope)
+
+**Gate:** Agent proposes path with rationale: "This is a [severity] bug in [scope]. Root cause is [known/unknown]. Recommending [path] because [reason]." Human approves path or redirects.
+
+### Phase 2: Investigate
+
+**Skill:** `superpowers:systematic-debugging`
+
+Follow the debugging methodology:
+1. **Reproduce** — Get a failing test or reliable reproduction
+2. **Hypothesize** — Form a theory about root cause
+3. **Verify** — Confirm or eliminate the hypothesis with evidence
+4. **Repeat** — If hypothesis was wrong, form the next one
+
+Follow `~/.claude/rules/correct-over-quick.md` — check the contract first, then spec, then code, then test. Don't assume the code is right and the test is wrong.
+
+Follow `~/.claude/rules/test-architecture-first.md` — if a test is failing, understand what behavior it specifies before changing anything.
+
+**For Hotfix path:** Time-box investigation. If root cause isn't found within reasonable effort, fix the symptom (with a clear comment explaining the workaround) and create a follow-up task for proper root cause analysis.
+
+**Gate:** Present root cause findings: "Root cause: [what's wrong]. The fix is [approach]. This touches [files]. Risk: [low/medium/high]." For hotfix: also state whether this is a proper fix or a workaround, and what cleanup is deferred. Human approves fix approach.
+
+**Skip when:** Quick path (root cause already known from triage).
+
+### Phase 3: Fix
+
+**Skill:** `superpowers:test-driven-development`
+
+1. **Write a failing test** that reproduces the bug — this is the spec for "fixed"
+2. **Implement the fix**
+3. **Verify the test passes**
+4. **Run the full test suite** — ensure no regressions
+
+Follow the testing philosophy in `~/.claude/rules/testing.md` — prefer integration tests with real resources over mocks. The bug-reproduction test should test behavior, not implementation details.
+
+**Do NOT:**
+- Fix the test to match broken code
+- Weaken assertions to make them pass
+- Skip writing the reproduction test ("it's obvious")
+- Fix unrelated code you noticed while investigating (note it, don't fix it)
+
+**Flag:** After fix is implemented and tests pass, notify: "Fix implemented. [N] tests pass, [M] new. Changes in [files]." Human is notified, agent proceeds to verify.
+
+### Phase 4: Verify
+
+**Skill:** `superpowers:verification-before-completion`
+
+1. Run all tests — not just the new one
+2. Verify the original reproduction steps no longer trigger the bug
+3. Check for related edge cases the same root cause could affect
+
+**For Standard/Hotfix path:** Also run `superpowers:requesting-code-review` — a second pass catches fixes that introduce new issues.
+
+**Flag:** Present verification results: "All [N] tests pass. Original reproduction confirmed fixed. [Edge cases checked/found]." Human is notified, agent proceeds to ship.
+
+**Skip when:** Quick path (test suite passing is sufficient verification).
+
+### Phase 5: Ship
+
+**Gate:** Present the fix for final approval before committing:
+- Summary: what was broken, why, what the fix does
+- Files changed (with line counts)
+- Tests added/modified
+- For Hotfix: list any deferred cleanup as follow-up tasks
+
+Human approves → commit. Human may request changes → loop back to Fix.
+
+1. **Commit** — test + fix in the same commit. Follow project commit conventions.
+2. **Update tracker** — if the bug has a tracker item, update its status
+3. **For Hotfix:** Document any deferred cleanup as follow-up tasks. A hotfix workaround is tech debt — track it.
+
+## Cross-Cutting Skills
+
+| Skill | When |
+|-------|------|
+| `superpowers:systematic-debugging` | Phase 2 (investigation) |
+| `superpowers:test-driven-development` | Phase 3 (fix) |
+| `superpowers:verification-before-completion` | Phase 4 (verify) |
+| `superpowers:requesting-code-review` | Phase 4 (standard + hotfix paths) |
+
+## Rules Referenced
+
+| Rule | Applies to |
+|------|-----------|
+| `~/.claude/rules/correct-over-quick.md` | Phase 2 — decision order when test and code disagree |
+| `~/.claude/rules/test-architecture-first.md` | Phase 2 — understand test intent before changing |
+| `~/.claude/rules/testing.md` | Phase 3 — integration tests, golden flows, error-path harness |
+| `~/.claude/rules/planning-standards.md` | Phase 5 — if the fix needs a follow-up plan |
+# Implementation review r3 (Codex gpt-5.6-sol/high, run 3d34aeeea2a1, 2026-09-15)
+
+1. must-fix — `ts/src/connectors/peer-sidecar.ts:208` — Nonterminal startup/runtime failure fabricates an `idle` notice; if a record rewrite fails after subscription while Codex remains busy, cleanup tells the parent the run finished.
+
+2. should-fix — `ts/src/connectors/background.ts:364` — Reading optional `peer.json` is unbounded and may block; a FIFO named `peer.json` with no writer makes `pollBackgroundRun()` hang instead of preserving prior poll semantics.
+
+3. should-fix — `ts/src/connectors/peer-sidecar.ts:191` — `owned` records pathnames, not file identities; if a registry record, key, or socket pathname is replaced during linger, cleanup unlinks the replacement it never created.
+
+4. should-fix — `ts/src/connectors/peer-registry.ts:127` — Dead-peer sweeping deletes keys by prefix and a socket from the current `sockDir`, without correlating them to the record; changing socket directories can leave the actual stale socket while deleting an unrelated `<deadPid>.sock` in the new directory.
+
+5. should-fix — `ts/src/connectors/peer-sidecar.ts:285` — Missing `childProcStartTime` makes `processIdentity(pid, "")` permanently `unknown`; if that wrapper is killed without a sentinel, the sidecar, watchers, intervals, registry row, and socket survive indefinitely.
+
+6. should-fix — `ts/contracts/mcp-surface.json:1123` — The strict contract widens `peer?: "pending"` to any string; a regression returning `peer:"failed"` passes `assertToolResponse`, and the contract test never checks rejection of non-`pending` values.
+
+# STRAT-AGENT-PEER-1 Design: Register Codex background runs as Claude Code peer sessions
+
+**Status:** DESIGN
+**Phase:** STRAT-AGENT: Agent Surface (slice of forge `STRAT-AGENT-VIS`)
+**Created:** 2026-09-15
+**Revised:** 2026-09-15 (r1 — Codex design review named four gaps: cancellation identity, sidecar startup failure, callback dir rule vs temp-dir tests; addressed in "Cancellation and failure isolation" and the callback rule. r2 — three should-fix: finish/subscribe race → terminal retention window; peer metadata via fatal `meta.json` path → sidecar-owned `peer.json` + deterministic name; racy golden flow → controlled-release fake child. r3 — one should-fix: notice guarantee restated as "exactly one attempt per accepted, non-replaced subscription" with explicit accept/replace/reject and shutdown-drain rules; editorial alignment of cleanup timing and the write-set invariant)
+**Related:** [feature.json](./feature.json), [research-claude-code-peer-registry.md](./research-claude-code-peer-registry.md), forge `ROADMAP.md` row `STRAT-AGENT-PEER-1` (filed 2026-09-09), prior slices [STRAT-AGENT-BG](../STRAT-AGENT-BG/design.md) and [STRAT-AGENT-BG-WRITE-1](../STRAT-AGENT-BG-WRITE-1/design.md)
+
+---
+
+## Problem Statement
+
+A `stratum_agent_run(agent="codex", background=true)` run is invisible to the parent Claude Code session. `ListAgents` shows only Claude subagents and peer Claude sessions, so the user cannot see that an astra review is running, and the parent has to wait with a `kill -0 <pid>` Bash loop capped at 10 minutes (or poll `stratum_agent_poll`). Claude Code already has a mechanism for exactly this, its peer-session registry plus a Unix-socket messaging protocol that includes a one-shot idle notification. Stratum should register each Codex background run as a peer so it appears in the list, shows `busy`/`idle`, and wakes the parent when it finishes.
+
+Origin: SmartMemory CORE-ONTOLOGY-PARITY-1 session, the user asked why the astra reviewer was not in the agent list.
+
+---
+
+## Ground truth (verified 2026-09-15 against Claude Code 2.1.272)
+
+Reverse-engineered by Codex from the installed bundle (full report with line references in [research-claude-code-peer-registry.md](./research-claude-code-peer-registry.md)) and then **confirmed live** from this session with a throwaway Node probe (`peer-probe.mjs`, scratchpad, deleted after):
+
+| Fact | Evidence |
+|---|---|
+| Registry is `<configDir>/sessions/<pid>.json`; `configDir` honours `CLAUDE_CONFIG_DIR`, default `~/.claude`. The **filename pid** is authoritative, the `pid` field inside is ignored. | research §1, §6; `JU(){return _o(be(),"sessions")}` |
+| Listing requires a **reachable Unix socket** at `messagingSocketPath` (250 ms connect probe, `EBUSY` counts). A record without a live socket is never listed. A `.key` file is **not** required to be listed. | research §1; probe listed with no key file |
+| Liveness: `kill(pid,0)` where only `ESRCH` means dead; if `pidDomain` matches (`"darwin"` on mac) and `procStart` is present, it is compared with `LC_ALL=C TZ=UTC ps -o lstart= -p <pid>` (exact string equality, UTC). | research §1, §2; live record shows 07:11 UTC vs 15:11 local |
+| `kind` enum is `interactive\|bg\|daemon\|daemon-worker`; anything else is dropped (rendered blank). `status` enum is `busy\|shell\|idle\|waiting`. Records with `spare:true` or any `parkedJobId` are excluded. | research §1, §5; probe rendered `· bg · busy` |
+| Row renders `name [ref] · kind · status · started <age>`; `[ref]` = first 6 hex of `sha256("session:" + socketPath)`. Stale `updatedAt` never hides a record. | research §1, §5 |
+| Key file: `<pid>.<sha256(path.resolve(socketPath))>.key`, mode 0600, `{"peerToken":<32 hex>,"procStart":<same string>,"pidDomain":"darwin"}`. The **sender** reads the destination's key and prefixes `{"type":"auth","token":...}` as the first JSON line. On macOS auth is optional; with no key file the sender sends no auth line and the message still lands. | research §2; probe received frames with no auth line |
+| Wire: newline-delimited JSON over the socket, sender half-closes, no acknowledgement frame. Inbound `user` frame and `notify_when_idle` control frame shapes captured verbatim below. | research §4; probe inbox |
+| Idle notice: receiver opens a **new** connection to the requester's `from` socket, authenticates with the **requester's** peer token (read from the requester's key file), sends `{"type":"control","action":"peer_idle_notice","orig_msg_id":<subscription msg_id>,"state":"idle"\|"exited"\|"unavailable","finished_at":<ms>,"from":"uds:<own sock>"}`. The requester only accepts a notice whose `orig_msg_id` matches an outstanding subscription. Changing `status` in the record does **not** notify anyone. | research §4 |
+| Idle subscriptions carry `expectPeerPid` = the registry filename pid and are refused (`wrong-endpoint`) if the process answering the socket has a different pid (`Bun.ant.getPeerPid`). Ordinary SendMessage does not check the pid in this build. | research §3 |
+
+Captured frames (probe inbox, tokens redacted, sender was this session):
+
+```json
+{"msgV":1,"msg_id":"4f41…","type":"user","message":{"role":"user","content":"<cross-session-message from=\"uds:/tmp/cc-socks/20595.sock\" from-name=\"forge-90\" from-mode=\"bypass\">\nPEER-1 probe: capture this frame.\n</cross-session-message>"},"priority":"next","from":"uds:/tmp/cc-socks/20595.sock"}
+{"type":"control","action":"notify_when_idle","from":"uds:/tmp/cc-socks/20595.sock","from_mode":"bypass","msgV":1,"msg_id":"91e2…"}
+```
+
+### Corrections to the roadmap row
+
+| Roadmap row said | Reality | Consequence |
+|---|---|---|
+| `kind: "codex"` | Parser drops unknown kinds | Use `kind: "bg"` |
+| Phase 1 is "list only", socket is Phase 2 | Listing itself probes the socket | A listening socket is mandatory from day one, so the record owner must be a process that can bind a socket |
+| Record carries `version: 2.1.261` | Installed is 2.1.272; records from 2.1.238 to 2.1.272 coexist and all list | Reader is permissive; gate on protocol, not on a version string (see Risk) |
+| Reuse the codex pid | The socket answerer's pid must equal the filename pid for idle subscriptions; codex cannot serve a socket, and the MCP server is one pid for N runs and may restart | A **per-run sidecar process** owns pid, record, key and socket |
+| `procStart` via stratum's `procStartTime()` | Claude Code compares against `TZ=UTC ps -o lstart=` text; stratum's helper returns `tvsec.tvusec` on darwin | Produce `procStart` with the same `ps` invocation; keep `procStartTime()` for stratum's own identity checks only |
+| "emit `notify_idle` on completion" | `notify_idle` is a capability name; the wire action is `peer_idle_notice`, sent only to sessions that subscribed with `notify_when_idle`, addressed to their socket with their token | Sidecar must store subscriptions and dial back |
+
+---
+
+## Scope
+
+**In (v1):**
+- Every codex background run (`startBackgroundRun`, codex path in `ts/src/connectors/background.ts`) spawns one detached **peer sidecar** that registers the run in the Claude Code peer registry, keeps `status` in step with the durable stream, answers `notify_when_idle` with `peer_idle_notice` when the run ends, and removes its files on exit.
+- `stratum_agent_run` background response gains `peerName` so the caller knows which `ListAgents` row is theirs and can `SendMessage(to=peerName, notify_when_idle=true)` instead of polling.
+- Inbound `user` frames are **refused** (the run's prompt is fixed at spawn; codex exec has no mid-run input channel). The sidecar replies with a `peer_message_status` control frame `status:"expired", status_detail:"refused"` the way Claude Code itself represents refusal, and logs the drop.
+
+**Out (follow-ups, filed at ship):**
+- Claude background runs (`claude-bg-worker.ts`, worker threads inside the MCP server): different process model, needs its own owner decision. `STRAT-AGENT-PEER-2`.
+- Foreground `stratum_agent_run` calls: the parent is blocked on them anyway.
+- Delivering peer messages into a running codex turn.
+- Registering under Claude Code's fleet view (24 h freshness, interactive-only filter, separate feature gate).
+
+---
+
+## Design
+
+### Owner: one detached sidecar per run
+
+```
+stratum-mcp (parent Claude Code's MCP child)
+  └─ startBackgroundRun(codex)
+       ├─ spawn sh -c T2F5_SHELL_WRAPPER codex …        (existing, detached, pid A)
+       └─ spawn node dist/connectors/peer-sidecar.js   (new, detached, pid B)
+              args/env: runId, streamPath, childPid A, childProcStartTime, cwd, name, sessionsDir, sockDir
+              1. bind  <sockDir>/B.sock
+              2. write <sessionsDir>/B.<sha256(sock)>.key   (0600)
+              3. write <sessionsDir>/B.json                 (0644, atomic tmp+rename)
+              4. tail streamPath: any new line → updatedAt, status busy
+                 sentinel line → status idle, fire idle notices, linger, cleanup, exit 0
+                 child A dead (processIdentity) with no sentinel → notices state "exited", linger, cleanup, exit
+              5. serve socket: parse JSON lines; user → refuse; notify_when_idle → store {msg_id, from}
+```
+
+Why a sidecar and not the alternatives:
+
+| Option | Why not |
+|---|---|
+| Codex wrapper pid + no socket | Never listed (socket probe). |
+| MCP server serves sockets for all runs | One pid can own one `<pid>.json`; N concurrent runs collapse to one row; server restart kills the row while the durable run keeps going, contradicting the restart-proof design of BG runs. |
+| Register from inside the `sh -c` wrapper | `sh` cannot serve a socket or speak the protocol. |
+| Sidecar (chosen) | Own pid satisfies filename pid = socket answerer pid; detached, so it outlives an MCP restart exactly like the run it shadows; one row per run; dies with the run. |
+
+The sidecar is a **shadow**, never an authority: it only reads `stream.jsonl` and never writes it, never touches `meta.json`, and its absence or crash changes nothing about the run, poll or cancel. If it crashes, Claude Code's own liveness check (`ESRCH`) drops the row; the stale `.json`/`.key`/`.sock` files are cleaned on the next `startBackgroundRun` by a sweep that removes only files whose filename pid is dead **and** whose record carries our marker `entrypoint: "stratum-peer"` (never anyone else's files).
+
+### Record shape (v1)
+
+```json
+{
+  "pid": <B>, "sessionId": "<uuid>", "cwd": "<run cwd>", "startedAt": <ms>,
+  "procStart": "<LC_ALL=C TZ=UTC ps -o lstart= -p B, trimmed>", "pidDomain": "darwin",
+  "version": "<stratum pkg version>", "peerProtocol": 1, "peerFeatures": ["notify_idle"],
+  "kind": "bg", "entrypoint": "stratum-peer",
+  "messagingSocketPath": "<sockDir>/B.sock",
+  "name": "codex-<modelShort>-<runId6>", "nameSource": "derived",
+  "status": "busy", "updatedAt": <ms>, "statusUpdatedAt": <ms>
+}
+```
+
+- `name`: `codex-astra-4c165b` style, from `modelIdentity(model).model` with the `gpt-`/`-codex` noise stripped, plus the first 6 chars of the runId. Lowercase, `[a-z0-9-]`, no colons or slashes (address-like names can fail candidate construction). **Blueprint correction:** a background run can never carry `flow` (the server requires `cancellationId` with `flow` and rejects `cancellationId` for background runs), so there is no step label in v1; a caller-supplied label is a possible follow-up.
+- `pidDomain`: `"darwin"` on macOS. On Linux Claude Code computes `darwin:<machine-id>:<pidns>`; the sidecar reproduces that formula (`/etc/machine-id` + `readlink /proc/self/ns/pid`). On any other platform, or if the formula cannot be evaluated, omit `pidDomain` (the reader then skips process checks and still lists).
+- `status` transitions: `busy` at start; stays `busy` while lines arrive; **`idle` is written only at the sentinel**, immediately before the notices and cleanup. A codex run with no output for minutes is still `busy`, which is true.
+
+### Socket protocol (v1 subset)
+
+- The first-line deadline defaults to 30 seconds. `PeerSidecarConfig.firstLineDeadlineMs` is passed to the sidecar as `STRATUM_PEER_FIRST_LINE_MS`; tests use 300 ms with temporary registry and socket directories.
+- Accept connections, split on `\n`, parse JSON, ignore the optional first `{"type":"auth"}` line (log a mismatch, do not reject; macOS auth is optional and the sender may hold a stale token), end the socket after EOF.
+- `type:"control", action:"notify_when_idle"` → **acceptance rule**: a frame is *accepted* when it parses, carries a string `msg_id` and a `from` that passes the callback rule below, and the table has fewer than 32 entries; it is then stored as `{msg_id, from, from_mode?}` (the request's `from_mode` is echoed verbatim on the notice; without it the notice is not admitted to the subscriber's model, see "Unproven assumptions"). A later accepted frame with the same `from` **replaces** the earlier one (Claude Code's own re-subscription semantics); the replaced subscription is dropped and gets no notice. A frame arriving when the table is full is *rejected*: logged, not stored, no notice. If the run has already finished (terminal, inside the linger), an accepted frame is answered immediately.
+- **Notice guarantee (precise):** every accepted, non-replaced subscription receives **exactly one notification attempt** (one dial-back with a 5 s timeout, no retry). Delivery is best effort, as in Claude Code itself. Attempts are made at the terminal transition and, for late subscriptions, immediately on acceptance. **Shutdown drain:** at the linger deadline and on SIGTERM/SIGINT the sidecar stops accepting connections, fires the attempt for every stored-but-unnotified subscription (`state:"exited"` on signal, `"idle"` otherwise), waits for in-flight dial-backs up to 5 s, then removes its files and exits.
+- `type:"user"` → send `peer_message_status` with `orig_msg_id`, `status:"expired"`, `status_detail:"refused"` to `from`; log.
+- Anything else → ignore, log at debug.
+- On run end: for each subscription, connect to `from` (`uds:` prefix stripped), read that peer's key by `sha256(path.resolve(sockPath))` suffix in `sessionsDir`, write `{"type":"auth","token":<their token>}\n` (omit the line if no key found), then the `peer_idle_notice` frame, half-close, 5 s timeout, best effort.
+- Callback targets (`from`) must be `uds:<abs path>` whose basename is `<digits>.sock` and whose directory is either the sidecar's **own `sockDir`** (same-directory rule, always accepted, which is also what the golden flow relies on when `sockDir` is a temp dir) or one of Claude Code's recognised default dirs (`/tmp/cc-socks`, `/private/tmp/cc-socks`, `/run/user/<uid>/cc-socks`, `cc-socks-<n>` variants). Anything else is dropped and logged. The key lookup for the callback token searches the sidecar's own `sessionsDir` only.
+
+### Wiring
+
+- `startBackgroundRun` (codex path) spawns the sidecar **after** `meta.json` is written and the child has spawned, passing `childPid` + `procStartTime` so the sidecar can detect a run that died without a sentinel. It waits only for the sidecar's `spawn` event; spawn failure is logged and swallowed and the run proceeds unregistered.
+- **The parent never rewrites `meta.json` after spawn** (that path, `background.ts:187`, kills the run on failure and must stay reserved for the run's own metadata). Instead the peer name is **deterministic** (`codex-<modelShort>-<runId6>[-<stepId>]`, computable before spawn) and the sidecar itself writes `<runDir>/peer.json` = `{ pid, name, sock, registeredAt }` atomically **after** socket bind, key and record all succeeded. `CodexRunMeta` is unchanged.
+- `bg_started` response gains `peerName` (present whenever registration was attempted, i.e. not disabled by the kill switch or drift guard). **Review r3 correction:** the originally planned `peer: "pending"` companion field was dropped because the MCP contract grammar has no literal type and `"peer?": "string"` would accept any value; `peerName` alone means "registration attempted, poll for `peer.registered`". `stratum_agent_poll` reads `peer.json` if present and reports `peer: { name, registered: true, pid, sock }`, otherwise `peer: { name, registered: false }` while the sidecar is still starting or failed. Callers treat `peerName` as tentative until `registered: true`, and fall back to `stratum_agent_poll` when `SendMessage(notify_when_idle)` to that name errors (row gone or never appeared). `mcp-surface.json` gains exactly these optional fields (strict contracts, see memory `strict-contract-seams`).
+- **Terminal retention window.** On sentinel or child death the sidecar flips `status:"idle"`, fires notices to existing subscribers, and then **keeps the row and socket alive for `STRATUM_PEER_LINGER_MS` (default 15 000 ms)**, answering any `notify_when_idle` that arrives in that window immediately with `state:"idle"` (or `"exited"`). Cleanup happens at the end of the window. This closes the race where a run finishes between the caller's `ListAgents` and its `SendMessage`; the guarantee is "every accepted, non-replaced subscription gets exactly one notification attempt", never "every caller gets a notice". Rows therefore show `idle` for ~15 s after completion, which is also the visible confirmation the user asked for.
+- `cancelBackgroundRun` is **not changed**. It SIGTERMs the wrapper's process group (`process.kill(-pid)`) and no sentinel is written when `sh` dies with its child. The sidecar is spawned `detached: true` so it sits in its **own** process group and survives that kill; it then observes "child dead, no sentinel" through `processIdentity(childPid, childProcStartTime)` and runs the `exited` path. Cancel therefore needs no knowledge of the sidecar and no second pid-identity check; the only identity the sidecar ever signals is its own.
+
+### Cancellation and failure isolation (review r1)
+
+| Event | Run outcome | Sidecar behaviour |
+|---|---|---|
+| Sentinel appears (rc 0 or non-zero) | unchanged | `status:"idle"`, notices `state:"idle"` with `detail:"rc=<n>"` when rc≠0, linger, cleanup, exit 0 |
+| Cancel (group SIGTERM), child gone, no sentinel | poll reports `child_died_without_sentinel` as today | `processIdentity` → `dead`; `status:"idle"`, notices `state:"exited"`, `detail:"cancelled_or_died"`, linger, cleanup, exit 0 |
+| `processIdentity` → `unknown` (EPERM, unreadable start time) | unchanged | keep watching; never treat "unknown" as dead (same rule as `proc_identity.ts` R4-3) |
+| Sidecar receives SIGTERM/SIGINT | unchanged | shutdown drain (notices `state:"exited"`, ≤5 s for in-flight dial-backs), cleanup, exit; no linger |
+| Sidecar crashes | unchanged | Claude Code drops the row on `ESRCH`; next `startBackgroundRun` sweep removes `<deadpid>.json`/`.key`/`.sock` **only** when the record has `entrypoint:"stratum-peer"` |
+| Sidecar cannot bind the socket / write the key / write the record | unchanged, run proceeds unregistered | remove whatever partial file it created, write the reason to `<streamPath>.peer.err`, exit 2; `startBackgroundRun` never waits on the sidecar beyond the `spawn` event |
+| Sidecar spawn itself fails (`spawn` error) | unchanged | logged, swallowed; `peer` field absent from meta and response |
+| Run already finished before the sidecar registers (fast run) | unchanged | first stream scan already shows the sentinel → register with `status:"idle"`, hold the retention window, answer any subscription immediately, then cleanup |
+| Run finishes between caller's `ListAgents` and `SendMessage` | unchanged | row still present for the retention window; subscription answered immediately. After the window the `SendMessage` errors and the caller falls back to `stratum_agent_poll` |
+| MCP server restarts mid-run | unchanged (durable) | unaffected, detached; poll still finds the run via `meta.json` |
+
+Invariant: the sidecar **reads** `stream.jsonl` and **writes only** `<sidecarPid>.json`, `<sidecarPid>.<hash>.key`, `<sidecarPid>.sock`, `<runDir>/peer.json`, and `<streamPath>.peer.err`. It never writes `stream.jsonl`, `meta.json`, or any registry file named for another pid. Cleanup after a normal terminal transition (sentinel or child death) happens at the **end of the linger window**; the two exceptions are signal shutdown (drain, then cleanup, no linger) and startup failure (partial files removed immediately). The poll and cancel contracts (`BackgroundPollResult`, cancel statuses) are byte-for-byte unchanged; the only additive change is the optional `peer` object.
+
+### Kill switches and drift guard
+
+- `STRATUM_PEER_REGISTER=0` disables registration entirely.
+- Registration is skipped, with one info log line per run, when: the sessions dir does not exist (no Claude Code on this machine); or the sessions dir contains any live record with `peerProtocol > 1` (protocol moved on, our frames might be wrong); or the socket dir cannot be created with mode 0700. No version-string allowlist: the reader proved permissive across 2.1.238 to 2.1.272 and a string gate would only go stale.
+- `sessionsDir` and `sockDir` are overridable (`STRATUM_PEER_SESSIONS_DIR`, `STRATUM_PEER_SOCK_DIR`, and as `StartBackgroundRunOptions` fields) so tests never touch the real registry.
+
+### Safety of writing into Claude Code's registry
+
+- Registry reads use `lstat` to skip non-regular files and symlinks, cap records at 262144 bytes (keys at 4096), and parent registration has a 2000 ms best-effort deadline.
+
+- Only files named with the sidecar's **own pid** are ever created, and only records carrying `entrypoint:"stratum-peer"` with a dead filename pid are ever removed by the sweep. Never `rm` a socket we did not bind.
+- Record 0644, key 0600, both written to a temp name in the same dir and renamed.
+- Refuse to start if `<pid>.json` already exists and is not ours (pid reuse against a stale foreign record), log and skip registration.
+
+---
+
+## Testing
+
+Per `~/.claude/rules/testing.md`: golden flow first, real processes, no mocks of the seam.
+
+1. **Golden flow** (`ts/tests/connectors/peer-sidecar.test.ts`), no timing races: the fake child is a **controlled release**, `["sh","-c","printf '<agent_message line>\n'; until [ -e \"$RELEASE\" ]; do sleep 0.05; done"]` with `RELEASE` a path in the temp dir. `startBackgroundRun({agent:"codex", command, registryRoot, sessionsDir: tmp, sockDir: tmp, lingerMs: 500})` → wait for `<runDir>/peer.json` → `<sidecarPid>.json` has `kind:"bg"`, `status:"busy"`, a matching `.key` exists, the socket connects → a fake requester socket in `sockDir` (with its own key) sends `notify_when_idle` → the test touches `RELEASE` → the requester receives exactly one `peer_idle_notice` with the same `orig_msg_id`, `state:"idle"`, preceded by an auth line carrying the requester's token → the record reads `status:"idle"` during the linger → after the linger, record, key and socket are gone → `pollBackgroundRun` reports `complete` (sidecar changed nothing about the run).
+2. **Error harness** (table-driven): child dies without sentinel (test kills the group the way cancel does) → `state:"exited"`; run already finished before subscription → immediate notice; subscription after the linger → connection refused, `pollBackgroundRun` still `complete`; `user` frame → `peer_message_status refused`; malformed line → ignored, connection still ends; unknown callback dir → notice not sent, logged; `STRATUM_PEER_REGISTER=0` → no files, no `peerName`, run unaffected; sessions dir missing → same; foreign `<pid>.json` present → skip; socket bind fails (pre-create a regular file at the socket path) → no record, `.peer.err` written, run unaffected, poll reports `peer.registered:false`; sidecar cannot write `peer.json` (read-only run dir after spawn) → registry files still cleaned up on exit, run unaffected.
+3. **Contract test**: the record produced is accepted by a copy of the 2.1.272 reader rules (kind/status enums, canonical filename, size cap, `procStart` matches `TZ=UTC ps -o lstart=` for the sidecar pid, key filename equals `sha256(path.resolve(sock))`).
+4. **Live verification (Phase 7 exit, manual, this session)**: launch a real codex bg run, call `ListAgents` and see the row, `SendMessage(notify_when_idle)` and receive the `[Cross-session idle notice]`, then confirm the row is gone. Equivalent of the probe already run during design.
+
+Run the codex-lifecycle and background test files after the change; full suite once at the end.
+
+---
+
+## Risks and open questions
+
+- **Protocol coupling to an undocumented Claude Code internal.** Mitigated by the shadow design (nothing about the run depends on it), the protocol gate, the kill switch, and the research report pinned to 2.1.272 so the next drift is diagnosable. Accepting this coupling is the point of the feature.
+- **Idle-notice pid check on other builds.** In 2.1.272 subscriptions verify the socket answerer's pid equals the filename pid; the sidecar satisfies it by construction. If a future build also checks `procStart` via the currently stubbed synchronous helper, our `procStart` string is already the exact `ps` text, so it should still match.
+- **Row clutter.** Every codex bg run adds a row for its lifetime only; rows disappear at completion, unlike the long-lived interactive sessions.
+- **Linux `pidDomain`.** Formula reproduced from the bundle, not yet observed live; if it mismatches, the reader simply skips process checks, so the failure mode is "listed, less strictly verified", not "hidden".
+
+## Unproven assumptions (gate checkpoint)
+
+Verified live before implementation (probe runs 85307, 50870, 76985 on 2026-09-15): listing requires a socket; the `user` and `notify_when_idle` frames land (with an auth line once our key file exists); the subscription's pid check passes for a process that owns its own record; our `peer_idle_notice` dial-back connects and is written with the requester's token.
+
+**Admission of the notice into the subscriber's model context: verified, with one required detail.** Probe 50870 sent a correlated `peer_idle_notice` **without** `from_mode` and nothing reached this session's model. Probe 76985 sent the same notice with **`from_mode` mirrored from the `notify_when_idle` request** (`"bypass"` here) and the `[Cross-session idle notice] "codex-probe3" … is idle now` arrived in this session's context. Claude Code classifies the notice's permission class from `from_mode` (receiver: `eAn(orig_msg_id, state, finished_at, detail, from_mode, verifiedPeer)`); a notice with no mode is treated as a different class and is at best shown to the user, not the model. **Rule for the sidecar: store the request's `from_mode` with each subscription and echo it on the notice.** The fallback for callers whose subscription fails remains `stratum_agent_poll`.
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "git status --short; sed -n '1,300p' ts/src/connectors/peer-sidecar.ts; rg -n 'pending|peerName|cleanup|linger' ts/tests/connectors/peer-* ts/tests/mcp-surface-peer.test.ts ts/src/connectors/background.ts ts/src -g '*.ts'" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+?? docs/features/STRAT-AGENT-PEER-1/report.md
+?? docs/features/STRAT-AGENT-PEER-1/sessions/codex-fix4-run.log
+#!/usr/bin/env -S node --experimental-strip-types
+import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { createConnection, createServer, type Socket } from "node:net";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { PeerRecordFile, PeerSidecarConfig } from "./peer-registry.js";
+
+function moduleUrl(name: string): URL {
+  const source = new URL(`./${name}.ts`, import.meta.url);
+  return existsSync(source) ? source : new URL(`./${name}.js`, import.meta.url);
+}
+const { claudeProcStart, configFromEnv, isAllowedCallback, keyFileName, pidDomain, readPeerToken, sidecarEnv }: typeof import("./peer-registry.js") = await import(moduleUrl("peer-registry").href);
+const { processIdentity }: typeof import("./proc_identity.js") = await import(moduleUrl("proc_identity").href);
+
+export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<void> {
+  let stderr: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    const entry = fileURLToPath(moduleUrl("peer-sidecar"));
+    stderr = await open(`${config.streamPath}.peer.err`, "a", 0o600);
+    const child = spawn(process.execPath, [...(entry.endsWith(".ts") ? ["--experimental-strip-types"] : []), entry], {
+      detached: true, stdio: ["ignore", "ignore", stderr.fd], env: sidecarEnv(config),
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    child.unref();
+  } catch (error) {
+    console.error("stratum peer spawn failed:", error);
+  } finally { await stderr?.close().catch(() => undefined); }
+}
+
+/** Serializes sidecar scans and identity checks. */
+export class PeerWorkQueue {
+  private work = Promise.resolve();
+  private readonly pending = new Set<"scan" | "identity">();
+  private readonly onError: (error: unknown) => void;
+  constructor(onError: (error: unknown) => void) { this.onError = onError; }
+  schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+    if (this.pending.has(kind)) return;
+    this.pending.add(kind);
+    this.work = this.work.then(task).catch(this.onError).finally(() => { this.pending.delete(kind); });
+  }
+  drain(): Promise<void> { return this.work; }
+}
+
+async function main(): Promise<void> {
+  const config = configFromEnv(process.env);
+  const sockPath = join(config.sockDir, `${process.pid}.sock`);
+  const recordPath = join(config.sessionsDir, `${process.pid}.json`);
+  const keyPath = join(config.sessionsDir, keyFileName(process.pid, sockPath));
+  const owned = new Set<string>();
+  const connections = new Set<Socket>();
+  const inFlight = new Set<Promise<void>>();
+  type Callback = {to: string; frame: Record<string, unknown>; notice: boolean};
+  const callbacks: Callback[] = [];
+  const activeNotices = new Set<string>();
+  const abortCallbacks = new Set<() => void>();
+  let callbackBudget = 5000;
+  const subscriptions = new Map<string, {id: string; to: string; from_mode?: unknown; notified: boolean}>();
+  let terminalReady = false;
+  function notifyPending(state = terminalState): void {
+    if (!state) return;
+    for (const subscription of subscriptions.values()) {
+      if (subscription.notified) continue;
+      subscription.notified = true;
+      sendControl(subscription.to, {type:"control", action:"peer_idle_notice", orig_msg_id:subscription.id,
+        state:state.state, finished_at:state.finishedAt, ...(state.detail ? {detail:state.detail} : {}), from:`uds:${sockPath}`,
+        ...(subscription.from_mode !== undefined ? {from_mode:subscription.from_mode} : {})}, true);
+    }
+  }
+  const peerToken = randomBytes(16).toString("hex");
+  function sendControl(to: string, frame: Record<string, unknown>, notice = false): void {
+    const replacement = notice ? callbacks.findIndex(item => item.notice && item.to === to) : -1;
+    if (replacement >= 0) callbacks.splice(replacement, 1);
+    if (callbacks.length >= 32) {
+      // The subscription table reserves at most 32 notices. Refusals yield their slots.
+      const refusal = notice ? callbacks.findIndex(item => !item.notice) : -1;
+      if (refusal < 0) { console.error("peer callback dropped: full"); return; }
+      callbacks.splice(refusal, 1);
+      console.error("peer callback dropped: full (reserved for idle notice)");
+    }
+    callbacks.push({to, frame, notice});
+    pumpCallbacks();
+  }
+  function pumpCallbacks(): void {
+    while (inFlight.size < 8) {
+      const index = callbacks.findIndex(item => !item.notice || !activeNotices.has(item.to));
+      if (index < 0) return;
+      const callback = callbacks.splice(index, 1)[0]!;
+      if (callback.notice) activeNotices.add(callback.to);
+      const attempt = dialBack(callback).catch(error => { console.error("peer callback failed:", error); });
+      inFlight.add(attempt);
+      void attempt.finally(() => {
+        inFlight.delete(attempt);
+        if (callback.notice) activeNotices.delete(callback.to);
+        pumpCallbacks();
+      });
+    }
+  }
+  async function dialBack({to, frame}: Callback): Promise<void> {
+    const token = await readPeerToken(config.sessionsDir, to);
+    await new Promise<void>(resolve => {
+      const socket = createConnection(to);
+      const abort = () => socket.destroy();
+      abortCallbacks.add(abort);
+      const timeout = setTimeout(abort, callbackBudget);
+      socket.once("connect", () => socket.end(
+        (token ? JSON.stringify({type:"auth", token}) + "\n" : "") + JSON.stringify(frame) + "\n",
+      ));
+      socket.once("error", abort);
+      socket.once("close", () => { clearTimeout(timeout); abortCallbacks.delete(abort); resolve(); });
+    });
+  }
+  async function drainCallbacks(): Promise<void> {
+    // Only accepted notices must survive shutdown; queued user refusals are best effort.
+    for (let i = callbacks.length - 1; i >= 0; i--) {
+      if (!callbacks[i]!.notice) { callbacks.splice(i, 1); console.error("peer callback dropped: shutdown"); }
+    }
+    // Share the five-second shutdown window across the bounded remaining waves.
+    callbackBudget = Math.floor(4800 / (1 + Math.ceil(callbacks.length / 8)));
+    const active = [...abortCallbacks];
+    const release = setTimeout(() => { for (const abort of active) abort(); }, callbackBudget);
+    let deadline: NodeJS.Timeout | undefined;
+    const drain = async () => {
+      while (inFlight.size || callbacks.length) {
+        pumpCallbacks();
+        await Promise.all([...inFlight]);
+      }
+    };
+    try {
+      await Promise.race([drain(), new Promise<void>(resolve => { deadline = setTimeout(resolve, 5000); })]);
+    } finally { clearTimeout(release); clearTimeout(deadline); }
+  }
+  function receive(value: unknown): void {
+    if (stopping || !value || typeof value !== "object" || Array.isArray(value)) return;
+    const frame = value as Record<string, unknown>;
+    const to = typeof frame.from === "string" ? isAllowedCallback(frame.from, config.sockDir) : undefined;
+    if (!to || typeof frame.msg_id !== "string") { console.error("peer frame rejected: invalid callback or msg_id"); return; }
+    if (frame.type === "user") {
+      console.error("peer user message refused");
+      sendControl(to, {type:"control", action:"peer_message_status", orig_msg_id:frame.msg_id,
+        status:"expired", status_detail:"refused", from:`uds:${sockPath}`,
+        ...(frame.from_mode !== undefined ? {from_mode:frame.from_mode} : {})});
+    } else if (frame.type === "control" && frame.action === "notify_when_idle") {
+      // At capacity even replacements are rejected, matching the specified acceptance rule.
+      if (subscriptions.size >= 32) { console.error("peer subscription rejected: full"); return; }
+      // Claude admits the notice to the subscriber model only with its original permission mode.
+      subscriptions.set(frame.from as string, {id:frame.msg_id, to, from_mode:frame.from_mode, notified:false});
+      if (terminalReady) notifyPending();
+    } else { console.error("peer frame ignored"); }
+  }
+  let record: Record<string, unknown> | undefined;
+  let terminalState: {state: "idle" | "exited" | "unavailable"; finishedAt: number; detail?: string} | undefined;
+  let stopping = false;
+  let watcher: FSWatcher | undefined;
+  const timers = new Set<NodeJS.Timeout>();
+  const work = new PeerWorkQueue(error => {
+    console.error(error);
+    terminalState ??= {state:"unavailable", finishedAt:Date.now(), detail:String(error)};
+    void cleanup().then(() => process.exit(2));
+  });
+  let startupDone = Promise.resolve();
+  let offset = 0;
+  let pending = Buffer.alloc(0);
+  let discarding = false;
+  function schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+    work.schedule(kind, async () => { if (!stopping) await task(); });
+  }
+  async function terminal(state: "idle" | "exited", detail?: string): Promise<void> {
+    if (terminalState) return;
+    const now = Date.now();
+    terminalState = {state, finishedAt: now, ...(detail ? {detail} : {})};
+    if (record) {
+      Object.assign(record, {status:"idle", updatedAt:now, statusUpdatedAt:now});
+      await atomicJson(recordPath, record, 0o644);
+      terminalReady = true;
+      notifyPending();
+      linger();
+    }
+  }
+  function linger(): void {
+    timers.add(setTimeout(() => { void cleanup().then(() => process.exit(0)); }, config.lingerMs ?? 15000));
+  }
+  async function scan(): Promise<void> {
+    if (terminalState) return;
+    let file: Awaited<ReturnType<typeof open>>;
+    try { file = await open(config.streamPath, "r"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    try {
+      const chunk = Buffer.alloc(64 * 1024);
+      while (!stopping && !terminalState) {
+        const {bytesRead} = await file.read(chunk, 0, chunk.length, offset);
+        if (!bytesRead) break;
+        offset += bytesRead;
+        pending = Buffer.concat([pending, chunk.subarray(0,bytesRead)]);
+        let newline: number;
+        while ((newline = pending.indexOf(10)) >= 0) {
+          const line = discarding ? "" : pending.subarray(0,newline).toString("utf8").trim();
+          discarding = false;
+          pending = pending.subarray(newline+1);
+          let value: unknown;
+          try { value = JSON.parse(line); } catch { continue; }
+          if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+          const rc = (value as Record<string,unknown>).__t2f5_done__;
+          if (typeof rc === "number") { await terminal("idle", rc !== 0 ? `rc=${rc}` : undefined); break; }
+          if (record) {
+            record.updatedAt = Date.now();
+            await atomicJson(recordPath, record, 0o644);
+          }
+        }
+        if (pending.length > 5_000_000) { pending = Buffer.alloc(0); discarding = true; }
+      }
+    } finally { await file.close(); }
+  }
+  const server = createServer(socket => {
+    connections.add(socket);
+    socket.on("error", () => socket.destroy());
+    socket.on("close", () => connections.delete(socket));
+    let input = Buffer.alloc(0);
+    let first = true;
+    const deadline = setTimeout(() => socket.destroy(), config.firstLineDeadlineMs ?? 30000);
+    socket.on("close", () => clearTimeout(deadline));
+    socket.on("data", (data: Buffer) => {
+      input = Buffer.concat([input, data]);
+      let newline: number;
+      while ((newline = input.indexOf(10)) >= 0) {
+        if (newline > 1024 * 1024) { socket.destroy(); return; }
+        const line = input.subarray(0,newline).toString("utf8"); input = input.subarray(newline+1);
+        const wasFirst = first; first = false; clearTimeout(deadline);
+        try {
+          const value: unknown = JSON.parse(line);
+          if (wasFirst && (value as {type?: unknown} | null)?.type === "auth") {
+            if ((value as {token?: unknown}).token !== peerToken) console.error("peer auth token mismatch (advisory)");
+          } else receive(value);
+        } catch { console.error("peer malformed frame ignored"); }
+      }
+      if (input.length > 1024 * 1024) socket.destroy();
+    });
+    socket.on("end", () => socket.end());
+  });
+  async function atomicJson(path: string, value: unknown, mode: number, retain = true): Promise<void> {
+    const temp = `${path}.${process.pid}.tmp`;
+    try {
+      const file = await open(temp, "wx", mode);
+      owned.add(temp);
+      try {
+        await file.writeFile(JSON.stringify(value));
+        // The registry contract specifies exact modes, independent of the caller's umask.
+        await file.chmod(mode);
+      } finally { await file.close(); }
+      await rename(temp, path);
+      owned.delete(temp);
+      if (retain) owned.add(path);
+    } finally {
+      if (owned.has(temp)) { await unlink(temp).catch(() => undefined); owned.delete(temp); }
+    }
+  }
+  let cleanupPromise: Promise<void> | undefined;
+  function cleanup(signal = false): Promise<void> {
+    cleanupPromise ??= (async () => {
+      stopping = true;
+      if (server.listening) server.close();
+      // Startup can be between bind and publishing its files when a signal arrives.
+      await startupDone;
+      watcher?.close();
+      for (const timer of timers) clearTimeout(timer);
+      const closed = new Promise<void>(resolve => server.close(() => resolve()));
+      for (const socket of connections) socket.destroy();
+      await work.drain();
+      notifyPending(signal ? {state:"exited", finishedAt:Date.now()} : terminalState ?? {state:"unavailable", finishedAt:Date.now(), detail:"peer stopped before completion"});
+      await drainCallbacks();
+      await closed;
+      for (const path of owned) await unlink(path).catch(() => undefined);
+      owned.clear();
+    })();
+    return cleanupPromise;
+  }
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => {
+    void cleanup(true).then(() => process.exit(0));
+  });
+  const start = async (): Promise<void> => {
+    try {
+      const info = await lstat(recordPath);
+      if (!info.isFile() || info.size > 262144) throw new Error("foreign peer record: unsafe file");
+      const existing: unknown = JSON.parse(await readFile(recordPath, "utf8"));
+      if ((existing as {entrypoint?: unknown} | null)?.entrypoint !== "stratum-peer") throw new Error("foreign peer record");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (stopping) return;
+    await mkdir(config.sockDir, {recursive: true, mode: 0o700});
+    if (stopping) return;
+    const listen = (): Promise<void> => new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(sockPath, () => { server.removeListener("error", reject); resolve(); });
+    });
+ts/tests/mcp-surface-peer.test.ts:7:  for (const response of [started, {...started,peerName:peer.name,peer:"pending"}]) {
+ts/tests/mcp-surface-peer.test.ts:22:  await expect(assertToolResponse("stratum_agent_run",{...started,peerName:peer.name,peer:"pending",undeclared:true})).rejects.toThrow();
+ts/src/connectors/background.ts:14:import { peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
+ts/src/connectors/background.ts:97:  lingerMs?: number;
+ts/src/connectors/background.ts:120:  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending";
+ts/src/connectors/background.ts:209:      const name = peerName(model, runId);
+ts/src/connectors/background.ts:222:        lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000),
+ts/src/connectors/background.ts:234:    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
+ts/src/connectors/background.ts:363:    peer = {name: peerName(loaded.meta.model, runId), registered: false};
+ts/src/connectors/background.ts:474:    // starts → initial scan sees no sentinel (appendFile pending) → sets cancelling=true →
+ts/src/connectors/background.ts:646:        // Drop the oversized pending line (treated as malformed) so a writer
+ts/tests/connectors/peer-sidecar.test.ts:15:import { peerName } from "../../src/connectors/peer-registry.js";
+ts/tests/connectors/peer-sidecar.test.ts:40:  const config = {runDir,streamPath,childPid:process.pid,childProcStartTime:(await procStartTime(process.pid))!,cwd:runDir,name:"codex-astra-abcdef",sessionsDir,sockDir,lingerMs:500};
+ts/tests/connectors/peer-sidecar.test.ts:67:    let pending = "";
+ts/tests/connectors/peer-sidecar.test.ts:69:      pending += data.toString(); let end: number;
+ts/tests/connectors/peer-sidecar.test.ts:70:      while ((end = pending.indexOf("\n")) >= 0) {
+ts/tests/connectors/peer-sidecar.test.ts:71:        frames.push(JSON.parse(pending.slice(0,end))); pending = pending.slice(end+1);
+ts/tests/connectors/peer-sidecar.test.ts:132:  expect(started).not.toHaveProperty("peerName");
+ts/tests/connectors/peer-sidecar.test.ts:175:it("tails complete lines, updates busy timestamps, ignores partial and oversized lines, then lingers idle", async () => {
+ts/tests/connectors/peer-sidecar.test.ts:220:it("golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger", async () => {
+ts/tests/connectors/peer-sidecar.test.ts:423:      registryRoot,sessionsDir:base.sessionsDir,sockDir:base.sockDir,lingerMs:500,
+ts/tests/connectors/peer-sidecar.test.ts:434:  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId),peer:"pending"});
+ts/tests/connectors/peer-sidecar.test.ts:447:    name:started.peerName,procStart:await claudeProcStart(registered.pid),messagingSocketPath:registered.sock});
+ts/tests/connectors/peer-sidecar.test.ts:454:  expect(running).toMatchObject({status:"running",peer:{name:started.peerName,registered:true,pid:registered.pid,sock:registered.sock}});
+ts/tests/connectors/peer-sidecar.test.ts:473:  "cancel", "late subscription", "after linger", "user refusal", "malformed frame", "disallowed callback",
+ts/tests/connectors/peer-sidecar.test.ts:491:    expect(started).not.toHaveProperty("peerName"); expect(started).not.toHaveProperty("peer");
+ts/tests/connectors/peer-sidecar.test.ts:526:    } else if (scenario === "late subscription" || scenario === "after linger") {
+ts/tests/connectors/peer-sidecar.test.ts:586:    sessionsDir:config.sessionsDir,sockDir:config.sockDir,lingerMs:500,
+ts/tests/connectors/peer-sidecar.test.ts:591:  expect(started.peerName).toBeDefined();
+ts/tests/connectors/peer-sidecar.test.ts:662:it("coalesces stream scans and identity probes while real socket work is pending", async () => {
+ts/tests/connectors/peer-sidecar.test.ts:695:    let pending = ""; socket.on("data",data => {
+ts/tests/connectors/peer-sidecar.test.ts:696:      pending += data.toString(); let end: number;
+ts/tests/connectors/peer-sidecar.test.ts:697:      while ((end = pending.indexOf("\n")) >= 0) { frames.push(JSON.parse(pending.slice(0,end))); pending = pending.slice(end+1); }
+ts/tests/connectors/peer-sidecar.test.ts:734:  const config = await fixture(); config.lingerMs = 2000;
+ts/tests/connectors/peer-registry.test.ts:15:    expect(registry.peerName(model!, "4c165babcdef")).toBe(`codex-${short}-4c165b`);
+ts/tests/connectors/peer-registry.test.ts:108:  const config = {runDir:dir,streamPath:join(dir,"stream.jsonl"),childPid:process.pid,childProcStartTime:"123",name:"codex-astra-abcdef",cwd:dir,sessionsDir:dir,sockDir:dir,lingerMs:500,firstLineDeadlineMs:300};
+ts/tests/connectors/peer-registry.test.ts:113:  expect(registry.configFromEnv(env)).toEqual({...config,lingerMs:15000,firstLineDeadlineMs:30000,childProcStartTime:undefined});
+ts/src/engine/receipts.ts:59:    egress: "pending",
+ts/src/engine/run_lock.ts:503:    // receipt marked `sent` comes back as `pending`. And a cancelled run is written exactly
+ts/src/engine/engine.ts:244:  pendingGates: string[];
+ts/src/engine/engine.ts:248:  bg: { status: BgStatus; cancelRequested: boolean; pendingGates: string[] };
+ts/src/engine/engine.ts:576:    for (const step of flow.steps) steps[step.id] = { status: "pending", attempts: [], spent: {} };
+ts/src/engine/engine.ts:627:      const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
+ts/src/engine/engine.ts:662:        this.bgFlows.set(run.id, { status: run.status, cancelRequested: false, pendingGates: [] });
+ts/src/engine/engine.ts:666:        this.bgFlows.set(run.id, { status: "cancelled", cancelRequested: true, pendingGates: [] });
+ts/src/engine/engine.ts:694:            this.bgFlows.set(current.id, { status: current.status, cancelRequested: false, pendingGates: [] });
+ts/src/engine/engine.ts:698:            this.bgFlows.set(current.id, { status: "cancelled", cancelRequested: true, pendingGates: [] });
+ts/src/engine/engine.ts:706:          const bg: BgFlowState = { status: "running", cancelRequested: false, pendingGates: [] };
+ts/src/engine/engine.ts:836:        state.status = "pending";
+ts/src/engine/engine.ts:1088:      pendingGates: [...bg.pendingGates],
+ts/src/engine/engine.ts:1107:    if (bg.status === "paused_gate") { bg.status = "cancelled"; bg.pendingGates = []; }
+ts/src/engine/engine.ts:1219:        bg.pendingGates = [];
+ts/src/engine/engine.ts:1225:        bg.pendingGates = [];
+ts/src/engine/engine.ts:1230:      const priorGates = bg.pendingGates;
+ts/src/engine/engine.ts:1232:      bg.pendingGates = [];
+ts/src/engine/engine.ts:1237:        bg.pendingGates = priorGates;
+ts/src/engine/engine.ts:1490:          bg.pendingGates = [];
+ts/src/engine/engine.ts:1508:          bg.pendingGates = gates;
+ts/src/engine/engine.ts:1657:        if (state.status !== "pending") continue;
+ts/src/engine/engine.ts:1734:              index, status: "pending", attempts: [], generation: this.nextGeneration(run), epoch: state.epoch ?? 0,
+ts/src/engine/engine.ts:1760:            for (const child of callee.steps) steps[child.id] = { status: "pending", attempts: [], spent: {} };
+ts/src/engine/engine.ts:1778:          // is persisted, so a crash mid-evaluate leaves the step `pending` and
+ts/src/engine/engine.ts:1935:      if (item.status !== "pending") continue;
+ts/src/engine/engine.ts:2052:        item.status = "pending";
+ts/src/engine/engine.ts:2067:        item.status = "pending";
+ts/src/engine/engine.ts:2258:            // pending item — the event spine is restart-proof.
+ts/src/engine/engine.ts:2451:    const pending = state.fanout.items
+ts/src/engine/engine.ts:2454:    for (const item of pending) {
+ts/src/engine/engine.ts:2489:      state.status = "pending";
+ts/src/engine/engine.ts:2823:      state.status = "pending";
+ts/src/engine/engine.ts:3129:   * while a settlement is still pending and could advance the run behind the driver. */
+ts/src/engine/engine.ts:3418:    if (bg) { bg.cancelRequested = true; bg.status = "cancelled"; bg.pendingGates = []; }
+ts/src/engine/engine.ts:3524:        if (this.learnEgress.enabled() && run.receipts?.some((receipt) => receipt.egress === "pending") === true) {
+ts/src/engine/state.ts:7:export type StepStatus = "pending" | "ready" | "running" | "waiting_gate" | "succeeded" | "failed" | "skipped";
+ts/src/engine/state.ts:34:  egress: "pending" | "sent" | "dead";
+ts/src/engine/state.ts:53:  status: "pending" | "ready" | "running" | "succeeded" | "failed" | "skipped";
+ts/src/engine/state.ts:91:  /** Default: "pending". */
+ts/src/engine/state.ts:92:  state: "pending" | "running" | "reparenting" | "complete" | "failed" | "cancelled";
+ts/src/guard/transition.ts:344:    // object keys: a policy carrying one behaves differently depending on
+ts/src/cli/stratum.ts:140:  // UTF-8 character split across writes stays whole in the pending byte
+ts/src/cli/stratum.ts:144:  let pendingBytes: Buffer = Buffer.alloc(0);
+ts/src/cli/stratum.ts:162:      pendingBytes = pendingBytes.length > 0 ? Buffer.concat([pendingBytes, chunk]) : chunk;
+ts/src/cli/stratum.ts:163:      let newline = pendingBytes.indexOf(10);
+ts/src/cli/stratum.ts:165:        const line = pendingBytes.subarray(0, newline).toString("utf8").trim();
+ts/src/cli/stratum.ts:166:        pendingBytes = pendingBytes.subarray(newline + 1);
+ts/src/cli/stratum.ts:167:        newline = pendingBytes.indexOf(10);
+ts/src/cli/query_gate.ts:70:  // never a pending successor of the step that is actually active.
+ts/src/cli/query_gate.ts:72:  for (const status of ["waiting_gate", "running", "ready", "pending"] as const) {
+ts/src/learn/smartmemory_egress.ts:38:  pending: ReceiptRecord[];
+ts/src/learn/smartmemory_egress.ts:200:          receipt.egress = "pending";
+ts/src/learn/smartmemory_egress.ts:242:      pending: (run.receipts ?? [])
+ts/src/learn/smartmemory_egress.ts:243:        .filter((receipt) => receipt.egress === "pending")
+ts/src/learn/smartmemory_egress.ts:247:    if (snapshot.pending.length === 0) return;
+ts/src/learn/smartmemory_egress.ts:250:    for (const receipt of snapshot.pending) {
+ts/src/learn/smartmemory_egress.ts:280:        if (receipt === undefined || receipt.egress !== "pending") continue;
+ts/src/mcp/server.ts:623:  const gateStepId = response.bg.pendingGates[0];
+ts/src/learn/apply.ts:332:  // Append INSIDE the section: appending at end-of-document drops the note under
+ts/src/connectors/runner.ts:29:  lingerMs?: number;
+ts/src/connectors/runner.ts:47:): Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending" }> {
+ts/src/connectors/runner.ts:91:      ...(options.lingerMs !== undefined ? { lingerMs: options.lingerMs } : {}),
+ts/src/connectors/background.ts:14:import { peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
+ts/src/connectors/background.ts:97:  lingerMs?: number;
+ts/src/connectors/background.ts:120:  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending";
+ts/src/connectors/background.ts:209:      const name = peerName(model, runId);
+ts/src/connectors/background.ts:222:        lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000),
+ts/src/connectors/background.ts:234:    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
+ts/src/connectors/background.ts:363:    peer = {name: peerName(loaded.meta.model, runId), registered: false};
+ts/src/connectors/background.ts:474:    // starts → initial scan sees no sentinel (appendFile pending) → sets cancelling=true →
+ts/src/connectors/background.ts:646:        // Drop the oversized pending line (treated as malformed) so a writer
+ts/src/connectors/peer-registry.ts:15:export function peerName(model: string, runId: string): string {
+ts/src/connectors/peer-registry.ts:151:  lingerMs?: number;
+ts/src/connectors/peer-registry.ts:161:    STRATUM_PEER_LINGER_MS: String(config.lingerMs ?? 15000),
+ts/src/connectors/peer-registry.ts:172:  const lingerMs = Number(env.STRATUM_PEER_LINGER_MS ?? 15000);
+ts/src/connectors/peer-registry.ts:174:  if (!Number.isSafeInteger(childPid) || childPid <= 0 || !Number.isSafeInteger(lingerMs) || lingerMs < 0) throw new Error("Invalid peer pid or linger");
+ts/src/connectors/peer-registry.ts:180:    sessionsDir: required("STRATUM_PEER_SESSIONS_DIR"), sockDir: required("STRATUM_PEER_SOCK_DIR"), lingerMs, firstLineDeadlineMs,
+ts/src/connectors/peer-sidecar.ts:39:  private readonly pending = new Set<"scan" | "identity">();
+ts/src/connectors/peer-sidecar.ts:43:    if (this.pending.has(kind)) return;
+ts/src/connectors/peer-sidecar.ts:44:    this.pending.add(kind);
+ts/src/connectors/peer-sidecar.ts:45:    this.work = this.work.then(task).catch(this.onError).finally(() => { this.pending.delete(kind); });
+ts/src/connectors/peer-sidecar.ts:164:    void cleanup().then(() => process.exit(2));
+ts/src/connectors/peer-sidecar.ts:168:  let pending = Buffer.alloc(0);
+ts/src/connectors/peer-sidecar.ts:182:      linger();
+ts/src/connectors/peer-sidecar.ts:185:  function linger(): void {
+ts/src/connectors/peer-sidecar.ts:186:    timers.add(setTimeout(() => { void cleanup().then(() => process.exit(0)); }, config.lingerMs ?? 15000));
+ts/src/connectors/peer-sidecar.ts:199:        pending = Buffer.concat([pending, chunk.subarray(0,bytesRead)]);
+ts/src/connectors/peer-sidecar.ts:201:        while ((newline = pending.indexOf(10)) >= 0) {
+ts/src/connectors/peer-sidecar.ts:202:          const line = discarding ? "" : pending.subarray(0,newline).toString("utf8").trim();
+ts/src/connectors/peer-sidecar.ts:204:          pending = pending.subarray(newline+1);
+ts/src/connectors/peer-sidecar.ts:215:        if (pending.length > 5_000_000) { pending = Buffer.alloc(0); discarding = true; }
+ts/src/connectors/peer-sidecar.ts:262:  let cleanupPromise: Promise<void> | undefined;
+ts/src/connectors/peer-sidecar.ts:263:  function cleanup(signal = false): Promise<void> {
+ts/src/connectors/peer-sidecar.ts:264:    cleanupPromise ??= (async () => {
+ts/src/connectors/peer-sidecar.ts:280:    return cleanupPromise;
+ts/src/connectors/peer-sidecar.ts:283:    void cleanup(true).then(() => process.exit(0));
+ts/src/connectors/peer-sidecar.ts:333:    // This durable discovery file survives cleanup so later polls can describe registration.
+ts/src/connectors/peer-sidecar.ts:337:    if (terminalState) { terminalReady = true; notifyPending(); linger(); }
+ts/src/connectors/peer-sidecar.ts:361:  catch (error) { await cleanup(); throw error; }
+ts/src/connectors/codex.ts:332:    // Lines are parsed as they stream, so only one pending partial line is
+ts/src/connectors/codex.ts:335:    let pending = "";
+ts/src/connectors/codex.ts:336:    let pendingBytes = 0;
+ts/src/connectors/codex.ts:343:      pending = "";
+ts/src/connectors/codex.ts:344:      pendingBytes = 0;
+ts/src/connectors/codex.ts:352:      pending += chunk;
+ts/src/connectors/codex.ts:353:      pendingBytes += Buffer.byteLength(chunk);
+ts/src/connectors/codex.ts:354:      let newline = pending.indexOf("\n");
+ts/src/connectors/codex.ts:358:        const line = pending.slice(0, newline);
+ts/src/connectors/codex.ts:362:        pending = pending.slice(newline + 1);
+ts/src/connectors/codex.ts:363:        pendingBytes -= lineBytes + 1;
+ts/src/connectors/codex.ts:364:        newline = pending.indexOf("\n");
+ts/src/connectors/codex.ts:366:      if (pendingBytes > stdoutLimit) declareOverrun();
+ts/src/connectors/codex.ts:393:    if (!overrun && pending) handleLine(pending);
+ts/src/connectors/cancellation.ts:37:/** Own teardown separately from child.kill: SDK cleanup cannot bypass the grace period. */
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '1,110p' ts/src/connectors/peer-sidecar.ts; sed -n '290,370p' ts/src/connectors/peer-sidecar.ts; sed -n '1,110p' ts/tests/connectors/peer-sidecar.test.ts; sed -n '170,220p' ts/tests/connectors/peer-sidecar.test.ts; cat ts/tests/mcp-surface-peer.test.ts; rg -n 'pending|peerName' README.md CHANGELOG.md ts/contracts/mcp-surface.json; git status --short" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+#!/usr/bin/env -S node --experimental-strip-types
+import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { createConnection, createServer, type Socket } from "node:net";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { PeerRecordFile, PeerSidecarConfig } from "./peer-registry.js";
+
+function moduleUrl(name: string): URL {
+  const source = new URL(`./${name}.ts`, import.meta.url);
+  return existsSync(source) ? source : new URL(`./${name}.js`, import.meta.url);
+}
+const { claudeProcStart, configFromEnv, isAllowedCallback, keyFileName, pidDomain, readPeerToken, sidecarEnv }: typeof import("./peer-registry.js") = await import(moduleUrl("peer-registry").href);
+const { processIdentity }: typeof import("./proc_identity.js") = await import(moduleUrl("proc_identity").href);
+
+export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<void> {
+  let stderr: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    const entry = fileURLToPath(moduleUrl("peer-sidecar"));
+    stderr = await open(`${config.streamPath}.peer.err`, "a", 0o600);
+    const child = spawn(process.execPath, [...(entry.endsWith(".ts") ? ["--experimental-strip-types"] : []), entry], {
+      detached: true, stdio: ["ignore", "ignore", stderr.fd], env: sidecarEnv(config),
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    child.unref();
+  } catch (error) {
+    console.error("stratum peer spawn failed:", error);
+  } finally { await stderr?.close().catch(() => undefined); }
+}
+
+/** Serializes sidecar scans and identity checks. */
+export class PeerWorkQueue {
+  private work = Promise.resolve();
+  private readonly pending = new Set<"scan" | "identity">();
+  private readonly onError: (error: unknown) => void;
+  constructor(onError: (error: unknown) => void) { this.onError = onError; }
+  schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+    if (this.pending.has(kind)) return;
+    this.pending.add(kind);
+    this.work = this.work.then(task).catch(this.onError).finally(() => { this.pending.delete(kind); });
+  }
+  drain(): Promise<void> { return this.work; }
+}
+
+async function main(): Promise<void> {
+  const config = configFromEnv(process.env);
+  const sockPath = join(config.sockDir, `${process.pid}.sock`);
+  const recordPath = join(config.sessionsDir, `${process.pid}.json`);
+  const keyPath = join(config.sessionsDir, keyFileName(process.pid, sockPath));
+  const owned = new Set<string>();
+  const connections = new Set<Socket>();
+  const inFlight = new Set<Promise<void>>();
+  type Callback = {to: string; frame: Record<string, unknown>; notice: boolean};
+  const callbacks: Callback[] = [];
+  const activeNotices = new Set<string>();
+  const abortCallbacks = new Set<() => void>();
+  let callbackBudget = 5000;
+  const subscriptions = new Map<string, {id: string; to: string; from_mode?: unknown; notified: boolean}>();
+  let terminalReady = false;
+  function notifyPending(state = terminalState): void {
+    if (!state) return;
+    for (const subscription of subscriptions.values()) {
+      if (subscription.notified) continue;
+      subscription.notified = true;
+      sendControl(subscription.to, {type:"control", action:"peer_idle_notice", orig_msg_id:subscription.id,
+        state:state.state, finished_at:state.finishedAt, ...(state.detail ? {detail:state.detail} : {}), from:`uds:${sockPath}`,
+        ...(subscription.from_mode !== undefined ? {from_mode:subscription.from_mode} : {})}, true);
+    }
+  }
+  const peerToken = randomBytes(16).toString("hex");
+  function sendControl(to: string, frame: Record<string, unknown>, notice = false): void {
+    const replacement = notice ? callbacks.findIndex(item => item.notice && item.to === to) : -1;
+    if (replacement >= 0) callbacks.splice(replacement, 1);
+    if (callbacks.length >= 32) {
+      // The subscription table reserves at most 32 notices. Refusals yield their slots.
+      const refusal = notice ? callbacks.findIndex(item => !item.notice) : -1;
+      if (refusal < 0) { console.error("peer callback dropped: full"); return; }
+      callbacks.splice(refusal, 1);
+      console.error("peer callback dropped: full (reserved for idle notice)");
+    }
+    callbacks.push({to, frame, notice});
+    pumpCallbacks();
+  }
+  function pumpCallbacks(): void {
+    while (inFlight.size < 8) {
+      const index = callbacks.findIndex(item => !item.notice || !activeNotices.has(item.to));
+      if (index < 0) return;
+      const callback = callbacks.splice(index, 1)[0]!;
+      if (callback.notice) activeNotices.add(callback.to);
+      const attempt = dialBack(callback).catch(error => { console.error("peer callback failed:", error); });
+      inFlight.add(attempt);
+      void attempt.finally(() => {
+        inFlight.delete(attempt);
+        if (callback.notice) activeNotices.delete(callback.to);
+        pumpCallbacks();
+      });
+    }
+  }
+  async function dialBack({to, frame}: Callback): Promise<void> {
+    const token = await readPeerToken(config.sessionsDir, to);
+    await new Promise<void>(resolve => {
+      const socket = createConnection(to);
+      const abort = () => socket.destroy();
+      abortCallbacks.add(abort);
+      const timeout = setTimeout(abort, callbackBudget);
+      if ((existing as {entrypoint?: unknown} | null)?.entrypoint !== "stratum-peer") throw new Error("foreign peer record");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (stopping) return;
+    await mkdir(config.sockDir, {recursive: true, mode: 0o700});
+    if (stopping) return;
+    const listen = (): Promise<void> => new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(sockPath, () => { server.removeListener("error", reject); resolve(); });
+    });
+    try { await listen(); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || !(await lstat(sockPath)).isSocket()) throw error;
+      const stale = await new Promise<boolean>(resolve => {
+        const probe = createConnection(sockPath);
+        const timer = setTimeout(() => { probe.destroy(); resolve(false); }, 250);
+        probe.once("connect", () => { clearTimeout(timer); probe.destroy(); resolve(false); });
+        probe.once("error", (error: NodeJS.ErrnoException) => {
+          clearTimeout(timer); probe.destroy(); resolve(error.code === "ECONNREFUSED" || error.code === "ENOENT");
+        });
+      });
+      if (!stale) throw error;
+      // sockPath is constructed from our own pid; never reclaim another endpoint.
+      await unlink(sockPath);
+      await listen();
+    }
+    owned.add(sockPath);
+    if (stopping) return;
+    const procStart = await claudeProcStart(process.pid);
+    const domain = await pidDomain();
+    if (stopping) return;
+    const identity = {...(procStart ? {procStart} : {}), ...(domain ? {pidDomain: domain} : {})};
+    await atomicJson(keyPath, {peerToken, ...identity}, 0o600);
+    const now = Date.now();
+    const {version} = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as {version: string};
+    await scan();
+    record = {
+      pid:process.pid, sessionId:randomUUID(), cwd:config.cwd, startedAt:now, ...identity,
+      version, peerProtocol:1, peerFeatures:["notify_idle"], kind:"bg", entrypoint:"stratum-peer",
+      messagingSocketPath:sockPath, name:config.name, nameSource:"derived", status:terminalState ? "idle" : "busy", updatedAt:now, statusUpdatedAt:now,
+    };
+    await atomicJson(recordPath, record, 0o644);
+    // This durable discovery file survives cleanup so later polls can describe registration.
+    await atomicJson(join(config.runDir,"peer.json"), {
+      pid:process.pid, name:config.name, sock:sockPath, registeredAt:new Date().toISOString(),
+    } satisfies PeerRecordFile, 0o600, false);
+    if (terminalState) { terminalReady = true; notifyPending(); linger(); }
+    else {
+      try { watcher = watch(config.streamPath, () => schedule("scan", scan)); watcher.on("error", error => console.error(error)); }
+      catch { /* The fallback also handles a stream created after registration. */ }
+      timers.add(setInterval(() => schedule("scan", scan), 500));
+      timers.add(setInterval(() => schedule("identity", async () => {
+        if (terminalState) return;
+        // Cancellation kills the child's group, never this detached shadow's group.
+        let identity: "alive" | "dead" | "unknown" = "unknown";
+        if (config.childProcStartTime) identity = await processIdentity(config.childPid, config.childProcStartTime);
+        else {
+          try { process.kill(config.childPid, 0); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") identity = "dead"; }
+        }
+        if (identity === "dead") {
+          await scan();
+          if (!terminalState) await terminal("exited", "cancelled_or_died");
+        }
+      }), 2000));
+    }
+  };
+  const started = start();
+  startupDone = started.catch(() => undefined);
+  try { await started; }
+  catch (error) { await cleanup(); throw error; }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => { console.error(error); process.exitCode = 2; });
+}
+import { afterEach, expect, it } from "vitest";
+import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { existsSync } from "node:fs";
+import { appendFile, lstat, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { claudeProcStart, keyFileName, resolveSessionsDir, type PeerRecordFile, type PeerSidecarConfig } from "../../src/connectors/peer-registry.js";
+import { procStartTime } from "../../src/connectors/proc_identity.js";
+import { startBackgroundRun, pollBackgroundRun, cancelBackgroundRun } from "../../src/connectors/background.js";
+import { peerName } from "../../src/connectors/peer-registry.js";
+import { assertToolResponse } from "../../src/mcp/contracts.js";
+import { spawnPeerSidecar } from "../../src/connectors/peer-sidecar.js";
+
+const roots: string[] = [];
+const backgroundPids = new Set<number>();
+const configs: PeerSidecarConfig[] = [];
+const children: ChildProcess[] = [];
+const servers: Server[] = [];
+const sockets = new Set<Socket>();
+async function waitFor<T>(read: () => Promise<T>, accepts: (value: T) => boolean, timeout = 6000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  let last: unknown;
+  while (Date.now() < deadline) {
+    try { const value = await read(); if (accepts(value)) return value; last = value; } catch (error) { last = error; }
+    await delay(20);
+  }
+  throw new Error(`Timed out: ${String(last)}`);
+}
+async function json(path: string): Promise<Record<string, unknown>> { return JSON.parse(await readFile(path, "utf8")); }
+async function fixture(): Promise<PeerSidecarConfig> {
+  const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runDir);
+  const sockDir = await mkdtemp("/tmp/sp-"); roots.push(sockDir);
+  const sessionsDir = join(runDir, "sessions"); await mkdir(sessionsDir);
+  const streamPath = join(runDir,"stream.jsonl"); await writeFile(streamPath, "");
+  const config = {runDir,streamPath,childPid:process.pid,childProcStartTime:(await procStartTime(process.pid))!,cwd:runDir,name:"codex-astra-abcdef",sessionsDir,sockDir,lingerMs:500};
+  configs.push(config); return config;
+}
+async function launch(config: PeerSidecarConfig, setup = "", launcher = spawnPeerSidecar): Promise<void> {
+  // A real Node preload records even failed startup pids so afterEach can reap them.
+  const preload = join(config.runDir, "preload.mjs");
+  await writeFile(preload, `import {writeFileSync, mkdirSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(join(config.runDir,"test-pid"))}, String(process.pid));\nprocess.on("exit", code => { try { writeFileSync(${JSON.stringify(join(config.runDir,"test-exit"))}, String(code)); } catch {} });\n${setup}`);
+  const previous = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = `${previous ?? ""} --import=${pathToFileURL(preload).href}`;
+  try { await launcher(config); } finally {
+    if (previous === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previous;
+  }
+}
+async function peer(config: PeerSidecarConfig): Promise<PeerRecordFile> {
+  return await waitFor(() => json(join(config.runDir,"peer.json")), value => typeof value.pid === "number") as PeerRecordFile;
+}
+async function send(sock: string, frames: unknown[]): Promise<void> {
+  const connection = createConnection(sock); sockets.add(connection);
+  connection.on("close", () => sockets.delete(connection));
+  await once(connection,"connect");
+  connection.end(frames.map(frame => typeof frame === "string" ? frame : JSON.stringify(frame)).join("\n") + "\n");
+  await once(connection,"close");
+}
+async function requester(config: PeerSidecarConfig, pid = 987654): Promise<{sock: string; frames: Record<string, unknown>[]}> {
+  const sock = join(config.sockDir,`${pid}.sock`); const frames: Record<string, unknown>[] = [];
+  const server = createServer(connection => {
+    sockets.add(connection); connection.on("close", () => sockets.delete(connection));
+    let pending = "";
+    connection.on("data", data => {
+      pending += data.toString(); let end: number;
+      while ((end = pending.indexOf("\n")) >= 0) {
+        frames.push(JSON.parse(pending.slice(0,end))); pending = pending.slice(end+1);
+      }
+    });
+  });
+  servers.push(server); server.listen(sock); await once(server,"listening");
+  await writeFile(join(config.sessionsDir,keyFileName(pid,sock)),JSON.stringify({peerToken:"a".repeat(32)}));
+  return {sock,frames};
+}
+function subscription(sock: string, id = "subscription-1"): Record<string, unknown> {
+  return {type:"control",action:"notify_when_idle",msg_id:id,from:`uds:${sock}`};
+}
+afterEach(async () => {
+  // Stop and reap durable wrappers before deleting files they can still write.
+  for (const pid of backgroundPids) {
+    try { process.kill(-pid,"SIGTERM"); } catch { continue; }
+    await waitFor(async () => { try { process.kill(pid,0); return false; } catch { return true; } },Boolean);
+  }
+  backgroundPids.clear();
+  for (const config of configs.splice(0)) {
+    await chmod(config.runDir,0o700).catch(() => undefined);
+    await chmod(config.sessionsDir,0o700).catch(() => undefined);
+    const pids = new Set<number>();
+    try { pids.add(Number(await readFile(join(config.runDir,"test-pid"),"utf8"))); } catch { /* spawn may fail */ }
+    try { if ((await lstat(join(config.runDir,"peer.json"))).isFile()) pids.add(Number((await json(join(config.runDir,"peer.json"))).pid)); } catch { /* startup may fail */ }
+    for (const name of await readdir(config.sessionsDir).catch(() => [])) {
+      if (!/^\d+\.json$/.test(name)) continue;
+      if (!(await lstat(join(config.sessionsDir,name)).catch(() => undefined))?.isFile()) continue;
+      const record = await json(join(config.sessionsDir,name)).catch(() => null);
+      if (record?.entrypoint === "stratum-peer") pids.add(Number(name.slice(0,-5)));
+    }
+    for (const pid of pids) {
+      try { process.kill(pid,"SIGTERM"); } catch { continue; }
+      const gone = async (): Promise<boolean> => { try { process.kill(pid,0); return false; } catch { return true; } };
+      try { await waitFor(gone, Boolean,7000); }
+      catch {
+        // Even a broken sidecar under test must not outlive the fixture.
+        try { process.kill(pid,"SIGKILL"); } catch { /* already exited */ }
+        await waitFor(gone, Boolean);
+      }
+    }
+  const pid = Number(await readFile(join(config.runDir,"test-pid"),"utf8"));
+  expect(await json(join(config.sessionsDir,`${pid}.json`))).toEqual({entrypoint:"foreign"});
+  expect(existsSync(join(config.runDir,"peer.json"))).toBe(false);
+  expect(existsSync(join(config.sockDir,`${pid}.sock`))).toBe(false);
+});
+it("tails complete lines, updates busy timestamps, ignores partial and oversized lines, then lingers idle", async () => {
+  const config = await fixture(); await launch(config); const registered = await peer(config);
+  const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
+  const initial = await json(recordPath);
+  await appendFile(config.streamPath,'bad\n{"event":"é');
+  await delay(600);
+  expect((await json(recordPath)).updatedAt).toBe(initial.updatedAt);
+  await appendFile(config.streamPath,'"}\n');
+  await waitFor(() => json(recordPath), value => Number(value.updatedAt) > Number(initial.updatedAt));
+  expect((await json(recordPath)).status).toBe("busy");
+  await appendFile(config.streamPath,'x'.repeat(5_100_000)); await delay(600);
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}\n'); await delay(600);
+  expect((await json(recordPath)).status).toBe("busy");
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}'); await delay(600);
+  expect((await json(recordPath)).status).toBe("busy");
+  await appendFile(config.streamPath,'\n');
+  await waitFor(() => json(recordPath), value => value.status === "idle");
+  await waitFor(async () => existsSync(recordPath), value => !value);
+  expect(existsSync(registered.sock)).toBe(false);
+  expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+  expect(existsSync(join(config.runDir,"peer.json"))).toBe(true);
+},10000);
+it("registers an already completed stream idle on its first scan", async () => {
+  const config = await fixture(); await writeFile(config.streamPath,'{"__t2f5_done__":7}\n');
+  await launch(config); const registered = await peer(config);
+  expect((await json(join(config.sessionsDir,`${registered.pid}.json`))).status).toBe("idle");
+});
+it("detects a killed child group without a sentinel and never acts on unknown identity", async () => {
+  const config = await fixture();
+  const child = spawn("sh",["-c","while :; do sleep 1; done"],{detached:true,stdio:"ignore"}); children.push(child); await once(child,"spawn");
+  config.childPid = child.pid!; config.childProcStartTime = (await procStartTime(child.pid!))!;
+  await launch(config); const registered = await peer(config);
+  const exited = once(child,"exit"); process.kill(-child.pid!,"SIGTERM"); await exited;
+  await waitFor(() => json(join(config.sessionsDir,`${registered.pid}.json`)), value => value.status === "idle");
+  const unknown = await fixture(); delete unknown.childProcStartTime;
+  await launch(unknown); const other = await peer(unknown); await delay(2300);
+  expect((await json(join(unknown.sessionsDir,`${other.pid}.json`))).status).toBe("busy");
+},10000);
+it("refuses user messages with an authenticated dial-back and ignores malformed frames", async () => {
+  const config = await fixture(); const recipient = await requester(config);
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,[{type:"auth",token:"stale"},"not-json",{type:"user",msg_id:"user-1",from_mode:"bypass",from:`uds:${recipient.sock}`}]);
+  await waitFor(async () => recipient.frames, frames => frames.length === 2);
+  expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},{type:"control",action:"peer_message_status",orig_msg_id:"user-1",status:"expired",status_detail:"refused",from_mode:"bypass",from:`uds:${registered.sock}`}]);
+});
+it("golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger", async () => {
+import { expect, it } from "vitest";
+import { assertToolResponse } from "../src/mcp/contracts.js";
+
+const peer = {name:"codex-astra-abcdef",registered:true,pid:123,sock:"/tmp/sp-example/123.sock"};
+const started = {status:"bg_started",runId:"abcdef123456",streamPath:"/tmp/stream.jsonl"};
+it("accepts old and peer-bearing background responses while rejecting undeclared keys", async () => {
+  for (const response of [started, {...started,peerName:peer.name,peer:"pending"}]) {
+    await expect(assertToolResponse("stratum_agent_run",response)).resolves.toBeUndefined();
+  }
+  const variants = [
+    {status:"running",runId:started.runId,textTail:"",eventsSeen:0,streamPath:started.streamPath},
+    {status:"complete",runId:started.runId,text:"",usage:{},exitCode:0,telemetry:{durationMs:1,model:"gpt-6-astra"}},
+    {status:"error",runId:started.runId,textTail:"",stderrTail:""},
+  ];
+  for (const response of variants) {
+    await expect(assertToolResponse("stratum_agent_poll",response)).resolves.toBeUndefined();
+    await expect(assertToolResponse("stratum_agent_poll",{...response,peer})).resolves.toBeUndefined();
+    await expect(assertToolResponse("stratum_agent_poll",{...response,peer:{name:peer.name,registered:false}})).resolves.toBeUndefined();
+    await expect(assertToolResponse("stratum_agent_poll",{...response,peer:{...peer,undeclared:true}})).rejects.toThrow();
+    await expect(assertToolResponse("stratum_agent_poll",{...response,peer,undeclared:true})).rejects.toThrow();
+  }
+  await expect(assertToolResponse("stratum_agent_run",{...started,peerName:peer.name,peer:"pending",undeclared:true})).rejects.toThrow();
+});
+README.md:503:Codex background runs also register a Claude Code peer row (`codex-<model>-<runId6> · bg · busy`) when the session registry is available. The response includes tentative `peerName` and `peer: "pending"`; poll reports `peer.registered: true` once registration succeeds. Subscribe with `SendMessage(to=peerName, notify_when_idle=true)` to receive an idle notice when the run finishes. If the peer cannot be found, fall back to `stratum_agent_poll`. The idle row remains for 15 seconds before cleanup; `peer.registered` records successful registration, not current socket availability. Inbound user messages are refused because the run's prompt is fixed at spawn. Set `STRATUM_PEER_REGISTER=0` to disable registration, or `STRATUM_PEER_LINGER_MS` to change retention. `STRATUM_PEER_SESSIONS_DIR` and `STRATUM_PEER_SOCK_DIR` override the registry and socket directories; the registry otherwise follows `CLAUDE_CONFIG_DIR` (default `~/.claude`) and sockets default to `/tmp/cc-socks`. This integration follows Claude Code 2.1.272's peer protocol; a live record advertising a newer protocol disables registration without affecting the run.
+README.md:553:The signature covers `{action, resource_id, from_state, to_state, rationale, ledger_head}` as canonical JSON, under namespace `stratum-guard-override`. The server rebuilds that payload itself, so nothing but the signature travels — and because it includes the resource's current **ledger head**, an authorization is valid at exactly one point in that resource's history. Spending it moves the head and kills the signature, so there is nothing to replay and no expiry to tune.
+README.md:1074:stratum query gates                # List all pending gate steps (JSON)
+README.md:1127:counts. `retry-dead` returns rows rejected with a terminal HTTP status to the pending queue
+ts/contracts/mcp-surface.json:905:            "pendingGates": "array",
+ts/contracts/mcp-surface.json:922:            "pendingGates": "array",
+ts/contracts/mcp-surface.json:939:            "pendingGates": "array",
+ts/contracts/mcp-surface.json:956:            "pendingGates": "array",
+ts/contracts/mcp-surface.json:973:            "pendingGates": "array",
+ts/contracts/mcp-surface.json:1122:          "peerName?": "string",
+CHANGELOG.md:7:- **Codex background runs register as Claude Code peer sessions.** The tentative `peerName`
+CHANGELOG.md:367:  *is* the queue (`egress: pending|sent|dead` per row), drained under the
+CHANGELOG.md:466:in that resource's history — spending it moves the head and kills the signature,
+CHANGELOG.md:907:"pending v1 rewrite" banner. Rewrote the spec reference and concept sections to
+CHANGELOG.md:1999:- **`FlowState.parallel_tasks` / `FlowState.cwd`** — `ParallelTaskState` dataclass (`task_id`, `state`, `started_at`, `finished_at`, `result`, `error`, `cert_violations`, `worktree_path`; states `pending|running|complete|failed|cancelled`) persists and restores via `dataclasses.asdict` + targeted reconstruction. `stratum_plan` captures `os.getcwd()` so the parallel path can anchor worktrees to the caller's repo. Legacy flows deserialize with sane defaults (no migrate.py change).
+CHANGELOG.md:2070:- `run()` drains pending async tasks (both on normal return and exception paths) before closing the loop — prevents dropped telemetry callbacks (e.g. litellm `async_success_handler`)
+ M docs/plans/COMPOSE-ROADMAP.md
+?? docs/features/STRAT-AGENT-PEER-1/report.md
+?? docs/features/STRAT-AGENT-PEER-1/sessions/codex-fix4-run.log
+?? docs/features/STRAT-AGENT-PEER-2/
+
+hook: PostToolUse
+hook: PostToolUse Completed
+codex
+I’m using the bug-fix skill’s TDD workflow within the brief’s scope. I’ll first add failing regressions for cleanup ownership and the removed response field, then implement both fixes and run only the requested tests and typecheck. The existing unrelated working-tree changes will stay untouched.
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '25,65p' ts/tests/connectors/peer-sidecar.test.ts; sed -n '1,15p' CHANGELOG.md; sed -n '1115,1128p' ts/contracts/mcp-surface.json; rg -n 'server.on|sessionId|let record' ts/src/connectors/peer-sidecar.ts; sed -n '1837,1842p' /Users/ruze/.codex/memories/MEMORY.md" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+async function waitFor<T>(read: () => Promise<T>, accepts: (value: T) => boolean, timeout = 6000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  let last: unknown;
+  while (Date.now() < deadline) {
+    try { const value = await read(); if (accepts(value)) return value; last = value; } catch (error) { last = error; }
+    await delay(20);
+  }
+  throw new Error(`Timed out: ${String(last)}`);
+}
+async function json(path: string): Promise<Record<string, unknown>> { return JSON.parse(await readFile(path, "utf8")); }
+async function fixture(): Promise<PeerSidecarConfig> {
+  const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runDir);
+  const sockDir = await mkdtemp("/tmp/sp-"); roots.push(sockDir);
+  const sessionsDir = join(runDir, "sessions"); await mkdir(sessionsDir);
+  const streamPath = join(runDir,"stream.jsonl"); await writeFile(streamPath, "");
+  const config = {runDir,streamPath,childPid:process.pid,childProcStartTime:(await procStartTime(process.pid))!,cwd:runDir,name:"codex-astra-abcdef",sessionsDir,sockDir,lingerMs:500};
+  configs.push(config); return config;
+}
+async function launch(config: PeerSidecarConfig, setup = "", launcher = spawnPeerSidecar): Promise<void> {
+  // A real Node preload records even failed startup pids so afterEach can reap them.
+  const preload = join(config.runDir, "preload.mjs");
+  await writeFile(preload, `import {writeFileSync, mkdirSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(join(config.runDir,"test-pid"))}, String(process.pid));\nprocess.on("exit", code => { try { writeFileSync(${JSON.stringify(join(config.runDir,"test-exit"))}, String(code)); } catch {} });\n${setup}`);
+  const previous = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = `${previous ?? ""} --import=${pathToFileURL(preload).href}`;
+  try { await launcher(config); } finally {
+    if (previous === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previous;
+  }
+}
+async function peer(config: PeerSidecarConfig): Promise<PeerRecordFile> {
+  return await waitFor(() => json(join(config.runDir,"peer.json")), value => typeof value.pid === "number") as PeerRecordFile;
+}
+async function send(sock: string, frames: unknown[]): Promise<void> {
+  const connection = createConnection(sock); sockets.add(connection);
+  connection.on("close", () => sockets.delete(connection));
+  await once(connection,"connect");
+  connection.end(frames.map(frame => typeof frame === "string" ? frame : JSON.stringify(frame)).join("\n") + "\n");
+  await once(connection,"close");
+}
+async function requester(config: PeerSidecarConfig, pid = 987654): Promise<{sock: string; frames: Record<string, unknown>[]}> {
+  const sock = join(config.sockDir,`${pid}.sock`); const frames: Record<string, unknown>[] = [];
+  const server = createServer(connection => {
+# Changelog
+
+## [Unreleased]
+
+- **Codex peer reliability:** detect dead children without start times, report runtime I/O failures as `unavailable`, bound callback and scan queues, honor first-line deadlines, and restrict registry cleanup and metadata reads.
+
+- **Codex background runs register as Claude Code peer sessions.** The tentative `peerName`
+  lets callers subscribe with `notify_when_idle`; polling reports registration status. Set
+  `STRATUM_PEER_REGISTER=0` to disable registration. Terminal peers linger for 15 seconds
+  by default (`STRATUM_PEER_LINGER_MS`). The integration is coupled to Claude Code 2.1.272's
+  peer protocol and skips registration when a live peer advertises a newer protocol.
+
+- **chore(connectors): drop the dead `budgeted` guard on background agent runs
+  (STRAT-AGENT-BG-BUDGET superseded).** Nothing in `ts/src` set the flag. Background run usage is
+  debited by reporting a `stratum_usage_report` receipt: poll returns `usage`/`split`/`usdSource`,
+            "effort?": "string"
+          }
+        },
+        "bg_started": {
+          "runId": "string",
+          "pid?": "number",
+          "streamPath": "string",
+          "peerName?": "string",
+          "peer?": "string"
+        }
+      }
+    },
+    "stratum_agent_poll": {
+      "request": {
+156:  let record: Record<string, unknown> | undefined;
+298:      server.once("error", reject);
+328:      pid:process.pid, sessionId:randomUUID(), cwd:config.cwd, startedAt:now, ...identity,
+# Task Group: forge/stratum TS background connector diagnosis and connector audits
+
+scope: July 19-20, 2026 `forge/stratum/ts` read-only diagnosis and narrow audit memory for background-run terminal-state races, connector verification paths, and mechanical no-op migrations.
+applies_to: cwd=/Users/ruze/reg/my/forge/stratum and cwd=/Users/ruze/reg/my/forge/stratum/ts; reuse_rule=safe for similar TS connector investigations in this checkout; exact temp-dir permissions and file layout should be revalidated each run.
+
+## Task 1: Background-run `exitCode` race was diagnosed as scan-then-liveness TOCTOU, not a missing producer write
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from pathlib import Path
+p=Path('ts/tests/mcp-surface-peer.test.ts');s=p.read_text().replace('peerName:peer.name,peer:\"pending\"','peerName:peer.name');s += '''\\nit(\"rejects the removed peer field on background start responses\", async () => {
+  for (const peer of [\"pending\", \"failed\", {registered:false}]) {
+    await expect(assertToolResponse(\"stratum_agent_run\", {...started,peerName:\"codex-astra-abcdef\",peer})).rejects.toThrow();
+  }
+});
+''';p.write_text(s)
+p=Path('ts/tests/connectors/peer-sidecar.test.ts');s=p.read_text().replace('expect(started).toMatchObject({peerName:peerName(\"gpt-6-astra\",started.runId),peer:\"pending\"});','expect(started).toMatchObject({peerName:peerName(\"gpt-6-astra\",started.runId)});\\n  expect(started).not.toHaveProperty(\"peer\");');s+='''
+it.each([\"pid\", \"sessionId\", \"key\", \"socket\"])(\"preserves a foreign %s replacement during linger\", async (kind) => {
+  const config = await fixture(); config.lingerMs = 1500;
+  await launch(config); const registered = await peer(config);
+  const recordPath = join(config.sessionsDir,"'`${registered.pid}.json`);
+  const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
+  await appendFile(config.streamPath,'"'{\"__t2f5_done__\":0}\\\\n');
+  await waitFor(() => json(recordPath), value => value.status === \"idle\");
+  const target = kind === \"key\" ? keyPath : kind === \"socket\" ? registered.sock : recordPath;
+  const foreign = kind === \"key\" ? {peerToken:\"foreign\"} : {...await json(recordPath),[kind]:kind === \"pid\" ? process.pid : \"foreign\"};
+  await rm(target);
+  let replacement: Server | undefined;
+  if (kind === \"socket\") {
+    replacement = createServer(socket => socket.end()); servers.push(replacement);
+    await new Promise<void>(resolve => replacement"'!.listen(target, resolve));
+  } else await writeFile(target,JSON.stringify(foreign));
+  await waitFor(async () => { try { process.kill(registered.pid,0); return false; } catch { return true; } }, Boolean);
+  if (kind === "socket") expect((await lstat(target)).isSocket()).toBe(true);
+  else expect(await json(target)).toEqual(foreign);
+  for (const path of [recordPath,keyPath,registered.sock]) if (path !== target) expect(existsSync(path)).toBe(false);
+});
+'"''';p.write_text(s)
+PY
+npx vitest run tests/connectors/peer-sidecar.test.ts tests/mcp-surface-peer.test.ts -t 'preserves a foreign|rejects the removed'" in /Users/ruze/reg/my/forge/stratum
+ exited 130 in 15989ms:
+npm warn exec The following package was not found and will be installed: vitest@5.0.1
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "npx vitest run tests/connectors/peer-sidecar.test.ts tests/mcp-surface-peer.test.ts -t 'preserves a foreign|rejects the removed'" in /Users/ruze/reg/my/forge/stratum/ts
+ exited 1 in 7685ms:
+
+ RUN  v3.2.7 /Users/ruze/reg/my/forge/stratum/ts
+
+ ❯ tests/mcp-surface-peer.test.ts (2 tests | 1 failed | 1 skipped) 6ms
+   ↓ accepts old and peer-bearing background responses while rejecting undeclared keys
+   × rejects the removed peer field on background start responses 5ms
+     → promise resolved "undefined" instead of rejecting
+ ❯ tests/connectors/peer-sidecar.test.ts (60 tests | 4 failed | 56 skipped) 6724ms
+   ↓ disables ambient background registration without directory or env overrides
+   ↓ launcher resolves when its stderr path cannot be opened
+   ↓ registers a real socket, UTC identity, key and peer metadata from source
+   ↓ refuses a foreign own-pid record without overwriting it
+   ↓ tails complete lines, updates busy timestamps, ignores partial and oversized lines, then lingers idle
+   ↓ registers an already completed stream idle on its first scan
+   ↓ detects a killed child group without a sentinel and never acts on unknown identity
+   ↓ refuses user messages with an authenticated dial-back and ignores malformed frames
+   ↓ golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger
+   ↓ drains accepted subscriptions on SIGTERM and cleans only owned files
+   ↓ drains accepted subscriptions on SIGINT and cleans only owned files
+   ↓ reclaims only a stale socket for its own pid
+   ↓ error harness: regular socket file
+   ↓ error harness: live socket
+   ↓ error harness: missing sessions
+   ↓ error harness: key write failure
+   ↓ error harness: peer metadata failure
+   ↓ error harness: read-only run directory
+   ↓ caps subscriptions at 32, rejects invalid callbacks, and omits auth when no key exists
+   ↓ reports exited with cancellation detail to a real requester after group death
+   ↓ bounds oversized socket input while continuing to serve other connections
+   ↓ drains in-flight callbacks for at most five seconds when a requester holds its half open
+   ↓ writes the specified file modes even under a restrictive inherited umask
+   ↓ closes a connection that never supplies its first line within the configured deadline
+   ↓ launches the emitted js fallback with no source files present
+   ↓ creates a missing socket directory with mode 0700 and watches a stream created later
+   ↓ cleans partial registration when signalled during startup
+   ↓ background golden flow registers busy, authenticates one notice, retains idle, and cleans up
+   ↓ background error harness: cancel
+   ↓ background error harness: late subscription
+   ↓ background error harness: after linger
+   ↓ background error harness: user refusal
+   ↓ background error harness: malformed frame
+   ↓ background error harness: disallowed callback
+   ↓ background error harness: kill switch
+   ↓ background error harness: missing sessions
+   ↓ background error harness: foreign record
+   ↓ background error harness: occupied socket
+   ↓ background error harness: read-only run directory
+   ↓ background error harness: malformed peer metadata
+   ↓ background error harness: protocol gate
+   ↓ background error harness: peer metadata write failure
+   ↓ returns a background run within 3 s with a numeric FIFO in the registry
+   ↓ refuses an unsafe own-pid oversized record without changing it
+   ↓ refuses an unsafe own-pid symlink record without changing it
+   ↓ reports exited and cleans up a dead background child without a recorded start time
+   ↓ reports unavailable on a non-terminal registry rewrite failure
+   ↓ forwards the first-line deadline through startBackgroundRun
+   ↓ poll rejects unsafe peer metadata: fifo
+   ↓ poll rejects unsafe peer metadata: symlink
+   ↓ poll rejects unsafe peer metadata: oversized
+   ↓ coalesces stream scans and identity probes while real socket work is pending
+   ↓ bounds refusal callbacks to eight active and 32 queued attempts
+   ↓ preserves every idle notice when refusals saturate callbacks
+   ↓ replaces queued terminal re-subscriptions to one address
+   ↓ attempts all 32 queued idle notices within the shutdown window with held sockets
+   × preserves a foreign pid replacement during linger 1693ms
+     → ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-TiPuWM/sessions/77392.json'
+   × preserves a foreign sessionId replacement during linger 1670ms
+     → ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-xB2RT3/sessions/77412.json'
+   × preserves a foreign key replacement during linger 1685ms
+     → ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-IGqoiQ/sessions/77428.0ba85d19d4c84790b951b56589316a1b1ec1b55eeb9054fda231c6803e7bc924.key'
+   × preserves a foreign socket replacement during linger 1675ms
+     → ENOENT: no such file or directory, lstat '/tmp/sp-s0yvay/77445.sock'
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/mcp-surface-peer.test.ts > rejects the removed peer field on background start responses
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected: 
+Error {
+  "message": "rejected promise",
+}
+
++ Received: 
+undefined
+
+ ❯ tests/mcp-surface-peer.test.ts:27:106
+     25| it("rejects the removed peer field on background start responses", asy…
+     26|   for (const peer of ["pending", "failed", {registered:false}]) {
+     27|     await expect(assertToolResponse("stratum_agent_run", {...started,p…
+       |                                                                                                          ^
+     28|   }
+     29| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  tests/connectors/peer-sidecar.test.ts > preserves a foreign pid replacement during linger
+Error: ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-TiPuWM/sessions/77392.json'
+ ❯ json tests/connectors/peer-sidecar.test.ts:34:89
+     32|   throw new Error(`Timed out: ${String(last)}`);
+     33| }
+     34| async function json(path: string): Promise<Record<string, unknown>> { …
+       |                                                                                         ^
+     35| async function fixture(): Promise<PeerSidecarConfig> {
+     36|   const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runD…
+ ❯ tests/connectors/peer-sidecar.test.ts:783:15
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  tests/connectors/peer-sidecar.test.ts > preserves a foreign sessionId replacement during linger
+Error: ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-xB2RT3/sessions/77412.json'
+ ❯ json tests/connectors/peer-sidecar.test.ts:34:89
+     32|   throw new Error(`Timed out: ${String(last)}`);
+     33| }
+     34| async function json(path: string): Promise<Record<string, unknown>> { …
+       |                                                                                         ^
+     35| async function fixture(): Promise<PeerSidecarConfig> {
+     36|   const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runD…
+ ❯ tests/connectors/peer-sidecar.test.ts:783:15
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  tests/connectors/peer-sidecar.test.ts > preserves a foreign key replacement during linger
+Error: ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-IGqoiQ/sessions/77428.0ba85d19d4c84790b951b56589316a1b1ec1b55eeb9054fda231c6803e7bc924.key'
+ ❯ json tests/connectors/peer-sidecar.test.ts:34:89
+     32|   throw new Error(`Timed out: ${String(last)}`);
+     33| }
+     34| async function json(path: string): Promise<Record<string, unknown>> { …
+       |                                                                                         ^
+     35| async function fixture(): Promise<PeerSidecarConfig> {
+     36|   const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runD…
+ ❯ tests/connectors/peer-sidecar.test.ts:783:15
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  tests/connectors/peer-sidecar.test.ts > preserves a foreign socket replacement during linger
+Error: ENOENT: no such file or directory, lstat '/tmp/sp-s0yvay/77445.sock'
+ ❯ tests/connectors/peer-sidecar.test.ts:782:34
+    780|   } else await writeFile(target,JSON.stringify(foreign));
+    781|   await waitFor(async () => { try { process.kill(registered.pid,0); re…
+    782|   if (kind === "socket") expect((await lstat(target)).isSocket()).toBe…
+       |                                  ^
+    783|   else expect(await json(target)).toEqual(foreign);
+    784|   for (const path of [recordPath,keyPath,registered.sock]) if (path !=…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  5 failed | 57 skipped (62)
+   Start at  21:56:21
+   Duration  7.29s (transform 100ms, setup 0ms, collect 369ms, tests 6.73s, environment 0ms, prepare 68ms)
+
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "rg -n 'real registry|realRegistry|sessions|snapshot' ts/tests/connectors/peer-sidecar.test.ts | tail -15; sed -n '15,25p' ts/tests/connectors/peer-sidecar.test.ts; sed -n '150,175p' ts/src/connectors/peer-sidecar.ts" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+515:    const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
+516:    const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
+583:  expect(spawnSync("mkfifo", [join(config.sessionsDir,"123.json")]).status).toBe(0);
+587:    sessionsDir:config.sessionsDir,sockDir:config.sockDir,lingerMs:500,
+593:  await waitFor(() => readdir(config.sessionsDir), names => names.some(name => name !== "123.json" && /^\d+\.json$/.test(name)));
+602:    ${kind === "symlink" ? "symlinkSync" : "copyFileSync"}(${JSON.stringify(target)}, ${JSON.stringify(config.sessionsDir)} + '/' + process.pid + '.json');`);
+605:  const path = join(config.sessionsDir,`${pid}.json`);
+620:  expect(existsSync(join(config.sessionsDir,`${registered.pid}.json`))).toBe(false);
+621:  expect(existsSync(join(config.sessionsDir,keyFileName(registered.pid,registered.sock)))).toBe(false);
+626:  await chmod(config.sessionsDir,0o500);
+726:  await waitFor(()=>json(join(config.sessionsDir,`${registered.pid}.json`)),value=>value.status === "idle");
+738:  await waitFor(()=>json(join(config.sessionsDir,`${registered.pid}.json`)),value=>value.status === "idle");
+757:  await waitFor(async () => existsSync(join(config.sessionsDir,`${registered.pid}.json`)),value=>!value,6500);
+769:  const recordPath = join(config.sessionsDir,`${registered.pid}.json`);
+770:  const keyPath = join(config.sessionsDir,keyFileName(registered.pid,registered.sock));
+import { peerName } from "../../src/connectors/peer-registry.js";
+import { assertToolResponse } from "../../src/mcp/contracts.js";
+import { spawnPeerSidecar } from "../../src/connectors/peer-sidecar.js";
+
+const roots: string[] = [];
+const backgroundPids = new Set<number>();
+const configs: PeerSidecarConfig[] = [];
+const children: ChildProcess[] = [];
+const servers: Server[] = [];
+const sockets = new Set<Socket>();
+async function waitFor<T>(read: () => Promise<T>, accepts: (value: T) => boolean, timeout = 6000): Promise<T> {
+      if (subscriptions.size >= 32) { console.error("peer subscription rejected: full"); return; }
+      // Claude admits the notice to the subscriber model only with its original permission mode.
+      subscriptions.set(frame.from as string, {id:frame.msg_id, to, from_mode:frame.from_mode, notified:false});
+      if (terminalReady) notifyPending();
+    } else { console.error("peer frame ignored"); }
+  }
+  let record: Record<string, unknown> | undefined;
+  let terminalState: {state: "idle" | "exited" | "unavailable"; finishedAt: number; detail?: string} | undefined;
+  let stopping = false;
+  let watcher: FSWatcher | undefined;
+  const timers = new Set<NodeJS.Timeout>();
+  const work = new PeerWorkQueue(error => {
+    console.error(error);
+    terminalState ??= {state:"unavailable", finishedAt:Date.now(), detail:String(error)};
+    void cleanup().then(() => process.exit(2));
+  });
+  let startupDone = Promise.resolve();
+  let offset = 0;
+  let pending = Buffer.alloc(0);
+  let discarding = false;
+  function schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+    work.schedule(kind, async () => { if (!stopping) await task(); });
+  }
+  async function terminal(state: "idle" | "exited", detail?: string): Promise<void> {
+    if (terminalState) return;
+    const now = Date.now();
+
+hook: PostToolUse
+hook: PostToolUse Completed
+codex
+All five new regressions fail as expected. The socket test also confirms that Node’s `server.close()` removes a replacement socket at the same pathname. Cleanup therefore needs to check the bound socket’s identity before closing the server, as well as validate the record and key before unlinking them.
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from pathlib import Path
+p=Path('ts/src/connectors/peer-sidecar.ts');s=p.read_text().replace('  const owned = new Set<string>();','  const owned = new Set<string>();\\n  const sessionId = randomUUID();\\n  let boundSocket: Awaited<ReturnType<typeof lstat>> | undefined;\\n  let serverFailed = false;');s=s.replace('  async function atomicJson(','''  server.on(\"error\", error => { serverFailed = true; console.error(\"peer socket error:\", error); });
+  async function removeOwnedJson(path: string): Promise<void> {
+    try {
+      const info = await lstat(path);
+      if ("'!info.isFile() || info.size > 262144) throw new Error("unsafe file");
+      const value = JSON.parse(await readFile(path, "utf8"));
+      const matches = path === keyPath ? value?.peerToken === peerToken
+        : value?.pid === process.pid && value?.sessionId === sessionId;
+      if (!matches) throw new Error("identity mismatch");
+      await unlink(path);
+    } catch (error) { console.error("peer cleanup left path alone:", path, error); }
+  }
+  async function closeOwnedSocket(): Promise<void> {
+    if (!owned.has(sockPath)) return;
+    try {
+      const info = await lstat(sockPath);
+      if (!info.isSocket() || !boundSocket || info.dev !== boundSocket.dev || info.ino !== boundSocket.ino
+        || !server.listening || serverFailed) throw new Error("socket listener identity mismatch");
+      // Node unlinks the Unix socket itself when closing. Never close a replaced path.
+      await new Promise<void>(resolve => server.close(error => {
+        if (error) console.error("peer socket close failed:", error);
+        resolve();
+      }));
+    } catch (error) { console.error("peer cleanup left path alone:", sockPath, error); }
+    owned.delete(sockPath);
+  }
+  async function atomicJson('"''');s=s.replace('      if (server.listening) server.close();\\n','').replace('      const closed = new Promise<void>(resolve => server.close(() => resolve()));\\n','').replace('      await closed;\\n      for (const path of owned) await unlink(path).catch(() => undefined);','      await closeOwnedSocket();\\n      for (const path of owned) await removeOwnedJson(path);');s=s.replace('    owned.add(sockPath);','    boundSocket = await lstat(sockPath);\\n    serverFailed = false;\\n    owned.add(sockPath);').replace('sessionId:randomUUID()','sessionId');p.write_text(s)
+for name in ['background.ts','runner.ts']:
+ p=Path('ts/src/connectors')/name;s=p.read_text().replace('; peer?: \"pending\"','').replace(', peer: \"pending\"','');p.write_text(s)
+p=Path('ts/contracts/mcp-surface.json');s=p.read_text().replace('\"peerName?\": \"string\",\\n          \"peer?\": \"string\"','\"peerName?\": \"string\"');p.write_text(s)
+p=Path('README.md');s=p.read_text().replace('The response includes tentative "'`peerName` and `peer: "pending"`; poll reports'"','The response includes "'`peerName` when registration is attempted; poll reports'"');p.write_text(s)
+p=Path('CHANGELOG.md');s=p.read_text().replace('The tentative "'`peerName`'"\\n  lets callers subscribe with "'`notify_when_idle`; polling reports registration status. Set'"','The "'`peerName` field alone'"\\n  indicates registration was attempted; poll for "'`peer.registered` before subscribing with `notify_when_idle`. Set'"');p.write_text(s)
+PY" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "npx vitest run tests/connectors/peer-sidecar.test.ts tests/mcp-surface-peer.test.ts -t 'preserves a foreign|rejects the removed'" in /Users/ruze/reg/my/forge/stratum/ts
+ succeeded in 7648ms:
+
+ RUN  v3.2.7 /Users/ruze/reg/my/forge/stratum/ts
+
+ ✓ tests/mcp-surface-peer.test.ts (2 tests | 1 skipped) 3ms
+ ✓ tests/connectors/peer-sidecar.test.ts (60 tests | 56 skipped) 6686ms
+   ✓ preserves a foreign pid replacement during linger  1680ms
+   ✓ preserves a foreign sessionId replacement during linger  1662ms
+   ✓ preserves a foreign key replacement during linger  1668ms
+   ✓ preserves a foreign socket replacement during linger  1675ms
+
+ Test Files  2 passed (2)
+      Tests  5 passed | 57 skipped (62)
+   Start at  21:57:07
+   Duration  7.26s (transform 100ms, setup 0ms, collect 395ms, tests 6.69s, environment 0ms, prepare 65ms)
+
+
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '1,100p' ts/tests/connectors/background.test.ts; rg -n 'STRATUM_PEER|beforeAll|beforeEach|afterAll|real registry' ts/tests/connectors/background*.test.ts ts/tests/connectors/peer-*.test.ts ts/vitest*; git diff --stat" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  T2F5_DONE_SENTINEL,
+  cancelBackgroundRun,
+  pollBackgroundRun,
+  startBackgroundRun,
+  type BackgroundRunMeta,
+} from "../../src/connectors/background.js";
+
+const roots: string[] = [];
+afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+
+async function root(): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), "stratum-p3-bg-"));
+  roots.push(path);
+  return path;
+}
+
+const THREAD_STARTED = { type: "thread.started", thread_id: "t-1" };
+const AGENT_MSG = { type: "item.completed", item: { type: "agent_message", text: "done text" } };
+const TURN_DONE = { type: "turn.completed", usage: { input_tokens: 3, output_tokens: 4, cached_input_tokens: 0 } };
+
+function fakeCodex(records: unknown[], options: { rc?: number; stderr?: string; sleep?: number } = {}): string[] {
+  const script = [
+    ...records.map((record) => `printf '%s\\n' '${JSON.stringify(record).replaceAll("'", "'\\''")}'`),
+    ...(options.stderr ? [`printf '%s' '${options.stderr.replaceAll("'", "'\\''")}' 1>&2`] : []),
+    ...(options.sleep ? [`sleep ${options.sleep}`] : []),
+    `exit ${options.rc ?? 0}`,
+  ].join("; ");
+  return ["sh", "-c", script];
+}
+
+async function waitFor(runId: string, registryRoot: string, status: string, timeout = 5_000) {
+  const deadline = Date.now() + timeout;
+  let last: Awaited<ReturnType<typeof pollBackgroundRun>> | undefined;
+  while (Date.now() < deadline) {
+    last = await pollBackgroundRun(runId, { registryRoot });
+    if (last.status === status) return last;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${status}: ${JSON.stringify(last)}`);
+}
+
+async function readMeta(registryRoot: string, runId: string): Promise<BackgroundRunMeta> {
+  return JSON.parse(await readFile(join(registryRoot, runId, "meta.json"), "utf8")) as BackgroundRunMeta;
+}
+
+async function writeRegistryRun(registryRoot: string, runId: string, records: unknown[], stderr = "") {
+  const runDir = join(registryRoot, runId);
+  await mkdir(runDir, { recursive: true });
+  const streamPath = join(runDir, "stream.jsonl");
+  const stderrPath = `${streamPath}.err`;
+  await writeFile(streamPath, records.map((record) => `${JSON.stringify(record)}\n`).join(""), "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  const meta: BackgroundRunMeta = {
+    runId, agent: "codex", model: "gpt-5", cwd: registryRoot, sandboxMode: "read-only",
+    promptChars: 1, createdAt: "2026-07-10T00:00:00Z", childPid: 0,
+    streamPath, stderrPath,
+  };
+  await writeFile(join(runDir, "meta.json"), JSON.stringify(meta), "utf8");
+}
+
+describe("P3 background run gate", () => {
+  it("runs the golden flow through running, complete, usage, and persisted process identity", async () => {
+    const registryRoot = await root();
+    const started = await startBackgroundRun({
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot,
+      command: fakeCodex([THREAD_STARTED, AGENT_MSG, TURN_DONE], { sleep: 0.5 }),
+    });
+
+    expect(started.status).toBe("bg_started");
+    expect(started.runId).toMatch(/^[0-9a-f]{12}$/);
+    expect(await readFile(started.streamPath, "utf8")).not.toContain(T2F5_DONE_SENTINEL);
+    expect(await waitFor(started.runId, registryRoot, "running")).toMatchObject({
+      status: "running", runId: started.runId, streamPath: started.streamPath,
+    });
+    expect(await waitFor(started.runId, registryRoot, "complete")).toMatchObject({
+      status: "complete", text: "done text", exitCode: 0, usage: { tokens: 7 },
+    });
+    const meta = await readMeta(registryRoot, started.runId);
+    if (meta.agent !== "codex") throw new Error("golden Codex run persisted Claude metadata");
+    expect(typeof started.pid).toBe("number");
+    expect(meta.childPid).toBe(started.pid);
+    expect(meta.procStartTime).toBeTruthy();
+  });
+
+  it("polls a nonzero wrapper result as error with stderr", async () => {
+    const registryRoot = await root();
+    const started = await startBackgroundRun({
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot,
+      command: fakeCodex([THREAD_STARTED], { rc: 4, stderr: "auth failed" }),
+    });
+    expect(await waitFor(started.runId, registryRoot, "error")).toMatchObject({
+      status: "error", exitCode: 4, stderrTail: expect.stringContaining("auth failed"),
+    });
+  });
+
+ts/vitest.config.ts:5:    env: { STRATUM_PEER_REGISTER: "0" },
+ts/tests/connectors/peer-sidecar.test.ts:124:  expect(process.env.STRATUM_PEER_REGISTER).toBe("0");
+ts/tests/connectors/peer-sidecar.test.ts:425:      env:{...process.env,RELEASE:release,STRATUM_PEER_REGISTER:"1",...env}});
+ts/tests/connectors/peer-sidecar.test.ts:479:    ? `writeFileSync(process.env.STRATUM_PEER_SESSIONS_DIR + '/' + process.pid + '.json', JSON.stringify({entrypoint:'foreign'}));`
+ts/tests/connectors/peer-sidecar.test.ts:481:      ? `writeFileSync(process.env.STRATUM_PEER_SOCK_DIR + '/' + process.pid + '.sock', 'foreign file');`
+ts/tests/connectors/peer-sidecar.test.ts:483:        ? `const {chmodSync} = await import("node:fs"); chmodSync(process.env.STRATUM_PEER_RUN_DIR,0o500);` : "";
+ts/tests/connectors/peer-sidecar.test.ts:485:    scenario === "kill switch" ? {STRATUM_PEER_REGISTER:"0"} : {}, async base => {
+ts/tests/connectors/peer-sidecar.test.ts:588:    env:{STRATUM_PEER_REGISTER:"1"},command:["sh","-c","sleep 10"]});
+ts/tests/connectors/peer-sidecar.test.ts:613:  const {config,started} = await backgroundFixture('delete process.env.STRATUM_PEER_CHILD_START;');
+ts/tests/connectors/peer-sidecar.test.ts:635:  const {config} = await backgroundFixture("",{STRATUM_PEER_FIRST_LINE_MS:"300"});
+ts/tests/connectors/peer-registry.test.ts:21:  expect(registry.resolveSessionsDir({ STRATUM_PEER_SESSIONS_DIR: "/tmp/sp-own", CLAUDE_CONFIG_DIR: "/ignored" })).toBe("/tmp/sp-own");
+ts/tests/connectors/peer-registry.test.ts:26:  expect(registry.resolveSockDir({ STRATUM_PEER_SOCK_DIR: "/tmp/sp-own" })).toBe("/tmp/sp-own");
+ts/tests/connectors/peer-registry.test.ts:70:  expect((await registry.shouldRegister(dir, { STRATUM_PEER_REGISTER:"0" })).ok).toBe(false);
+ts/tests/connectors/peer-registry.test.ts:112:  delete env.STRATUM_PEER_FIRST_LINE_MS; delete env.STRATUM_PEER_LINGER_MS; delete env.STRATUM_PEER_CHILD_START;
+ts/tests/connectors/peer-registry.test.ts:114:  expect(() => registry.configFromEnv({...env,STRATUM_PEER_CHILD_PID:"0"})).toThrow();
+ts/tests/connectors/peer-registry.test.ts:116:    expect(() => registry.configFromEnv({...env,STRATUM_PEER_FIRST_LINE_MS:value})).toThrow();
+ts/tests/connectors/peer-registry.test.ts:119:  expect(registry.sidecarEnv(defaultConfig).STRATUM_PEER_FIRST_LINE_MS).toBe("30000");
+ts/tests/connectors/background-claude-interleavings.test.ts:12:import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ts/tests/connectors/background-claude.test.ts:8:import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+ts/tests/connectors/background-claude.test.ts:22:beforeAll(() => { process.env.STRATUM_TEST_WORKER = "1"; });
+ts/tests/connectors/background-claude.test.ts:23:afterAll(() => {
+ts/tests/connectors/background-claude.test.ts:254:  beforeAll(() => {
+ts/tests/connectors/background-claude.test.ts:258:  afterAll(() => {
+ts/tests/connectors/background-claude.test.ts:285:  beforeAll(() => {
+ts/tests/connectors/background-claude.test.ts:289:  afterAll(() => {
+ CHANGELOG.md                             |  4 ++--
+ README.md                                |  2 +-
+ docs/plans/COMPOSE-ROADMAP.md            |  1 +
+ ts/contracts/mcp-surface.json            |  3 +--
+ ts/src/connectors/background.ts          |  4 ++--
+ ts/src/connectors/peer-sidecar.ts        | 39 ++++++++++++++++++++++++++++----
+ ts/src/connectors/runner.ts              |  2 +-
+ ts/tests/connectors/peer-sidecar.test.ts | 24 +++++++++++++++++++-
+ ts/tests/mcp-surface-peer.test.ts        | 10 ++++++--
+ 9 files changed, 73 insertions(+), 16 deletions(-)
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from pathlib import Path
+p=Path('ts/src/connectors/peer-sidecar.ts');s=p.read_text().replace('await new Promise<void>(resolve => server.close(error => {\\n        if (error) console.error(\"peer socket close failed:\", error);\\n        resolve();\\n      }));','await new Promise<void>(resolve => {\\n        server.close(error => {\\n          if (error) console.error(\"peer socket close failed:\", error);\\n          resolve();\\n        });\\n        for (const socket of connections) socket.destroy();\\n      });');p.write_text(s)
+p=Path('ts/tests/connectors/peer-sidecar.test.ts');s=p.read_text().replace('  if (kind === \"socket\") expect((await lstat(target)).isSocket()).toBe(true);','  expect(await readFile("'`${config.streamPath}.peer.err`,"utf8")).toContain("peer cleanup left path alone:");'"\\n  if (kind === \"socket\") expect((await lstat(target)).isSocket()).toBe(true);');p.write_text(s)
+PY
+npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts tests/mcp-surface-peer.test.ts" in /Users/ruze/reg/my/forge/stratum/ts
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "python3 - <<'PY'
+from pathlib import Path
+p=Path('ts/src/connectors/peer-sidecar.ts');s=p.read_text().replace('await new Promise<void>(resolve => server.close(error => {\\n        if (error) console.error(\"peer socket close failed:\", error);\\n        resolve();\\n      }));','await new Promise<void>(resolve => {\\n        server.close(error => {\\n          if (error) console.error(\"peer socket close failed:\", error);\\n          resolve();\\n        });\\n        for (const socket of connections) socket.destroy();\\n      });');p.write_text(s)
+p=Path('ts/tests/connectors/peer-sidecar.test.ts');s=p.read_text().replace('  if (kind === \"socket\") expect((await lstat(target)).isSocket()).toBe(true);','  expect(await readFile("'`${config.streamPath}.peer.err`,"utf8")).toContain("peer cleanup left path alone:");'"\\n  if (kind === \"socket\") expect((await lstat(target)).isSocket()).toBe(true);');p.write_text(s)
+PY
+sed -n '190,210p' ts/src/connectors/background.ts; git diff -- ts/src/connectors/background.ts; git diff --check" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+    ...(startTime ? { procStartTime: startTime } : {}),
+    streamPath,
+    stderrPath,
+  };
+  try {
+    await atomicWriteJson(join(runDir, "meta.json"), meta);
+  } catch (error) {
+    // No metadata means the caller cannot discover or cancel this detached run.
+    // Kill the whole process group and wait for the wrapper to exit before rejecting.
+    await killDetachedProcessGroup(child, pid);
+    throw error;
+  }
+  child.unref();
+  // Peer discovery is best effort and never enters the fatal metadata-write path.
+  // cancelBackgroundRun intentionally stays unchanged: this shadow owns its own group.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    const registration = async (): Promise<string | undefined> => {
+      const name = peerName(model, runId);
+      const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
+diff --git a/ts/src/connectors/background.ts b/ts/src/connectors/background.ts
+index 8523767..c637a87 100644
+--- a/ts/src/connectors/background.ts
++++ b/ts/src/connectors/background.ts
+@@ -117,7 +117,7 @@ export function agentRunsRoot(): string {
+ }
+ 
+ export async function startBackgroundRun(options: StartBackgroundRunOptions): Promise<{
+-  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string; peer?: "pending";
++  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string;
+ }> {
+   // D11: explicit runtime validation — TypeScript casts at the MCP boundary do not
+   // protect callers that bypass the MCP surface.
+@@ -231,7 +231,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
+       }, 2000);
+     });
+     const name = await Promise.race([registration(), timeout]);
+-    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name, peer: "pending" };
++    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name };
+   } catch (error) { console.error("stratum peer registration failed:", error); }
+   finally { if (timer !== undefined) clearTimeout(timer); }
+   return { status: "bg_started", runId, pid, streamPath };
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "rg -n 'env =|registryRoot|STRATUM_PEER_REGISTER' ts/src/connectors/background.ts | head -18; git diff -- ts/src/connectors/peer-sidecar.ts" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+94:  registryRoot?: string;
+105:export interface RegistryOptions { registryRoot?: string }
+140:  const registryRoot = options.registryRoot ?? agentRunsRoot();
+141:  const { runId, runDir } = await newRunDir(registryRoot);
+164:  if (options.env === undefined) applyHeadlessShellEnv(env);
+263:  const registryRoot = options.registryRoot ?? agentRunsRoot();
+264:  const { runId, runDir } = await newRunDir(registryRoot);
+358:  const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
+440:  const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
+diff --git a/ts/src/connectors/peer-sidecar.ts b/ts/src/connectors/peer-sidecar.ts
+index 1dd0bdc..42e49cf 100644
+--- a/ts/src/connectors/peer-sidecar.ts
++++ b/ts/src/connectors/peer-sidecar.ts
+@@ -53,6 +53,9 @@ async function main(): Promise<void> {
+   const recordPath = join(config.sessionsDir, `${process.pid}.json`);
+   const keyPath = join(config.sessionsDir, keyFileName(process.pid, sockPath));
+   const owned = new Set<string>();
++  const sessionId = randomUUID();
++  let boundSocket: Awaited<ReturnType<typeof lstat>> | undefined;
++  let serverFailed = false;
+   const connections = new Set<Socket>();
+   const inFlight = new Set<Promise<void>>();
+   type Callback = {to: string; frame: Record<string, unknown>; notice: boolean};
+@@ -242,6 +245,35 @@ async function main(): Promise<void> {
+     });
+     socket.on("end", () => socket.end());
+   });
++  server.on("error", error => { serverFailed = true; console.error("peer socket error:", error); });
++  async function removeOwnedJson(path: string): Promise<void> {
++    try {
++      const info = await lstat(path);
++      if (!info.isFile() || info.size > 262144) throw new Error("unsafe file");
++      const value = JSON.parse(await readFile(path, "utf8"));
++      const matches = path === keyPath ? value?.peerToken === peerToken
++        : value?.pid === process.pid && value?.sessionId === sessionId;
++      if (!matches) throw new Error("identity mismatch");
++      await unlink(path);
++    } catch (error) { console.error("peer cleanup left path alone:", path, error); }
++  }
++  async function closeOwnedSocket(): Promise<void> {
++    if (!owned.has(sockPath)) return;
++    try {
++      const info = await lstat(sockPath);
++      if (!info.isSocket() || !boundSocket || info.dev !== boundSocket.dev || info.ino !== boundSocket.ino
++        || !server.listening || serverFailed) throw new Error("socket listener identity mismatch");
++      // Node unlinks the Unix socket itself when closing. Never close a replaced path.
++      await new Promise<void>(resolve => {
++        server.close(error => {
++          if (error) console.error("peer socket close failed:", error);
++          resolve();
++        });
++        for (const socket of connections) socket.destroy();
++      });
++    } catch (error) { console.error("peer cleanup left path alone:", sockPath, error); }
++    owned.delete(sockPath);
++  }
+   async function atomicJson(path: string, value: unknown, mode: number, retain = true): Promise<void> {
+     const temp = `${path}.${process.pid}.tmp`;
+     try {
+@@ -263,18 +295,16 @@ async function main(): Promise<void> {
+   function cleanup(signal = false): Promise<void> {
+     cleanupPromise ??= (async () => {
+       stopping = true;
+-      if (server.listening) server.close();
+       // Startup can be between bind and publishing its files when a signal arrives.
+       await startupDone;
+       watcher?.close();
+       for (const timer of timers) clearTimeout(timer);
+-      const closed = new Promise<void>(resolve => server.close(() => resolve()));
+       for (const socket of connections) socket.destroy();
+       await work.drain();
+       notifyPending(signal ? {state:"exited", finishedAt:Date.now()} : terminalState ?? {state:"unavailable", finishedAt:Date.now(), detail:"peer stopped before completion"});
+       await drainCallbacks();
+-      await closed;
+-      for (const path of owned) await unlink(path).catch(() => undefined);
++      await closeOwnedSocket();
++      for (const path of owned) await removeOwnedJson(path);
+       owned.clear();
+     })();
+     return cleanupPromise;
+@@ -314,6 +344,8 @@ async function main(): Promise<void> {
+       await unlink(sockPath);
+       await listen();
+     }
++    boundSocket = await lstat(sockPath);
++    serverFailed = false;
+     owned.add(sockPath);
+     if (stopping) return;
+     const procStart = await claudeProcStart(process.pid);
+@@ -325,7 +357,7 @@ async function main(): Promise<void> {
+     const {version} = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as {version: string};
+     await scan();
+     record = {
+-      pid:process.pid, sessionId:randomUUID(), cwd:config.cwd, startedAt:now, ...identity,
++      pid:process.pid, sessionId, cwd:config.cwd, startedAt:now, ...identity,
+       version, peerProtocol:1, peerFeatures:["notify_idle"], kind:"bg", entrypoint:"stratum-peer",
+       messagingSocketPath:sockPath, name:config.name, nameSource:"derived", status:terminalState ? "idle" : "busy", updatedAt:now, statusUpdatedAt:now,
+     };
+
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "sed -n '130,144p' ts/src/connectors/peer-sidecar.ts; sed -n '155,165p' ts/src/connectors/background.ts; sed -n '120,145p' ts/tests/connectors/peer-sidecar.test.ts; sed -n '1858,1875p' /Users/ruze/.codex/memories/MEMORY.md" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+    let deadline: NodeJS.Timeout | undefined;
+    const drain = async () => {
+      while (inFlight.size || callbacks.length) {
+        pumpCallbacks();
+        await Promise.all([...inFlight]);
+      }
+    };
+    try {
+      await Promise.race([drain(), new Promise<void>(resolve => { deadline = setTimeout(resolve, 5000); })]);
+    } finally { clearTimeout(release); clearTimeout(deadline); }
+  }
+  function receive(value: unknown): void {
+    if (stopping || !value || typeof value !== "object" || Array.isArray(value)) return;
+    const frame = value as Record<string, unknown>;
+    const to = typeof frame.from === "string" ? isAllowedCallback(frame.from, config.sockDir) : undefined;
+    T2F5_OUT: streamPath,
+    T2F5_ERR: stderrPath,
+    T2F5_IN: inputPath,
+  };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.CLAUDE_API_KEY;
+  delete env.CLAUDECODE;
+  // A caller-supplied env is authoritative; the headless-shell default is
+  // only layered onto the ambient process.env fallback.
+  if (options.env === undefined) applyHeadlessShellEnv(env);
+  // Stamped before spawn: durationMs is measured from here to the sentinel
+});
+
+it("disables ambient background registration without directory or env overrides", async () => {
+  // Fail before spawning if the worker safety default disappears.
+  expect(process.env.STRATUM_PEER_REGISTER).toBe("0");
+  const sessionsDir = resolveSessionsDir(process.env);
+  const before = existsSync(sessionsDir) ? new Set(await readdir(sessionsDir)) : undefined;
+  const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runDir);
+  const registryRoot = join(runDir,"runs");
+  const started = await startBackgroundRun({agent:"codex",prompt:"x",cwd:runDir,registryRoot,
+    command:["sh","-c","sleep 0.1"]});
+  backgroundPids.add(started.pid!);
+  expect(started).not.toHaveProperty("peerName");
+  await waitFor(() => pollBackgroundRun(started.runId,{registryRoot}), result => result.status === "complete");
+  if (before) {
+    const after = await readdir(sessionsDir);
+    const addedPeers: string[] = [];
+    for (const name of after) {
+      if (before.has(name) || !/^\d+\.json$/.test(name)) continue;
+      const record = await json(join(sessionsDir,name));
+      if (record.entrypoint === "stratum-peer") addedPeers.push(name);
+    }
+    expect(addedPeers).toEqual([]);
+  }
+});
+
+### keywords
+
+- module.register, registerHooks, DEP0205, claude-bg-worker-hooks.mjs, npm run typecheck, tests/connectors, no-op migration, ts/bin missing
+
+## User preferences
+
+- when the user says `Read-only diagnosis` and asks for exact producer/test read-write evidence, stay in analysis mode and trace the actual code paths instead of proposing speculative fixes [Task 1]
+- when the user says `Do not ask clarifying questions` and wants the full deliverable in one pass, finish the investigation and note environment blockers explicitly instead of pausing midstream [Task 1]
+- when the user asks for an inventory of `each call site found` and says `nothing to do` is a valid outcome, treat a no-op migration as a correct end state if grep/typecheck/tests support it [Task 2]
+- when the user says `NEVER run two concurrent full vitest runs`, keep Stratum verification serial and targeted [Task 2]
+
+## Reusable knowledge
+
+- `T2F5_SHELL_WRAPPER` already writes the terminal sentinel before exit; the observable inconsistency comes from `pollBackgroundRun()` scanning the stream and only then checking liveness if `exitCode` is still undefined [Task 1]
+- `waitFor()` returns on the first matching status, so product-level inconsistent terminal responses surface directly in the test contract [Task 1]
+- In this checkout there were no real `module.register(...)` hits under `ts/src`, and `ts/src/connectors/claude-bg-worker-hooks.mjs` already uses `registerHooks(...)` [Task 2]
+- From `/Users/ruze/reg/my/forge/stratum/ts`, the correct connector-focused test scope is `tests/connectors`, not `ts/tests/connectors` [Task 2]
+
+
+hook: PostToolUse
+hook: PostToolUse Completed
+ succeeded in 50896ms:
+
+ RUN  v3.2.7 /Users/ruze/reg/my/forge/stratum/ts
+
+ ✓ tests/mcp-surface-peer.test.ts (2 tests) 4ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > runs the golden flow through running, complete, usage, and persisted process identity
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background-codex-lifecycle.test.ts > Codex background start lifecycle > frames the background prompt file with the sandbox preamble
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background-codex-lifecycle.test.ts (2 tests) 92ms
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/connectors/peer-registry.test.ts (28 tests) 198ms
+stderr | tests/connectors/peer-sidecar.test.ts > disables ambient background registration without directory or env overrides
+stratum peer registration skipped: disabled
+
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | tests/connectors/peer-sidecar.test.ts > launcher resolves when its stderr path cannot be opened
+stratum peer spawn failed: Error: ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-skw9Y1/missing/stream.jsonl.peer.err'
+    at open (node:internal/fs/promises:639:25)
+    at spawnPeerSidecar (/Users/ruze/reg/my/forge/stratum/ts/src/connectors/peer-sidecar.ts:22:14)
+    at /Users/ruze/reg/my/forge/stratum/ts/tests/connectors/peer-sidecar.test.ts:148:3
+    at file:///Users/ruze/reg/my/forge/stratum/ts/node_modules/.pnpm/@vitest+runner@3.2.7/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-skw9Y1/missing/stream.jsonl.peer.err'
+}
+
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:77716) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/connectors/background-claude.test.ts (16 tests) 478ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > polls a nonzero wrapper result as error with stderr
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background.test.ts > P3 background run gate > cancels only the verified process group and then polls terminal
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background.test.ts > P3 background run gate > creates the run registry private to the invoking user (0700 dirs, 0600 files)
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background-claude-interleavings.test.ts (21 tests) 858ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > reports durationMs and resolved model/effort telemetry on terminal polls
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background.test.ts > P3 background run gate > refuses to signal after a process start-time mismatch
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background.test.ts (12 tests) 1567ms
+   ✓ P3 background run gate > runs the golden flow through running, complete, usage, and persisted process identity  531ms
+   ✓ P3 background run gate > reports durationMs and resolved model/effort telemetry on terminal polls  538ms
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: kill switch
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: missing sessions
+stratum peer registration skipped: unreadable sessions directory
+
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: protocol gate
+stratum peer registration skipped: unsupported live peer protocol
+
+ ✓ tests/connectors/peer-sidecar.test.ts (60 tests) 49867ms
+   ✓ tails complete lines, updates busy timestamps, ignores partial and oversized lines, then lingers idle  3127ms
+   ✓ detects a killed child group without a sentinel and never acts on unknown identity  4684ms
+   ✓ golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger  665ms
+   ✓ error harness: read-only run directory  659ms
+   ✓ caps subscriptions at 32, rejects invalid callbacks, and omits auth when no key exists  690ms
+   ✓ reports exited with cancellation detail to a real requester after group death  2220ms
+   ✓ drains in-flight callbacks for at most five seconds when a requester holds its half open  5167ms
+   ✓ closes a connection that never supplies its first line within the configured deadline  472ms
+   ✓ creates a missing socket directory with mode 0700 and watches a stream created later  687ms
+   ✓ background golden flow registers busy, authenticates one notice, retains idle, and cleans up  793ms
+   ✓ background error harness: cancel  2704ms
+   ✓ background error harness: late subscription  753ms
+   ✓ background error harness: after linger  740ms
+   ✓ background error harness: user refusal  752ms
+   ✓ background error harness: malformed frame  753ms
+   ✓ background error harness: disallowed callback  746ms
+   ✓ background error harness: read-only run directory  737ms
+   ✓ background error harness: malformed peer metadata  868ms
+   ✓ reports exited and cleans up a dead background child without a recorded start time  2693ms
+   ✓ forwards the first-line deadline through startBackgroundRun  522ms
+   ✓ poll rejects unsafe peer metadata: fifo  348ms
+   ✓ poll rejects unsafe peer metadata: symlink  320ms
+   ✓ poll rejects unsafe peer metadata: oversized  325ms
+   ✓ bounds refusal callbacks to eight active and 32 queued attempts  831ms
+   ✓ replaces queued terminal re-subscriptions to one address  383ms
+   ✓ attempts all 32 queued idle notices within the shutdown window with held sockets  5494ms
+   ✓ preserves a foreign pid replacement during linger  1680ms
+   ✓ preserves a foreign sessionId replacement during linger  1680ms
+   ✓ preserves a foreign key replacement during linger  1685ms
+   ✓ preserves a foreign socket replacement during linger  1674ms
+
+ Test Files  7 passed (7)
+      Tests  141 passed (141)
+   Start at  21:57:30
+   Duration  50.46s (transform 402ms, setup 0ms, collect 1.34s, tests 53.06s, environment 1ms, prepare 350ms)
+
+
+codex
+The ownership regressions now pass for a replaced PID, session ID, key token, and live socket. `bg_started` now returns only `peerName` for registration attempts, and the contract rejects the removed `peer` field. The requested test group is running, including the existing real-registry safety check.
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts tests/mcp-surface-peer.test.ts' in /Users/ruze/reg/my/forge/stratum/ts
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc "git diff --check; git diff --numstat; rg -n 'peer\\??: \"pending\"|peer:peer|peer:\"pending\"|\"peer\\?\": \"string\"' ts/src/connectors ts/contracts/mcp-surface.json ts/tests/mcp-surface-peer.test.ts README.md CHANGELOG.md; git status --short" in /Users/ruze/reg/my/forge/stratum
+ succeeded in 0ms:
+2	2	CHANGELOG.md
+1	1	README.md
+1	0	docs/plans/COMPOSE-ROADMAP.md
+1	2	ts/contracts/mcp-surface.json
+2	2	ts/src/connectors/background.ts
+37	5	ts/src/connectors/peer-sidecar.ts
+1	1	ts/src/connectors/runner.ts
+24	1	ts/tests/connectors/peer-sidecar.test.ts
+8	2	ts/tests/mcp-surface-peer.test.ts
+ M CHANGELOG.md
+ M README.md
+ M docs/plans/COMPOSE-ROADMAP.md
+ M ts/contracts/mcp-surface.json
+ M ts/src/connectors/background.ts
+ M ts/src/connectors/peer-sidecar.ts
+ M ts/src/connectors/runner.ts
+ M ts/tests/connectors/peer-sidecar.test.ts
+ M ts/tests/mcp-surface-peer.test.ts
+?? docs/features/STRAT-AGENT-PEER-1/report.md
+?? docs/features/STRAT-AGENT-PEER-1/sessions/codex-fix4-run.log
+?? docs/features/STRAT-AGENT-PEER-2/
+
+hook: PostToolUse
+hook: PostToolUse Completed
+ succeeded in 50861ms:
+
+ RUN  v3.2.7 /Users/ruze/reg/my/forge/stratum/ts
+
+ ✓ tests/mcp-surface-peer.test.ts (2 tests) 4ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > runs the golden flow through running, complete, usage, and persisted process identity
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background-codex-lifecycle.test.ts > Codex background start lifecycle > frames the background prompt file with the sandbox preamble
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background-codex-lifecycle.test.ts (2 tests) 102ms
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/connectors/peer-registry.test.ts (28 tests) 191ms
+stderr | tests/connectors/peer-sidecar.test.ts > disables ambient background registration without directory or env overrides
+stratum peer registration skipped: disabled
+
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | tests/connectors/peer-sidecar.test.ts > launcher resolves when its stderr path cannot be opened
+stratum peer spawn failed: Error: ENOENT: no such file or directory, open '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-xDWFAj/missing/stream.jsonl.peer.err'
+    at open (node:internal/fs/promises:639:25)
+    at spawnPeerSidecar (/Users/ruze/reg/my/forge/stratum/ts/src/connectors/peer-sidecar.ts:22:14)
+    at /Users/ruze/reg/my/forge/stratum/ts/tests/connectors/peer-sidecar.test.ts:148:3
+    at file:///Users/ruze/reg/my/forge/stratum/ts/node_modules/.pnpm/@vitest+runner@3.2.7/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/sp-xDWFAj/missing/stream.jsonl.peer.err'
+}
+
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:79652) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/connectors/background-claude.test.ts (16 tests) 479ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > polls a nonzero wrapper result as error with stderr
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background.test.ts > P3 background run gate > cancels only the verified process group and then polls terminal
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background.test.ts > P3 background run gate > creates the run registry private to the invoking user (0700 dirs, 0600 files)
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background-claude-interleavings.test.ts (21 tests) 859ms
+stderr | tests/connectors/background.test.ts > P3 background run gate > reports durationMs and resolved model/effort telemetry on terminal polls
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/background.test.ts > P3 background run gate > refuses to signal after a process start-time mismatch
+stratum peer registration skipped: disabled
+
+ ✓ tests/connectors/background.test.ts (12 tests) 1578ms
+   ✓ P3 background run gate > runs the golden flow through running, complete, usage, and persisted process identity  541ms
+   ✓ P3 background run gate > reports durationMs and resolved model/effort telemetry on terminal polls  536ms
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: kill switch
+stratum peer registration skipped: disabled
+
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: missing sessions
+stratum peer registration skipped: unreadable sessions directory
+
+stderr | tests/connectors/peer-sidecar.test.ts > background error harness: protocol gate
+stratum peer registration skipped: unsupported live peer protocol
+
+ ✓ tests/connectors/peer-sidecar.test.ts (60 tests) 49833ms
+   ✓ tails complete lines, updates busy timestamps, ignores partial and oversized lines, then lingers idle  3098ms
+   ✓ detects a killed child group without a sentinel and never acts on unknown identity  4662ms
+   ✓ golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger  667ms
+   ✓ error harness: read-only run directory  658ms
+   ✓ caps subscriptions at 32, rejects invalid callbacks, and omits auth when no key exists  687ms
+   ✓ reports exited with cancellation detail to a real requester after group death  2216ms
+   ✓ drains in-flight callbacks for at most five seconds when a requester holds its half open  5152ms
+   ✓ closes a connection that never supplies its first line within the configured deadline  465ms
+   ✓ creates a missing socket directory with mode 0700 and watches a stream created later  684ms
+   ✓ background golden flow registers busy, authenticates one notice, retains idle, and cleans up  752ms
+   ✓ background error harness: cancel  2702ms
+   ✓ background error harness: late subscription  751ms
+   ✓ background error harness: after linger  738ms
+   ✓ background error harness: user refusal  815ms
+   ✓ background error harness: malformed frame  744ms
+   ✓ background error harness: disallowed callback  752ms
+   ✓ background error harness: read-only run directory  742ms
+   ✓ background error harness: malformed peer metadata  863ms
+   ✓ reports exited and cleans up a dead background child without a recorded start time  2683ms
+   ✓ forwards the first-line deadline through startBackgroundRun  542ms
+   ✓ poll rejects unsafe peer metadata: fifo  344ms
+   ✓ poll rejects unsafe peer metadata: symlink  340ms
+   ✓ poll rejects unsafe peer metadata: oversized  338ms
+   ✓ bounds refusal callbacks to eight active and 32 queued attempts  840ms
+   ✓ replaces queued terminal re-subscriptions to one address  388ms
+   ✓ attempts all 32 queued idle notices within the shutdown window with held sockets  5496ms
+   ✓ preserves a foreign pid replacement during linger  1691ms
+   ✓ preserves a foreign sessionId replacement during linger  1674ms
+   ✓ preserves a foreign key replacement during linger  1674ms
+   ✓ preserves a foreign socket replacement during linger  1682ms
+
+ Test Files  7 passed (7)
+      Tests  141 passed (141)
+   Start at  21:58:27
+   Duration  50.44s (transform 501ms, setup 0ms, collect 1.36s, tests 53.05s, environment 2ms, prepare 380ms)
+
+
+codex
+The requested test group passed all 141 tests. I added a log assertion and tightened connection teardown, so I’m finishing a verification run of that final revision before typechecking. The diff confirms that `cancelBackgroundRun` is unchanged.
+hook: PostToolUse
+hook: PostToolUse Completed
+hook: PreToolUse
+hook: PreToolUse Completed
+exec
+/bin/zsh -lc 'npm run typecheck' in /Users/ruze/reg/my/forge/stratum/ts
+ succeeded in 2499ms:
+hook: PostToolUse
+hook: PostToolUse Completed
+codex
+1. **Cleanup verifies ownership:** record PID/session ID, key token, and bound socket identity/listener state. Mismatches survive and are logged. Tests: `preserves a foreign %s replacement during linger` — PID, session ID, key, and socket variants.
+
+2. **Removed `peer: "pending"`:** updated background responses, return types, contract, README, and CHANGELOG. Poll-side `peer` remains unchanged. Test: `rejects the removed peer field on background start responses`.
+
+**Verification from `ts/`:**
+
+- TDD regressions: 5 failed before fixes, then 5 passed.
+- `npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts tests/mcp-surface-peer.test.ts` — **141 passed, 7 files**.
+- `npm run typecheck` — passed, zero errors.
+- `git diff --check` — passed.
+
+**Real-registry check:** ambient-registration safety test passed with no added Stratum peer records. Registration fixtures used temporary directories and real processes/sockets.
+
+`cancelBackgroundRun` untouched. No full suite or commits.
+
+
+hook: Stop
+hook: Stop Completed
+tokens used
+59,465
+1. **Cleanup verifies ownership:** record PID/session ID, key token, and bound socket identity/listener state. Mismatches survive and are logged. Tests: `preserves a foreign %s replacement during linger` — PID, session ID, key, and socket variants.
+
+2. **Removed `peer: "pending"`:** updated background responses, return types, contract, README, and CHANGELOG. Poll-side `peer` remains unchanged. Test: `rejects the removed peer field on background start responses`.
+
+**Verification from `ts/`:**
+
+- TDD regressions: 5 failed before fixes, then 5 passed.
+- `npx vitest run tests/connectors/peer-*.test.ts tests/connectors/background*.test.ts tests/mcp-surface-peer.test.ts` — **141 passed, 7 files**.
+- `npm run typecheck` — passed, zero errors.
+- `git diff --check` — passed.
+
+**Real-registry check:** ambient-registration safety test passed with no added Stratum peer records. Registration fixtures used temporary directories and real processes/sockets.
+
+`cancelBackgroundRun` untouched. No full suite or commits.
+
+
