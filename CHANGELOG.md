@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **Optional contract fields now accept explicit `null`.** `T?` now means `T | null | undefined`
+  rather than only `T | undefined`, widening both declared-contract and flow-input validation while
+  leaving required fields and type checks unchanged. The canonical case is an agent reporting that
+  it made no commit as `commit_hash: null`: this failed both a retried `ship` step whose first attempt
+  had already committed and the 2026-09-15 `explore_design` step in flow
+  `00540397-0bec-4aa5-b6d5-2eb5634f7201`, where the design already existed. This closes the previously
+  filed open question about a retry being unable to satisfy its contract after the failed attempt
+  already committed.
+
 - **`step_usage` events now state the amount AND its provenance (`usd_source`).** The consumer used
   to infer provenance from whether `cost_usd` was present, so a producer sending an honest estimate
   had it silently relabelled as provider-reported spend. Its only safe alternative was to omit the
