@@ -1,4 +1,4 @@
-# STRAT-LEARN-INLINE-TS-1 — Restore the automatic inline harvest trigger lost in the TS cutover
+# STRAT-LEARN-INLINE-TS-1 — Surface harvested lessons automatically (the trigger, not the machinery)
 
 **Status:** PLANNED
 **Priority:** MEDIUM
@@ -8,69 +8,113 @@
 ## Related Documents
 
 - [`STRAT-LEARN-INLINE/report.md`](../STRAT-LEARN-INLINE/report.md) — the Python v1 that shipped and
-  then silently stopped existing. Its design/blueprint/plan remain the specification of intent.
-- [`STRAT-CONFIG-PREFS-1`](../STRAT-CONFIG-PREFS-1/design.md) — the config layer whose strict
-  unknown-key rejection surfaced this. Provides the layered home this feature's switch belongs in.
+  then silently stopped firing. Its design/blueprint/plan remain the specification of intent.
+- [`STRAT-CONFIG-PREFS-1`](../STRAT-CONFIG-PREFS-1/design.md) — the config layer that surfaced this,
+  and the layered home this feature's switch belongs in.
 - `git show python-legacy:src/stratum/judge/inline_learn.py` — the retired harvester edge.
 
 ## The finding
 
-`STRAT-LEARN-INLINE` shipped on 2026-06-08 as a **default-OFF automatic edge on the judge path**:
-when `stratum_judge` returned a `must-fix` finding, the harvester classified each failed predicate
-and staged a described patch candidate — with no human in the loop. The user enabled it on
-2026-06-11, recording the preference in `compose/stratum.toml`:
-
-```toml
-# Enabled 2026-06-11 per user request so working-style lessons
-# get harvested automatically instead of requiring manual correction.
-[learn.inline_patch]
-enabled = true
-classifier = "heuristic"
-```
+`STRAT-LEARN-INLINE` shipped 2026-06-08 as a **default-OFF automatic edge on the judge path**. The
+user enabled it 2026-06-11, recording the preference in `compose/stratum.toml` (deleted 2026-09-16,
+compose `b34b188`) *"so working-style lessons get harvested automatically instead of requiring
+manual correction."*
 
 **The 2026-07 TS cutover ported the machinery but not the trigger.** `ts/src/learn/` has
-`harvest.ts`, `classify.ts`, `candidate.ts`, `apply.ts` — the parts are all there. But the only
-importer outside `ts/src/learn/` is **`ts/src/cli/learn.ts`**: `harvest(flowsDir)` is now an
-operator-invoked sweep over a directory. Nothing on the judge path calls it.
+`harvest.ts`, `classify.ts`, `candidate.ts`, `apply.ts`. The only importer outside `ts/src/learn/`
+is `ts/src/cli/learn.ts` — `harvest()` became an operator-invoked sweep. Nothing on the judge path
+calls it, so the feature reverted to exactly the manual mode the preference was set to escape.
 
-So the feature did not disappear — it **silently reverted to the manual mode the user's preference
-was set to escape**. `grep -rni inline_patch ts/src` returns nothing; the TOML section that turned
-it on has had no reader for three months, and under STRAT-CONFIG-PREFS-1's strict loader it is now
-a hard unknown-key error.
+## The measurement (2026-09-16) — the machinery works; nobody is listening
 
-This is the failure class STRAT-CONFIG-PREFS-1 exists to prevent, caught by that feature's own
-first use — a preference that was set, recorded, and then silently inert.
+Run by hand over the real flow store (`~/.stratum/ts/flows`, 1350 flows):
+
+```
+608 failure records (0 runs skipped, 0 events dropped)
+1190 clusters → 4 durable
+  stratum: 1 actionable    compose: 2 actionable
+```
+
+The classifier is conservative by design (`classify.ts`: keys on the violated contract, never the
+offending value; refuses mixed or unattributed provenance; `durable` needs ≥2 runs and ≥3
+run-step pairs). 4 durable from 1190 is the filter working, not failing.
+
+**Measurement caveat, recorded so it is not repeated:** candidates are filtered by
+`cluster.scope.workspaceRoot !== root` (`cli/learn.ts:70`). Running from `stratum/ts` rather than
+`stratum` reports `0 for this project` and looks like a dead feature. Always harvest from the repo
+root.
+
+### The lessons it found are real
+
+```
+build: recurring schema failure on outcome (stratum)
+  steps blueprint, explore_design, plan, verification returned approved/done/pass/revised/success
+  where the contract allows complete/failed/skipped — 14 times across 2 runs / 6 pairs.
+  Every one recovered on retry, so each cost an extra agent dispatch and nothing surfaced it.
+
+build: recurring schema failure on outcome (compose)
+  steps docs, explore_design returned exists/short_circuited_existing_approved_design/success
+  — 9 times across 8 runs / 9 pairs.
+
+build: recurring schema failure on commit_hash (compose)
+  steps docs, explore_design returned null where the contract allows string
+  — 7 times across 6 runs / 7 pairs.
+```
+
+**The third one is the proof of cost.** That is the same defect the CHANGELOG records being fixed by
+hand on 2026-09-15 ("the canonical case is an agent reporting that it made no commit as
+`commit_hash: null`", flow `00540397-0bec-4aa5-b6d5-2eb5634f7201`). The harvester had seven
+attributed occurrences of it. No human ran the command, so the bug was found the expensive way,
+months later, from a single failing run.
+
+**This is not a yield problem. It is a delivery problem.** The lessons exist and are good; the only
+thing missing is that something has to *say* them without being asked.
 
 ## Scope
 
-Restore the automatic trigger in TypeScript. Reuse the existing `ts/src/learn/` modules; this is a
-wiring and gating feature, not a reimplementation.
+Restore the automatic surfacing. Reuse `ts/src/learn/` as-is — this is wiring, gating and delivery,
+not a reimplementation of the classifier.
 
-- Re-establish the harvester edge on the judge path (Python v1 scoped this to the MCP judge-step
-  path only, explicitly excluding guard transitions — keep that boundary).
-- Express the switch through **STRAT-CONFIG-PREFS-1's layered config**, not a new bare env var.
-  It is the second citizen of that layer, and a natural test of it.
-- Default OFF, matching Python v1. Candidates are staged and described, never applied, and never
-  touch the running spec.
+- Re-establish the harvester edge on the judge path. Python v1 scoped this to the MCP judge-step
+  path and explicitly excluded guard transitions (a lifecycle gate is not a dev-work diagnosis) —
+  keep that boundary.
+- Express the switch through the STRAT-CONFIG-PREFS-1 chain, not a new bare env var. It is that
+  layer's second citizen and a natural test of it.
+- Default OFF, matching Python v1. Candidates are staged and described, never applied.
+- **Harvest from the workspace root, not the cwd**, or the scope filter silently yields nothing.
 
 ## Acceptance criteria
 
 - [ ] Judge-path `must-fix` verdicts trigger harvest+classify automatically when enabled.
 - [ ] The switch resolves through the STRAT-CONFIG-PREFS-1 chain and reports its winning layer.
 - [ ] Default OFF. With the switch off, the judge path is byte-identical to today.
-- [ ] Candidates are staged only — never auto-applied. `STRATUM_LEARN_APPLY_ENABLED` keeps
-      governing application, separately from harvesting.
-- [ ] Guard transitions stay excluded (a lifecycle gate is not a dev-work diagnosis).
+- [ ] Scope resolution uses the workspace root; a run from a subdirectory must not silently drop
+      every candidate. Regression test for the `stratum/ts` vs `stratum` case above.
+- [ ] Candidates are staged only, never auto-applied. `STRATUM_LEARN_APPLY_ENABLED` continues to
+      govern application, separately from harvesting.
+- [ ] Guard transitions stay excluded.
 - [ ] Tests assert the trigger fires on the judge path, the off-path no-op, and layer provenance.
-- [ ] The user's 2026-06-11 preference is expressible again, and a report records that it is.
+- [ ] A durable lesson reaches a human without anyone running a command.
 
 ## Explicitly NOT in scope
 
-- Reviving the Python `postmortem/` CLI surface. The TS CLI sweep stays as-is.
-- Auto-applying candidates. That remains behind `STRATUM_LEARN_APPLY_ENABLED`.
+- Retuning the classifier thresholds. The measurement says they are calibrated correctly; changing
+  them without evidence would trade real lessons for noise.
+- Auto-applying candidates. That stays behind `STRATUM_LEARN_APPLY_ENABLED`.
+- Reviving the Python `postmortem/` CLI surface.
+
+## Immediate follow-up, independent of this feature
+
+The `outcome` enum mismatch is actionable now and costs an agent dispatch every time it fires:
+steps return `approved`/`done`/`pass`/`revised`/`success`/`exists` against a contract allowing only
+`complete`/`failed`/`skipped`. Either widen the contract or fix the step instructions. File
+separately — it should not wait on the trigger.
 
 ## Origin
 
 Found 2026-09-16 while resolving the `compose/stratum.toml` fossil during STRAT-CONFIG-PREFS-1.
-The fossil was going to be deleted as configuring a nonexistent feature; checking `ts/src/learn/`
-first showed the feature half-exists, which turned a cleanup into a real regression ticket.
+The file was about to be deleted as configuring a nonexistent feature; checking `ts/src/learn/`
+first showed the feature half-exists. A first pass then measured zero yield and nearly killed it —
+that zero was an artifact of harvesting from `ts/` instead of the repo root. Running it correctly
+produced three real lessons, one of which had been silently predicting a bug that was later fixed
+by hand.
