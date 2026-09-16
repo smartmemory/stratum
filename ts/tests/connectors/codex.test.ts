@@ -39,18 +39,31 @@ function fakeSpawn(records: unknown[], exitCode = 0, stderr = "") {
 }
 
 describe("CodexConnector", () => {
-  it("builds argv byte-for-byte like Python _exec_args", () => {
+  it("builds exec argv for all four sandbox axes", () => {
     expect(codexExecArgs("gpt-5.3-codex-spark/low", "/work", "read-only")).toEqual([
       "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only",
+      "-c", "sandbox_workspace_write.network_access=false",
+      "-c", "sandbox_workspace_write.writable_roots=[]",
+      "-c", 'approval_policy="never"',
       "-m", "gpt-5.3-codex-spark", "-C", "/work",
       "-c", 'model_reasoning_effort="low"', "-",
     ]);
-    expect(codexExecArgs("gpt-5", "/work", "workspace-write")).toEqual([
+    expect(codexExecArgs("gpt-5", "/work", "workspace-write", {
+      networkAccess: true,
+      writableRoots: ["/cache", "/output"],
+      approvalPolicy: "on-request",
+    })).toEqual([
       "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
+      "-c", "sandbox_workspace_write.network_access=true",
+      "-c", 'sandbox_workspace_write.writable_roots=["/cache","/output"]',
+      "-c", 'approval_policy="on-request"',
       "-m", "gpt-5", "-C", "/work", "-",
     ]);
     expect(codexExecArgs("gpt-5", "/work", "danger-full-access" as never)).toEqual([
       "exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access",
+      "-c", "sandbox_workspace_write.network_access=false",
+      "-c", "sandbox_workspace_write.writable_roots=[]",
+      "-c", 'approval_policy="never"',
       "-m", "gpt-5", "-C", "/work", "-",
     ]);
   });
@@ -105,6 +118,9 @@ describe("CodexConnector", () => {
       model: "gpt-5.3-codex-spark/low",
       cwd: "/work",
       sandboxMode: "workspace-write",
+      networkAccess: true,
+      writableRoots: ["/cache"],
+      approvalPolicy: "on-request",
       env: { PATH: "/definitely-missing", ANTHROPIC_API_KEY: "must-not-leak" },
       sdkFactory,
       onEvent: async (event) => { connectorEvents.push(event); },
@@ -123,14 +139,33 @@ describe("CodexConnector", () => {
     });
     expect(sdkFactory).toHaveBeenCalledWith({ env: { PATH: "/definitely-missing" } });
     expect(startThread).toHaveBeenCalledWith({
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
+      additionalDirectories: ["/cache"],
       model: "gpt-5.3-codex-spark",
       modelReasoningEffort: "low",
+      networkAccessEnabled: true,
       sandboxMode: "workspace-write",
       skipGitRepoCheck: true,
       workingDirectory: "/work",
     });
     expect(connectorEvents).toEqual([
+      {
+        kind: "sandbox_policy",
+        metadata: {
+          policy: {
+            filesystemMode: "workspace-write",
+            networkAccess: true,
+            writableRoots: ["/cache"],
+            approvalPolicy: "on-request",
+          },
+          provenance: {
+            filesystemMode: { layer: "dispatch", source: "CodexConnector options" },
+            networkAccess: { layer: "dispatch", source: "CodexConnector options" },
+            writableRoots: { layer: "dispatch", source: "CodexConnector options" },
+            approvalPolicy: { layer: "dispatch", source: "CodexConnector options" },
+          },
+        },
+      },
       {
         kind: "agent_started",
         metadata: { agent: "codex", model: "gpt-5.3-codex-spark/low", prompt_chars: withSandboxPreamble("echo test").length },

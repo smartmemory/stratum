@@ -68,6 +68,41 @@ describe("P1 golden flow", () => {
     expect(audit.events.map((event) => event.type)).toEqual(["planned", "ready", "result", "result", "ready", "resumed", "result", "completed"]);
     expect(audit.steps.collect?.attempts[0]).toMatchObject({ attempt: 1, result: { value: "raw" } });
   });
+
+  it("records an elevated sandbox policy and every winning layer in the run audit", async () => {
+    const { engine } = await createEngine();
+    const planned = await engine.plan(flow([{ id: "finish", do: "finish", out: "Result" }]), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ready");
+    await engine.stepDone(planned.runId, "finish", {
+      output: { value: "done" },
+      sandboxAudit: {
+        policy: {
+          filesystemMode: "workspace-write",
+          networkAccess: true,
+          writableRoots: ["/cache"],
+          approvalPolicy: "never",
+        },
+        provenance: {
+          filesystemMode: { layer: "project", source: "/project/stratum.toml" },
+          networkAccess: { layer: "user", source: "/user/config.toml" },
+          writableRoots: { layer: "dispatch", source: "stratum_agent_run" },
+          approvalPolicy: { layer: "default", source: "built-in defaults" },
+        },
+      },
+    });
+    expect((await engine.audit(planned.runId)).events).toContainEqual(expect.objectContaining({
+      type: "sandbox_policy",
+      stepId: "finish",
+      detail: expect.objectContaining({
+        attempt: 1,
+        policy: expect.objectContaining({ filesystemMode: "workspace-write", networkAccess: true }),
+        provenance: expect.objectContaining({
+          filesystemMode: { layer: "project", source: "/project/stratum.toml" },
+          networkAccess: { layer: "user", source: "/user/config.toml" },
+        }),
+      }),
+    }));
+  });
 });
 
 describe("P1 table-driven error harness", () => {

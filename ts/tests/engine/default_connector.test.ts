@@ -41,4 +41,24 @@ describe("engine default connector", () => {
     const result = await defaultConnector({ agent: "claude", prompt: "p", attempt: 1, outSchema: { value: "string" } });
     expect(result).toMatchObject({ failure: expect.stringContaining("must be JSON") });
   });
+
+  it("preserves elevated sandbox evidence for the engine audit trail", async () => {
+    const sandboxAudit = {
+      policy: { filesystemMode: "workspace-write" as const, networkAccess: true, writableRoots: ["/cache"], approvalPolicy: "never" as const },
+      provenance: {
+        filesystemMode: { layer: "project" as const, source: "/work/stratum.toml" },
+        networkAccess: { layer: "user" as const, source: "/user/config.toml" },
+        writableRoots: { layer: "dispatch" as const, source: "stratum_agent_run" },
+        approvalPolicy: { layer: "default" as const, source: "built-in defaults" },
+      },
+    };
+    runAgent.mockResolvedValueOnce({
+      text: "done",
+      usage: {},
+      telemetry: { durationMs: 1, model: "fake" },
+      sandboxAudit,
+    });
+    await expect(defaultConnector({ agent: "codex", prompt: "p", attempt: 1 }))
+      .resolves.toMatchObject({ sandboxAudit });
+  });
 });

@@ -79,8 +79,18 @@ describe("P3 background run gate", () => {
       command: fakeCodex([AGENT_MSG]),
     });
     expect(await readFile(`${started.streamPath}.in`, "utf8")).toBe("solve");
-    expect(await readMeta(registryRoot, started.runId)).toMatchObject({ sandboxMode: "danger-full-access" });
-    expect(await waitFor(started.runId, registryRoot, "complete")).toMatchObject({ text: "done text" });
+    expect(await readMeta(registryRoot, started.runId)).toMatchObject({
+      sandboxMode: "danger-full-access",
+      sandboxAudit: {
+        policy: { filesystemMode: "danger-full-access" },
+        provenance: { filesystemMode: { layer: "dispatch", source: "startBackgroundRun options" } },
+        fullAccessAuthorization: { layer: "env", source: "STRATUM_CODEX_ALLOW_FULL_ACCESS" },
+      },
+    });
+    expect(await waitFor(started.runId, registryRoot, "complete")).toMatchObject({
+      text: "done text",
+      sandboxAudit: { fullAccessAuthorization: { layer: "env", source: "STRATUM_CODEX_ALLOW_FULL_ACCESS" } },
+    });
   });
 
   it("runs the golden flow through running, complete, usage, and persisted process identity", async () => {

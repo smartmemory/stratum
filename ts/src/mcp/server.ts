@@ -8,6 +8,7 @@ import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/
 import { createForegroundRun, killAndReapGroup, recordForegroundGroup, settleForegroundRun } from "../connectors/foreground_registry.js";
 import { procStartTime } from "../connectors/proc_identity.js";
 import type { CodexSandboxMode, ConnectorEventHandler } from "../connectors/base.js";
+import type { CodexApprovalPolicy } from "../config/types.js";
 import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { cancelFlow, EMPTY_AGENTS } from "../engine/flow_cancel.js";
 import type { AgentCancelSummary } from "../connectors/foreground_registry.js";
@@ -312,6 +313,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         case "stratum_agent_run": {
           const model = optionalString(request, "model");
           const sandboxMode = optionalString(request, "sandboxMode");
+          const approvalPolicy = optionalString(request, "approvalPolicy");
           // assertToolRequest (line 72) has already validated allowedTools/disallowedTools
           // element types via {"$array":"string"} in the contract — optionalArray() is safe.
           // Check Array.isArray() first to distinguish "not provided" from "provided as []".
@@ -374,6 +376,9 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             // (workspace-write for claude bg), bypassing the caller's intent.
             ...(model !== undefined ? { model } : {}),
             ...(sandboxMode !== undefined ? { sandboxMode: sandboxMode as CodexSandboxMode } : {}),
+            ...(typeof request.networkAccess === "boolean" ? { networkAccess: request.networkAccess } : {}),
+            ...(Array.isArray(request.writableRoots) ? { writableRoots: optionalArray(request, "writableRoots") } : {}),
+            ...(approvalPolicy !== undefined ? { approvalPolicy: approvalPolicy as CodexApprovalPolicy } : {}),
             ...(typeof request.background === "boolean" ? { background: request.background } : {}),
             ...(allowedTools !== undefined ? { allowedTools } : {}),
             ...(disallowedTools !== undefined ? { disallowedTools } : {}),
@@ -503,7 +508,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           // The envelope is always agent_run_failed; `code` names the specific
           // connector failure (CANCELLATION_TEARDOWN_TIMEOUT and friends) when it has one.
           const data = { code: failure.code ?? "agent_run_failed", ...Object.fromEntries(
-            ["usage", "split", "usdSource", "stderr", "telemetry"].filter(key => key in Object(failure)).map(key => [key, (failure as unknown as Record<string, unknown>)[key]])) };
+            ["usage", "split", "usdSource", "stderr", "telemetry", "sandboxAudit"].filter(key => key in Object(failure)).map(key => [key, (failure as unknown as Record<string, unknown>)[key]])) };
           throw await registryError("agent_run_failed", ErrorCode.InternalError, failure.message ?? String(error), data);
         }
         if (!tool.startsWith("stratum_guard_")) throw error;

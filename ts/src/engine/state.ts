@@ -198,7 +198,7 @@ export interface AuditEvent {
   type: "planned" | "ready" | "result" | "judged" | "routed" | "skipped" | "resumed" | "completed" | "failed" | "budget_exhausted"
     | "gate_waiting" | "gate_resolved" | "fanout_item_ready" | "fanout_item_dispatched" | "fanout_attempt_result"
     | "fanout_item_skipped" | "fanout_ledger_debit" | "fanout_merge"
-    | "usage_debit" | "step_reset" | "checkpoint_reverted" | "carry_updated" | "flow_cancelled";
+    | "usage_debit" | "step_reset" | "checkpoint_reverted" | "carry_updated" | "flow_cancelled" | "sandbox_policy";
   stepId?: string;
   detail?: unknown;
 }

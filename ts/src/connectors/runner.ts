@@ -2,6 +2,8 @@ import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResul
 import { startBackgroundRun } from "./background.js";
 import { ClaudeConnector, type QueryFunction } from "./claude.js";
 import { CodexConnector, type SpawnProcess } from "./codex.js";
+import { isSandboxEscalated, loadStratumConfig } from "../config/index.js";
+import type { CodexApprovalPolicy } from "../config/types.js";
 
 // Module-level discriminant sets — created once, not per-call (intentionally isolated
 // from the identical sets in background.ts to avoid a cross-module import dependency).
@@ -23,6 +25,9 @@ export interface AgentRunOptions {
   thinking?: Record<string, unknown>;
   effort?: string;
   sandboxMode?: CodexSandboxMode;
+  networkAccess?: boolean;
+  writableRoots?: readonly string[];
+  approvalPolicy?: CodexApprovalPolicy;
   registryRoot?: string;
   sessionsDir?: string;
   sockDir?: string;
@@ -74,6 +79,18 @@ export async function runAgent(
   options.signal?.throwIfAborted();
   validateAgentSettings(options);
   const cwd = options.cwd ?? process.cwd();
+  const resolved = options.agent === "codex" ? loadStratumConfig({
+    projectRoot: cwd,
+    dispatch: {
+      ...(options.sandboxMode !== undefined ? { filesystemMode: options.sandboxMode } : {}),
+      ...(options.networkAccess !== undefined ? { networkAccess: options.networkAccess } : {}),
+      ...(options.writableRoots !== undefined ? { writableRoots: options.writableRoots } : {}),
+      ...(options.approvalPolicy !== undefined ? { approvalPolicy: options.approvalPolicy } : {}),
+    },
+    env: options.env ?? process.env,
+  }) : undefined;
+  const sandbox = resolved?.sandbox;
+  const sandboxAudit = sandbox !== undefined && isSandboxEscalated(sandbox) ? resolved!.sandboxAudit() : undefined;
   if (options.background) {
     // Claude-only settings never reach a background codex run: startBackgroundRun's
     // codex branch builds its argv from codexCommand() and records CodexRunMeta,
@@ -87,7 +104,13 @@ export async function runAgent(
       cwd,
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
-      ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
+      ...(sandbox !== undefined ? {
+        sandboxMode: sandbox.filesystemMode,
+        networkAccess: sandbox.networkAccess,
+        writableRoots: sandbox.writableRoots,
+        approvalPolicy: sandbox.approvalPolicy,
+      } : options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
+      ...(sandboxAudit !== undefined ? { sandboxAudit } : {}),
       ...(options.registryRoot !== undefined ? { registryRoot: options.registryRoot } : {}),
       ...(options.sessionsDir !== undefined ? { sessionsDir: options.sessionsDir } : {}),
       ...(options.sockDir !== undefined ? { sockDir: options.sockDir } : {}),
@@ -106,7 +129,11 @@ export async function runAgent(
       cwd,
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
-      ...(options.sandboxMode !== undefined ? { sandboxMode: options.sandboxMode } : {}),
+      sandboxMode: sandbox!.filesystemMode,
+      networkAccess: sandbox!.networkAccess,
+      writableRoots: sandbox!.writableRoots,
+      approvalPolicy: sandbox!.approvalPolicy,
+      ...(sandboxAudit !== undefined ? { sandboxAudit } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}),
       ...(options.onSpawn !== undefined ? { onSpawn: options.onSpawn } : {}),
       ...(boundaries.codexSpawn !== undefined ? { spawn: boundaries.codexSpawn } : {}),
@@ -131,7 +158,7 @@ export async function runAgent(
 }
 
 /** Reject settings that would otherwise silently disappear at a provider boundary. */
-export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "model" | "effort" | "thinking" | "allowedTools" | "disallowedTools">): void {
+export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "model" | "effort" | "thinking" | "allowedTools" | "disallowedTools" | "networkAccess" | "writableRoots" | "approvalPolicy">): void {
   if (options.agent === "codex") {
     if (options.thinking !== undefined || options.allowedTools !== undefined || options.disallowedTools !== undefined) {
       throw new Error("Codex does not support Claude thinking/tool filters; select a Codex sandboxMode instead");
@@ -140,6 +167,9 @@ export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "
       throw new Error(`unsupported Codex reasoning effort ${JSON.stringify(options.effort)}`);
     }
   } else {
+    if (options.networkAccess !== undefined || options.writableRoots !== undefined || options.approvalPolicy !== undefined) {
+      throw new Error("Codex sandbox networkAccess/writableRoots/approvalPolicy settings are not supported by Claude");
+    }
     if (options.effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(options.effort)) {
       throw new Error(`unsupported Claude effort ${JSON.stringify(options.effort)}`);
     }
