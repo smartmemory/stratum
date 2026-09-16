@@ -7,7 +7,7 @@ import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
 import { createForegroundRun, killAndReapGroup, recordForegroundGroup, settleForegroundRun } from "../connectors/foreground_registry.js";
 import { procStartTime } from "../connectors/proc_identity.js";
-import type { ConnectorEventHandler } from "../connectors/base.js";
+import type { CodexSandboxMode, ConnectorEventHandler } from "../connectors/base.js";
 import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { cancelFlow, EMPTY_AGENTS } from "../engine/flow_cancel.js";
 import type { AgentCancelSummary } from "../connectors/foreground_registry.js";
@@ -373,7 +373,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             // truthy check silently drops it and the run falls back to the default
             // (workspace-write for claude bg), bypassing the caller's intent.
             ...(model !== undefined ? { model } : {}),
-            ...(sandboxMode !== undefined ? { sandboxMode: sandboxMode as "read-only" | "workspace-write" } : {}),
+            ...(sandboxMode !== undefined ? { sandboxMode: sandboxMode as CodexSandboxMode } : {}),
             ...(typeof request.background === "boolean" ? { background: request.background } : {}),
             ...(allowedTools !== undefined ? { allowedTools } : {}),
             ...(disallowedTools !== undefined ? { disallowedTools } : {}),

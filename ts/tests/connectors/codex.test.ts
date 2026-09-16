@@ -49,6 +49,25 @@ describe("CodexConnector", () => {
       "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
       "-m", "gpt-5", "-C", "/work", "-",
     ]);
+    expect(codexExecArgs("gpt-5", "/work", "danger-full-access" as never)).toEqual([
+      "exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access",
+      "-m", "gpt-5", "-C", "/work", "-",
+    ]);
+  });
+
+  it.each([
+    ["read-only", {}],
+    ["workspace-write", {}],
+    ["danger-full-access", { STRATUM_CODEX_ALLOW_FULL_ACCESS: "1" }],
+  ] as const)("passes sandboxMode=%s to the spawned child argv", async (sandboxMode, env) => {
+    const spawn = fakeSpawn([{ type: "item.completed", item: { type: "agent_message", text: "ok" } }]);
+    await new CodexConnector({ sandboxMode: sandboxMode as never, env, spawn }).run("test");
+    expect(spawn.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(["--sandbox", sandboxMode]));
+  });
+
+  it("refuses danger-full-access unless STRATUM_CODEX_ALLOW_FULL_ACCESS explicitly opts in", () => {
+    expect(() => new CodexConnector({ sandboxMode: "danger-full-access" as never, env: {} }))
+      .toThrow("STRATUM_CODEX_ALLOW_FULL_ACCESS");
   });
 
   it("defaults to sdk and validates the explicit compatibility transport", () => {
@@ -312,6 +331,19 @@ describe("CodexConnector", () => {
     await expect(connector.run("test")).rejects.toThrow("codex unhappy");
   });
 
+  it("surfaces a recorded exit-0 API 400 from stderr with status and message", async () => {
+    const payload = 'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The model is not supported with a ChatGPT account."}}';
+    const connector = new CodexConnector({ spawn: fakeSpawn([], 0, payload) });
+    await expect(connector.run("test")).rejects.toThrow(
+      "Codex API error (status 400): The model is not supported with a ChatGPT account.",
+    );
+  });
+
+  it("does not report an exit-0 run with no agent output as success", async () => {
+    const connector = new CodexConnector({ spawn: fakeSpawn([]) });
+    await expect(connector.run("test")).rejects.toThrow("completed without agent output");
+  });
+
   for (const [variant, payload] of [
     ["unterminated", "x".repeat(70_000)],
     ["newline-terminated", `${"x".repeat(70_000)}\n`],
@@ -371,6 +403,21 @@ describe("CodexConnector", () => {
     });
     await connector.run("do the task");
     expect(stdinChunks.join("")).toBe(`${CODEX_SANDBOX_PREAMBLE}\n\ndo the task`);
+
+    const fullAccessSpawn = fakeSpawn([{ type: "item.completed", item: { type: "agent_message", text: "ok" } }]);
+    const fullAccessChunks: string[] = [];
+    fullAccessSpawn.mockImplementationOnce((command, args, options) => {
+      const child = fakeSpawn([{ type: "item.completed", item: { type: "agent_message", text: "ok" } }])(command, args, options);
+      child.stdin.on("data", (chunk: Buffer) => fullAccessChunks.push(chunk.toString("utf8")));
+      return child;
+    });
+    await new CodexConnector({
+      sandboxMode: "danger-full-access" as never,
+      env: { STRATUM_CODEX_ALLOW_FULL_ACCESS: "true" },
+      transport: "exec",
+      spawn: fullAccessSpawn,
+    }).run("do the task");
+    expect(fullAccessChunks.join("")).toBe("do the task");
   });
 
   it("preserves a caller-set PUPPETEER_EXECUTABLE_PATH", () => {

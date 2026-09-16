@@ -6,7 +6,7 @@ import { CodexConnector, type SpawnProcess } from "./codex.js";
 // Module-level discriminant sets — created once, not per-call (intentionally isolated
 // from the identical sets in background.ts to avoid a cross-module import dependency).
 const VALID_AGENTS = new Set<string>(["claude", "codex"]);
-const VALID_SANDBOX_MODES = new Set<string>(["read-only", "workspace-write"]);
+const VALID_SANDBOX_MODES = new Set<string>(["read-only", "workspace-write", "danger-full-access"]);
 
 export interface AgentRunOptions {
   agent: AgentType;
@@ -55,7 +55,7 @@ export async function runAgent(
   }
   if (options.sandboxMode !== undefined && !VALID_SANDBOX_MODES.has(options.sandboxMode)) {
     throw new Error(
-      `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only" or "workspace-write"`,
+      `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only", "workspace-write", or "danger-full-access"`,
     );
   }
   // D8 applies to the FOREGROUND claude path too: ClaudeConnector hardcodes
@@ -67,6 +67,9 @@ export async function runAgent(
       'claude runs with sandboxMode="read-only" are not supported: the Claude connector ' +
       'cannot enforce read-only (D8). Omit sandboxMode or pass "workspace-write".',
     );
+  }
+  if (options.agent === "claude" && options.sandboxMode === "danger-full-access") {
+    throw new Error('sandboxMode="danger-full-access" is Codex-only; Claude does not enforce Codex sandbox modes');
   }
   options.signal?.throwIfAborted();
   validateAgentSettings(options);

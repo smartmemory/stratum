@@ -18,14 +18,14 @@ function generated(holds = true, reason = "context confirms it") {
 describe("judged predicates", () => {
   it("ships the canonical stakes to model and effort table", () => {
     expect(STAKES_MODEL).toEqual({
-      cheap: { model: "gpt-5.3-codex-spark", effort: "low" },
+      cheap: { model: "gpt-5.6-luna", effort: "low" },
       default: { model: "gpt-5.6-terra", effort: "high" },
       paranoid: { model: "gpt-6-astra", effort: "high" },
     });
   });
 
   it.each([
-    ["cheap", "gpt-5.3-codex-spark/low", "low"],
+    ["cheap", "gpt-5.6-luna/low", "low"],
     ["default", "gpt-5.6-terra/high", "high"],
     ["paranoid", "gpt-6-astra/high", "high"],
   ] as const)("routes %s through its model tier", async (stakes, model, effort) => {
@@ -71,8 +71,8 @@ describe("judged predicates", () => {
       usage: { totalTokens: 1_500 },
     } as never);
     const result = await evaluateJudged({ statement: "x", stakes: "cheap" });
-    // spark output rate 14 USD/MTok: 1500 unattributed tokens must never price as $0.
-    expect(result.usage).toEqual({ tokens: 1_500, usd: 0.021 });
+    // luna output rate 1.2 USD/MTok: 1500 unattributed tokens must never price as $0.
+    expect(result.usage).toEqual({ tokens: 1_500, usd: 0.0018 });
   });
 
   it("keeps untrusted context in the JSON prompt", async () => {

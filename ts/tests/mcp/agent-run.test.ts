@@ -404,6 +404,19 @@ it('only cancellationId asks MCP Codex runs to own a process group', async () =>
   expect(seen[1]!.ownProcessGroup).toBe(true);
 });
 
+it('threads danger-full-access through stratum_agent_run without making it the default', async () => {
+  const seen: AgentRunOptions[] = [];
+  const dispatcher = createToolDispatcher({ runAgent: async options => {
+    seen.push(options);
+    return { text: 'ok', usage: {}, telemetry: { model: 'fixture', durationMs: 0 } };
+  } });
+  const request = { agent: 'codex', prompt: 'fixture', cwd: process.cwd() };
+  await dispatcher.call('stratum_agent_run', request);
+  await dispatcher.call('stratum_agent_run', { ...request, sandboxMode: 'danger-full-access' });
+  expect(seen[0]!.sandboxMode).toBeUndefined();
+  expect(seen[1]!.sandboxMode).toBe('danger-full-access');
+});
+
 it('returns a distinct bounded teardown error when a connector ignores abort', async () => {
   let finish!: (value: { text: string; usage: {}, telemetry: { model: 'fixture', durationMs: 0 } }) => void;
   let began!: () => void;

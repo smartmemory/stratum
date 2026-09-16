@@ -343,7 +343,7 @@ describe("P1 table-driven error harness", () => {
     const { engine } = await createEngine({
       judge: async (predicate, context) => {
         calls.push({ predicate, context });
-        return { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.3-codex-spark/low", usage: { tokens: 100, usd: 0.01 } };
+        return { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.6-terra/low", usage: { tokens: 100, usd: 0.01 } };
       },
     });
     const planned = await engine.plan(flow([
@@ -357,7 +357,7 @@ describe("P1 table-driven error harness", () => {
     expect(audit.flowSpent).toMatchObject({ tokens: 100, usd: 0.01 });
     expect(audit.events.find((event) => event.type === "judged")).toMatchObject({
       stepId: "finish",
-      detail: { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.3-codex-spark/low", usage: { tokens: 100, usd: 0.01 } },
+      detail: { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.6-terra/low", usage: { tokens: 100, usd: 0.01 } },
     });
   });
 

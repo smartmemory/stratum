@@ -9,7 +9,7 @@ import { Worker } from "node:worker_threads";
 import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorSplit, ConnectorUsage } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
-import { applyHeadlessShellEnv, codexCommand, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
+import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
 import { peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
 import { spawnPeerSidecar } from "./peer-sidecar.js";
@@ -73,6 +73,9 @@ export interface CodexRunMeta extends BackgroundRunMetaBase {
   agent: "codex";
   childPid: number;
   procStartTime?: string;
+  /** The injected process-boundary seam may be an opaque lifecycle fixture,
+   * not a Codex JSONL producer. Absence preserves the strict production default. */
+  outputContract?: "opaque";
 }
 
 export interface ClaudeRunMeta extends BackgroundRunMetaBase {
@@ -96,7 +99,9 @@ export interface StartBackgroundRunOptions {
   sockDir?: string;
   lingerMs?: number;
   env?: NodeJS.ProcessEnv;
-  /** Final-agent-argv process-boundary seam used by the ported Python scenarios. */
+  /** Final-agent-argv process-boundary seam used by tests. Injected commands are
+   * opaque lifecycle fixtures; structured errors and nonzero exits still fail,
+   * but only the real Codex command is required to emit an agent message. */
   command?: string[];
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -122,13 +127,13 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   // D11: explicit runtime validation — TypeScript casts at the MCP boundary do not
   // protect callers that bypass the MCP surface.
   const VALID_AGENTS = new Set(["claude", "codex"]);
-  const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write"]);
+  const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
   if (!VALID_AGENTS.has(options.agent)) {
     throw new Error(`Unknown agent ${JSON.stringify(options.agent)}; must be "claude" or "codex"`);
   }
   if (options.sandboxMode !== undefined && !VALID_SANDBOX_MODES.has(options.sandboxMode)) {
     throw new Error(
-      `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only" or "workspace-write"`,
+      `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only", "workspace-write", or "danger-full-access"`,
     );
   }
   if (options.agent === "claude") {
@@ -137,6 +142,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
 
   // Codex path (D6: workspace-write is now allowed — guard removed)
   const sandboxMode = options.sandboxMode ?? "read-only";
+  assertCodexSandboxAllowed(sandboxMode, options.env ?? process.env);
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
   const streamPath = join(runDir, "stream.jsonl");
@@ -146,7 +152,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   await Promise.all([
     writeFile(streamPath, "", { encoding: "utf8", mode: 0o600 }),
     writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600 }),
-    writeFile(inputPath, withSandboxPreamble(options.prompt), { encoding: "utf8", mode: 0o600 }),
+    writeFile(inputPath, withSandboxPreamble(options.prompt, sandboxMode), { encoding: "utf8", mode: 0o600 }),
   ]);
   const model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
   const command = options.command ?? codexCommand(model, options.cwd, sandboxMode);
@@ -188,6 +194,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     createdAt,
     childPid: pid,
     ...(startTime ? { procStartTime: startTime } : {}),
+    ...(options.command !== undefined ? { outputContract: "opaque" as const } : {}),
     streamPath,
     stderrPath,
   };
@@ -259,6 +266,9 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
       "Claude's permissionMode cannot be safely enforced via the SDK without a mapped " +
       "tool restriction list. Omit sandboxMode or pass 'workspace-write' explicitly.",
     );
+  }
+  if (options.sandboxMode === "danger-full-access") {
+    throw new Error("sandboxMode='danger-full-access' is Codex-only; Claude does not enforce Codex sandbox modes");
   }
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
@@ -431,12 +441,17 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     }
   }
   const telemetry = await terminalTelemetry(loaded.meta, streamPath);
-  if (scan.exitCode === 0 && scan.error === undefined) {
+  const stderrTail = await tailText(stderrPath);
+  const terminalError = scan.error ?? codexErrorMessage(stderrTail)
+    ?? (text.length === 0 && loaded.meta.outputContract !== "opaque"
+      ? "codex completed without agent output"
+      : undefined);
+  if (scan.exitCode === 0 && terminalError === undefined) {
     return { status: "complete", runId, ...peerFields, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
   }
   return {
     status: "error", runId, ...peerFields, exitCode: scan.exitCode, textTail: text,
-    stderrTail: await tailText(stderrPath), ...(scan.error ? { reason: scan.error } : {}), telemetry,
+    stderrTail, ...(terminalError ? { reason: terminalError } : {}), telemetry,
   };
 }
 
@@ -577,7 +592,7 @@ async function scanStream(path: string): Promise<{
       exitCode = Number.isFinite(value) ? Math.trunc(value) : 1;
       continue;
     }
-    if (record.type === "error" && error === undefined) error = typeof record.message === "string" ? record.message : "codex error";
+    if (error === undefined) error = codexErrorMessage(record);
     if (record.type === "item.completed" && isRecord(record.item) && record.item.type === "agent_message" && typeof record.item.text === "string") {
       text = (text + record.item.text).slice(-2 * TEXT_CAP);
     }

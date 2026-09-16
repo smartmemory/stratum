@@ -73,16 +73,29 @@ export const CODEX_SANDBOX_PREAMBLE = [
   "[/sandbox constraints]",
 ].join("\n");
 
-/** Deliberately NOT gated on sandboxMode. Both values of CodexSandboxMode
- * ("read-only" | "workspace-write") are passed to `codex --sandbox`, so every
- * dispatch runs under seatbelt/landlock — the modes differ in write permission,
- * not window-server access, and GUI apps abort under both. Gating on the mode
- * would strip the warning from workspace-write agents, which are exactly the
- * ones that run browser tests and crash-looped before this existed. Revisit
- * only if an unsandboxed mode is ever added to CodexSandboxMode. */
-export function withSandboxPreamble(prompt: string): string {
+/** Sandboxed modes both run under seatbelt/landlock. Full access does not, so
+ * prepending this warning there would assert a false execution boundary. */
+export function withSandboxPreamble(prompt: string, sandboxMode: CodexSandboxMode = "read-only"): string {
+  if (sandboxMode === "danger-full-access") return prompt;
   if (prompt.startsWith("[sandbox constraints]")) return prompt;
   return `${CODEX_SANDBOX_PREAMBLE}\n\n${prompt}`;
+}
+
+const FULL_ACCESS_ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
+
+/** Full access is fail-closed and opt-in at the connector boundary so direct
+ * callers cannot bypass the MCP/runner validation path. */
+export function assertCodexSandboxAllowed(
+  sandboxMode: CodexSandboxMode,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (sandboxMode !== "danger-full-access") return;
+  const optIn = env.STRATUM_CODEX_ALLOW_FULL_ACCESS?.trim().toLowerCase();
+  if (!optIn || !FULL_ACCESS_ENABLED_VALUES.has(optIn)) {
+    throw new Error(
+      'Codex danger-full-access is disabled; set STRATUM_CODEX_ALLOW_FULL_ACCESS=1 to opt in explicitly',
+    );
+  }
 }
 
 /** Newest chrome-headless-shell in the Puppeteer cache, if any. Sandboxed
@@ -187,6 +200,7 @@ export class CodexConnector {
     this.cwd = options.cwd ?? process.cwd();
     this.sandboxMode = options.sandboxMode ?? "read-only";
     this.env = { ...(options.env ?? process.env) };
+    assertCodexSandboxAllowed(this.sandboxMode, this.env);
     for (const key of CODEX_SCRUB_VARS) delete this.env[key];
     // A caller-supplied env is authoritative; the headless-shell default is
     // only layered onto the ambient process.env fallback.
@@ -210,7 +224,7 @@ export class CodexConnector {
   async run(prompt: string): Promise<ConnectorResult> {
     this.signal?.throwIfAborted();
     if (this.ownProcessGroup) requireProcessGroups();
-    const framed = withSandboxPreamble(prompt);
+    const framed = withSandboxPreamble(prompt, this.sandboxMode);
     return this.transport === "sdk" ? this.runSdk(framed) : this.runExec(framed);
   }
 
@@ -264,6 +278,7 @@ export class CodexConnector {
         }
       }
       controller.signal.throwIfAborted();
+      if (text.length === 0) throw new Error("codex completed without agent output");
       const durationMs = Math.max(0, Date.now() - startedAt);
       return {
         text: text.join(""),
@@ -315,9 +330,7 @@ export class CodexConnector {
         });
       }
       if (record.type === "turn.failed" && isRecord(record.error)) codexError = String(record.error.message ?? "codex turn failed");
-      if (record.type === "error" && codexError === undefined) {
-        codexError = typeof record.message === "string" ? record.message : "codex error";
-      }
+      if (codexError === undefined) codexError = codexErrorMessage(record);
       if (record.type === "item.completed" && isRecord(record.item) && record.item.type === "agent_message") {
         if (typeof record.item.text === "string" && record.item.text) text.push(record.item.text);
       }
@@ -402,11 +415,15 @@ export class CodexConnector {
     if (spawnError) throw spawnError;
     if (eventDeliveryError) throw eventDeliveryError;
 
+    codexError ??= codexErrorMessage(stderr);
     if (codexError) throw new Error(codexError);
     // A nonzero exit is NOT on its own a failed run: codex exits nonzero on some
     // sandbox denials after it has already emitted a complete agent_message.
     // Only an exit that produced no agent text at all is an error.
-    if (exitCode !== 0 && text.length === 0) throw new Error(stderr.trim() || `codex exited with code ${exitCode}`);
+    if (text.length === 0) {
+      if (exitCode !== 0) throw new Error(stderr.trim() || `codex exited with code ${exitCode}`);
+      throw new Error("codex completed without agent output");
+    }
     } catch (error) {
       throw attachCodexUsage(error, inputTokens, outputTokens, cacheRead, costUsd, Date.now() - startedAt, this.model);
     }
@@ -444,13 +461,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseRecord(line: string): Record<string, unknown> | undefined {
-  if (!line.trim()) return undefined;
+  const trimmed = line.trim();
+  if (!trimmed) return undefined;
+  const candidate = trimmed.startsWith("ERROR:") ? trimmed.slice("ERROR:".length).trim() : trimmed;
   try {
-    const value: unknown = JSON.parse(line);
+    const value: unknown = JSON.parse(candidate);
     return isRecord(value) ? value : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** Extract the CLI's structured API error from either a JSONL record or the
+ * `ERROR: {...}` stderr form that can still accompany exit code 0. */
+export function codexErrorMessage(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    for (const line of value.split(/\r?\n/u)) {
+      const parsed = parseRecord(line);
+      if (parsed) {
+        const message = codexErrorMessage(parsed);
+        if (message) return message;
+      }
+    }
+    return undefined;
+  }
+  if (!isRecord(value) || value.type !== "error") return undefined;
+  const nested = isRecord(value.error) ? value.error : undefined;
+  const message = typeof nested?.message === "string"
+    ? nested.message
+    : typeof value.message === "string" ? value.message : "codex error";
+  const status = typeof value.status === "number" || typeof value.status === "string"
+    ? String(value.status)
+    : undefined;
+  return status ? `Codex API error (status ${status}): ${message}` : message;
 }
 
 const TOOL_DETAIL_CAP = 2_048;
