@@ -1,10 +1,10 @@
 {
   "code": "STRAT-AGENT-PEER-1",
   "description": "Register Codex background agent runs as Claude Code peer sessions so `stratum_agent_run(agent=\"codex\", background=true)` shows in the parent session's ListAgents / /list-agents, flips busy→idle from the durable stream, and (Phase 2) serves the peer socket so the parent wakes on notify_idle instead of polling. Per-run detached sidecar owns the `~/.claude/sessions/<pid>.json` record, `.key` file and `/tmp/cc-socks/<pid>.sock`; version-allowlisted against the installed Claude Code, fails silent-but-logged on drift. Slice of forge STRAT-AGENT-VIS (filed 2026-09-09 in forge ROADMAP.md).",
-  "status": "IN_PROGRESS",
+  "status": "COMPLETE",
   "phase": "STRAT-AGENT: Agent Surface",
   "created": "2026-09-15",
-  "updated": "2026-09-15",
+  "updated": "2026-09-16",
   "complexity": "L",
   "position": 2,
   "tags": [
@@ -12,5 +12,32 @@
     "background",
     "claude-code-interop"
   ],
-  "impact": "medium"
+  "impact": "medium",
+  "completions": [
+    {
+      "completion_id": "STRAT-AGENT-PEER-1:af1c3e56562f7353e13711243e27e528dff672ac",
+      "feature_code": "STRAT-AGENT-PEER-1",
+      "commit_sha": "af1c3e56562f7353e13711243e27e528dff672ac",
+      "commit_sha_short": "af1c3e56",
+      "tests_pass": true,
+      "files_changed": [
+        "ts/src/connectors/peer-registry.ts",
+        "ts/src/connectors/peer-sidecar.ts",
+        "ts/src/connectors/background.ts",
+        "ts/src/connectors/runner.ts",
+        "ts/contracts/mcp-surface.json",
+        "ts/scripts/prepare-dist.mjs",
+        "ts/vitest.config.ts",
+        "ts/tests/connectors/peer-registry.test.ts",
+        "ts/tests/connectors/peer-sidecar.test.ts",
+        "ts/tests/mcp-surface-peer.test.ts",
+        "README.md",
+        "CHANGELOG.md"
+      ],
+      "recorded_at": "2026-09-16T00:35:45.895Z",
+      "recorded_by": "mcp:agent",
+      "notes": "see docs/features/STRAT-AGENT-PEER-1/report.md §5 (final suite 1384 pass / 3 skip / 1 pre-existing flake in tests/mcp/agent_registry.test.ts T-S02-1, passes in isolation)"
+    }
+  ],
+  "commit_sha": "af1c3e56562f7353e13711243e27e528dff672ac"
 }
