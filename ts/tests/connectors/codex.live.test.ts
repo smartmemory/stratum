@@ -9,9 +9,9 @@ function codexAvailable(): boolean {
 
 // Paid live execution is opt-in even on authenticated developer machines.
 describe.skipIf(process.env.STRATUM_LIVE_CODEX !== "1" || !!process.env.CI || !codexAvailable())("live codex connector", () => {
-  it("echoes through gpt-5.3-codex-spark/low", async () => {
-    const result = await new CodexConnector({ model: "gpt-5.3-codex-spark/low" }).run("Reply with exactly: STRATUM_P3_ECHO_OK");
+  it("echoes through gpt-5.6-terra/low", async () => {
+    const result = await new CodexConnector({ model: "gpt-5.6-terra/low" }).run("Reply with exactly: STRATUM_P3_ECHO_OK");
     expect(result.text).toContain("STRATUM_P3_ECHO_OK");
-    expect(result.telemetry).toMatchObject({ model: "gpt-5.3-codex-spark", effort: "low" });
+    expect(result.telemetry).toMatchObject({ model: "gpt-5.6-terra", effort: "low" });
   }, 120_000);
 });

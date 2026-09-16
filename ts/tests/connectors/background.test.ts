@@ -64,6 +64,25 @@ async function writeRegistryRun(registryRoot: string, runId: string, records: un
 }
 
 describe("P3 background run gate", () => {
+  it("requires explicit opt-in for full access and omits the sandbox preamble when enabled", async () => {
+    const registryRoot = await root();
+    await expect(startBackgroundRun({
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot,
+      sandboxMode: "danger-full-access" as never,
+      command: fakeCodex([AGENT_MSG]),
+    })).rejects.toThrow("STRATUM_CODEX_ALLOW_FULL_ACCESS");
+
+    const started = await startBackgroundRun({
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot,
+      sandboxMode: "danger-full-access" as never,
+      env: { PATH: process.env.PATH, STRATUM_CODEX_ALLOW_FULL_ACCESS: "yes" },
+      command: fakeCodex([AGENT_MSG]),
+    });
+    expect(await readFile(`${started.streamPath}.in`, "utf8")).toBe("solve");
+    expect(await readMeta(registryRoot, started.runId)).toMatchObject({ sandboxMode: "danger-full-access" });
+    expect(await waitFor(started.runId, registryRoot, "complete")).toMatchObject({ text: "done text" });
+  });
+
   it("runs the golden flow through running, complete, usage, and persisted process identity", async () => {
     const registryRoot = await root();
     const started = await startBackgroundRun({
@@ -95,6 +114,34 @@ describe("P3 background run gate", () => {
     });
     expect(await waitFor(started.runId, registryRoot, "error")).toMatchObject({
       status: "error", exitCode: 4, stderrTail: expect.stringContaining("auth failed"),
+    });
+  });
+
+  it("polls an exit-0 API 400 or empty Codex run as error", async () => {
+    const registryRoot = await root();
+    const apiFailure = await startBackgroundRun({
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot,
+      command: fakeCodex([], {
+        stderr: 'ERROR: {"type":"error","status":400,"error":{"message":"model unavailable"}}',
+      }),
+    });
+    expect(await waitFor(apiFailure.runId, registryRoot, "error")).toMatchObject({
+      status: "error", exitCode: 0,
+      reason: "Codex API error (status 400): model unavailable",
+    });
+
+    const emptyRunId = "c0de00000000";
+    await writeRegistryRun(registryRoot, emptyRunId, [{ [T2F5_DONE_SENTINEL]: 0 }]);
+    expect(await pollBackgroundRun(emptyRunId, { registryRoot })).toMatchObject({
+      status: "error", exitCode: 0, reason: "codex completed without agent output",
+    });
+
+    const opaque = await startBackgroundRun({
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot,
+      command: fakeCodex([]),
+    });
+    expect(await waitFor(opaque.runId, registryRoot, "complete")).toMatchObject({
+      status: "complete", exitCode: 0, text: "",
     });
   });
 

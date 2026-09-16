@@ -18,10 +18,10 @@ describe("evaluateJudgedViaCodex", () => {
   it("dispatches a read-only codex judge with the stakes-mapped model/effort id", async () => {
     const { run, calls } = fakeRun('{"holds":true,"reason":"value matches"}');
     const result = await evaluateJudgedViaCodex({ statement: "result is real", stakes: "cheap" }, { result: { value: "x" } }, { run });
-    expect(result).toMatchObject({ holds: true, reason: "value matches", stakes: "cheap", model: "gpt-5.3-codex-spark/low" });
+    expect(result).toMatchObject({ holds: true, reason: "value matches", stakes: "cheap", model: "gpt-5.6-luna/low" });
     expect(result.usage.tokens).toBe(100);
     expect(result.usage.usd).toBeGreaterThan(0);
-    expect(calls[0]).toMatchObject({ agent: "codex", model: "gpt-5.3-codex-spark/low", sandboxMode: "read-only" });
+    expect(calls[0]).toMatchObject({ agent: "codex", model: "gpt-5.6-luna/low", sandboxMode: "read-only" });
     expect(calls[0]!.prompt).toContain("result is real");
   });
 

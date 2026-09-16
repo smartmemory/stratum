@@ -86,6 +86,20 @@ describe("runAgent discriminant validation (4c)", () => {
     );
     expect(result).toMatchObject({ text: "stub ok" });
   });
+
+  it("accepts opted-in codex danger-full-access and rejects that Codex-only mode for claude", async () => {
+    const result = await runAgent(
+      {
+        agent: "codex", sandboxMode: "danger-full-access" as never, prompt: "test", cwd: "/tmp",
+        env: { STRATUM_CODEX_ALLOW_FULL_ACCESS: "on" },
+      },
+      { codexSpawn: fakeCodexSpawn() },
+    );
+    expect(result).toMatchObject({ text: "stub ok" });
+    await expect(runAgent({
+      agent: "claude", sandboxMode: "danger-full-access" as never, prompt: "test", cwd: "/tmp",
+    }, { claudeQuery: stubClaudeQuery })).rejects.toThrow("Codex-only");
+  });
 });
 
 describe("provider settings are enforced at dispatch", () => {

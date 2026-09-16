@@ -16,7 +16,7 @@
 export const SMARTMEMORY_SCRUB_VARS = ["SMARTMEMORY_API_KEY", "SMARTMEMORY_WORKSPACE_ID"] as const;
 
 export type AgentType = "claude" | "codex";
-export type CodexSandboxMode = "read-only" | "workspace-write";
+export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 
 /** Post-dispatch usage. Dispatch counts are reserved exclusively by the engine. */
 export interface ConnectorUsage {

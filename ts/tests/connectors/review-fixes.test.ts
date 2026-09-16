@@ -24,14 +24,17 @@ async function onPlatform<T>(platform: string, body: () => Promise<T>): Promise<
 it('signal presence preserves SDK transport; explicit ownership selects exec and detached only there', async () => {
   let sdkCalls = 0;
   await new CodexConnector({ signal: new AbortController().signal, env: { STRATUM_CODEX_TRANSPORT: 'sdk' },
-    sdkFactory: () => ({ startThread: () => ({ runStreamed: async () => ({ events: (async function* () { sdkCalls++; })() }) }) }),
+    sdkFactory: () => ({ startThread: () => ({ runStreamed: async () => ({ events: (async function* () {
+      sdkCalls++;
+      yield { type: 'item.completed', item: { id: 'm-1', type: 'agent_message', text: 'ok' } } as const;
+    })() }) }) }),
   }).run('fixture');
   expect(sdkCalls).toBe(1);
   for (const ownProcessGroup of [false, true]) {
     let detached: boolean | undefined;
     await new CodexConnector({ ownProcessGroup, signal: new AbortController().signal, spawn: (_command, _args, options) => {
       detached = options.detached;
-      return spawn(process.execPath, ['-e', 'process.stdin.resume()'], options);
+      return spawn(process.execPath, ['-e', `process.stdin.resume(); process.stdin.on('end',()=>console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'ok'}})))`], options);
     } }).run('fixture');
     expect(detached).toBe(ownProcessGroup);
   }
@@ -46,7 +49,9 @@ it('resolves the PATH CLI at execution time, including when installed after cons
     expect((await connector.run('fixture')).text).toBe('path-cli');
     let sdkBinary: string | undefined;
     await new CodexConnector({ env: { PATH: root, STRATUM_CODEX_TRANSPORT: 'sdk' }, signal: new AbortController().signal,
-      sdkFactory: options => { sdkBinary = options.codexPathOverride; return { startThread: () => ({ runStreamed: async () => ({ events: (async function* () {})() }) }) }; },
+      sdkFactory: options => { sdkBinary = options.codexPathOverride; return { startThread: () => ({ runStreamed: async () => ({ events: (async function* () {
+        yield { type: 'item.completed', item: { id: 'm-1', type: 'agent_message', text: 'ok' } } as const;
+      })() }) }) }; },
     }).run('fixture');
     expect(sdkBinary).toBe(join(root, 'codex'));
   } finally { await rm(root, { recursive: true, force: true }); }
