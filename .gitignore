@@ -13,7 +13,11 @@ node_modules/
 package-lock.json
 
 # IDE / tool state
-.claude/
+.claude/*
+!.claude/agents/
+.claude/settings.local.json
+.claude/session-context.md
+.claude/session-context.*.md
 .playwright-mcp/
 
 # Stratum local run state + internal specs
