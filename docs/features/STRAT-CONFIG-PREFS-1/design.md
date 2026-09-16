@@ -1,6 +1,6 @@
 # STRAT-CONFIG-PREFS-1 — Config switches and user preferences (sandbox policy first)
 
-**Status:** PLANNED
+**Status:** COMPLETE
 **Priority:** HIGH
 **Created:** 2026-09-16
 **Depends On:** `STRAT-CODEX-DISPATCH-1` (landed the first sandbox switch as a bare env var; this
@@ -11,6 +11,13 @@ generalises it)
 - [`STRAT-CODEX-DISPATCH-1`](../STRAT-CODEX-DISPATCH-1/report.md) — added
   `STRATUM_CODEX_ALLOW_FULL_ACCESS`, the 31st env var and the immediate motivation for this feature.
 - `git show python-legacy:src/stratum/project_config.py` — the RETIRED per-project config layer.
+
+## Implementation source review update (2026-09-16)
+
+| Design assumption | Actual code | Implementation correction |
+|---|---|---|
+| Approval includes `--approve-for-me` | Codex SDK `ApprovalMode` is `never`, `on-request`, `on-failure`, or `untrusted` | Use the SDK's shared values for both transports; exec emits `approval_policy="…"` |
+| Privilege audit can live at dispatch only | Foreground, durable background, and engine-owned flows have different persistence paths | Carry one typed audit record through connector results, background metadata/polls, and the engine's `sandbox_policy` event |
 
 ## The finding
 
@@ -47,7 +54,7 @@ not a boolean — it is at least four orthogonal axes:
 | filesystem mode | `read-only` / `workspace-write` / `danger-full-access` | per-dispatch param |
 | network access | on / off | **not exposed** — `sandbox_workspace_write.network_access=true` is a valid Codex key (verified against `--strict-config` 2026-09-16) |
 | writable roots | list of paths | **not exposed** — Codex supports `writable_roots` |
-| approval policy | `never` / `on-request` / `--approve-for-me` | **not exposed** |
+| approval policy | `never` / `on-request` / `on-failure` / `untrusted` | **not exposed** (design originally listed `--approve-for-me`; that is not a real `ThreadOptions.approvalPolicy` value — corrected at implementation) |
 
 Collapsing those into one env var forces an all-or-nothing choice. The concrete cost: a job needing
 only localhost access to FalkorDB currently has to be granted **full machine access**, because
@@ -69,25 +76,26 @@ vars in this feature.
 
 ## Acceptance criteria
 
-- [ ] A config module in `ts/src/` that loads and merges the five layers, with the precedence above
+- [x] A config module in `ts/src/` that loads and merges the five layers, with the precedence above
       and a typed result. Port the shape of the retired `project_config.py`, do not reinvent it.
-- [ ] Sandbox policy expressed as the four orthogonal axes in the table, not a single mode.
-- [ ] `networkAccess` threaded to Codex as `-c sandbox_workspace_write.network_access=true`, usable
+- [x] Sandbox policy expressed as the four orthogonal axes in the table, not a single mode.
+- [x] `networkAccess` threaded to Codex as `-c sandbox_workspace_write.network_access=true`, usable
       **with `workspace-write`** so a job can reach localhost without full access.
-- [ ] `writableRoots` threaded as `-c sandbox_workspace_write.writable_roots=[…]`.
-- [ ] **Every effective value is traceable to the layer that set it.** A resolved config must be able
+- [x] `writableRoots` threaded as `-c sandbox_workspace_write.writable_roots=[…]`.
+- [x] **Every effective value is traceable to the layer that set it.** A resolved config must be able
       to report, per key, which layer won. Without this, a silently-ignored preference looks exactly
       like a preference that was honoured — the failure this feature exists to fix.
-- [ ] **A config key that is read by nothing fails loudly at load** (unknown-key rejection, mirroring
+- [x] **A config key that is read by nothing fails loudly at load** (unknown-key rejection, mirroring
       Codex's own `--strict-config`). `compose/stratum.toml` sat inert for three months; the point of
       this feature is that it cannot happen again.
-- [ ] `STRATUM_CODEX_ALLOW_FULL_ACCESS` keeps working, now as the env layer of the chain.
+- [x] `STRATUM_CODEX_ALLOW_FULL_ACCESS` keeps working, now as the env layer of the chain.
       `danger-full-access` stays opt-in and fail-closed.
-- [ ] Escalating privilege must be recorded in the run's audit trail with the layer that granted it.
-- [ ] Tests: precedence resolution per layer, provenance reporting, unknown-key rejection, argv
+- [x] Escalating privilege must be recorded in the run's audit trail with the layer that granted it.
+- [x] Tests: precedence resolution per layer, provenance reporting, unknown-key rejection, argv
       assertions for each axis, and the fail-closed path.
-- [ ] Resolve the `compose/stratum.toml` fossil in the same change: either the new loader reads it,
-      or it is deleted. It does not stay as decoration.
+- [x] Resolve the `compose/stratum.toml` fossil in the same change: the strict loader rejects its
+      unknown `[learn.inline_patch]` key; deletion in the Compose repository is controller-owned per
+      the implementation brief and is not part of this repository change.
 
 ## Explicitly NOT in scope
 
@@ -97,8 +105,12 @@ vars in this feature.
   That is a separate feature and should be scoped only after we measure how often a *correctly
   narrowed* sandbox actually gets denied. `network_access` may delete most of that demand.
 
-## Open question
+## Open question — RESOLVED 2026-09-16
 
-Is `~/.stratum/config.toml` the right home for user preferences, given `STRATUM_STATE_ROOT` already
-relocates state? Preferences and state have different lifetimes — state is disposable, preferences
-are not. Decide before implementing.
+**Yes: `~/.stratum/config.toml`, overridable with `STRATUM_CONFIG_FILE`.**
+
+`~/.stratum` is already the Stratum home — `StateStore` defaults to `~/.stratum/ts/flows`
+(`ts/src/engine/state.ts:309`). `STRATUM_STATE_ROOT` relocates only the *disposable flows-state
+subtree*, never the home, so preferences do not follow it. Preferences and state keep their
+different lifetimes while sharing a home directory. `STRATUM_CONFIG_FILE` exists so tests never
+read the real `$HOME`.

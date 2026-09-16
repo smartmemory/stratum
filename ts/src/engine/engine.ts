@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { runAgent } from "../connectors/runner.js";
+import type { SandboxPolicyAudit } from "../config/types.js";
 import { processIdentity } from "../connectors/proc_identity.js";
 import { procStartTime } from "../connectors/proc_identity.js";
 import { extractReferences, type ExtractedReference, type PathSegment, type Reference } from "../ir/refs.js";
@@ -155,6 +156,8 @@ export interface StepResult {
   usdSource?: "reported" | "estimated";
   /** Input/output token detail preserved beside the Budget-shaped usage (ConnectorResult.split). */
   split?: { input: number; output: number; cacheRead?: number; cacheCreation?: number };
+  /** Connector-owned evidence, present only when Codex exceeded safe sandbox defaults. */
+  sandboxAudit?: SandboxPolicyAudit;
 }
 
 export interface ReadyStep {
@@ -770,6 +773,7 @@ export class StratumEngine {
     }
 
     const attempt = state.attempts.length + 1;
+    this.recordSandboxPolicyAudit(run, result.sandboxAudit, this.scopedId(scope, step.id), { attempt });
     const telemetry = result.telemetry;
     if (!validConnectorTelemetry(telemetry)) {
       return this.failAttempt(run, validated.value, validated.contracts, scope, step, state, attempt, "invalid connector telemetry (nothing recorded)", {}, result.output);
@@ -2387,6 +2391,11 @@ export class StratumEngine {
     if (!step.fanout) throw new Error("fanout missing after validation");
     const stage = step.fanout.steps[stageIndex];
     if (!stage) throw new Error("fanout stage is out of range");
+    this.recordSandboxPolicyAudit(run, result.sandboxAudit, step.id, {
+      attempt,
+      itemIndex: item.index,
+      stage: stageIndex,
+    });
     if (!validConnectorTelemetry(result.telemetry) || !validUsage(result.usage ?? {})) {
       const failure = { attempt, reason: "invalid connector telemetry or usage" };
       this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "usage", failure, result);
@@ -3494,6 +3503,23 @@ export class StratumEngine {
     run.events.push({ at: now(), type, ...(stepId ? { stepId } : {}), ...(detail !== undefined ? { detail } : {}) });
   }
 
+  private recordSandboxPolicyAudit(
+    run: PersistedRun,
+    audit: SandboxPolicyAudit | undefined,
+    stepId: string,
+    context: Record<string, number>,
+  ): void {
+    if (audit === undefined) return;
+    this.event(run, "sandbox_policy", stepId, {
+      ...context,
+      policy: structuredClone(audit.policy),
+      provenance: structuredClone(audit.provenance),
+      ...(audit.fullAccessAuthorization !== undefined
+        ? { fullAccessAuthorization: structuredClone(audit.fullAccessAuthorization) }
+        : {}),
+    });
+  }
+
   /** Every persist happens inside a locked section. A persist outside one is a lost update
    *  waiting to happen, and the three write paths this assertion caught (plan's initial
    *  persist, the engine-fanout admission writes, and `stratum learn egress`) are why it is a
@@ -3664,6 +3690,7 @@ export const defaultConnector: EngineConnector = async ({ agent, prompt, cwd, pr
   const provenance = {
     ...(result.usdSource !== undefined ? { usdSource: result.usdSource } : {}),
     ...(result.split !== undefined ? { split: result.split } : {}),
+    ...(result.sandboxAudit !== undefined ? { sandboxAudit: result.sandboxAudit } : {}),
   };
   if (outSchema === undefined) return { output: result.text, usage: result.usage, telemetry: result.telemetry, ...provenance };
   try {

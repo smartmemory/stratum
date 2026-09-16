@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorSplit, ConnectorUsage } from "./base.js";
 import { finiteNonnegative, modelIdentity } from "./base.js";
+import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
+import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
@@ -76,6 +78,7 @@ export interface CodexRunMeta extends BackgroundRunMetaBase {
   /** The injected process-boundary seam may be an opaque lifecycle fixture,
    * not a Codex JSONL producer. Absence preserves the strict production default. */
   outputContract?: "opaque";
+  sandboxAudit?: SandboxPolicyAudit;
 }
 
 export interface ClaudeRunMeta extends BackgroundRunMetaBase {
@@ -94,6 +97,10 @@ export interface StartBackgroundRunOptions {
   thinking?: Record<string, unknown>;
   effort?: string;
   sandboxMode?: CodexSandboxMode;
+  networkAccess?: boolean;
+  writableRoots?: readonly string[];
+  approvalPolicy?: CodexApprovalPolicy;
+  sandboxAudit?: SandboxPolicyAudit;
   registryRoot?: string;
   sessionsDir?: string;
   sockDir?: string;
@@ -113,9 +120,9 @@ type BackgroundPeer = { name: string; registered: boolean; pid?: number; sock?: 
 
 export type BackgroundPollResult =
   | { status: "not_found"; runId: string }
-  | { status: "running"; runId: string; peer?: BackgroundPeer; textTail: string; eventsSeen: number; streamPath: string }
-  | { status: "complete"; runId: string; peer?: BackgroundPeer; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode: 0; telemetry: ConnectorTelemetry }
-  | { status: "error"; runId: string; peer?: BackgroundPeer; reason?: string; exitCode?: number; textTail: string; stderrTail: string; eventsSeen?: number; streamPath?: string; telemetry?: ConnectorTelemetry };
+  | { status: "running"; runId: string; peer?: BackgroundPeer; textTail: string; eventsSeen: number; streamPath: string; sandboxAudit?: SandboxPolicyAudit }
+  | { status: "complete"; runId: string; peer?: BackgroundPeer; text: string; usage: ConnectorUsage; split?: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode: 0; telemetry: ConnectorTelemetry; sandboxAudit?: SandboxPolicyAudit }
+  | { status: "error"; runId: string; peer?: BackgroundPeer; reason?: string; exitCode?: number; textTail: string; stderrTail: string; eventsSeen?: number; streamPath?: string; telemetry?: ConnectorTelemetry; sandboxAudit?: SandboxPolicyAudit };
 
 export function agentRunsRoot(): string {
   return join(homedir(), ".stratum", "ts", "agent_runs");
@@ -142,6 +149,15 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
 
   // Codex path (D6: workspace-write is now allowed — guard removed)
   const sandboxMode = options.sandboxMode ?? "read-only";
+  const sandboxPolicy: SandboxPolicy = {
+    filesystemMode: sandboxMode,
+    networkAccess: options.networkAccess ?? false,
+    writableRoots: options.writableRoots ?? [],
+    approvalPolicy: options.approvalPolicy ?? "never",
+  };
+  const sandboxAudit = options.sandboxAudit ?? (isSandboxEscalated(sandboxPolicy)
+    ? backgroundSandboxAudit(sandboxPolicy, options)
+    : undefined);
   assertCodexSandboxAllowed(sandboxMode, options.env ?? process.env);
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
@@ -155,7 +171,11 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     writeFile(inputPath, withSandboxPreamble(options.prompt, sandboxMode), { encoding: "utf8", mode: 0o600 }),
   ]);
   const model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
-  const command = options.command ?? codexCommand(model, options.cwd, sandboxMode);
+  const command = options.command ?? codexCommand(model, options.cwd, sandboxMode, {
+    networkAccess: sandboxPolicy.networkAccess,
+    writableRoots: sandboxPolicy.writableRoots,
+    approvalPolicy: sandboxPolicy.approvalPolicy,
+  });
   const env: NodeJS.ProcessEnv = {
     ...(options.env ?? process.env),
     T2F5_OUT: streamPath,
@@ -195,6 +215,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     childPid: pid,
     ...(startTime ? { procStartTime: startTime } : {}),
     ...(options.command !== undefined ? { outputContract: "opaque" as const } : {}),
+    ...(sandboxAudit !== undefined ? { sandboxAudit } : {}),
     streamPath,
     stderrPath,
   };
@@ -368,6 +389,8 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
   if (!loaded) return { status: "not_found", runId };
   const { streamPath, stderrPath } = loaded;
+  const sandboxAudit = loaded.meta.agent === "codex" ? loaded.meta.sandboxAudit : undefined;
+  const auditFields = sandboxAudit === undefined ? {} : { sandboxAudit };
   let peer: BackgroundPeer | undefined;
   if (loaded.meta.agent === "codex") {
     peer = {name: peerName(loaded.meta.model, runId), registered: false};
@@ -425,7 +448,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   // Codex path:
   if (scan.exitCode === undefined) {
     if (await processIdentityMatches(loaded.meta.childPid, loaded.meta.procStartTime)) {
-      return { status: "running", runId, ...peerFields, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
+      return { status: "running", runId, ...peerFields, ...auditFields, textTail: text, eventsSeen: scan.eventsSeen, streamPath };
     }
     // TOCTOU: `scan` predates the process-identity check. The wrapper appends its exit-code
     // sentinel and then exits, so between the stale scan and the child going away the sentinel
@@ -435,7 +458,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     text = capText(scan.text, streamPath);
     if (scan.exitCode === undefined) {
       return {
-        status: "error", runId, ...peerFields, reason: "child_died_without_sentinel", textTail: text,
+        status: "error", runId, ...peerFields, ...auditFields, reason: "child_died_without_sentinel", textTail: text,
         stderrTail: await tailText(stderrPath), eventsSeen: scan.eventsSeen, streamPath,
       };
     }
@@ -447,10 +470,10 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
       ? "codex completed without agent output"
       : undefined);
   if (scan.exitCode === 0 && terminalError === undefined) {
-    return { status: "complete", runId, ...peerFields, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
+    return { status: "complete", runId, ...peerFields, ...auditFields, text, usage: scan.usage, split: scan.split, ...(scan.usdSource !== undefined ? { usdSource: scan.usdSource } : {}), exitCode: 0, telemetry };
   }
   return {
-    status: "error", runId, ...peerFields, exitCode: scan.exitCode, textTail: text,
+    status: "error", runId, ...peerFields, ...auditFields, exitCode: scan.exitCode, textTail: text,
     stderrTail, ...(terminalError ? { reason: terminalError } : {}), telemetry,
   };
 }
@@ -720,6 +743,26 @@ async function terminalTelemetry(meta: BackgroundRunMeta, streamPath: string): P
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function backgroundSandboxAudit(policy: SandboxPolicy, options: StartBackgroundRunOptions): SandboxPolicyAudit {
+  const provenance = Object.fromEntries(([
+    "filesystemMode", "networkAccess", "writableRoots", "approvalPolicy",
+  ] as const satisfies readonly SandboxPolicyKey[]).map((key) => {
+    const explicit = key === "filesystemMode" ? options.sandboxMode !== undefined : options[key] !== undefined;
+    return [key, Object.freeze({
+      layer: explicit ? "dispatch" as const : "default" as const,
+      source: explicit ? "startBackgroundRun options" : "built-in defaults",
+    })];
+  })) as unknown as SandboxPolicyAudit["provenance"];
+  const authorization = policy.filesystemMode === "danger-full-access"
+    ? fullAccessAuthorization(options.env ?? process.env)
+    : undefined;
+  return Object.freeze({
+    policy: Object.freeze({ ...policy, writableRoots: Object.freeze([...policy.writableRoots]) }),
+    provenance: Object.freeze(provenance),
+    ...(authorization !== undefined ? { fullAccessAuthorization: authorization } : {}),
+  });
 }
 
 // Export registry for testing (internal use only)

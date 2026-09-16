@@ -1,5 +1,5 @@
 {
-  "surface": 20,
+  "surface": 21,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -71,7 +71,8 @@
           "model?": "string",
           "durationMs?": "number",
           "effort?": "string"
-        }
+        },
+        "sandboxAudit?": "object"
       }
     },
     "flow_cancel_unacknowledged": {
@@ -1082,6 +1083,11 @@
         "cwd": "string",
         "model?": "string",
         "sandboxMode?": "string",
+        "networkAccess?": "boolean",
+        "writableRoots?": {
+          "$array": "string"
+        },
+        "approvalPolicy?": "string",
         "background?": "boolean",
         "allowedTools?": {
           "$array": "string"
@@ -1113,7 +1119,8 @@
             "durationMs": "number",
             "model": "string",
             "effort?": "string"
-          }
+          },
+          "sandboxAudit?": "object"
         },
         "bg_started": {
           "runId": "string",
@@ -1136,6 +1143,7 @@
           "textTail": "string",
           "eventsSeen": "number",
           "streamPath": "string",
+          "sandboxAudit?": "object",
           "peer?": {
             "name": "string",
             "registered": "boolean",
@@ -1160,6 +1168,7 @@
             "model": "string",
             "effort?": "string"
           },
+          "sandboxAudit?": "object",
           "peer?": {
             "name": "string",
             "registered": "boolean",
@@ -1180,6 +1189,7 @@
             "model": "string",
             "effort?": "string"
           },
+          "sandboxAudit?": "object",
           "peer?": {
             "name": "string",
             "registered": "boolean",

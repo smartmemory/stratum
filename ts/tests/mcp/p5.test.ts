@@ -862,6 +862,16 @@ describe("stratum_agent_run T1 contract changes", () => {
     })).resolves.toBeUndefined();
   });
 
+  it("accepts the four orthogonal Codex sandbox axes in the request", async () => {
+    await expect(assertToolRequest("stratum_agent_run", {
+      agent: "codex", prompt: "p", cwd: "/tmp",
+      sandboxMode: "workspace-write",
+      networkAccess: true,
+      writableRoots: ["/cache"],
+      approvalPolicy: "on-request",
+    })).resolves.toBeUndefined();
+  });
+
   it("rejects a mixed-type allowedTools array at the contract boundary", async () => {
     await expect(assertToolRequest("stratum_agent_run", {
       agent: "claude", prompt: "p", cwd: "/tmp",

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **STRAT-CONFIG-PREFS-1: Stratum reads a config file again, and sandbox policy is four
+  orthogonal axes.** The TS engine had read no config file at all since the July cutover replaced
+  `project_config.py` with 31 ad-hoc `process.env` reads. `ts/src/config/` restores a layered
+  resolver — built-in defaults, user preferences at `~/.stratum/config.toml` (override with
+  `STRATUM_CONFIG_FILE`), project `stratum.toml`, per-dispatch params, then env as the escape
+  hatch. Two properties make a silently-ignored preference impossible: every effective value
+  reports the layer that set it via `resolved.provenance(key)`, and an unknown key or wrong-typed
+  value fails loudly at load naming both the key path and the source file (mirroring codex's
+  `--strict-config`).
+
+  Sandbox policy is no longer one boolean. `filesystemMode`, `networkAccess`, `writableRoots` and
+  `approvalPolicy` are independent and threaded to BOTH transports (exec argv and the Codex SDK's
+  `ThreadOptions`). `networkAccess = true` is usable with `workspace-write`, so a job needing
+  localhost no longer has to be granted full machine access. `danger-full-access` stays fail-closed:
+  a config file may select it, but only `STRATUM_CODEX_ALLOW_FULL_ACCESS` authorizes it, and the
+  audit record names both the selecting layer and the authorizing one. Elevated runs append a
+  `sandbox_policy` audit event (event contract v5; MCP surface v21).
+
 - **Codex peer reliability:** detect dead children without start times, report runtime I/O failures as `unavailable`, bound callback and scan queues, honor first-line deadlines, and restrict registry cleanup and metadata reads.
 
 - **Codex background runs register as Claude Code peer sessions.** The `peerName` field alone

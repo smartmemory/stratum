@@ -1009,8 +1009,8 @@ describe("P4 frozen contracts", () => {
   it("every emitted event and engine response validates against the frozen contract payload shapes", async () => {
     const eventsContract = JSON.parse(await readFile(new URL("../../contracts/events.json", import.meta.url), "utf8")) as { events: number; kinds: Record<string, Shape> };
     const surface = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8")) as { surface: number; tools: Record<string, { request: Shape; responses: Record<string, Shape> }> };
-    expect(eventsContract.events).toBe(4);
-    expect(surface.surface).toBe(20);
+      expect(eventsContract.events).toBe(5);
+      expect(surface.surface).toBe(21);
     expect(Object.keys(surface.tools)).toHaveLength(25);
 
     const allEvents: AuditEvent[] = [];
@@ -1033,7 +1033,18 @@ describe("P4 frozen contracts", () => {
       tool: "stratum_usage_report",
       value: await a.usageReport(aPlanned.runId, { dispatchId: "p4-receipt", source: "contract", usage: { tokens: 1 } }) as unknown as Record<string, unknown>,
     });
-    responses.push({ tool: "stratum_step_done", value: await a.stepDone(aPlanned.runId, "build", { output: { value: "built" } }) as unknown as Record<string, unknown> });
+    responses.push({ tool: "stratum_step_done", value: await a.stepDone(aPlanned.runId, "build", {
+      output: { value: "built" },
+      sandboxAudit: {
+        policy: { filesystemMode: "workspace-write", networkAccess: true, writableRoots: ["/cache"], approvalPolicy: "never" },
+        provenance: {
+          filesystemMode: { layer: "project", source: "/project/stratum.toml" },
+          networkAccess: { layer: "user", source: "/user/config.toml" },
+          writableRoots: { layer: "dispatch", source: "stratum_agent_run" },
+          approvalPolicy: { layer: "default", source: "built-in defaults" },
+        },
+      },
+    }) as unknown as Record<string, unknown> });
     polls.push(await a.flowPoll(aPlanned.runId, 0) as unknown as Record<string, unknown>); // running while waiting_gate
     audits.push(await a.audit(aPlanned.runId) as unknown as Record<string, unknown>);
     responses.push({ tool: "stratum_resume", value: await a.resume(aPlanned.runId) as unknown as Record<string, unknown> });

@@ -16,7 +16,7 @@
 export const SMARTMEMORY_SCRUB_VARS = ["SMARTMEMORY_API_KEY", "SMARTMEMORY_WORKSPACE_ID"] as const;
 
 export type AgentType = "claude" | "codex";
-export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type { CodexSandboxMode } from "../config/types.js";
 
 /** Post-dispatch usage. Dispatch counts are reserved exclusively by the engine. */
 export interface ConnectorUsage {
@@ -61,6 +61,8 @@ export interface ConnectorResult {
   text: string;
   usage: ConnectorUsage;
   telemetry: ConnectorTelemetry;
+  /** Present only when the effective Codex policy exceeds safe built-in defaults. */
+  sandboxAudit?: SandboxPolicyAudit;
 }
 
 /** Token detail preserved beside the Budget-shaped usage (STRAT-USAGE-SPLIT). */
@@ -90,3 +92,4 @@ export function modelIdentity(modelId: string): { model: string; effort?: string
 export function finiteNonnegative(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
+import type { SandboxPolicyAudit } from "../config/types.js";

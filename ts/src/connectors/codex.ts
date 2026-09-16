@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, modelIdentity, SMARTMEMORY_SCRUB_VARS } from "./base.js";
+import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
+import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import { usdFromTokens } from "../judge/pricing.js";
 
 import { linkAbort, cancellationGraceMs, processTermination, requireProcessGroups } from "./cancellation.js";
@@ -46,6 +48,11 @@ export interface CodexConnectorOptions {
   onSpawn?: (pid: number) => void;
   cwd?: string;
   sandboxMode?: CodexSandboxMode;
+  networkAccess?: boolean;
+  writableRoots?: readonly string[];
+  approvalPolicy?: CodexApprovalPolicy;
+  /** Winning-layer evidence supplied by the central config resolver. */
+  sandboxAudit?: SandboxPolicyAudit;
   env?: NodeJS.ProcessEnv;
   /** SDK is the normal in-process path; exec is an explicit compatibility path. */
   transport?: CodexTransport;
@@ -152,11 +159,16 @@ export function resolveStdoutLimit(): number {
   return Math.max(value, 64 * 1024);
 }
 
-/** Exact TypeScript port of Python CodexConnector._exec_args. */
+/** Codex exec argv, preserving the retired connector shape plus explicit policy axes. */
 export function codexExecArgs(
   modelId: string,
   cwd: string,
   sandboxMode: CodexSandboxMode = "read-only",
+  sandbox: Pick<SandboxPolicy, "networkAccess" | "writableRoots" | "approvalPolicy"> = {
+    networkAccess: false,
+    writableRoots: [],
+    approvalPolicy: "never",
+  },
 ): string[] {
   const { model, effort } = modelIdentity(modelId);
   const args = [
@@ -165,6 +177,12 @@ export function codexExecArgs(
     "--skip-git-repo-check",
     "--sandbox",
     sandboxMode,
+    "-c",
+    `sandbox_workspace_write.network_access=${sandbox.networkAccess}`,
+    "-c",
+    `sandbox_workspace_write.writable_roots=${JSON.stringify([...sandbox.writableRoots])}`,
+    "-c",
+    `approval_policy=${JSON.stringify(sandbox.approvalPolicy)}`,
     "-m",
     model,
     "-C",
@@ -175,8 +193,13 @@ export function codexExecArgs(
   return args;
 }
 
-export function codexCommand(modelId: string, cwd: string, sandboxMode: CodexSandboxMode): string[] {
-  return ["codex", ...codexExecArgs(modelId, cwd, sandboxMode)];
+export function codexCommand(
+  modelId: string,
+  cwd: string,
+  sandboxMode: CodexSandboxMode,
+  sandbox?: Pick<SandboxPolicy, "networkAccess" | "writableRoots" | "approvalPolicy">,
+): string[] {
+  return ["codex", ...codexExecArgs(modelId, cwd, sandboxMode, sandbox)];
 }
 
 export class CodexConnector {
@@ -184,6 +207,10 @@ export class CodexConnector {
   private readonly signal: AbortSignal | undefined;
   private readonly cwd: string;
   private readonly sandboxMode: CodexSandboxMode;
+  private readonly networkAccess: boolean;
+  private readonly writableRoots: readonly string[];
+  private readonly approvalPolicy: CodexApprovalPolicy;
+  private readonly sandboxAudit: SandboxPolicyAudit | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly transport: CodexTransport;
   private readonly ownProcessGroup: boolean;
@@ -199,6 +226,18 @@ export class CodexConnector {
     this.signal = options.signal;
     this.cwd = options.cwd ?? process.cwd();
     this.sandboxMode = options.sandboxMode ?? "read-only";
+    this.networkAccess = options.networkAccess ?? false;
+    this.writableRoots = Object.freeze([...(options.writableRoots ?? [])]);
+    this.approvalPolicy = options.approvalPolicy ?? "never";
+    const policy: SandboxPolicy = {
+      filesystemMode: this.sandboxMode,
+      networkAccess: this.networkAccess,
+      writableRoots: this.writableRoots,
+      approvalPolicy: this.approvalPolicy,
+    };
+    this.sandboxAudit = options.sandboxAudit ?? (isSandboxEscalated(policy)
+      ? directSandboxAudit(policy, options)
+      : undefined);
     this.env = { ...(options.env ?? process.env) };
     assertCodexSandboxAllowed(this.sandboxMode, this.env);
     for (const key of CODEX_SCRUB_VARS) delete this.env[key];
@@ -225,7 +264,25 @@ export class CodexConnector {
     this.signal?.throwIfAborted();
     if (this.ownProcessGroup) requireProcessGroups();
     const framed = withSandboxPreamble(prompt, this.sandboxMode);
-    return this.transport === "sdk" ? this.runSdk(framed) : this.runExec(framed);
+    if (this.sandboxAudit !== undefined) {
+      await this.emit({
+        kind: "sandbox_policy",
+        metadata: {
+          policy: structuredClone(this.sandboxAudit.policy),
+          provenance: structuredClone(this.sandboxAudit.provenance),
+          ...(this.sandboxAudit.fullAccessAuthorization !== undefined
+            ? { fullAccessAuthorization: structuredClone(this.sandboxAudit.fullAccessAuthorization) }
+            : {}),
+        },
+      });
+    }
+    try {
+      const result = await (this.transport === "sdk" ? this.runSdk(framed) : this.runExec(framed));
+      return this.sandboxAudit === undefined ? result : { ...result, sandboxAudit: this.sandboxAudit };
+    } catch (error) {
+      if (this.sandboxAudit !== undefined && error instanceof Error) Object.assign(error, { sandboxAudit: this.sandboxAudit });
+      throw error;
+    }
   }
 
   private async runSdk(prompt: string): Promise<ConnectorResult> {
@@ -240,9 +297,11 @@ export class CodexConnector {
     try {
       const identity = modelIdentity(this.model);
       const options: ThreadOptions = {
-        approvalPolicy: "never",
+        approvalPolicy: this.approvalPolicy,
         model: identity.model,
         sandboxMode: this.sandboxMode,
+        networkAccessEnabled: this.networkAccess,
+        additionalDirectories: [...this.writableRoots],
         skipGitRepoCheck: true,
         workingDirectory: this.cwd,
         ...(identity.effort !== undefined ? { modelReasoningEffort: reasoningEffort(identity.effort) } : {}),
@@ -293,7 +352,11 @@ export class CodexConnector {
   private async runExec(prompt: string): Promise<ConnectorResult> {
     const startedAt = Date.now();
     const command = this.injectedSpawn ? { command: "codex", prefix: [] } : resolveCodexCommand(this.env);
-    const child = this.spawn(command.command, [...command.prefix, ...codexExecArgs(this.model, this.cwd, this.sandboxMode)], {
+    const child = this.spawn(command.command, [...command.prefix, ...codexExecArgs(this.model, this.cwd, this.sandboxMode, {
+      networkAccess: this.networkAccess,
+      writableRoots: this.writableRoots,
+      approvalPolicy: this.approvalPolicy,
+    })], {
       cwd: this.cwd,
       env: this.env,
       detached: this.ownProcessGroup && process.platform !== "win32",
@@ -438,6 +501,26 @@ export class CodexConnector {
   private async emit(event: ConnectorEvent): Promise<void> {
     await this.onEvent?.(event);
   }
+}
+
+function directSandboxAudit(policy: SandboxPolicy, options: CodexConnectorOptions): SandboxPolicyAudit {
+  const provenance = Object.fromEntries(([
+    "filesystemMode", "networkAccess", "writableRoots", "approvalPolicy",
+  ] as const satisfies readonly SandboxPolicyKey[]).map((key) => {
+    const explicit = key === "filesystemMode" ? options.sandboxMode !== undefined : options[key] !== undefined;
+    return [key, Object.freeze({
+      layer: explicit ? "dispatch" as const : "default" as const,
+      source: explicit ? "CodexConnector options" : "built-in defaults",
+    })];
+  })) as unknown as SandboxPolicyAudit["provenance"];
+  const authorization = policy.filesystemMode === "danger-full-access"
+    ? fullAccessAuthorization(options.env ?? process.env)
+    : undefined;
+  return Object.freeze({
+    policy: Object.freeze({ ...policy, writableRoots: Object.freeze([...policy.writableRoots]) }),
+    provenance: Object.freeze(provenance),
+    ...(authorization !== undefined ? { fullAccessAuthorization: authorization } : {}),
+  });
 }
 
 const defaultSdkFactory: CodexSdkFactory = (options) => {

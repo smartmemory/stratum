@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import type { QueryFunction } from "../../src/connectors/claude.js";
@@ -120,5 +123,73 @@ describe("provider settings are enforced at dispatch", () => {
     const spawn = fakeCodexSpawn();
     await runAgent({ agent: "codex", prompt: "p", model: "gpt-5", effort: "low" }, { codexSpawn: spawn });
     expect(spawn).toHaveBeenCalledWith("codex", expect.arrayContaining(['model_reasoning_effort="low"']), expect.any(Object));
+  });
+
+  it("loads project sandbox policy and threads every axis to the exec transport", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-runner-config-"));
+    try {
+      await writeFile(join(root, "stratum.toml"), [
+        "[sandbox]",
+        'filesystemMode = "workspace-write"',
+        "networkAccess = true",
+        'writableRoots = ["/cache"]',
+        'approvalPolicy = "on-request"',
+      ].join("\n"));
+      const spawn = fakeCodexSpawn();
+      const result = await runAgent({
+        agent: "codex",
+        prompt: "p",
+        cwd: root,
+        env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
+      }, { codexSpawn: spawn });
+      expect(spawn).toHaveBeenCalledWith("codex", expect.arrayContaining([
+        "--sandbox", "workspace-write",
+        "-c", "sandbox_workspace_write.network_access=true",
+        "-c", 'sandbox_workspace_write.writable_roots=["/cache"]',
+        "-c", 'approval_policy="on-request"',
+      ]), expect.any(Object));
+      expect(result).toMatchObject({
+        sandboxAudit: {
+          policy: { filesystemMode: "workspace-write", networkAccess: true, writableRoots: ["/cache"], approvalPolicy: "on-request" },
+          provenance: { networkAccess: { layer: "project", source: join(root, "stratum.toml") } },
+        },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a config file requests full access without the env opt-in", async () => {
+    const root = await mkdtemp(join(tmpdir(), "stratum-runner-full-access-"));
+    try {
+      await writeFile(join(root, "stratum.toml"), '[sandbox]\nfilesystemMode = "danger-full-access"\n');
+      const spawn = fakeCodexSpawn();
+      await expect(runAgent({
+        agent: "codex",
+        prompt: "p",
+        cwd: root,
+        env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
+      }, { codexSpawn: spawn })).rejects.toThrow("STRATUM_CODEX_ALLOW_FULL_ACCESS");
+      expect(spawn).not.toHaveBeenCalled();
+
+      const allowed = await runAgent({
+        agent: "codex",
+        prompt: "p",
+        cwd: root,
+        env: {
+          STRATUM_CONFIG_FILE: join(root, "missing-user.toml"),
+          STRATUM_CODEX_ALLOW_FULL_ACCESS: "yes",
+        },
+      }, { codexSpawn: spawn });
+      expect(allowed).toMatchObject({
+        sandboxAudit: {
+          provenance: { filesystemMode: { layer: "project", source: join(root, "stratum.toml") } },
+          fullAccessAuthorization: { layer: "env", source: "STRATUM_CODEX_ALLOW_FULL_ACCESS" },
+        },
+      });
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
