@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Claude MCP tool-schema deferral:** explicit `allowedTools` restrictions now also include
+  `ToolSearch` unless the caller already allowed or explicitly disallowed it; the preset branch is
+  unchanged. ToolSearch is the SDK mechanism that defers MCP schemas — without it, every configured
+  MCP tool schema was inlined on the post-connect turn. The measured failure went from 26–31K tokens
+  on turn 1 to 511K cache-creation tokens on turn 2, explaining compose flow
+  `05f660fe`'s Sonnet 4.6 1M-tier refusal. This was also a cost defect: about 500K tokens per trivial
+  Sonnet 5 turn (about $3.26) for any `allowedTools` dispatch with MCP servers configured.
+
 - **STRAT-CONFIG-PREFS-1: Stratum reads a config file again, and sandbox policy is four
   orthogonal axes.** The TS engine had read no config file at all since the July cutover replaced
   `project_config.py` with 31 ad-hoc `process.env` reads. `ts/src/config/` restores a layered

@@ -110,7 +110,7 @@ describe("provider settings are enforced at dispatch", () => {
     let received: Record<string, unknown> | undefined;
     const query: QueryFunction = async function* ({ options }) { received = options; yield { type: "result", subtype: "success", result: "ok" }; };
     await runAgent({ agent: "claude", prompt: "p", thinking: { type: "adaptive" }, effort: "high", allowedTools: ["Read"], disallowedTools: ["Write"] }, { claudeQuery: query });
-    expect(received).toMatchObject({ thinking: { type: "adaptive" }, effort: "high", tools: ["Read"], disallowedTools: ["Write"] });
+    expect(received).toMatchObject({ thinking: { type: "adaptive" }, effort: "high", tools: ["Read", "ToolSearch"], disallowedTools: ["Write"] });
   });
   it("rejects unsupported provider options before execution", async () => {
     await expect(runAgent({ agent: "codex", prompt: "p", allowedTools: ["Read"] })).rejects.toThrow("does not support");
