@@ -328,7 +328,7 @@ describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
       });
       expect(capturedSdkOptions).toBeDefined();
       // D5: ClaudeConnector.allowedTools → sdkOptions.tools (availability, not auto-approve)
-      expect(capturedSdkOptions!.tools).toEqual(["Read"]);
+      expect(capturedSdkOptions!.tools).toEqual(["Read", "ToolSearch"]);
       // Must NOT be sdkOptions.allowedTools (that would be auto-approve, wrong semantic)
       expect(capturedSdkOptions!).not.toHaveProperty("allowedTools");
     } finally { await pair.close(); }

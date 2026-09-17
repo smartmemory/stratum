@@ -11,6 +11,36 @@ async function* messages() {
 }
 
 describe("ClaudeConnector", () => {
+  async function capturedTools(options: ConstructorParameters<typeof ClaudeConnector>[0]): Promise<unknown> {
+    let tools: unknown;
+    const query: QueryFunction = async function* ({ options: sdkOptions }) {
+      tools = sdkOptions?.tools;
+      yield { type: "result", subtype: "success", result: "ok" };
+    };
+    await new ClaudeConnector({ ...options, query }).run("test");
+    return tools;
+  }
+
+  it("adds ToolSearch to an explicit allowedTools restriction", async () => {
+    await expect(capturedTools({ allowedTools: ["Read", "Bash"] }))
+      .resolves.toEqual(["Read", "Bash", "ToolSearch"]);
+  });
+
+  it("does not duplicate ToolSearch when it is already allowed", async () => {
+    await expect(capturedTools({ allowedTools: ["Read", "ToolSearch"] }))
+      .resolves.toEqual(["Read", "ToolSearch"]);
+  });
+
+  it("respects an explicit ToolSearch disallow", async () => {
+    await expect(capturedTools({ allowedTools: ["Read"], disallowedTools: ["ToolSearch"] }))
+      .resolves.toEqual(["Read"]);
+  });
+
+  it("keeps the Claude Code preset when allowedTools is undefined", async () => {
+    await expect(capturedTools({}))
+      .resolves.toEqual({ type: "preset", preset: "claude_code" });
+  });
+
   it("maps live assistant, tool, result, and usage messages to connector events", async () => {
     const query: QueryFunction = async function* () {
       yield {
@@ -73,7 +103,7 @@ describe("ClaudeConnector", () => {
     expect(query).toHaveBeenCalledWith({
       prompt: "echo test",
       options: expect.objectContaining({
-        cwd: "/work", model: "claude-sonnet-4-6", permissionMode: "acceptEdits", tools: ["Read"],
+        cwd: "/work", model: "claude-sonnet-4-6", permissionMode: "acceptEdits", tools: ["Read", "ToolSearch"],
       }),
     });
     expect(result).toEqual({

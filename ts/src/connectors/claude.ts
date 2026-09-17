@@ -112,7 +112,14 @@ export class ClaudeConnector {
         } } : {}),
       };
       if (this.options.allowedTools !== undefined) {
-        sdkOptions.tools = this.options.allowedTools;
+        // MCP schema deferral requires ToolSearch; without it every schema is inlined on the
+        // post-connect turn (2026-09-16: compose/docs/features/COMP-MODEL-ROUTE-1/evidence/).
+        const toolSearchDisallowed = this.options.disallowedTools?.includes("ToolSearch") === true;
+        sdkOptions.tools = toolSearchDisallowed
+          ? this.options.allowedTools.filter(tool => tool !== "ToolSearch")
+          : this.options.allowedTools.includes("ToolSearch")
+            ? this.options.allowedTools
+            : [...this.options.allowedTools, "ToolSearch"];
         if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
       } else {
         sdkOptions.tools = { type: "preset", preset: "claude_code" };
