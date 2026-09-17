@@ -45,17 +45,42 @@ built-ins. Three arms, identical but for the tool list, `cwd` = compose:
 | + `disallowedTools: [target]` | `["Read","ToolSearch"]` | no | undiscoverable, refused |
 
 A step declaring `Read` as its only tool discovered and invoked an MCP tool and got real data.
-`disallowedTools` **does** bind, hard — the denied tool was not even findable via ToolSearch. So the
-one restriction compose actually relies on (review steps deny `Edit`/`Write`) is correctly enforced.
+
+**Those three arms did NOT establish this, and review said so correctly:** arm A actually received
+`["Read","ToolSearch"]`, because the fixed connector appends ToolSearch, so its success was equally
+explainable by ToolSearch making the target available. A fourth arm settled it. With
+`disallowedTools` containing `ToolSearch`, the connector emits `tools: ["Read","Bash"]` exactly, no
+ToolSearch anywhere, and a prompt that forces a Bash call first to reach the post-connect turn:
+
+```
+sdkToolsOption: ["Read","Bash"]     invoked: ["Bash","mcp__filesystem__list_directory"]
+said: TOOL_OK                        cacheCreation: 544635
+```
+
+The MCP tool was still invoked and returned real data, so the conclusion stands on that arm rather
+than on the table above. The 544,635 figure also independently reproduces the 511,214 measured on
+2026-09-16, in the production shape. Full arms, including a confounded one that was discarded, are
+in `evidence/probes-2026-09-17.md`.
+`disallowedTools` **does** bind for the MCP tool tested — the denied tool was not even findable via
+ToolSearch. CORRECTED after review: extending that to "review steps' `Edit`/`Write` denial is
+correctly enforced" is extrapolation, not measurement. No arm attempted `Edit` or `Write`.
 
 A first attempt at this probe was **invalid and discarded**: control and treatment failed
 identically because both were stopped by the permission layer before the tool list mattered. The
 table above was produced with a `canUseTool` callback so the two layers could be told apart.
 
-**2. Permissions come from disk, not from the launcher.** Re-run with all 14 `CLAUDE*` env vars
-stripped: identical result. There is no inheritance from the parent session. `SettingSource` is
-`'user' | 'project' | 'local'` — filesystem locations, all loaded when `settingSources` is omitted,
-which is what `ClaudeConnector` does. CLI, Claude Code MCP, Codex MCP and cron are all the same.
+**2. Settings are read from disk; the launcher's env vars are not the channel.** Re-run with all 14
+`CLAUDE*` env vars stripped: identical result. `SettingSource` is `'user' | 'project' | 'local'` —
+filesystem locations, all loaded when `settingSources` is omitted, which is what `ClaudeConnector`
+does.
+
+**CORRECTED after review:** an env-var ablation only rules out those variables. It does NOT
+establish "there is no inheritance", and the earlier sweeping form of this claim ("CLI, Claude Code
+MCP, Codex MCP and cron are all the same") was wrong. The connector explicitly sets
+`permissionMode: "acceptEdits"` (`claude.ts:77-84`), so the launcher already contributes permission
+policy. The SDK also exposes `settings` and `managedSettings` channels; this connector sets neither,
+so they did not affect these runs, but no settings-source ablation was performed and unique
+provenance is not established.
 
 **3. The asymmetry.** Codex dispatches get a declared, defaulted, per-axis-audited policy.
 `ClaudeConnector`'s options are model, cwd, two tool lists, and process-control knobs. No sandbox,
@@ -77,8 +102,12 @@ This adds keys to `SandboxPolicy` and one connector read.
 Two new axes, chosen because they are the only ones Claude can actually honour:
 
 - `mcpServers` — which plug-in servers a dispatch may reach. **Deny by default**, opt-in per step.
-  Enforced through the SDK's `canUseTool` callback, which is the real seam: the probe confirms
-  `tools` cannot express this and `canUseTool` can.
+  The enforcement seam is an OPEN QUESTION, corrected after review. `canUseTool` was proposed and is
+  NOT sufficient: `sdk.mjs` states "Allow rules from settings files can also shadow the callback but
+  are not visible here", so an auto-approved tool bypasses it — precisely the pre-approved set this
+  axis exists to control. `PreToolUse` is the candidate replacement and is **unverified** (the SDK
+  notes PreToolUse denies bypass `canUseTool`). What IS established is only negative: the `tools`
+  list cannot express this (arm D2).
 - `settingSources` — which of user/project/local to load. Default to project-local so behaviour is
   machine-independent. `user` becomes an explicit opt-in line for those who want today's
   convenience, recorded rather than silent.
@@ -88,19 +117,34 @@ dispatch emits the same `sandbox_policy` audit record the Codex path already emi
 
 ### Enforcement is NOT symmetric, and the config must say so
 
-`filesystemMode` and `networkAccess` stay **Codex-only**. Codex gets OS-level Seatbelt; the Claude
-SDK offers no equivalent, and `canUseTool` is a gate the agent passes through, not a sandbox — a
-shell command still reaches the whole machine. Marking these axes per-provider is required. Claiming
-parity would be the worst outcome of this feature. Wrapping the Claude subprocess in an OS sandbox
-is a separate piece of work, not in scope, and note `sandbox-exec` cannot nest
-(`project_codex_seatbelt_nonnesting`).
+**CORRECTED after review — the original text here was factually wrong.** It claimed "the Claude SDK
+offers no equivalent" sandbox. It does. `sdk.d.ts:1777` documents a `sandbox` option for command
+isolation restricting filesystem and network access, and the schema at `sdk.d.ts:2700` carries
+`filesystem.allowRead/denyRead/allowWrite/denyWrite` and `network.allowedDomains/deniedDomains`,
+OS-enforced (Seatbelt on macOS, bubblewrap on Linux, `failIfUnavailable` defaulting true).
 
-### Precedence is a ceiling
+So `filesystemMode` and `networkAccess` are NOT inherently un-honourable for Claude. The honest
+position is narrower: **coverage and mapping are unknown and must be investigated before either axis
+is claimed for Claude.** The SDK's own note that "filesystem and network restrictions are configured
+via permission rules, not via these sandbox settings" needs reconciling with its schema, and command
+sandboxing does not obviously contain every MCP server or non-shell tool. Parity with Codex is not
+established and must not be assumed in either direction. `sandbox-exec` also cannot nest
+(`project_codex_seatbelt_nonnesting`), which constrains how any wrapper could be layered.
 
-Project config sets the maximum a dispatch may have. A step narrows, never widens. Prevents a
-template escalating itself. This mirrors the existing fail-closed treatment of
-`danger-full-access`, which a config may select but only `STRATUM_CODEX_ALLOW_FULL_ACCESS`
-authorizes.
+### Precedence should be a ceiling — and this does NOT exist yet
+
+Project config should set the maximum a dispatch may have, a step narrowing but never widening, so a
+template cannot escalate itself.
+
+**CORRECTED after review: the existing resolver has no ceiling semantics at all.** Dispatch values
+overwrite project values and env overwrites both (`config/index.ts:89-113`). The
+`STRATUM_CODEX_ALLOW_FULL_ACCESS` flag is a separate authorization gate, not a ceiling. This is new
+merge and validation semantics, not a configuration key.
+
+"No new file, no new layer" survives — the files and layer order are reusable as-is — but "add one
+axis and one connector read" understated the work. Accepted keys, defaults, file parsing, dispatch
+parsing, env mapping, merging and array freezing are each hand-written per axis
+(`config/index.ts:17-44`, `149-193`, `224-238`, `283-290`).
 
 ## Acceptance criteria
 
