@@ -1,6 +1,6 @@
 {
   "name": "@smartmemory/stratum",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "mcpName": "ai.smartmemory/stratum-mcp",
   "description": "Stratum engine: your agent proposes the step, Stratum decides whether it actually finished. Typed, resumable, postcondition-enforced workflows for AI agents.",
   "license": "Apache-2.0",
