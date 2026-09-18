@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-18
+
 - **Claude MCP tool-schema deferral:** explicit `allowedTools` restrictions now also include
   `ToolSearch` unless the caller already allowed or explicitly disallowed it; the preset branch is
   unchanged. ToolSearch is the SDK mechanism that defers MCP schemas — without it, every configured
