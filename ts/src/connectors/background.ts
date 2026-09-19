@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { constants, createReadStream } from "node:fs";
+import { constants, createReadStream, existsSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,7 +13,8 @@ import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPol
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
-import { peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
+import { normalizePeerLabel, peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
+import { createWorkerPeerLifecycle } from "./peer-worker-lifecycle.js";
 import { spawnPeerSidecar } from "./peer-sidecar.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
@@ -21,6 +22,7 @@ import { spawnPeerSidecar } from "./peer-sidecar.js";
 // terminal signal (D10) — no isAlive field needed (saves unbounded memory growth).
 interface ClaudeBgEntry {
   worker: Worker;
+  peerLifecycle: ReturnType<typeof createWorkerPeerLifecycle>;
   // D9: set before worker.terminate() — suppresses exit/error-handler sentinel write.
   cancelling: boolean;
   // D13: per-run finalization lock. First synchronous caller (error fires before exit)
@@ -44,7 +46,7 @@ function claimFinalization(
   }
   entry.finalizationClaim = doFinalize()
     .catch(() => { /* best-effort — I/O failure must not block registry deletion */ })
-    .finally(() => claudeWorkerRegistry.delete(runId));
+    .finally(() => { claudeWorkerRegistry.delete(runId); entry.peerLifecycle.markFinalized(); });
   return entry.finalizationClaim;
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ const TEXT_CAP = 20_000;
 const MAX_LINE_BYTES = 5_000_000;
 
 interface BackgroundRunMetaBase {
+  peerLabel?: string;
   runId: string;
   model: string;
   cwd: string;
@@ -90,6 +93,8 @@ export interface ClaudeRunMeta extends BackgroundRunMetaBase {
 export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta;
 
 export interface StartBackgroundRunOptions {
+  peerLabel?: string;
+  workerTestReleasePath?: string;
   agent: AgentType;
   prompt: string;
   cwd: string;
@@ -131,6 +136,8 @@ export function agentRunsRoot(): string {
 export async function startBackgroundRun(options: StartBackgroundRunOptions): Promise<{
   status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string;
 }> {
+  const normalizedLabel = normalizePeerLabel(options.peerLabel);
+  if (normalizedLabel !== undefined) options = { ...options, peerLabel: normalizedLabel };
   // D11: explicit runtime validation — TypeScript casts at the MCP boundary do not
   // protect callers that bypass the MCP surface.
   const VALID_AGENTS = new Set(["claude", "codex"]);
@@ -210,6 +217,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     model,
     cwd: options.cwd,
     sandboxMode,
+    ...(options.peerLabel !== undefined ? {peerLabel: options.peerLabel} : {}),
     promptChars: options.prompt.length,
     createdAt,
     childPid: pid,
@@ -234,7 +242,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   let timedOut = false;
   try {
     const registration = async (): Promise<string | undefined> => {
-      const name = peerName(model, runId);
+      const name = peerName(model, runId, {label: options.peerLabel});
       const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
       const sockDir = options.sockDir ?? resolveSockDir(env);
       const gate = await shouldRegister(sessionsDir, env);
@@ -267,6 +275,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
 
 // WorkerInput is the data passed to claude-bg-worker via workerData.
 interface WorkerInput {
+  testReleasePath?: string;
   prompt: string;
   connectorOptions: ClaudeConnectorOptions;
   streamPath: string;
@@ -276,7 +285,7 @@ interface WorkerInput {
 }
 
 async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Promise<{
-  status: "bg_started"; runId: string; streamPath: string;
+  status: "bg_started"; runId: string; streamPath: string; peerName?: string;
 }> {
   // D8: reject read-only for claude bg — claude.ts:43 hardcodes permissionMode:"acceptEdits"
   // with no SDK enforcement path for sandboxMode:"read-only". Explicit rejection prevents
@@ -305,6 +314,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   // D4: default sandboxMode for claude bg = workspace-write (the primary use case)
   const sandboxMode = options.sandboxMode ?? "workspace-write";
   const workerInput: WorkerInput = {
+    ...(options.workerTestReleasePath !== undefined ? {testReleasePath: options.workerTestReleasePath} : {}),
     prompt: options.prompt,
     connectorOptions: {
       model,
@@ -318,17 +328,13 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     streamPath,
     stderrPath,
   };
-  // Worker TypeScript loading: point to the .ts source file.
-  // The hooks file (--import) registers synchronous resolve/load hooks that:
-  //   - remap "./foo.js" imports → "./foo.ts" for sibling source files
-  //   - read .ts files via readFileSync + stripTypeScriptTypes (bypasses default loader)
-  // This enables the Worker to load TypeScript without a build step (test and production).
-  const hooksPath = fileURLToPath(new URL("./claude-bg-worker-hooks.mjs", import.meta.url));
-  const worker = new Worker(new URL("./claude-bg-worker.ts", import.meta.url), {
+  const source = new URL("./claude-bg-worker.ts", import.meta.url);
+  const fromSource = existsSync(source);
+  const worker = new Worker(fromSource ? source : new URL("./claude-bg-worker.js", import.meta.url), {
     workerData: workerInput,
-    execArgv: ["--import", hooksPath],
+    execArgv: fromSource ? ["--import", fileURLToPath(new URL("./claude-bg-worker-hooks.mjs", import.meta.url))] : [],
   });
-  const entry: ClaudeBgEntry = { worker, cancelling: false, finalizationClaim: null };
+  const entry: ClaudeBgEntry = { worker, cancelling: false, finalizationClaim: null, peerLifecycle: createWorkerPeerLifecycle() };
   claudeWorkerRegistry.set(runId, entry);
 
   // D9 + D13: exit handler — guarded by cancelling flag AND claimFinalization lock.
@@ -336,6 +342,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   // claims the finalizationClaim first; the exit handler then sees it non-null and
   // discards its own doFinalize. This prevents duplicate sentinel writes.
   worker.once("exit", () => {
+    entry.peerLifecycle.markExited();
     if (entry.cancelling) return; // cancel path owns finalization
     void claimFinalization(entry, runId, () => writeSentinelIfAbsent(streamPath, 1));
   });
@@ -365,6 +372,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     model,
     cwd: options.cwd,
     sandboxMode,
+    ...(options.peerLabel !== undefined ? {peerLabel: options.peerLabel} : {}),
     promptChars: options.prompt.length,
     createdAt: new Date().toISOString(),
     streamPath,
@@ -377,11 +385,40 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   } catch (error) {
     // Without meta.json the caller gets no runId handle — a still-running
     // workspace-write worker would be uncontrollable. Kill it before rethrowing.
+    entry.peerLifecycle.abandon();
     entry.cancelling = true; // suppress exit/error finalizers for this dead run
     await worker.terminate().catch(() => { /* already dead */ });
     claudeWorkerRegistry.delete(runId);
     throw error;
   }
+  let abandoned = false;
+  let timer: NodeJS.Timeout | undefined;
+  const abandon = () => { abandoned = true; entry.peerLifecycle.abandon(); };
+  try {
+    const registration = async () => {
+      const env = options.env ?? process.env;
+      const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
+      const sockDir = options.sockDir ?? resolveSockDir(env);
+      const gate = await shouldRegister(sessionsDir, env);
+      if (abandoned || !gate.ok) return;
+      await sweepDeadStratumPeers(sessionsDir, sockDir).catch(() => 0);
+      if (abandoned) return;
+      const name = peerName(model, runId, {agent:"claude", label:options.peerLabel});
+      const handle = await spawnPeerSidecar({ownerKind:"claude-worker", runId, runDir, streamPath,
+        name, cwd:options.cwd, sessionsDir, sockDir,
+        lingerMs:options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000),
+        firstLineDeadlineMs:Number(env.STRATUM_PEER_FIRST_LINE_MS ?? 30000)});
+      if (handle) entry.peerLifecycle.attach(handle);
+      return !abandoned && handle ? name : undefined;
+    };
+    const timeout = new Promise<undefined>(resolve => {
+      timer = setTimeout(() => { abandon(); resolve(undefined); }, 2000);
+    });
+    const name = await Promise.race([registration(), timeout]);
+    if (name) return {status:"bg_started", runId, streamPath, peerName:name};
+  } catch (error) { console.error("stratum peer registration failed:", error); }
+  finally { clearTimeout(timer); }
+  abandon();
   return { status: "bg_started", runId, streamPath };
 }
 
@@ -392,8 +429,10 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   const sandboxAudit = loaded.meta.agent === "codex" ? loaded.meta.sandboxAudit : undefined;
   const auditFields = sandboxAudit === undefined ? {} : { sandboxAudit };
   let peer: BackgroundPeer | undefined;
-  if (loaded.meta.agent === "codex") {
-    peer = {name: peerName(loaded.meta.model, runId), registered: false};
+  {
+    let label: string | undefined;
+    try { label = normalizePeerLabel(loaded.meta.peerLabel); } catch { /* optional old metadata */ }
+    peer = {name: peerName(loaded.meta.model, runId, {agent:loaded.meta.agent, label}), registered: false};
     try {
       const peerPath = join(dirname(streamPath), "peer.json");
       const handle = await open(peerPath, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);

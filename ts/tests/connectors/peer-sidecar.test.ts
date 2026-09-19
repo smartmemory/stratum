@@ -32,7 +32,7 @@ async function waitFor<T>(read: () => Promise<T>, accepts: (value: T) => boolean
   throw new Error(`Timed out: ${String(last)}`);
 }
 async function json(path: string): Promise<Record<string, unknown>> { return JSON.parse(await readFile(path, "utf8")); }
-async function fixture(): Promise<PeerSidecarConfig> {
+async function fixture(): Promise<Extract<PeerSidecarConfig, {childPid: number}>> {
   const runDir = await mkdtemp(join(tmpdir(), "sp-")); roots.push(runDir);
   const sockDir = await mkdtemp("/tmp/sp-"); roots.push(sockDir);
   const sessionsDir = join(runDir, "sessions"); await mkdir(sessionsDir);
@@ -40,7 +40,7 @@ async function fixture(): Promise<PeerSidecarConfig> {
   const config = {runDir,streamPath,childPid:process.pid,childProcStartTime:(await procStartTime(process.pid))!,cwd:runDir,name:"codex-astra-abcdef",sessionsDir,sockDir,lingerMs:500};
   configs.push(config); return config;
 }
-async function launch(config: PeerSidecarConfig, setup = "", launcher = spawnPeerSidecar): Promise<void> {
+async function launch(config: PeerSidecarConfig, setup = "", launcher: (config: PeerSidecarConfig) => Promise<unknown> = spawnPeerSidecar): Promise<void> {
   // A real Node preload records even failed startup pids so afterEach can reap them.
   const preload = join(config.runDir, "preload.mjs");
   await writeFile(preload, `import {writeFileSync, mkdirSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(join(config.runDir,"test-pid"))}, String(process.pid));\nprocess.on("exit", code => { try { writeFileSync(${JSON.stringify(join(config.runDir,"test-exit"))}, String(code)); } catch {} });\n${setup}`);
@@ -864,4 +864,58 @@ it("poll survives peer metadata replaced by a FIFO at file acquisition", async (
   const result = spawnSync(process.execPath,["--import",new URL("../helpers/source-loader.mjs",import.meta.url).href,script],{timeout:2500,encoding:"utf8",env:{...process.env,NODE_OPTIONS:""}});
   expect(result.error).toBeUndefined(); expect(result.status,result.stderr).toBe(0);
   expect(JSON.parse(result.stdout)).toMatchObject({swapped:true,result:{status:"running",peer:{registered:false}}});
+});
+
+it.each(["finalize", "abandon"] as const)("worker IPC %s rescans, retains terminal state, and echoes authenticated notices", async action => {
+  const base = await fixture();
+  const config: PeerSidecarConfig = {...base, ownerKind:"claude-worker", runId:"abcdef123456", lingerMs:700};
+  let handle: Awaited<ReturnType<typeof spawnPeerSidecar>>;
+  await launch(config, "", async value => { handle = await spawnPeerSidecar(value); return handle; });
+  const registered = await peer(config);
+  const req = await requester(config);
+  await send(registered.sock, [{...subscription(req.sock), from_mode:"plan"}]);
+  handle![action](); handle![action]();
+  const frames = await waitFor(async () => req.frames, values => values.some(value => value.action === "peer_idle_notice"));
+  expect(frames).toContainEqual({type:"auth", token:"a".repeat(32)});
+  expect(frames.filter(value => value.action === "peer_idle_notice")).toMatchObject([{
+    state:action === "finalize" ? "exited" : "unavailable", from_mode:"plan", orig_msg_id:"subscription-1",
+    detail:action === "finalize" ? "worker_ended_without_sentinel" : "worker_owner_channel_lost",
+  }]);
+  await waitForCleanup(config, registered);
+  expect(await readFile(config.streamPath,"utf8")).toBe("");
+});
+it("queues finalization before owner-ready and lets an existing sentinel win", async () => {
+  const base = await fixture();
+  const config: PeerSidecarConfig = {...base, ownerKind:"claude-worker", runId:"abcdef123456", lingerMs:700};
+  await appendFile(config.streamPath,'{"__t2f5_done__":130}\n');
+  await launch(config, "await new Promise(resolve => setTimeout(resolve, 150));", async value => {
+    const handle = await spawnPeerSidecar(value); handle!.finalize(); return handle;
+  });
+  const registered = await peer(config), req = await requester(config);
+  await send(registered.sock,[subscription(req.sock)]);
+  await waitFor(async () => req.frames, values => values.some(value => value.action === "peer_idle_notice"));
+  expect(req.frames.find(value => value.action === "peer_idle_notice")).toMatchObject({state:"idle",detail:"rc=130"});
+  await waitForCleanup(config,registered);
+});
+it("rejects worker mode without an IPC channel before publishing", async () => {
+  const base = await fixture();
+  const {sidecarEnv} = await import("../../src/connectors/peer-registry.js");
+  const child = spawn(process.execPath,["--experimental-strip-types",new URL("../../src/connectors/peer-sidecar.ts",import.meta.url).pathname], {
+    env:sidecarEnv({...base,ownerKind:"claude-worker",runId:"abcdef123456"}), stdio:"pipe",
+  });
+  children.push(child);
+  let error = ""; child.stderr!.on("data", chunk => {error += chunk;});
+  await once(child,"exit");
+  expect(child.exitCode).toBe(2);
+  expect(error).toContain("requires connected IPC");
+  expect(existsSync(join(base.runDir,"peer.json"))).toBe(false);
+});
+
+it("abandons delayed startup before owner-ready without publishing a row", async () => {
+  const base = await fixture();
+  const config: PeerSidecarConfig = {...base,ownerKind:"claude-worker",runId:"abcdef123456"};
+  await launch(config,"await new Promise(resolve => setTimeout(resolve, 2300));");
+  await waitFor(() => readFile(join(config.runDir,"test-exit"),"utf8"),value => value === "2");
+  expect(existsSync(join(config.runDir,"peer.json"))).toBe(false);
+  expect(await readdir(config.sessionsDir)).toEqual([]);
 });

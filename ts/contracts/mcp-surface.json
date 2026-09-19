@@ -1,5 +1,5 @@
 {
-  "surface": 22,
+  "surface": 23,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -1079,7 +1079,7 @@
       }
     },
     "stratum_agent_run": {
-      "description": "Run a Codex or Claude agent. Foreground runs return the completed report. With background=true, bg_started only confirms launch; completion is not automatically reported. Follow completionInstructions: in Claude Code, immediately subscribe using SendMessage(to=peerName, notify_when_idle=true) when peerName is returned. After the idle notice, call stratum_agent_poll(runId) to retrieve the report. If subscription fails, peerName is absent, or SendMessage is unavailable, poll until complete or error. Do not assume a background launch will wake the caller.",
+      "description": "Run a Codex or Claude agent. Foreground runs return the completed report. With background=true, bg_started only confirms launch; completion is not automatically reported. Follow completionInstructions: in Claude Code, immediately subscribe using SendMessage(to=peerName, notify_when_idle=true) when peerName is returned. After the idle notice, call stratum_agent_poll(runId) to retrieve the report. If subscription fails, peerName is absent, or SendMessage is unavailable, poll until complete or error. Do not assume a background launch will wake the caller. Optional peerLabel is a background-only display hint for Claude and Codex peers.",
       "request": {
         "agent": "string",
         "prompt": "string",
@@ -1105,7 +1105,8 @@
           "runId": "string",
           "stepId?": "string",
           "itemIndex?": "number"
-        }
+        },
+        "peerLabel?": "string"
       },
       "responses": {
         "complete": {
@@ -1408,6 +1409,141 @@
           "message": "string"
         }
       }
+    },
+    "stratum_distill": {
+      "request": {
+        "workspace_root": "string",
+        "project_dir?": "string",
+        "min_count?": "number",
+        "window_days?": "number",
+        "write?": "boolean"
+      },
+      "responses": {
+        "ok": {
+          "candidates": {
+            "$array": {
+              "clusterId": "string",
+              "revisionId": "string",
+              "schemaVersion": "string",
+              "targetKind": "string",
+              "targetPath": "string",
+              "scope": {
+                "workspaceRoot": "string",
+                "transcriptProjectDir": "string",
+                "observedCwds": {
+                  "$array": "string"
+                }
+              },
+              "claim": "string",
+              "rendered": {
+                "content": "string",
+                "templateId": "string",
+                "templateVersion": "string",
+                "insertion": {
+                  "mode": "string"
+                }
+              },
+              "evidence": {
+                "$array": {
+                  "id": "string",
+                  "sourceKind": "string",
+                  "projectDir": "string",
+                  "sessionId": "string",
+                  "transcriptFile": "string",
+                  "cwd": "string|null",
+                  "steps": {
+                    "$array": {
+                      "toolName": "string",
+                      "canonicalInput": "string",
+                      "lineNo": "number",
+                      "blockIndex": "number",
+                      "toolUseId": "string|null",
+                      "cwd": "string|null",
+                      "lineDigest": "string"
+                    }
+                  }
+                }
+              },
+              "recurrence": {
+                "records": "number",
+                "distinctSessions": "number"
+              },
+              "authoringInputsDigest": "string",
+              "poolSnapshot": {
+                "$array": {
+                  "assetId": "string",
+                  "contentDigest": "string"
+                }
+              },
+              "assetName": "string",
+              "workflow": {
+                "$oneOf": [
+                  {
+                    "kind": "string",
+                    "signature": "string",
+                    "step": {
+                      "toolName": "string",
+                      "canonicalInput": "string"
+                    }
+                  },
+                  {
+                    "kind": "string",
+                    "signature": "string",
+                    "tools": {
+                      "$array": "string"
+                    }
+                  }
+                ]
+              },
+              "rationale": "string",
+              "confidence": "number",
+              "sourceHandle": {
+                "projectDir": "string",
+                "sessionId": "string",
+                "transcriptFile": "string",
+                "lineNo": "number",
+                "blockIndex": "number"
+              },
+              "authoring": {
+                "detectorVersion": "string",
+                "canonicalizerVersion": "string",
+                "formSelectorVersion": "string",
+                "minCount": "number",
+                "minSessions": "number",
+                "ngramRange": {
+                  "$array": "number"
+                },
+                "selectedBy": "string",
+                "poolRead": "boolean"
+              }
+            }
+          },
+          "evaluated": "number",
+          "written": "number",
+          "reason": "string",
+          "out_path": "string",
+          "workspace_root": "string",
+          "project_dirs": {
+            "$array": "string"
+          },
+          "applied": "boolean",
+          "diagnostics": {
+            "sessions": "number",
+            "skippedFiles": "number",
+            "droppedLines": "number",
+            "droppedEvents": "number",
+            "mtimeFailures": "number",
+            "malformedRows": "number",
+            "unsupportedRows": "number",
+            "authoringSkipped": "number"
+          }
+        },
+        "error": {
+          "error_type": "string",
+          "message": "string"
+        }
+      },
+      "description": "Extract recurring workflows from Claude transcripts into immutable asset drafts for review. Requires an explicit workspace_root; project_dir selects the transcript source. Defaults: window_days=30, min_count=2, write=true. Use write=false to preview. Stages only to .stratum/distill/candidates.jsonl; never applies drafts."
     }
   }
 }

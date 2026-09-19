@@ -3,13 +3,14 @@
 // Receives workerData from background.ts, runs ClaudeConnector, writes normalized
 // JSONL to the shared stream file in the same format as the Codex shell wrapper.
 // This lets scanStream() parse both without branching per agent type (D2).
-import { appendFileSync, createWriteStream } from "node:fs";
+import { appendFileSync, createWriteStream, existsSync } from "node:fs";
 import { workerData } from "node:worker_threads";
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { ClaudeConnector } from "./claude.js";
 import { T2F5_DONE_SENTINEL } from "./background.js";
 
 interface WorkerInput {
+  testReleasePath?: string;
   prompt: string;
   connectorOptions: ClaudeConnectorOptions;
   streamPath: string;
@@ -32,6 +33,18 @@ function writeLine(record: Record<string, unknown>): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  if (process.env.STRATUM_TEST_WORKER === "controlled") {
+    const {testReleasePath} = workerData as WorkerInput;
+    if (!testReleasePath) throw new Error("controlled worker requires testReleasePath");
+    await writeLine({type:"item.completed", item:{type:"agent_message", text:"stub response"}});
+    const deadline = Date.now() + 30000;
+    while (!existsSync(testReleasePath)) {
+      if (Date.now() >= deadline) throw new Error("controlled worker release timed out");
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await writeLine({type:"turn.completed", usage:{input_tokens:1, output_tokens:1}});
+    return;
+  }
   // STRATUM_TEST_WORKER=1: bypass real SDK and emit a synthetic response immediately.
   // Tests set this env var to avoid real API calls. The `.then()` continuation writes
   // the rc=0 sentinel after run() returns. Do not set this in production.

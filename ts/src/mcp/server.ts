@@ -1,3 +1,5 @@
+import { distillTool } from "../distill/runner.js";
+import { normalizePeerLabel } from "../connectors/peer-registry.js";
 import { linkAbort, teardownDeadline } from "../connectors/cancellation.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -55,6 +57,7 @@ export interface McpDependencies {
 }
 
 export type ToolName =
+  | "stratum_distill"
   | "stratum_validate" | "stratum_compile_speckit" | "stratum_plan" | "stratum_step_done" | "stratum_usage_report" | "stratum_resume" | "stratum_audit"
   | "stratum_commit" | "stratum_revert"
   | "stratum_gate_resolve" | "stratum_flow_poll" | "stratum_flow_run_bg" | "stratum_flow_bg_poll" | "stratum_flow_cancel_bg" | "stratum_flow_cancel"
@@ -180,6 +183,11 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
       let succeeded = false;
       let teardownFailure: Error | undefined;
       try {
+        if (tool === "stratum_agent_run" && request.peerLabel !== undefined) {
+          if (request.background !== true) throw await inputValidationError("peerLabel", "peerLabel is background-only");
+          try { normalizePeerLabel(request.peerLabel); }
+          catch (error) { throw await inputValidationError("peerLabel", String(error)); }
+        }
         if (tool === "stratum_agent_run" && request.flow !== undefined && request.cancellationId === undefined) {
           // Hand-validated here for the same reason the cancellationId checks are: the
           // bookkeeping must be in place before any awaited contract I/O. The SHAPE of `flow`
@@ -235,6 +243,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         await assertToolRequest(tool, request);
         let response: Record<string, unknown>;
         switch (tool) {
+        case "stratum_distill": {
+          response = await distillTool(request);
+          break;
+        }
         case "stratum_compile_speckit": {
           const tasksDir = string(request, "tasks_dir");
           const flowName = optionalString(request, "flow_name") ?? "tasks";
@@ -368,6 +380,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
                 void registryWrites.catch(() => undefined);
               },
             } : {}),
+            ...(request.peerLabel !== undefined ? {peerLabel: normalizePeerLabel(request.peerLabel)!} : {}),
             prompt: string(request, "prompt"),
             cwd: string(request, "cwd"),
             // Presence-based forwarding, NOT truthiness: sandboxMode:"" must reach

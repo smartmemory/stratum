@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --experimental-strip-types
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
@@ -15,31 +15,85 @@ function moduleUrl(name: string): URL {
 const { claudeProcStart, configFromEnv, isAllowedCallback, keyFileName, pidDomain, readPeerToken, sidecarEnv }: typeof import("./peer-registry.js") = await import(moduleUrl("peer-registry").href);
 const { processIdentity, procStartTime }: typeof import("./proc_identity.js") = await import(moduleUrl("proc_identity").href);
 
-export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<void> {
+export interface PeerSidecarHandle { finalize(): void; abandon(): void }
+
+function workerHandle(child: ChildProcess, runId: string): PeerSidecarHandle {
+  let ready = false;
+  let requested = false;
+  let sending = false;
+  let closed = false;
+  let sendTimer: NodeJS.Timeout | undefined;
+  const stop = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(readyTimer);
+    clearTimeout(sendTimer);
+    child.removeListener("message", message);
+    child.removeListener("disconnect", stop);
+    child.removeListener("exit", stop);
+    // Retain an inert error sink: Node may emit an asynchronous channel error
+    // after disconnect, and EventEmitter errors must always have a listener.
+    child.removeListener("error", stop);
+    child.on("error", absorbError);
+    try { if (child.connected) child.disconnect(); } catch { /* closed channel */ }
+  };
+  const absorbError = () => {};
+  const flush = () => {
+    if (closed || !ready || !requested || sending) return;
+    sending = true;
+    sendTimer = setTimeout(stop, 1000);
+    sendTimer.unref();
+    try { child.send({type:"run-finalized", runId}, () => stop()); } catch { stop(); }
+  };
+  const message = (value: unknown) => {
+    if (value && typeof value === "object" && (value as {type?: unknown}).type === "owner-ready"
+      && (value as {runId?: unknown}).runId === runId) {
+      ready = true;
+      clearTimeout(readyTimer);
+      flush();
+    }
+  };
+  const readyTimer = setTimeout(stop, 2000);
+  readyTimer.unref();
+  child.on("message", message);
+  child.on("error", stop);
+  child.once("disconnect", stop);
+  child.once("exit", stop);
+  child.channel?.unref();
+  return {finalize() { requested = true; flush(); }, abandon: stop};
+}
+
+export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<PeerSidecarHandle | undefined> {
   let stderr: Awaited<ReturnType<typeof open>> | undefined;
+  let handle: PeerSidecarHandle | undefined;
   try {
     const entry = fileURLToPath(moduleUrl("peer-sidecar"));
     stderr = await open(`${config.streamPath}.peer.err`, "a", 0o600);
     const child = spawn(process.execPath, [...(entry.endsWith(".ts") ? ["--experimental-strip-types"] : []), entry], {
-      detached: true, stdio: ["ignore", "ignore", stderr.fd], env: sidecarEnv(config),
+      detached: true, stdio: config.ownerKind === "claude-worker"
+        ? ["ignore", "ignore", stderr.fd, "ipc"] : ["ignore", "ignore", stderr.fd], env: sidecarEnv(config),
     });
+    if (config.ownerKind === "claude-worker") handle = workerHandle(child, config.runId);
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
     child.unref();
+    return handle;
   } catch (error) {
+    handle?.abandon();
     console.error("stratum peer spawn failed:", error);
+    return undefined;
   } finally { await stderr?.close().catch(() => undefined); }
 }
 
 /** Serializes sidecar scans and identity checks. */
 export class PeerWorkQueue {
   private work = Promise.resolve();
-  private readonly pending = new Set<"scan" | "identity">();
+  private readonly pending = new Set<"scan" | "identity" | "owner">();
   private readonly onError: (error: unknown) => void;
   constructor(onError: (error: unknown) => void) { this.onError = onError; }
-  schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+  schedule(kind: "scan" | "identity" | "owner", task: () => Promise<void>): void {
     if (this.pending.has(kind)) return;
     this.pending.add(kind);
     this.work = this.work.then(task).catch(this.onError).finally(() => { this.pending.delete(kind); });
@@ -49,6 +103,34 @@ export class PeerWorkQueue {
 
 async function main(): Promise<void> {
   const config = configFromEnv(process.env);
+  const workerOwner = config.ownerKind === "claude-worker";
+  if (workerOwner && (!process.connected || !process.send)) throw new Error("Worker peer requires connected IPC");
+  let ownerFinalized = false;
+  let ownerLost = false;
+  let ownerReady = false;
+  let ownerStarted = false;
+  const ownerMessage = (value: unknown) => {
+    if (config.ownerKind === "claude-worker" && value && typeof value === "object"
+      && (value as {type?: unknown}).type === "run-finalized"
+      && (value as {runId?: unknown}).runId === config.runId) {
+      ownerFinalized = true;
+      if (ownerStarted) schedule("owner", checkOwner);
+    }
+  };
+  const ownerDisconnect = () => {
+    ownerLost = true;
+    if (ownerStarted) schedule("owner", checkOwner);
+  };
+  if (workerOwner) {
+    process.on("message", ownerMessage);
+    process.on("disconnect", ownerDisconnect);
+    process.on("error", ownerDisconnect);
+    try {
+      process.send!({type:"owner-ready", runId: config.runId}, error => {
+        if (error) ownerDisconnect(); else ownerReady = true;
+      });
+    } catch { ownerDisconnect(); }
+  }
   const sockPath = join(config.sockDir, `${process.pid}.sock`);
   const recordPath = join(config.sessionsDir, `${process.pid}.json`);
   const keyPath = join(config.sessionsDir, keyFileName(process.pid, sockPath));
@@ -182,10 +264,10 @@ async function main(): Promise<void> {
   let offset = 0;
   let pending = Buffer.alloc(0);
   let discarding = false;
-  function schedule(kind: "scan" | "identity", task: () => Promise<void>): void {
+  function schedule(kind: "scan" | "identity" | "owner", task: () => Promise<void>): void {
     work.schedule(kind, async () => { if (!stopping) await task(); });
   }
-  async function terminal(state: "idle" | "exited", detail?: string): Promise<void> {
+  async function terminal(state: "idle" | "exited" | "unavailable", detail?: string): Promise<void> {
     if (terminalState) return;
     const now = Date.now();
     terminalState = {state, finishedAt: now, ...(detail ? {detail} : {})};
@@ -230,6 +312,12 @@ async function main(): Promise<void> {
         if (pending.length > 5_000_000) { pending = Buffer.alloc(0); discarding = true; }
       }
     } finally { await file.close(); }
+  }
+  async function checkOwner(): Promise<void> {
+    if (terminalState || (!ownerFinalized && !ownerLost)) return;
+    await scan();
+    if (!terminalState) await terminal(ownerFinalized ? "exited" : "unavailable",
+      ownerFinalized ? "worker_ended_without_sentinel" : "worker_owner_channel_lost");
   }
   const server = createServer(socket => {
     connections.add(socket);
@@ -309,6 +397,13 @@ async function main(): Promise<void> {
       stopping = true;
       // Startup can be between bind and publishing its files when a signal arrives.
       await startupDone;
+      process.removeListener("message", ownerMessage);
+      process.removeListener("disconnect", ownerDisconnect);
+      process.removeListener("error", ownerDisconnect);
+      if (workerOwner) {
+        process.on("error", () => {});
+        try { if (process.connected) process.disconnect(); } catch { /* already closed */ }
+      }
       watcher?.close();
       for (const timer of timers) clearTimeout(timer);
       for (const socket of connections) socket.destroy();
@@ -324,9 +419,9 @@ async function main(): Promise<void> {
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => {
     void cleanup(true).then(() => process.exit(0));
   });
-  let childProcStartTime = config.childProcStartTime;
+  let childProcStartTime = config.ownerKind === "claude-worker" ? undefined : config.childProcStartTime;
   const start = async (): Promise<void> => {
-    if (!childProcStartTime) {
+    if (config.ownerKind !== "claude-worker" && !childProcStartTime) {
       let dead = false;
       try { process.kill(config.childPid, 0); }
       catch (error) { dead = (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -351,9 +446,9 @@ async function main(): Promise<void> {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (stopping) return;
+    if (stopping || (workerOwner && ownerLost && !ownerReady)) return;
     await mkdir(config.sockDir, {recursive: true, mode: 0o700});
-    if (stopping) return;
+    if (stopping || (workerOwner && ownerLost && !ownerReady)) return;
     const listen = (): Promise<void> => new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(sockPath, () => { server.removeListener("error", reject); resolve(); });
@@ -377,15 +472,17 @@ async function main(): Promise<void> {
     boundSocket = await lstat(sockPath);
     serverFailed = false;
     owned.add(sockPath);
-    if (stopping) return;
+    if (stopping || (workerOwner && ownerLost && !ownerReady)) return;
     const procStart = await claudeProcStart(process.pid);
     const domain = await pidDomain();
-    if (stopping) return;
+    if (stopping || (workerOwner && ownerLost && !ownerReady)) return;
     const identity = {...(procStart ? {procStart} : {}), ...(domain ? {pidDomain: domain} : {})};
     await atomicJson(keyPath, {peerToken, ...identity}, 0o600);
     const now = Date.now();
     const {version} = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as {version: string};
     await scan();
+    if (workerOwner) await checkOwner();
+    if (stopping || (workerOwner && ownerLost && !ownerReady)) return;
     record = {
       pid:process.pid, sessionId, cwd:config.cwd, startedAt:now, ...identity,
       version, peerProtocol:1, peerFeatures:["notify_idle"], kind:"bg", entrypoint:"stratum-peer",
@@ -401,7 +498,7 @@ async function main(): Promise<void> {
       try { watcher = watch(config.streamPath, () => schedule("scan", scan)); watcher.on("error", error => console.error(error)); }
       catch { /* The fallback also handles a stream created after registration. */ }
       timers.add(setInterval(() => schedule("scan", scan), 500));
-      timers.add(setInterval(() => schedule("identity", async () => {
+      if (config.ownerKind !== "claude-worker") timers.add(setInterval(() => schedule("identity", async () => {
         if (terminalState) return;
         // Cancellation kills the child's group, never this detached shadow's group.
         let identity: "alive" | "dead" | "unknown" = "unknown";
@@ -419,7 +516,12 @@ async function main(): Promise<void> {
   };
   const started = start();
   startupDone = started.catch(() => undefined);
-  try { await started; }
+  try {
+    await started;
+    ownerStarted = true;
+    if (workerOwner && ownerLost && !ownerReady) await cleanup();
+    else if (workerOwner) schedule("owner", checkOwner);
+  }
   catch (error) { await cleanup(); throw error; }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

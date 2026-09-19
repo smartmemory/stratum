@@ -12,10 +12,25 @@ const { modelIdentity }: typeof import("./base.js") = await import(
   (existsSync(baseUrl) ? baseUrl : new URL("./base.js", import.meta.url)).href
 );
 const execFileAsync = promisify(execFile);
-export function peerName(model: string, runId: string): string {
-  const short = modelIdentity(model).model.toLowerCase().replace(/^gpt-[\d.]+-/, "")
-    .replace(/codex-|-codex/g, "").replace(/[^a-z0-9]/g, "") || "codex";
-  return `codex-${short}-${runId.slice(0, 6)}`;
+export function normalizePeerLabel(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || /[\x00-\x1f\x7f]/.test(value)
+    || value.trim().length < 1 || value.trim().length > 64) {
+    throw new Error("peerLabel must be 1–64 trimmed characters without ASCII controls");
+  }
+  const label = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!label) throw new Error("peerLabel must contain an ASCII letter or digit");
+  return label;
+}
+
+export function peerName(model: string, runId: string, options: {agent?: "codex" | "claude"; label?: string | undefined} = {}): string {
+  const agent = options.agent ?? "codex";
+  const identity = modelIdentity(model).model.toLowerCase();
+  const short = agent === "claude"
+    ? identity.replace(/^claude-/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "model"
+    : identity.replace(/^gpt-[\d.]+-/, "").replace(/codex-|-codex/g, "").replace(/[^a-z0-9]/g, "") || "codex";
+  if (agent === "codex" && options.label === undefined) return `codex-${short}-${runId.slice(0, 6)}`;
+  return `${agent}-${short.slice(0, 40)}-${runId}${options.label ? `-${options.label}` : ""}`;
 }
 export function resolveSessionsDir(env: NodeJS.ProcessEnv): string {
   return env.STRATUM_PEER_SESSIONS_DIR ?? join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sessions");
@@ -145,11 +160,9 @@ export async function sweepDeadStratumPeers(sessionsDir: string, _sockDir: strin
 }
 
 export type PeerRecordFile = { pid: number; name: string; sock: string; registeredAt: string };
-export interface PeerSidecarConfig {
+interface PeerSidecarCommon {
   runDir: string;
   streamPath: string;
-  childPid: number;
-  childProcStartTime?: string;
   name: string;
   cwd: string;
   sessionsDir: string;
@@ -157,11 +170,18 @@ export interface PeerSidecarConfig {
   lingerMs?: number;
   firstLineDeadlineMs?: number;
 }
+export type PeerSidecarConfig = PeerSidecarCommon & (
+  | {ownerKind?: "process"; childPid: number; childProcStartTime?: string}
+  | {ownerKind: "claude-worker"; runId: string}
+);
 export function sidecarEnv(config: PeerSidecarConfig): NodeJS.ProcessEnv {
   return {
     ...process.env,
     STRATUM_PEER_RUN_DIR: config.runDir, STRATUM_PEER_STREAM: config.streamPath,
-    STRATUM_PEER_CHILD_PID: String(config.childPid), STRATUM_PEER_CHILD_START: config.childProcStartTime,
+    STRATUM_PEER_OWNER_KIND: config.ownerKind ?? "process",
+    STRATUM_PEER_RUN_ID: config.ownerKind === "claude-worker" ? config.runId : undefined,
+    STRATUM_PEER_CHILD_PID: config.ownerKind === "claude-worker" ? undefined : String(config.childPid),
+    STRATUM_PEER_CHILD_START: config.ownerKind === "claude-worker" ? undefined : config.childProcStartTime,
     STRATUM_PEER_NAME: config.name, STRATUM_PEER_CWD: config.cwd,
     STRATUM_PEER_SESSIONS_DIR: config.sessionsDir, STRATUM_PEER_SOCK_DIR: config.sockDir,
     STRATUM_PEER_LINGER_MS: String(config.lingerMs ?? 15000),
@@ -174,14 +194,19 @@ export function configFromEnv(env: NodeJS.ProcessEnv): PeerSidecarConfig {
     if (!value) throw new Error(`Missing ${key}`);
     return value;
   };
-  const childPid = Number(required("STRATUM_PEER_CHILD_PID"));
+  const kind = env.STRATUM_PEER_OWNER_KIND ?? "process";
+  if (kind !== "process" && kind !== "claude-worker") throw new Error("Invalid peer owner kind");
+  const runId = kind === "claude-worker" ? required("STRATUM_PEER_RUN_ID") : undefined;
+  if (runId !== undefined && !/^[0-9a-f]{12}$/.test(runId)) throw new Error("Invalid peer run ID");
+  const childPid = kind === "process" ? Number(required("STRATUM_PEER_CHILD_PID")) : 1;
   const lingerMs = Number(env.STRATUM_PEER_LINGER_MS ?? 15000);
   const firstLineDeadlineMs = Number(env.STRATUM_PEER_FIRST_LINE_MS ?? 30000);
   if (!Number.isSafeInteger(childPid) || childPid <= 0 || !Number.isSafeInteger(lingerMs) || lingerMs < 0) throw new Error("Invalid peer pid or linger");
   if (!Number.isSafeInteger(firstLineDeadlineMs) || firstLineDeadlineMs < 0) throw new Error("Invalid peer first-line deadline");
   return {
     runDir: required("STRATUM_PEER_RUN_DIR"), streamPath: required("STRATUM_PEER_STREAM"),
-    childPid, ...(env.STRATUM_PEER_CHILD_START ? {childProcStartTime: env.STRATUM_PEER_CHILD_START} : {}),
+    ...(kind === "claude-worker" ? {ownerKind: kind, runId: runId!}
+      : {childPid, ...(env.STRATUM_PEER_CHILD_START ? {childProcStartTime: env.STRATUM_PEER_CHILD_START} : {})}),
     name: required("STRATUM_PEER_NAME"), cwd: required("STRATUM_PEER_CWD"),
     sessionsDir: required("STRATUM_PEER_SESSIONS_DIR"), sockDir: required("STRATUM_PEER_SOCK_DIR"), lingerMs, firstLineDeadlineMs,
   };

@@ -529,3 +529,76 @@ describe("cancel/finalization interleavings (merge-gate round)", () => {
     expect(claudeWorkerRegistry.size).toBe(0);
   });
 });
+
+vi.mock("../../src/connectors/peer-sidecar.js", () => ({spawnPeerSidecar:vi.fn()}));
+
+it("retains exit and settled finalization while sidecar attachment is delayed", async () => {
+  const {spawnPeerSidecar} = await import("../../src/connectors/peer-sidecar.js");
+  const registryRoot = await root();
+  let attach!: (handle: {finalize: () => void; abandon: () => void}) => void;
+  vi.mocked(spawnPeerSidecar).mockImplementationOnce(() => new Promise(resolve => {attach = resolve;}));
+  const started = startBackgroundRun({agent:"claude",prompt:"x",cwd:registryRoot,registryRoot,
+    sessionsDir:registryRoot, sockDir:registryRoot, env:{STRATUM_PEER_REGISTER:"1"}});
+  await vi.waitFor(() => expect(attach).toBeTypeOf("function"));
+  const worker = await getLastWorker();
+  worker.emit("exit",0);
+  await vi.waitFor(() => expect(claudeWorkerRegistry.size).toBe(0));
+  const handle = {finalize:vi.fn(),abandon:vi.fn()}; attach(handle);
+  expect(await started).toHaveProperty("peerName");
+  expect(handle.finalize).toHaveBeenCalledTimes(1);
+});
+it("error settlement alone does not finalize the peer before worker exit", async () => {
+  const {spawnPeerSidecar} = await import("../../src/connectors/peer-sidecar.js");
+  const handle = {finalize:vi.fn(),abandon:vi.fn()};
+  vi.mocked(spawnPeerSidecar).mockResolvedValueOnce(handle);
+  const registryRoot = await root();
+  await startBackgroundRun({agent:"claude",prompt:"x",cwd:registryRoot,registryRoot,
+    sessionsDir:registryRoot,sockDir:registryRoot,env:{STRATUM_PEER_REGISTER:"1"}});
+  const worker = await getLastWorker(); worker.emit("error",Error("failed"));
+  await vi.waitFor(() => expect(claudeWorkerRegistry.size).toBe(0));
+  expect(handle.finalize).not.toHaveBeenCalled();
+  worker.emit("exit",1);
+  expect(handle.finalize).toHaveBeenCalledTimes(1);
+});
+it("failed finalization still releases the peer after exit without recreating the stream", async () => {
+  const {spawnPeerSidecar} = await import("../../src/connectors/peer-sidecar.js");
+  const handle = {finalize:vi.fn(),abandon:vi.fn()}; vi.mocked(spawnPeerSidecar).mockResolvedValueOnce(handle);
+  const registryRoot = await root();
+  const run = await startBackgroundRun({agent:"claude",prompt:"x",cwd:registryRoot,registryRoot,
+    sessionsDir:registryRoot,sockDir:registryRoot,env:{STRATUM_PEER_REGISTER:"1"}});
+  await rm(run.streamPath); await mkdir(run.streamPath);
+  (await getLastWorker()).emit("exit",1);
+  await vi.waitFor(() => expect(handle.finalize).toHaveBeenCalledTimes(1));
+  expect(claudeWorkerRegistry.size).toBe(0);
+});
+it("abandons a sidecar handle arriving after the registration budget", async () => {
+  const {spawnPeerSidecar} = await import("../../src/connectors/peer-sidecar.js");
+  let attach!: (handle: {finalize: () => void; abandon: () => void}) => void;
+  vi.mocked(spawnPeerSidecar).mockImplementationOnce(() => new Promise(resolve => {attach = resolve;}));
+  const registryRoot = await root();
+  const started = await startBackgroundRun({agent:"claude",prompt:"x",cwd:registryRoot,registryRoot,
+    sessionsDir:registryRoot,sockDir:registryRoot,env:{STRATUM_PEER_REGISTER:"1"}});
+  expect(started).not.toHaveProperty("peerName");
+  const handle = {finalize:vi.fn(),abandon:vi.fn()}; attach(handle);
+  await vi.waitFor(() => expect(handle.abandon).toHaveBeenCalledTimes(1));
+  (await getLastWorker()).emit("exit",0);
+  expect(handle.finalize).not.toHaveBeenCalled();
+});
+
+it("a late registration gate cannot launch after the parent budget expires", async () => {
+  const registry = await import("../../src/connectors/peer-registry.js");
+  const {spawnPeerSidecar} = await import("../../src/connectors/peer-sidecar.js");
+  let release!: (value: {ok:true}) => void;
+  const gate = vi.spyOn(registry,"shouldRegister").mockImplementationOnce(() => new Promise(resolve => {release = resolve;}));
+  const count = vi.mocked(spawnPeerSidecar).mock.calls.length;
+  const registryRoot = await root();
+  try {
+    const run = await startBackgroundRun({agent:"claude",prompt:"x",cwd:registryRoot,registryRoot,
+      sessionsDir:registryRoot,sockDir:registryRoot,env:{STRATUM_PEER_REGISTER:"1"}});
+    expect(run).not.toHaveProperty("peerName");
+    release({ok:true}); await Promise.resolve(); await Promise.resolve();
+    expect(vi.mocked(spawnPeerSidecar).mock.calls.length).toBe(count);
+    (await getLastWorker()).emit("exit",0);
+    await vi.waitFor(() => expect(claudeWorkerRegistry.size).toBe(0));
+  } finally {gate.mockRestore();}
+});
