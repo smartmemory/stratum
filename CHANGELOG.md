@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **Docs: `stratum_agent_run`/`stratum_agent_poll` MCP contract descriptions and README now
+  document the background-completion subscribe workflow, and why it cannot be made automatic.**
+  Neither field previously carried a description at all, so a caller had no way to discover the
+  `SendMessage(notify_when_idle=true)` + `stratum_agent_poll` pattern except by reading this
+  README or getting stuck. Root cause, confirmed 2026-09-19: MCP's `progressToken` mechanism
+  exists and Claude Code sends it, but Claude Code does not yet wire it into its visible
+  task-notification system (requires client-side MCP "Tasks"/SEP-1686 support, not shipped as of
+  2.1.272 — tracked upstream at `anthropics/claude-code#18617` and `#52137`). This is a Claude
+  Code harness gap, not something fixable from the server side — documented so nobody re-derives
+  or re-litigates it. Also documents the working alternative for pure Codex dispatch (no
+  flow/checkpoint needed): running `codex exec` directly inside `Bash run_in_background: true`
+  gets automatic notification for free, verified with matching `-s`/`-c
+  sandbox_workspace_write.network_access` sandbox/network equivalents to
+  `stratum_agent_run`'s `sandboxMode`/`networkAccess` params. No code changed — descriptions and
+  README only.
+
 ## [0.6.0] — 2026-09-18
 
 - **Claude MCP tool-schema deferral:** explicit `allowedTools` restrictions now also include

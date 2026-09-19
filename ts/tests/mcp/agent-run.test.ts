@@ -92,6 +92,31 @@ afterAll(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
+  it.each(["codex-sol-abcdef", undefined])("exposes completion instructions for background runs (peer=%s)", async (peerName) => {
+    const started = { status: "bg_started" as const, runId: "abcdef123456", streamPath: "/tmp/test-stream.jsonl",
+      ...(peerName ? { peerName } : {}) };
+    const pair = await connected({ runAgent: async () => started });
+    try {
+      const tools = (await pair.client.listTools()).tools;
+      expect(tools.find(tool => tool.name === "stratum_agent_run")?.description).toContain("notify_when_idle");
+      expect(tools.find(tool => tool.name === "stratum_agent_poll")?.description).toContain("idle notice");
+      const result = await pair.client.callTool({ name: "stratum_agent_run", arguments: {
+        agent: "codex", prompt: "test", cwd: process.cwd(), background: true,
+      } });
+      const payload = response(result);
+      expect(result.structuredContent).toEqual(payload);
+      expect(payload).toMatchObject(started);
+      expect(payload.completionInstructions).toContain('stratum_agent_poll({"runId":"abcdef123456"})');
+      if (peerName) {
+        expect(payload.completionInstructions).toContain('SendMessage({"to":"codex-sol-abcdef","notify_when_idle":true})');
+        expect(payload.completionInstructions).toContain("If subscription fails");
+      } else {
+        expect(payload.completionInstructions).toContain("No completion notification is registered");
+        expect(payload.completionInstructions).not.toContain("SendMessage");
+      }
+    } finally { await pair.close(); }
+  });
+
   // ──────────────────────────────────────────────────────────────────────────
   // 1 & 2: Codex workspace-write background via backgroundCommand stub
   // ──────────────────────────────────────────────────────────────────────────

@@ -394,6 +394,12 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           await registryWrites;
           succeeded = true;
           response = "status" in executed ? { ...executed } : { status: "complete", ...executed };
+          if (response.status === "bg_started") {
+            const poll = `stratum_agent_poll(${JSON.stringify({ runId: response.runId })})`;
+            response.completionInstructions = typeof response.peerName === "string"
+              ? `Completion is not automatically reported. In Claude Code, immediately call SendMessage(${JSON.stringify({ to: response.peerName, notify_when_idle: true })}). After the idle notice, call ${poll} to retrieve the report. If subscription fails or SendMessage is unavailable, poll until complete or error. Registration may still be starting; a running poll can be followed by another subscription attempt. The peer remains available for only 15 seconds after completion by default.`
+              : `No completion notification is registered. Call ${poll} and keep polling while status is running; retrieve the report on complete or handle error/not_found. Do not wait for an automatic completion message.`;
+          }
           break;
         }
         case "stratum_agent_poll": response = await agentPoll(string(request, "runId")); break;
@@ -547,7 +553,7 @@ export async function createMcpServer(dependencies: McpDependencies = {}): Promi
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: Object.entries(surface.tools).map(([name, definition]) => ({
       name,
-      description: (definition as typeof definition & { description?: string }).description ?? `Stratum ${name.slice("stratum_".length)}`,
+      description: definition.description ?? `Stratum ${name.slice("stratum_".length)}`,
       inputSchema: jsonSchema(definition.request),
     })),
   }));

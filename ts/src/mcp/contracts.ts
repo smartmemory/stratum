@@ -10,6 +10,7 @@ export interface McpSurface {
   surface: number;
   errors: Record<string, { data: Shape }>;
   tools: Record<string, {
+    description?: string;
     request: Record<string, Shape>;
     responses: Record<string, Record<string, Shape>>;
     discriminator?: Record<string, string>;
