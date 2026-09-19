@@ -153,6 +153,128 @@ describe("StratumEngine usage receipts", () => {
     expect(usageDebits(afterAudit.events)).toHaveLength(1);
   });
 
+  it("completes a usage-bearing stepDone after its dispatch receipt settled first without double-debiting", async () => {
+    const { engine, store } = await subject();
+    const planned = await engine.plan(linearSpec(), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected first ready");
+    const dispatchId = planned.ready[0]!.dispatchToken;
+
+    expect(await engine.usageReport(planned.runId, {
+      dispatchId, stepId: "first", source: "client", usage: { tokens: 2 },
+      telemetry: { model: "worker", durationMs: 3 },
+    })).toMatchObject({ status: "ok", ledger: { spent: { dispatches: 1, tokens: 2 } } });
+    const beforeStepDone = await engine.audit(planned.runId);
+
+    expect(await engine.stepDone(planned.runId, "first", {
+      output: { value: "done" }, usage: { tokens: 2 }, telemetry: { model: "worker", durationMs: 3 },
+    }, dispatchId)).toMatchObject({ status: "completed", output: { value: "done" } });
+
+    const afterStepDone = await engine.audit(planned.runId);
+    const run = await store.load(planned.runId);
+    expect(afterStepDone.flowSpent).toEqual(beforeStepDone.flowSpent);
+    expect(afterStepDone.flowSpent).toEqual({ dispatches: 1, tokens: 2 });
+    expect(run.receipts).toHaveLength(1);
+    expect(usageDebits(run.events)).toHaveLength(1);
+    expect(run.steps.first).toMatchObject({ status: "succeeded", acceptedDispatchToken: dispatchId });
+  });
+
+  it("completes a duplicate settlement from a persisted pre-verdict receipt", async () => {
+    const { engine, store } = await subject();
+    const planned = await engine.plan(linearSpec({ flowBudget: { tokens: 10 }, taskBudget: { tokens: 2 } }), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected first ready");
+    const dispatchId = planned.ready[0]!.dispatchToken;
+
+    await engine.usageReport(planned.runId, {
+      dispatchId, stepId: "first", source: "client", usage: { tokens: 1 },
+      telemetry: { model: "legacy-worker", durationMs: 3 },
+    });
+    const legacyRun = await store.load(planned.runId);
+    const legacyReceipt = legacyRun.receipts?.[0] as { budgetVerdict?: unknown } | undefined;
+    if (legacyReceipt === undefined) throw new Error("expected persisted receipt");
+    delete legacyReceipt.budgetVerdict;
+    await store.save(legacyRun);
+    expect((await store.load(planned.runId)).receipts?.[0]).not.toHaveProperty("budgetVerdict");
+
+    await expect(engine.stepDone(planned.runId, "first", {
+      output: { value: "done" }, usage: { tokens: 1 }, telemetry: { model: "legacy-worker", durationMs: 3 },
+    }, dispatchId)).resolves.toMatchObject({ status: "completed", output: { value: "done" } });
+
+    const run = await store.load(planned.runId);
+    expect(run.flowSpent).toEqual({ dispatches: 1, tokens: 1 });
+    expect(run.receipts).toHaveLength(1);
+    expect(usageDebits(run.events)).toHaveLength(1);
+    expect(run.steps.first).toMatchObject({ status: "succeeded", acceptedDispatchToken: dispatchId });
+  });
+
+  it("replays a receipt-first success after an unrelated receipt exhausts the shared task budget", async () => {
+    const { engine, store } = await subject();
+    const planned = await engine.plan(linearSpec({ flowBudget: { tokens: 10 }, taskBudget: { tokens: 2 } }), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected first ready");
+    const dispatchId = planned.ready[0]!.dispatchToken;
+
+    expect(await engine.usageReport(planned.runId, {
+      dispatchId, stepId: "first", source: "client", usage: { tokens: 1 },
+      telemetry: { model: "worker-a", durationMs: 3 },
+    })).toMatchObject({ status: "ok", ledger: { spent: { dispatches: 1, tokens: 1 } } });
+    expect(await engine.usageReport(planned.runId, {
+      dispatchId: "unrelated-call", stepId: "first", source: "client", usage: { tokens: 2 },
+      telemetry: { model: "worker-b", durationMs: 4 },
+    })).toMatchObject({ status: "ok", budget: "task_exhausted", ledger: { spent: { dispatches: 1, tokens: 3 } } });
+
+    expect(await engine.stepDone(planned.runId, "first", {
+      output: { value: "done" }, usage: { tokens: 1 }, telemetry: { model: "worker-a", durationMs: 3 },
+    }, dispatchId)).toMatchObject({ status: "completed", output: { value: "done" } });
+
+    const run = await store.load(planned.runId);
+    expect(run.flowSpent).toEqual({ dispatches: 1, tokens: 3 });
+    expect(run.receipts).toHaveLength(2);
+    expect(usageDebits(run.events)).toHaveLength(2);
+    expect(run.steps.first).toMatchObject({ status: "succeeded", acceptedDispatchToken: dispatchId });
+  });
+
+  it("fails a usage-bearing stepDone when its receipt-first settlement exhausted the task budget", async () => {
+    const { engine, store } = await subject();
+    const planned = await engine.plan(linearSpec({ flowBudget: { tokens: 10 }, taskBudget: { tokens: 1 } }), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected first ready");
+    const dispatchId = planned.ready[0]!.dispatchToken;
+
+    expect(await engine.usageReport(planned.runId, {
+      dispatchId, stepId: "first", source: "client", usage: { tokens: 2 },
+      telemetry: { model: "worker", durationMs: 3 },
+    })).toMatchObject({ status: "ok", budget: "task_exhausted", ledger: { spent: { dispatches: 1, tokens: 2 } } });
+
+    expect(await engine.stepDone(planned.runId, "first", {
+      output: { value: "done" }, usage: { tokens: 2 }, telemetry: { model: "worker", durationMs: 3 },
+    }, dispatchId)).toMatchObject({ status: "failed", failure: { reason: "task budget exhausted" } });
+
+    const run = await store.load(planned.runId);
+    expect(run.flowSpent).toEqual({ dispatches: 1, tokens: 2 });
+    expect(run.receipts).toHaveLength(1);
+    expect(run.steps.first?.attempts[0]).toMatchObject({
+      failure: { reason: "task budget exhausted" }, usage: { tokens: 2 },
+    });
+  });
+
+  it("rejects a receipt-first duplicate attributed to a different step", async () => {
+    const { engine, store } = await subject();
+    const planned = await engine.plan(linearSpec({ twoSteps: true }), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected first ready");
+    const dispatchId = planned.ready[0]!.dispatchToken;
+
+    expect(await engine.usageReport(planned.runId, {
+      dispatchId, stepId: "second", source: "client", usage: { tokens: 2 },
+      telemetry: { model: "worker", durationMs: 3 },
+    })).toMatchObject({ status: "ok" });
+
+    await expect(engine.stepDone(planned.runId, "first", {
+      output: { value: "done" }, usage: { tokens: 2 }, telemetry: { model: "worker", durationMs: 3 },
+    }, dispatchId)).rejects.toThrow(/receipt.*belongs to.*second.*not.*first/i);
+
+    const run = await store.load(planned.runId);
+    expect(run.receipts).toHaveLength(1);
+    expect(run.steps.first).toMatchObject({ status: "ready", attempts: [] });
+  });
+
   it("records a late terminal-run receipt without changing terminal status", async () => {
     const { engine, store } = await subject();
     const planned = await engine.plan(linearSpec({ flowBudget: { tokens: 1 } }), { name: "x" });
@@ -312,6 +434,59 @@ describe("StratumEngine usage receipts", () => {
     expect(judgedEvents[0]?.detail).toMatchObject({
       source: "judged", model: "judge-model", amount: { tokens: 5, usd: 0.04 }, usdSource: "legacy",
     });
+  });
+
+  it("uses real issuance ids for stepDone and connector fanout receipts and keeps the legacy fallback when none exists", async () => {
+    const ordinary = await subject();
+    const planned = await ordinary.engine.plan(linearSpec(), { name: "x" });
+    if (planned.status !== "ready") throw new Error("expected ordinary step");
+    const dispatchId = planned.ready[0]!.dispatchToken;
+    await ordinary.engine.stepDone(planned.runId, "first", {
+      output: { value: "done" }, usage: { tokens: 2 }, telemetry: { model: "worker", durationMs: 3 },
+    }, dispatchId);
+    const ordinaryReceipt = (await ordinary.store.load(planned.runId)).receipts?.[0];
+    expect(ordinaryReceipt?.dispatchId).toBe(dispatchId);
+    expect(ordinaryReceipt?.dispatchId).not.toMatch(/^legacy:/);
+
+    const fanout = await subject({ connector: async ({ prompt }) => ({
+      output: { value: prompt }, usage: { tokens: 3 }, telemetry: { model: "fanout-worker", durationMs: 4 },
+    }) });
+    const fanoutSpec = {
+      version: 1,
+      contracts: { Result: { value: "string" } },
+      flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
+        steps: [{ id: "fan", fanout: {
+          over: "${input.items}", concurrency: 1, isolation: "none", require: "all", merge: "sequential",
+          steps: [{ do: "fan ${item}", out: "Result" }],
+        } }],
+      } },
+    };
+    const fanoutPlan = await fanout.engine.plan(fanoutSpec, { items: ["a"] });
+    await waitForTerminal(fanout.engine, fanout.store, fanoutPlan.runId);
+    const fanoutRun = await fanout.store.load(fanoutPlan.runId);
+    const fanoutReceipt = fanoutRun.receipts?.find((receipt) => receipt.source === "fanout");
+    const fanoutDispatchId = fanoutRun.steps.fan?.fanout?.items[0]?.acceptedDispatchToken;
+    expect(fanoutDispatchId).toEqual(expect.any(String));
+    expect(fanoutReceipt?.dispatchId).toBe(fanoutDispatchId);
+    expect(fanoutReceipt?.dispatchId).not.toMatch(/^legacy:/);
+
+    const judged = await subject({ judge: async () => ({
+      holds: true, reason: "sound", model: "judge-model", usage: { tokens: 5 },
+    }) });
+    const judgedSpec = {
+      version: 1,
+      contracts: { Result: { value: "string" } },
+      flows: { entry: "main", main: {
+        input: { name: "string" }, output: { from: "${checked.output}", contract: "Result" },
+        steps: [{ id: "checked", do: "checked", out: "Result", ensure: [{ judged: { statement: "sound", stakes: "cheap" } }] }],
+      } },
+    };
+    const judgedPlan = await judged.engine.plan(judgedSpec, { name: "x" });
+    if (judgedPlan.status !== "ready") throw new Error("expected judged step");
+    await judged.engine.stepDone(judgedPlan.runId, "checked", { output: { value: "done" } }, judgedPlan.ready[0]!.dispatchToken);
+    const judgedReceipt = (await judged.store.load(judgedPlan.runId)).receipts?.[0];
+    expect(judgedReceipt?.dispatchId).toMatch(/^legacy:\d+$/);
   });
 
   it('rejects client receipts in the reserved "legacy:" namespace', async () => {
