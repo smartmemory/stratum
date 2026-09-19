@@ -185,3 +185,24 @@ it("preserves key and socket when the dead record cannot be unlinked", async () 
   expect(await readFile(key,"utf8")).toBe("owned");
   expect((await lstat(endpoint)).isSocket()).toBe(true);
 });
+
+it("normalizes labels and derives agent names while retaining legacy names", () => {
+  expect(registry.normalizePeerLabel(undefined)).toBeUndefined();
+  expect(registry.normalizePeerLabel(" Schema Review! ")).toBe("schema-review");
+  expect(registry.normalizePeerLabel("a".repeat(64))).toHaveLength(64);
+  for (const value of [null, 1, "", " ", "!!!", "中文", "a\nb", "a\x7f", "a".repeat(65)]) expect(() => registry.normalizePeerLabel(value)).toThrow(/peerLabel/);
+  expect(registry.peerName("claude-sonnet-5", "abcdef123456", {agent:"claude", label:"schema-review"})).toBe("claude-sonnet-5-abcdef123456-schema-review");
+  expect(registry.peerName("claude-sonnet-5", "abcdef123456", {agent:"claude"})).toBe("claude-sonnet-5-abcdef123456");
+  expect(registry.peerName("gpt-6-astra", "abcdef123456", {label:"review"})).toBe("codex-astra-abcdef123456-review");
+});
+it("round trips worker config and rejects bad owner fields", async () => {
+  const dir = await root();
+  const config = {ownerKind:"claude-worker" as const, runId:"abcdef123456",runDir:dir,streamPath:join(dir,"stream"),name:"claude-test",cwd:dir,sessionsDir:dir,sockDir:dir,lingerMs:500,firstLineDeadlineMs:300};
+  const env = registry.sidecarEnv(config);
+  expect(env.STRATUM_PEER_CHILD_PID).toBeUndefined();
+  expect(env.STRATUM_PEER_CHILD_START).toBeUndefined();
+  expect(registry.configFromEnv(env)).toEqual(config);
+  for (const id of [undefined, "123", "ABCDEF123456"]) expect(() => registry.configFromEnv({...env, STRATUM_PEER_RUN_ID:id})).toThrow();
+  expect(() => registry.configFromEnv({...env, STRATUM_PEER_OWNER_KIND:"thread"})).toThrow();
+  expect(registry.sidecarEnv({...config,ownerKind:"process",childPid:process.pid}).STRATUM_PEER_RUN_ID).toBeUndefined();
+});

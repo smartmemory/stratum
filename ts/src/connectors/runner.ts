@@ -1,3 +1,4 @@
+import { normalizePeerLabel } from "./peer-registry.js";
 import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { startBackgroundRun } from "./background.js";
 import { ClaudeConnector, type QueryFunction } from "./claude.js";
@@ -16,6 +17,7 @@ export interface AgentRunOptions {
   cwd?: string;
   model?: string;
   background?: boolean;
+  peerLabel?: string;
   signal?: AbortSignal;
   ownProcessGroup?: boolean;
   /** Group-leader pid of each cancellable child, reported as it spawns (S02-1). Forwarded to
@@ -50,6 +52,8 @@ export async function runAgent(
   options: AgentRunOptions,
   boundaries: AgentRunBoundaries = {},
 ): Promise<ConnectorResult | { status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string }> {
+  if (options.peerLabel !== undefined && options.background !== true) throw new Error("peerLabel is background-only");
+  const peerLabel = normalizePeerLabel(options.peerLabel);
   // 4c: discriminant validation — reject unknown agent and sandboxMode values before
   // either the background or foreground dispatch branch. Mirrors background.ts guards
   // (D11) but is intentionally independent (no cross-module import).
@@ -99,6 +103,7 @@ export async function runAgent(
     // validateAgentSettings has already rejected them for codex, so the spread is
     // claude-only rather than dead (D5 / BG-WRITE-A).
     return startBackgroundRun({
+      ...(peerLabel !== undefined ? {peerLabel} : {}),
       agent: options.agent,
       prompt: options.prompt,
       cwd,

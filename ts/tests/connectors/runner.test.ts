@@ -193,3 +193,22 @@ describe("provider settings are enforced at dispatch", () => {
     }
   });
 });
+
+it("rejects foreground and malformed peer labels before provider invocation", async () => {
+  const spawn = fakeCodexSpawn();
+  for (const options of [{peerLabel:"review"}, {background:true,peerLabel:42}, {background:true,peerLabel:"!!!"}]) {
+    await expect(runAgent({agent:"codex",prompt:"x",...options} as Parameters<typeof runAgent>[0],{codexSpawn:spawn})).rejects.toThrow(/peerLabel/);
+  }
+  expect(spawn).not.toHaveBeenCalled();
+});
+it("forwards normalized background labels into durable metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(),"stratum-label-"));
+  try {
+    const result = await runAgent({agent:"codex",prompt:"x",cwd:root,registryRoot:root,background:true,peerLabel:" Schema Review "}, {backgroundCommand:["sh","-c","exit 0"]});
+    if (!("runId" in result)) throw Error("expected background run");
+    const {readFile} = await import("node:fs/promises");
+    const {pollBackgroundRun} = await import("../../src/connectors/background.js");
+    expect(JSON.parse(await readFile(join(root,result.runId,"meta.json"),"utf8")).peerLabel).toBe("schema-review");
+    await vi.waitFor(async () => expect((await pollBackgroundRun(result.runId,{registryRoot:root})).status).toBe("complete"));
+  } finally {await rm(root,{recursive:true,force:true});}
+});

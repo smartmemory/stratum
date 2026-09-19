@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+- **STRAT-AGENT-PEER-2: Claude background runs register as Claude Code peers too, with optional
+  labels for either agent.** Previously only Codex background runs (`STRAT-AGENT-PEER-1`) got a
+  peer row — a Claude background run has no pid of its own to register, since it's a worker
+  thread inside the MCP server process rather than a separate child process, so it was invisible
+  to `ListAgents`/`SendMessage(notify_when_idle)` and had to be polled by hand. Claude workers now
+  get the same per-run detached sidecar Codex uses, with a private IPC handshake standing in for
+  the child-pid liveness check Codex relies on: a numeric sentinel wins first, then
+  worker-exit-plus-finalization, then owner-channel-loss, in that precedence, so a false idle is
+  never reported and a lost MCP server is distinguished from a worker that simply finished. Also
+  new: an optional `peerLabel` on `stratum_agent_run` (background-only, either agent) for a
+  readable peer name (`claude-sonnet-5-<runId>-schema-review`) instead of a bare run ID.
+
+- **STRAT-DISTILL-TS-1: the skill-candidate staging pipeline is back, ported to TS.**
+  `STRAT-DISTILL` shipped in the Python engine and was retired at the 2026-07 TS cutover along
+  with everything else under `judge/`; this is the first of those surfaces to return.
+  `stratum_distill` (MCP tool) and `stratum distill extract|top|stats` (CLI) detect recurring
+  workflows in Claude Code transcripts and stage complete, human-reviewable
+  `SKILL.md`/`agent/*.md`/`command/*.md` drafts to an independent `.stratum/distill/` sidecar
+  (schema `distill-2.0`) — never installed automatically, and there is currently no admission gate
+  at all (`STRAT-DISTILL-APPLY`, `STRAT-ADMIT` remain planned). Candidate identity is
+  deterministic and content-addressed, and the candidate type is deliberately modeled on the
+  MEMORY-patch harvester's (`ts/src/learn/`) shape for future compatibility with its admission
+  gate, without being assignable to it today.
+
+- **MCP contract surface 21 → 23.** Surface 22 (`STRAT-STEPDONE-PROVENANCE-1`, landed separately:
+  `usdSource`/`split` on `stratum_step_done`, real dispatch ids replacing synthesized
+  `legacy:<seq>` receipt ids) and surface 23 (this release: `stratum_agent_run.peerLabel`,
+  `stratum_distill`) shipped back-to-back from two agents working the same tree concurrently;
+  noted here in case a version-pinned test or client needs to know why the jump skips 22 as a
+  separate visible surface.
+
 - **Docs: `stratum_agent_run`/`stratum_agent_poll` MCP contract descriptions and README now
   document the background-completion subscribe workflow, and why it cannot be made automatic.**
   Neither field previously carried a description at all, so a caller had no way to discover the

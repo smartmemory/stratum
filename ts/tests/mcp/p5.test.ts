@@ -106,6 +106,10 @@ describe("P5 frozen MCP surface", () => {
       await call("stratum_validate", { spec: simpleFlow });
       await call("stratum_validate", { spec: {} });
 
+      // distill: empty preview success and domain validation error via the real contract.
+      await call("stratum_distill", { workspace_root: root, project_dir: join(root, "missing-transcripts"), write: false });
+      await call("stratum_distill", { workspace_root: root, min_count: 0 });
+
       // compile_speckit: both frozen statuses over a real task directory.
       const tasksDir = join(root, "tasks");
       await mkdir(tasksDir);

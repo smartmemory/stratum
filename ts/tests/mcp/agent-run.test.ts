@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { pollBackgroundRun, runAgent } from "../../src/connectors/index.js";
 import type { AgentRunOptions } from "../../src/connectors/runner.js";
 import { createMcpServer, createToolDispatcher, type McpDependencies } from "../../src/mcp/server.js";
@@ -92,7 +92,7 @@ afterAll(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
-  it.each(["codex-sol-abcdef", undefined])("exposes completion instructions for background runs (peer=%s)", async (peerName) => {
+  it.each(["codex-sol-abcdef", "claude-sonnet-5-abcdef123456", undefined])("exposes completion instructions for background runs (peer=%s)", async (peerName) => {
     const started = { status: "bg_started" as const, runId: "abcdef123456", streamPath: "/tmp/test-stream.jsonl",
       ...(peerName ? { peerName } : {}) };
     const pair = await connected({ runAgent: async () => started });
@@ -108,7 +108,7 @@ describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
       expect(payload).toMatchObject(started);
       expect(payload.completionInstructions).toContain('stratum_agent_poll({"runId":"abcdef123456"})');
       if (peerName) {
-        expect(payload.completionInstructions).toContain('SendMessage({"to":"codex-sol-abcdef","notify_when_idle":true})');
+        expect(payload.completionInstructions).toContain(`SendMessage(${JSON.stringify({to:peerName,notify_when_idle:true})})`);
         expect(payload.completionInstructions).toContain("If subscription fails");
       } else {
         expect(payload.completionInstructions).toContain("No completion notification is registered");
@@ -507,4 +507,25 @@ it('failure usage crosses an actual MCP client/server error envelope', async () 
       data: { code: 'agent_run_failed', usage: { tokens: 9, usd: 0.25 }, split: { input: 7, output: 2, cacheRead: 4 }, usdSource: 'reported' },
     });
   } finally { await fixture.close(); }
+});
+
+it("rejects foreground or malformed peer labels before dispatch", async () => {
+  let called = false;
+  const dispatcher = createToolDispatcher({runAgent:async () => {called = true; throw Error("must not run");}});
+  for (const extra of [{peerLabel:"review"}, {background:true,peerLabel:42}, {background:true,peerLabel:"!!!"}]) {
+    await expect(dispatcher.call("stratum_agent_run",{agent:"claude",prompt:"x",cwd:process.cwd(),...extra})).rejects.toThrow(/peerLabel/);
+  }
+  expect(called).toBe(false);
+});
+
+it("forwards a normalized Claude label through real contract admission", async () => {
+  const seen: AgentRunOptions[] = [];
+  const dispatcher = createToolDispatcher({runAgent:async options => {
+    seen.push(options);
+    return {status:"bg_started",runId:"abcdef123456",streamPath:"/tmp/fixture",peerName:"claude-sonnet-5-abcdef123456-review"};
+  }});
+  const result = await dispatcher.call("stratum_agent_run",{agent:"claude",prompt:"x",cwd:process.cwd(),background:true,peerLabel:" Review "});
+  expect(seen[0]!.peerLabel).toBe("review");
+  expect(result).not.toHaveProperty("pid");
+  expect(result.completionInstructions).toContain("claude-sonnet-5-abcdef123456-review");
 });
