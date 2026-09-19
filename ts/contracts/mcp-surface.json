@@ -1077,6 +1077,7 @@
       }
     },
     "stratum_agent_run": {
+      "description": "Run a Codex or Claude agent. Foreground runs return the completed report. With background=true, bg_started only confirms launch; completion is not automatically reported. Follow completionInstructions: in Claude Code, immediately subscribe using SendMessage(to=peerName, notify_when_idle=true) when peerName is returned. After the idle notice, call stratum_agent_poll(runId) to retrieve the report. If subscription fails, peerName is absent, or SendMessage is unavailable, poll until complete or error. Do not assume a background launch will wake the caller.",
       "request": {
         "agent": "string",
         "prompt": "string",
@@ -1126,11 +1127,13 @@
           "runId": "string",
           "pid?": "number",
           "streamPath": "string",
-          "peerName?": "string"
+          "peerName?": "string",
+          "completionInstructions?": "string"
         }
       }
     },
     "stratum_agent_poll": {
+      "description": "Check a background agent run and retrieve its report. Call after a peer idle notice, or poll while running if no idle subscription is available. Polling does not subscribe to notifications. A complete response contains the report in text; error contains failure details. peer.registered records past registration, not current socket availability.",
       "request": {
         "runId": "string"
       },
