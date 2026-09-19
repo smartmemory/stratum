@@ -72,6 +72,7 @@ Bootstrap: establish the core structure and first working milestone.
 | 2 | STRAT-USAGE-SPLIT | Input/output token split never reaches storage: connectors read it, collapse it into Budget.tokens, and compose files the aggregate as output_tokens. Populate the already-declared ReceiptRecord.split instead of widening BUDGET_KEYS. Unblocks STRAT-LEARN-COST §7 (cost classifier) and all context-cost measurement. | PARTIAL |
 | 3 | STRAT-LEARN-COST-1 | Price-table freshness job (S4 transferred from COMP-COST-OWNER) + Claude connector stops emitting a labelled $0 when the SDK reported no cost | PLANNED |
 | 4 | STRAT-AGENT-RUN-MODEL-VALIDATE | stratum_agent_run validates model/effort/agent against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400 | PLANNED |
+| 5 | STRAT-STEPDONE-PROVENANCE-1 | Declare usdSource?/split? on stratum_step_done.request.result + replace legacy:&lt;seq&gt; placeholder with real dispatch ids on envelope settlement. Blocks compose COMP-COST-OWNER-1's exactly-once dispatch settlement. | PLANNED |
 
 ---
 

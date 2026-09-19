@@ -1,0 +1,24 @@
+{
+  "code": "STRAT-STEPDONE-PROVENANCE-1",
+  "description": "Declare usdSource?/split? on stratum_step_done.request.result + replace legacy:&lt;seq&gt; placeholder with real dispatch ids on envelope settlement. Blocks compose COMP-COST-OWNER-1's exactly-once dispatch settlement.",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-19",
+  "updated": "2026-09-19",
+  "complexity": "S",
+  "position": 5,
+  "tags": [
+    "cost-settlement",
+    "contract-bump",
+    "unblocks-compose"
+  ],
+  "links": [
+    {
+      "kind": "external",
+      "provider": "local",
+      "repo": "compose",
+      "to_code": "COMP-COST-OWNER-1",
+      "note": "This stratum ticket blocks compose's COMP-COST-OWNER-1 next attempt"
+    }
+  ]
+}
