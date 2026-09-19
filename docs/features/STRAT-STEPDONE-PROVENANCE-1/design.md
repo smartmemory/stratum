@@ -1,6 +1,12 @@
 # STRAT-STEPDONE-PROVENANCE-1: usage provenance + real dispatch ids on stepDone settlement — Design
 
-**Status:** DESIGN
+**Status:** SHIPPED (2026-09-19, commit `3d92b5c`) — pushed to `origin/main`. The
+`mcp__compose__record_completion`/`set_feature_status` roadmap-status tools refused to flip
+this to COMPLETE (`COMPLETION_EVIDENCE_REQUIRED: commit not found in repository`, on a commit
+confirmed present via `git cat-file`/`git log` and on `origin/main` — likely the guard's
+git-verification checking a hardcoded compose repo root rather than following the MCP
+workspace binding). Left this note here as the source of truth instead of fighting the tool;
+`docs/plans/COMPOSE-ROADMAP.md` still shows PLANNED and needs manual reconciliation.
 **Date:** 2026-09-19
 
 ## Related Documents
