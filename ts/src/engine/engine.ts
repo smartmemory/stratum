@@ -25,6 +25,9 @@ import { assertRunId, type AttemptRecord, type AttemptTelemetry, type AuditEvent
 
 const execFileAsync = promisify(execFile);
 
+type BudgetVerdict = "flow" | "subflow" | "task";
+type SettledReceiptRecord = ReceiptRecord & { budgetVerdict?: "ok" | BudgetVerdict };
+
 export interface EvaluatorContext {
   input: unknown;
   steps: Readonly<Record<string, unknown>>;
@@ -788,7 +791,7 @@ export class StratumEngine {
     delete usage.dispatches;
     // "settle": the agent already ran, so over-limit usage is still recorded in both ledgers.
     const budgetFailure = hasBudget(usage)
-      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state }, result.usdSource, result.split)
+      ? this.settleLegacyReceipt(run, usage, "step_done", telemetry, { scope, step, state }, result.usdSource, result.split, dispatchToken)
       : undefined;
     if (budgetFailure === "flow") {
       const failure = { attempt, reason: "flow budget exhausted" };
@@ -2046,7 +2049,7 @@ export class StratumEngine {
     if (!Array.isArray(values)) throw new Error("fanout over must resolve to an array");
     const attempt = item.attempts.length + 1;
     const outcome = await this.settleFanoutAttempt(
-      run, spec, contracts, step, state, item, values[item.index], item.output, stageIndex, attempt, result,
+      run, spec, contracts, step, state, item, values[item.index], item.output, stageIndex, attempt, result, undefined, dispatchToken,
     );
     if (!outcome.success) {
       item.failure = outcome.failure;
@@ -2289,7 +2292,7 @@ export class StratumEngine {
               return "retry";
             }
             const settled = await this.settleFanoutAttempt(
-              run, spec, contracts, step, state, item, value, previous, stageIndex, attempt, outcome.result, cwd,
+              run, spec, contracts, step, state, item, value, previous, stageIndex, attempt, outcome.result, cwd, item.dispatchToken,
             );
             if (stale()) return "abandon";
             if (!settled.success) {
@@ -2387,6 +2390,7 @@ export class StratumEngine {
     attempt: number,
     result: StepResult,
     workspaceRoot?: string,
+    dispatchId?: string,
   ): Promise<{ success: true } | { success: false; failure: FailureContext }> {
     if (!step.fanout) throw new Error("fanout missing after validation");
     const stage = step.fanout.steps[stageIndex];
@@ -2407,7 +2411,7 @@ export class StratumEngine {
     const settled = hasBudget(usage)
       ? this.settleLegacyReceipt(run, usage, "fanout", result.telemetry, {
         scope: this.rootScope(run, spec), step, state, item,
-      }, result.usdSource, result.split)
+      }, result.usdSource, result.split, dispatchId)
       : undefined;
     if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
     const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
@@ -2687,13 +2691,13 @@ export class StratumEngine {
 
   private settleReceipt(run: PersistedRun, receipt: ReceiptRecord, located?: LocatedStep, explicitAttempt?: number):
     | { status: "duplicate"; receipt: ReceiptRecord }
-    | { status: "ok"; budget?: "flow" | "subflow" | "task" } {
+    | { status: "ok"; budget?: BudgetVerdict } {
     const duplicate = findReceipt(run, receipt.dispatchId);
     if (duplicate !== undefined) return { status: "duplicate", receipt: duplicate };
 
     const canonicalStepId = located === undefined ? undefined : this.scopedId(located.scope, located.step.id);
     if (canonicalStepId !== undefined) receipt.stepId = canonicalStepId;
-    let budget: "flow" | "subflow" | "task" | undefined;
+    let budget: BudgetVerdict | undefined;
     const executable = located !== undefined && (located.step.do !== undefined || located.step.fanout !== undefined);
     if (executable) {
       budget = this.debit(run, located.step, located.state, receipt.amount, "settle", located.scope);
@@ -2712,6 +2716,9 @@ export class StratumEngine {
       else if (!subflowOk) budget = "subflow";
     }
 
+    // Duplicate envelope settlements must replay the verdict from this exact
+    // debit. The shared ledgers can change before the duplicate arrives.
+    (receipt as SettledReceiptRecord).budgetVerdict = budget ?? "ok";
     (run.receipts ??= []).push(receipt);
     // `attempt` names the attempt the call belongs to. Legacy settles pass it (the
     // attempt record is pushed after settlement, so length+1 is that attempt);
@@ -2725,9 +2732,13 @@ export class StratumEngine {
         : undefined);
     const item = located?.item;
     const detail = {
-      ...(located?.state.epoch !== undefined ? { epoch: located.state.epoch } : {}),
+      ...(located !== undefined ? { epoch: located.item?.epoch ?? located.state.epoch ?? 0 } : {}),
       ...(attempt !== undefined ? { attempt } : {}),
-      ...(item?.stage !== undefined ? { item: { itemIndex: item.index, stage: item.stage, generation: item.generation } } : {}),
+      ...(item !== undefined ? { item: {
+        itemIndex: item.index,
+        ...(item.stage !== undefined ? { stage: item.stage } : {}),
+        generation: item.generation,
+      } } : {}),
     };
     // One detail object serves both the audit event and the receipt row, so the
     // SmartMemory mirror carries exactly what the event stream carries.
@@ -2744,7 +2755,15 @@ export class StratumEngine {
       ...(receipt.usdSource !== undefined ? { usdSource: receipt.usdSource } : {}),
       ...(receipt.reportedAt !== undefined ? { reportedAt: receipt.reportedAt } : {}),
     };
-    receipt.detail = { ...(receipt.detail ?? {}), ...eventDetail };
+    const suppliedDetail = { ...(receipt.detail ?? {}) };
+    // These fields identify the ledger owner. A caller may add detail, but it
+    // must not be able to forge the canonical step attempt/item attribution.
+    if (located !== undefined) {
+      delete suppliedDetail.epoch;
+      delete suppliedDetail.attempt;
+      delete suppliedDetail.item;
+    }
+    receipt.detail = { ...suppliedDetail, ...eventDetail };
     this.event(run, "usage_debit", canonicalStepId, structuredClone(eventDetail));
     return { status: "ok", ...(budget !== undefined ? { budget } : {}) };
   }
@@ -2757,10 +2776,19 @@ export class StratumEngine {
     located: LocatedStep,
     usdSource?: "reported" | "estimated",
     split?: StepResult["split"],
-  ): "flow" | "subflow" | "task" | undefined {
+    dispatchId?: string,
+  ): BudgetVerdict | undefined {
+    const attempt = (located.item?.attempts.length ?? located.state.attempts.length) + 1;
+    if (dispatchId !== undefined) {
+      const duplicate = findReceipt(run, dispatchId);
+      if (duplicate !== undefined) {
+        this.assertReceiptOwner(duplicate, located, attempt);
+        return this.storedBudgetVerdict(duplicate);
+      }
+    }
     const seq = (run.receiptCounter ?? 0) + 1;
     const receipt = buildReceipt(run, {
-      dispatchId: `legacy:${seq}`,
+      dispatchId: dispatchId ?? `legacy:${seq}`,
       stepId: this.scopedId(located.scope, located.step.id),
       source,
       usage,
@@ -2770,10 +2798,49 @@ export class StratumEngine {
       // unlabelled usd is engine-synthesized "legacy".
       ...(usage.usd !== undefined ? { usdSource: usdSource ?? "legacy" } : {}),
     });
-    const attempt = (located.item?.attempts.length ?? located.state.attempts.length) + 1;
     const settled = this.settleReceipt(run, receipt, located, attempt);
-    if (settled.status === "duplicate") throw new Error(`legacy receipt sequence ${seq} collided`);
+    if (settled.status === "duplicate") {
+      throw new Error(`settlement receipt dispatch ${JSON.stringify(receipt.dispatchId)} collided`);
+    }
     return settled.budget;
+  }
+
+  private storedBudgetVerdict(receipt: ReceiptRecord): BudgetVerdict | undefined {
+    const verdict = (receipt as SettledReceiptRecord).budgetVerdict;
+    // Pre-verdict receipts have no durable record of the original budget check.
+    // Rechecking today's ledgers would make unrelated later debits change this
+    // settlement. A flow exhaustion already terminalized the run and cannot
+    // reach this duplicate path, so preserve compatibility for the ambiguous
+    // legacy task/subflow case by allowing the already-charged work to finish.
+    if (verdict === undefined) return undefined;
+    if (verdict === "ok") return undefined;
+    if (verdict === "flow" || verdict === "subflow" || verdict === "task") return verdict;
+    throw new Error(`settlement receipt ${JSON.stringify(receipt.dispatchId)} has an invalid stored budget verdict`);
+  }
+
+  private assertReceiptOwner(receipt: ReceiptRecord, located: LocatedStep, attempt: number): void {
+    const expected = {
+      stepId: this.scopedId(located.scope, located.step.id),
+      epoch: located.item?.epoch ?? located.state.epoch ?? 0,
+      attempt,
+      ...(located.item !== undefined ? { item: {
+        itemIndex: located.item.index,
+        ...(located.item.stage !== undefined ? { stage: located.item.stage } : {}),
+        generation: located.item.generation,
+      } } : {}),
+    };
+    const detail = receipt.detail ?? {};
+    const actual = {
+      stepId: receipt.stepId,
+      epoch: detail.epoch ?? 0,
+      attempt: detail.attempt,
+      ...(detail.item !== undefined ? { item: detail.item } : {}),
+    };
+    if (!deepEqual(actual, expected)) {
+      throw new Error(
+        `settlement receipt ${JSON.stringify(receipt.dispatchId)} belongs to ${JSON.stringify(actual)}, not ${JSON.stringify(expected)}`,
+      );
+    }
   }
 
   private unreachableOnFailTarget(step: Step, scope: ExecutionScope): boolean {
