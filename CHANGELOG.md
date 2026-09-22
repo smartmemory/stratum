@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **STRAT-USAGE-SPLIT closed: the token split is verified in production, not just in fixtures.**
+  Wiring shipped in `56529e2` (surface 16) and Codex pricing in `9e6363a`/`00ff4db`; this closes
+  the ticket on real data. Flow `14550460` (2026-09-19) carries `split.input/output/cacheRead/
+  cacheCreation` on every agent receipt, compose's build-history row for the same build reads
+  138,108 input tokens where every pre-fix row read 0, and the five receipts' provider-reported
+  dollars sum to compose's build total exactly (11.453682, 0.0% deviation against a ±1% bar).
+  One residue found and filed as `STRAT-USAGE-SPLIT-1`: the Claude connector's error path
+  attaches `split: {input: 0, output: 0}` to a dispatch that never received a usage event, so a
+  cancelled run's unstarted step is ledgered as a free call instead of an unmeasured one. The
+  dangling `blocks → STRAT-LEARN-COST-2` link was dropped: that classifier ticket is named in
+  `STRAT-LEARN-COST/design.md` §7 but was never filed.
+
 - **STRAT-AGENT-PEER-2: Claude background runs register as Claude Code peers too, with optional
   labels for either agent.** Previously only Codex background runs (`STRAT-AGENT-PEER-1`) got a
   peer row — a Claude background run has no pid of its own to register, since it's a worker

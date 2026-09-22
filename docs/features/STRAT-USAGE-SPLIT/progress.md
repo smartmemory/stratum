@@ -53,3 +53,38 @@ computed independently of the token columns; the token columns were the
 aggregate filed as output. The $0.70 row was a heavily cache-read call
 (cached input bills at 0.1×), the $4.36/25,638 row genuinely output-heavy.
 Columns were never commensurable; post-fix they are.
+
+## 2026-09-22 — verified in production, closed
+
+The branch merged as `56529e2` (PR #28); Codex dollars followed in `9e6363a` /
+`00ff4db` (`codexUsageFields`: estimated via `usdFromTokens`, labelled
+`estimated`, never `reported`). Compose adopted the split on dispatch rows in
+`e849aa1` (COMP-COST-OWNER).
+
+**Live-dispatch golden (real data, not a fixture):** flow `14550460` (compose
+build `7ae2118b`, BUG-27, 2026-09-19) — five `claude-sonnet-5` agent receipts,
+every one carrying `split.input/output/cacheRead/cacheCreation`, e.g. the
+`diagnose` step: input 30,465 / output 38,265 / cacheRead 9,657,548 /
+cacheCreation 177,148, usd 4.6255 `reported`. Compose's build-history row for
+the same build reads input 138,108 / output 69,093 / cache_read 17,865,690 —
+non-zero input where every pre-fix row read 0. Dispatch-ledger rows since
+2026-09-14: 23, `tokens_in` null on 0.
+
+**Reconciliation:** sum of the five receipts' `usd` = 11.453682; compose's
+`build-actuals` row for the build = 11.453682. Deviation 0.0% (criterion was
+±1%). Caveat: both sides derive from the same provider-reported
+`total_cost_usd`, so this checks the pipeline loses nothing, not the provider's
+bill — there is no per-call billing surface to check against.
+
+**Schema unmeasured-vs-zero — stays DEFERRED, residue named:** dispatch
+`a31aac4a` (step `test`, outcome `error`, run cancelled before the step ran)
+was recorded `tokens_in: 0, tokens_out: 0, usd: null`. Cause is the Claude
+connector's error path (`claude.ts:229`), which attaches
+`split: { input: 0, output: 0 }` even when no usage event was ever received —
+the success path omits nothing it doesn't have, the failure path doesn't
+distinguish. Filed as a follow-up (see roadmap, child of this ticket) rather
+than bundled: it is a connector fix plus a compose consumer decision, not
+split wiring.
+
+Acceptance: all wiring, golden and reconciliation criteria met; the schema
+criterion is superseded by the follow-up. Status → COMPLETE.

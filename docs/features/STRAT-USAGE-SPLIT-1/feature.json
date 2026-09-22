@@ -1,0 +1,17 @@
+{
+  "code": "STRAT-USAGE-SPLIT-1",
+  "description": "A dispatch that fails before any usage event arrives records split {input:0, output:0} instead of no split, so compose files an unmeasured call as zero tokens (dispatch a31aac4a, 2026-09-19). Claude connector error path should omit split/usage when nothing was reported; compose consumer keeps null for unmeasured.",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-22",
+  "updated": "2026-09-22",
+  "complexity": "S",
+  "position": 6,
+  "parent": "STRAT-USAGE-SPLIT",
+  "links": [
+    {
+      "kind": "surfaced_by",
+      "to_code": "STRAT-USAGE-SPLIT"
+    }
+  ]
+}
