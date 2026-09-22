@@ -1,10 +1,10 @@
 {
   "code": "STRAT-AGENT-PEER-2",
   "description": "Register Claude background runs (worker threads inside the MCP server, `claude-bg-worker.ts`) as Claude Code peer sessions. Follow-up split out of STRAT-AGENT-PEER-1, whose per-run detached sidecar assumes a detached child process; claude bg runs live in-process and need their own owner decision (sidecar per worker, or one MCP-server row multiplexing runs). Also candidate home for a caller-supplied peer label (background runs cannot carry `flow`).",
-  "status": "PLANNED",
+  "status": "COMPLETE",
   "phase": "STRAT-AGENT: Agent Surface",
   "created": "2026-09-15",
-  "updated": "2026-09-15",
+  "updated": "2026-09-19",
   "complexity": "M",
   "position": 3,
   "parent": "STRAT-AGENT-PEER-1",
@@ -14,5 +14,45 @@
     "claude-code-interop",
     "follow-up"
   ],
-  "impact": "low"
+  "impact": "low",
+  "completions": [
+    {
+      "completion_id": "STRAT-AGENT-PEER-2:50d08438456080cdbcdc0955499853bd11447f95",
+      "feature_code": "STRAT-AGENT-PEER-2",
+      "commit_sha": "50d08438456080cdbcdc0955499853bd11447f95",
+      "commit_sha_short": "50d08438",
+      "tests_pass": true,
+      "files_changed": [
+        "docs/features/STRAT-AGENT-PEER-2/design.md",
+        "docs/features/STRAT-AGENT-PEER-2/blueprint.md",
+        "docs/features/STRAT-AGENT-PEER-2/report.md",
+        "ts/src/connectors/background.ts",
+        "ts/src/connectors/claude-bg-worker.ts",
+        "ts/src/connectors/peer-registry.ts",
+        "ts/src/connectors/peer-sidecar.ts",
+        "ts/src/connectors/peer-worker-lifecycle.ts",
+        "ts/src/connectors/runner.ts",
+        "ts/src/mcp/server.ts",
+        "ts/contracts/mcp-surface.json",
+        "ts/tests/connectors/background-claude-interleavings.test.ts",
+        "ts/tests/connectors/background-claude-peer.test.ts",
+        "ts/tests/connectors/peer-registry.test.ts",
+        "ts/tests/connectors/peer-sidecar.test.ts",
+        "ts/tests/connectors/peer-worker-lifecycle.test.ts",
+        "ts/tests/connectors/runner.test.ts",
+        "ts/tests/mcp-surface-peer.test.ts",
+        "ts/tests/mcp/agent-run.test.ts",
+        "ts/tests/mcp/p5.test.ts",
+        "ts/tests/engine/p4.test.ts",
+        "ts/tests/mcp/contracts-grammar.test.ts",
+        "ts/tests/mcp/schema-grammar.test.ts",
+        "CHANGELOG.md",
+        "README.md"
+      ],
+      "recorded_at": "2026-09-19T08:17:10.863Z",
+      "recorded_by": "mcp:agent",
+      "notes": "Claude background runs (in-process worker threads) now register as Claude Code peer sessions, same mechanism as STRAT-AGENT-PEER-1's codex path. Sidecar per worker, private IPC handshake in place of child-pid monitoring, optional peerLabel."
+    }
+  ],
+  "commit_sha": "50d08438456080cdbcdc0955499853bd11447f95"
 }

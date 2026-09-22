@@ -1,0 +1,53 @@
+{
+  "code": "STRAT-DISTILL-TS-1",
+  "description": "STRAT-DISTILL (skill-candidate staging: detect recurring transcript workflows, stage draft SKILL.md/agent/command files) ported from the retired Python engine to ts/src/distill/. stratum_distill (MCP) + stratum distill extract|top|stats (CLI). Never auto-installs — staging only.",
+  "status": "COMPLETE",
+  "phase": "STRAT-DISTILL: Skill Distillation",
+  "created": "2026-09-19",
+  "updated": "2026-09-19",
+  "complexity": "M",
+  "position": 1,
+  "tags": [
+    "distill",
+    "skill-staging",
+    "ts-port"
+  ],
+  "impact": "medium",
+  "completions": [
+    {
+      "completion_id": "STRAT-DISTILL-TS-1:50d08438456080cdbcdc0955499853bd11447f95",
+      "feature_code": "STRAT-DISTILL-TS-1",
+      "commit_sha": "50d08438456080cdbcdc0955499853bd11447f95",
+      "commit_sha_short": "50d08438",
+      "tests_pass": true,
+      "files_changed": [
+        "docs/features/STRAT-DISTILL-TS-1/design.md",
+        "docs/features/STRAT-DISTILL-TS-1/blueprint.md",
+        "docs/features/STRAT-DISTILL-TS-1/report.md",
+        "ts/src/distill/candidate.ts",
+        "ts/src/distill/detector.ts",
+        "ts/src/distill/harvest.ts",
+        "ts/src/distill/runner.ts",
+        "ts/src/distill/synthesize.ts",
+        "ts/src/cli/distill.ts",
+        "ts/src/cli/stratum.ts",
+        "ts/src/mcp/server.ts",
+        "ts/contracts/mcp-surface.json",
+        "ts/tests/cli/distill.test.ts",
+        "ts/tests/distill/candidate.test.ts",
+        "ts/tests/distill/detector.test.ts",
+        "ts/tests/distill/fixtures.ts",
+        "ts/tests/distill/harvest.test.ts",
+        "ts/tests/distill/runner.test.ts",
+        "ts/tests/distill/synthesize.test.ts",
+        "ts/tests/mcp/distill.test.ts",
+        "CHANGELOG.md",
+        "README.md"
+      ],
+      "recorded_at": "2026-09-19T08:17:02.574Z",
+      "recorded_by": "mcp:agent",
+      "notes": "Ported STRAT-DISTILL from retired Python engine to ts/src/distill/. Staging-only (never auto-installs); AssetCandidate deliberately shaped compatible with PatchCandidate for the future STRAT-ADMIT admission gate."
+    }
+  ],
+  "commit_sha": "50d08438456080cdbcdc0955499853bd11447f95"
+}
