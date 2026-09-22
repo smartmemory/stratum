@@ -73,6 +73,7 @@ Bootstrap: establish the core structure and first working milestone.
 | 4 | STRAT-AGENT-RUN-MODEL-VALIDATE | stratum_agent_run validates model/effort/agent against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400 | PLANNED |
 | 5 | STRAT-STEPDONE-PROVENANCE-1 | Declare usdSource?/split? on stratum_step_done.request.result + replace legacy:&lt;seq&gt; placeholder with real dispatch ids on envelope settlement. Blocks compose COMP-COST-OWNER-1's exactly-once dispatch settlement. | COMPLETE |
 | 6 | STRAT-USAGE-SPLIT-1 | A dispatch that fails before any usage event arrives records split {input:0, output:0} instead of no split, so compose files an unmeasured call as zero tokens (dispatch a31aac4a, 2026-09-19). Claude connector error path should omit split/usage when nothing was reported; compose consumer keeps null for unmeasured. | PLANNED |
+| 7 | STRAT-DISTILL-APPLY | Graduate stratum_distill's reserved apply flag: write a staged skill-class AssetCandidate to the working tree through the memory-class apply machinery (admission critics, journal, guard-ledger commit, CAS revert, reconcile) generalized from ts/src/learn/apply.ts. Narrow v1: single asset, deterministic critics, default OFF. STRAT-ADMIT's LLM critics, batch admission and pool lock remain a follow-up. | IN_PROGRESS |
 
 ---
 

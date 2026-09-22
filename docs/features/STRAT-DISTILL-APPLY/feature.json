@@ -1,0 +1,17 @@
+{
+  "code": "STRAT-DISTILL-APPLY",
+  "description": "Graduate stratum_distill's reserved apply flag: write a staged skill-class AssetCandidate to the working tree through the memory-class apply machinery (admission critics, journal, guard-ledger commit, CAS revert, reconcile) generalized from ts/src/learn/apply.ts. Narrow v1: single asset, deterministic critics, default OFF. STRAT-ADMIT's LLM critics, batch admission and pool lock remain a follow-up.",
+  "status": "IN_PROGRESS",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-22",
+  "updated": "2026-09-22",
+  "complexity": "M",
+  "position": 7,
+  "parent": "STRAT-DISTILL-TS-1",
+  "tags": [
+    "distill",
+    "self-modification",
+    "guard",
+    "apply-path"
+  ]
+}
