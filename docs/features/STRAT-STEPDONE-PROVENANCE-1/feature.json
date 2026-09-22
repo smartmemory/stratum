@@ -1,10 +1,10 @@
 {
   "code": "STRAT-STEPDONE-PROVENANCE-1",
   "description": "Declare usdSource?/split? on stratum_step_done.request.result + replace legacy:&lt;seq&gt; placeholder with real dispatch ids on envelope settlement. Blocks compose COMP-COST-OWNER-1's exactly-once dispatch settlement.",
-  "status": "PLANNED",
+  "status": "COMPLETE",
   "phase": "Standalone Tickets",
   "created": "2026-09-19",
-  "updated": "2026-09-19",
+  "updated": "2026-09-22",
   "complexity": "S",
   "position": 5,
   "tags": [
@@ -20,5 +20,26 @@
       "to_code": "COMP-COST-OWNER-1",
       "note": "This stratum ticket blocks compose's COMP-COST-OWNER-1 next attempt"
     }
-  ]
+  ],
+  "completions": [
+    {
+      "completion_id": "STRAT-STEPDONE-PROVENANCE-1:3d92b5c1574a3fc3a142920d7bf4870d518ec5b0",
+      "feature_code": "STRAT-STEPDONE-PROVENANCE-1",
+      "commit_sha": "3d92b5c1574a3fc3a142920d7bf4870d518ec5b0",
+      "commit_sha_short": "3d92b5c1",
+      "tests_pass": true,
+      "files_changed": [
+        "ts/contracts/mcp-surface.json",
+        "ts/src/engine/engine.ts",
+        "ts/tests/engine/p4.test.ts",
+        "ts/tests/engine/receipts.test.ts",
+        "ts/tests/mcp/contracts-grammar.test.ts",
+        "ts/tests/mcp/schema-grammar.test.ts"
+      ],
+      "recorded_at": "2026-09-22T02:12:57.828Z",
+      "recorded_by": "mcp:agent",
+      "notes": "usdSource?/split? declared on stratum_step_done.request.result; legacy:<seq> placeholder replaced with real dispatch ids on envelope settlement. Contract surface bumped 21->22."
+    }
+  ],
+  "commit_sha": "3d92b5c1574a3fc3a142920d7bf4870d518ec5b0"
 }
