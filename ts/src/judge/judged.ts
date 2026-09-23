@@ -18,11 +18,9 @@ export const STAKES_MODEL: Readonly<Record<Stakes, JudgeTier>> = Object.freeze({
   // `gpt-5.6-luna` as the fast model (confirmed by the account owner). Every
   // spark id now returns HTTP 400 under ChatGPT-account auth, on Codex CLI
   // 0.153.3 and 0.154.0 alike — that is removal, not a stale CLI. Do not
-  // restore the spark id. `gpt-5.6-luna` is the ONLY working luna id (probed:
-  // gpt-5.3-luna, luna, gpt-5.3-codex-luna, gpt-6-luna all 400) — note it moved
-  // FAMILY, 5.3 -> 5.6. Priced in pricing.ts at 0.2/1.2, i.e. 10x cheaper than
-  // terra; routing `cheap` to terra would defeat the tier. Never silently fall
-  // back at dispatch time.
+  // restore the spark id. gpt-6-luna also dispatched successfully twice on
+  // 2026-09-23; the earlier claim that it 400s is stale. Keep the existing
+  // cheap tier on gpt-5.6-luna (priced at 0.2/1.2) pending a routing decision.
   cheap: { model: "gpt-5.6-luna", effort: "low" },
   default: { model: "gpt-5.6-terra", effort: "high" },
   paranoid: { model: "gpt-6-astra", effort: "high" },

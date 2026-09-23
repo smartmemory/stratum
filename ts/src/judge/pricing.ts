@@ -1,3 +1,5 @@
+import { modelIdentity } from "../connectors/base.js";
+
 export interface ModelPricing {
   input: number;
   output: number;
@@ -29,8 +31,19 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.free
   "gpt-5.6-luna": { input: 0.2, output: 1.2, cacheRead: 0.02 },
   "gpt-5.6-terra": { input: 2, output: 12, cacheRead: 0.2 },
   "gpt-5.6-sol": { input: 4, output: 20, cacheRead: 0.4 },
+  // Source: OpenAI 2026-09-22 announcement; not yet checked against LiteLLM.
+  // cacheRead is INFERRED at 0.1x input for these two models.
+  "gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2 },
+  "gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 },
   "gpt-6-astra": { input: 10, output: 50, cacheRead: 1 },
 });
+
+/** Retired upstream 2026-09-16; retained in MODEL_PRICING for historical usage. */
+export const RETIRED_MODELS: ReadonlySet<string> = new Set(["gpt-5.3-codex-spark"]);
+
+export function dispatchableModels(): string[] {
+  return Object.keys(MODEL_PRICING).filter((model) => !RETIRED_MODELS.has(model)).sort();
+}
 
 export interface PricedTokenUsage {
   inputTokens?: number;
@@ -40,8 +53,7 @@ export interface PricedTokenUsage {
 }
 
 export function baseModel(model: string): string {
-  const slash = model.lastIndexOf("/");
-  return slash === -1 ? model : model.slice(0, slash);
+  return modelIdentity(model).model;
 }
 
 /**

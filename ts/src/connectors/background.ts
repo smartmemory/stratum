@@ -166,6 +166,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     ? backgroundSandboxAudit(sandboxPolicy, options)
     : undefined);
   assertCodexSandboxAllowed(sandboxMode, options.env ?? process.env);
+  const model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
   const streamPath = join(runDir, "stream.jsonl");
@@ -177,7 +178,6 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600 }),
     writeFile(inputPath, withSandboxPreamble(options.prompt, sandboxMode), { encoding: "utf8", mode: 0o600 }),
   ]);
-  const model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
   const command = options.command ?? codexCommand(model, options.cwd, sandboxMode, {
     networkAccess: sandboxPolicy.networkAccess,
     writableRoots: sandboxPolicy.writableRoots,

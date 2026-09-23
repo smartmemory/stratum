@@ -33,7 +33,7 @@ async function harness(agent: NonNullable<McpDependencies["runAgent"]>) {
   });
   return {
     call: () => dispatcher.call("stratum_agent_run", {
-      agent: "codex", prompt: "test", cwd: root, model: "gpt-5",
+      agent: "codex", prompt: "test", cwd: root, model: "gpt-5.6-terra",
       cancellationId: randomUUID(), flow: { runId: planned.runId },
     }),
     meta: async () => {
