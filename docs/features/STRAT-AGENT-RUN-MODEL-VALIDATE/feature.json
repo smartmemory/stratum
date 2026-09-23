@@ -1,10 +1,39 @@
 {
   "code": "STRAT-AGENT-RUN-MODEL-VALIDATE",
   "description": "stratum_agent_run validates model/effort/agent against the runtime allowlist and fails fast naming valid values, instead of spending a dispatch to surface a vendor 400",
-  "status": "IN_PROGRESS",
+  "status": "COMPLETE",
   "phase": "Standalone Tickets",
   "created": "2026-09-15",
   "updated": "2026-09-23",
   "complexity": "S",
-  "position": 4
+  "position": 4,
+  "completions": [
+    {
+      "completion_id": "STRAT-AGENT-RUN-MODEL-VALIDATE:13581c43b1848592d15b87ca69f3a3f46cec90ea",
+      "feature_code": "STRAT-AGENT-RUN-MODEL-VALIDATE",
+      "commit_sha": "13581c43b1848592d15b87ca69f3a3f46cec90ea",
+      "commit_sha_short": "13581c43",
+      "tests_pass": true,
+      "files_changed": [
+        "CHANGELOG.md",
+        "ts/src/connectors/background.ts",
+        "ts/src/connectors/base.ts",
+        "ts/src/connectors/codex.ts",
+        "ts/src/connectors/runner.ts",
+        "ts/src/judge/judged.ts",
+        "ts/src/judge/pricing.ts",
+        "ts/src/mcp/server.ts",
+        "ts/tests/connectors/codex.test.ts",
+        "ts/tests/connectors/model-validation.test.ts",
+        "ts/tests/connectors/runner.test.ts",
+        "ts/tests/judge/pricing.test.ts",
+        "ts/tests/mcp/flow_cancel_fast_exit.test.ts",
+        "ts/tests/mcp/model-validation.test.ts"
+      ],
+      "recorded_at": "2026-09-23T14:38:07.066Z",
+      "recorded_by": "mcp:agent",
+      "notes": "Design 0ce69f4 (astra design gate clean in 2 rounds), impl cc37cfd, review fix 13581c4; astra impl review clean in round 2. Full suite at 13581c4: 1798 passed / 3 skipped / 1 failed — tests/mcp/p5.test.ts 'stratum watch' ENOTEMPTY on temp-dir teardown under load avg ~5.5; passes 24/24 isolated; unrelated to model validation. Follow-up outside scope: compose/server/model-tiers.js:40 fast tier points at retired gpt-5.3-codex-spark."
+    }
+  ],
+  "commit_sha": "13581c43b1848592d15b87ca69f3a3f46cec90ea"
 }
