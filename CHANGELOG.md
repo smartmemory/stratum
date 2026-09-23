@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **STRAT-DISTILL-APPLY S3: asset adapter — staged distill drafts can be installed, reverted and
+  reconciled** (library only; CLI verbs land in S4). `ts/src/distill/apply.ts` plugs into the
+  S1 core with four deterministic critics: structural validity (strict frontmatter, the
+  `disable-model-invocation` marker, 16 KB byte cap, subagents refused in v1), behavioral
+  harmlessness, semantic consistency (re-harvests every cited transcript with no age window and
+  compares all seven step fields plus `cwd`, so an edited, deleted or rehashed-row forgery fails
+  closed), and subset-marginal-gain (no name/digest collision across the three `.claude` dirs).
+  Non-`workspace` sources need `trustSource`, and `workspace` claims are re-derived
+  independently because the identity hashes are unkeyed. A symlinked `.claude` is refused.
+  Gated by `STRATUM_DISTILL_APPLY_ENABLED`, independent of the learn flag. Shared core changes:
+  reconcile now takes the same locks as apply/revert (it could previously roll back an
+  in-flight apply), and asset target reads fail closed on anything but `ENOENT`. A settled
+  apply stays a silent no-op in reconcile: editing an installed file afterwards (for example to
+  promote a draft) is a normal edit, not divergence.
+
 - **STRAT-DISTILL-APPLY S1: the learn apply transaction is now a candidate-agnostic core.**
   `ts/src/apply/protocol.ts` holds apply / revert / ledger-receipt / reconcile / abort behind an
   adapter (critics, admission, journal shape, locks, guard registration, target paths);
