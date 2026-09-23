@@ -78,9 +78,9 @@ describe("tagged frozen-contract shape grammar", () => {
 });
 
 describe("STRAT-LEARN-COST frozen contract declarations", () => {
-  it("freezes surface 23 and rejects undeclared nested usage-report keys", async () => {
+  it("freezes surface 24 and rejects undeclared nested usage-report keys", async () => {
     const surface = await mcpSurface();
-    expect(surface.surface).toBe(23);
+    expect(surface.surface).toBe(24);
     expect(surface.tools.stratum_usage_report).toBeDefined();
     await expect(assertToolRequest("stratum_usage_report", {
       runId: "run-1",

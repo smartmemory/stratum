@@ -1,5 +1,5 @@
 {
-  "surface": 23,
+  "surface": 24,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -1428,6 +1428,7 @@
               "targetKind": "string",
               "targetPath": "string",
               "scope": {
+                "sourceMode": "string",
                 "workspaceRoot": "string",
                 "transcriptProjectDir": "string",
                 "observedCwds": {
@@ -1543,7 +1544,7 @@
           "message": "string"
         }
       },
-      "description": "Extract recurring workflows from Claude transcripts into immutable asset drafts for review. Requires an explicit workspace_root; project_dir selects the transcript source. Defaults: window_days=30, min_count=2, write=true. Use write=false to preview. Stages only to .stratum/distill/candidates.jsonl; never applies drafts."
+      "description": "Extract recurring workflows from Claude transcripts into immutable distill-2.1 asset drafts for review. Requires an explicit workspace_root; project_dir selects the transcript source. Defaults: window_days=30, min_count=2, write=true. Use write=false to preview. Stages only to .stratum/distill/candidates.jsonl; never applies drafts; applied is always false. Applying, reverting, and reconciling assets are CLI-only operations."
     }
   }
 }
