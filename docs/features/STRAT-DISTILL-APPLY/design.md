@@ -10,6 +10,7 @@
 - Admission gate this is the v1 seam for: `../STRAT-ADMIT/design.md` (guardrail 5; §2.3 subset admission, §2.4 lineage are explicitly NOT built here)
 - Guard primitive: `ts/src/guard/transition.ts` (`registerGuard`, `guardTransition`), `ts/src/guard/lock.ts` (`resourceLock`)
 - Guardrails 1–5 and their rationale: Appendix A below (unchanged from the 2026-08 stub)
+- Blueprint (implementation grounding, and the verified corrections to this design — read its `## Corrections` before implementing): [`blueprint.md`](/Users/ruze/reg/my/forge/stratum/docs/features/STRAT-DISTILL-APPLY/blueprint.md)
 
 ---
 
@@ -148,7 +149,7 @@ The golden flow mines a fixture project dir, so it exercises the `--trust-source
 
 ### D7 — Allowlist, scope, immutable core (guardrails 1, 4)
 
-**Locking:** the asset adapter holds `resourceLock("distill-pool-<sha(realpath(root))>")` across pool listing, admission and write, and inside it the target lock `distill-target-<sha>` (same nesting order everywhere; `resourceLock` is the cross-process primitive `apply.ts:364` already uses). Revert and reconcile take the same pair.
+**Locking:** the asset adapter holds `resourceLock("distill-pool-<sha(realpath(root))>")` across pool listing, admission and write, and inside it the target lock `distill-target-<sha>` (same nesting order everywhere; `resourceLock` is the cross-process primitive (`ts/src/guard/lock.ts:385`) that `apply.ts:368` (apply) and `:552` (revert) already use). Revert and reconcile take the same pair.
 
 `assertAllowlisted` for assets: realpath of the deepest existing ancestor must sit under realpath(`<root>/.claude/<skills|agents|commands>`), the `.claude` dir itself must resolve inside the workspace (same symlink defenses as `apply.ts:275-296`), file must be `.md`, and for skills the parent dir name must equal `name`. Project scope only; no user/global promotion in v1 (guardrail 1). `ts/src/{guard,judge}`, specs, `docs/judgment` are outside the allowlist by construction and additionally on the HAZARDS denylist as content.
 
