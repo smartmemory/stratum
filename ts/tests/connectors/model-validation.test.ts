@@ -13,8 +13,8 @@ describe("dispatch model validation", () => {
   it("rejects unknown ids with the sorted accepted list", () => {
     expect(() => codexModelWithEffort("typo")).toThrow(`Unknown Codex model "typo"; accepted models: ${accepted.join(", ")}`);
   });
-  it("rejects retired ids distinctly", () => {
-    expect(() => codexModelWithEffort("gpt-5.3-codex-spark/low")).toThrow('"gpt-5.3-codex-spark" retired upstream 2026-09-16');
+  it("rejects retired ids distinctly with the sorted accepted list", () => {
+    expect(() => codexModelWithEffort("gpt-5.3-codex-spark/low")).toThrow(`Codex model "gpt-5.3-codex-spark" retired upstream 2026-09-16; accepted models: ${accepted.join(", ")}`);
   });
   it.each(["chatgpt/gpt-5.3-codex-spark", "openai/gpt-6-sol/high"])("explains bare ids for %s", (model) => {
     expect(() => codexModelWithEffort(model, "high")).toThrow("provider-prefixed ids are not supported; pass the bare model id");

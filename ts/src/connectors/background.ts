@@ -11,7 +11,7 @@ import { finiteNonnegative, modelIdentity } from "./base.js";
 import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
-import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, codexModelWithEffort, defaultCodexModel, withSandboxPreamble } from "./codex.js";
+import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, resolveCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
 import { normalizePeerLabel, peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
 import { createWorkerPeerLifecycle } from "./peer-worker-lifecycle.js";
@@ -166,7 +166,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     ? backgroundSandboxAudit(sandboxPolicy, options)
     : undefined);
   assertCodexSandboxAllowed(sandboxMode, options.env ?? process.env);
-  const model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
+  const model = resolveCodexModel(options.model, options.effort);
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
   const streamPath = join(runDir, "stream.jsonl");

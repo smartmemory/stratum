@@ -1,3 +1,4 @@
+import { resolveCodexModel } from "../connectors/codex.js";
 import { distillTool } from "../distill/runner.js";
 import { normalizePeerLabel } from "../connectors/peer-registry.js";
 import { linkAbort, teardownDeadline } from "../connectors/cancellation.js";
@@ -186,6 +187,12 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
         const agent = request.agent;
         if (tool === "stratum_agent_run" && agent !== "codex" && agent !== "claude") {
           throw await inputValidationError("agent", `Unknown agent ${JSON.stringify(agent)}; expected codex or claude`);
+        }
+        if (tool === "stratum_agent_run" && agent === "codex") {
+          try { resolveCodexModel(optionalString(request, "model"), optionalString(request, "effort")); }
+          catch (error) {
+            throw await inputValidationError("model", error instanceof Error ? error.message : String(error));
+          }
         }
         if (tool === "stratum_agent_run" && request.peerLabel !== undefined) {
           if (request.background !== true) throw await inputValidationError("peerLabel", "peerLabel is background-only");

@@ -222,7 +222,7 @@ export class CodexConnector {
   private readonly onSpawn: ((pid: number) => void) | undefined;
 
   constructor(options: CodexConnectorOptions = {}) {
-    this.model = codexModelWithEffort(options.model ?? (options.effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), options.effort);
+    this.model = resolveCodexModel(options.model, options.effort);
     this.signal = options.signal;
     this.cwd = options.cwd ?? process.cwd();
     this.sandboxMode = options.sandboxMode ?? "read-only";
@@ -680,12 +680,17 @@ function stdoutOverrunError(limit: number): Error {
   );
 }
 
+/** Resolve request/default model and effort identically before any dispatch side effects. */
+export function resolveCodexModel(model?: string, effort?: string): string {
+  return codexModelWithEffort(model ?? (effort === undefined ? defaultCodexModel() : modelIdentity(defaultCodexModel()).model), effort);
+}
+
 export function codexModelWithEffort(model: string, effort?: string): string {
   const identity = modelIdentity(model);
-  if (RETIRED_MODELS.has(identity.model)) {
-    throw new Error(`Codex model ${JSON.stringify(identity.model)} retired upstream 2026-09-16`);
-  }
   const accepted = dispatchableModels();
+  if (RETIRED_MODELS.has(identity.model)) {
+    throw new Error(`Codex model ${JSON.stringify(identity.model)} retired upstream 2026-09-16; accepted models: ${accepted.join(", ")}`);
+  }
   if (!accepted.includes(identity.model)) {
     const hint = identity.model.includes("/")
       ? "; provider-prefixed ids are not supported; pass the bare model id"
