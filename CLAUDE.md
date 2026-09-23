@@ -16,23 +16,9 @@ recovery is `git show python-legacy:<file>`. Never delete that branch.
 UI and pipeline monitoring live in **Compose** (`/Users/ruze/reg/my/forge/compose/`),
 which drives stratum via the TS CLI/MCP contract.
 
-## Repo Layout
-
-```
-ts/                    — TypeScript engine (sole engine)
-  src/
-    engine/            — flow state, execution, ensure postconditions
-    mcp/               — MCP server surface
-    cli/               — CLI bins (node ≥24; erasable-syntax type stripping)
-    guard/ judge/ parallel/ connectors/ speckit/ ir/ ...
-docs/                  — Stratum-level docs
-  plans/               — Implementation plans + epic ledgers
-  features/            — Feature specs
-  app/                 — Archived coder-compose docs (brainstorm, PRD, decisions, journal)
-ROADMAP.md             — Canonical roadmap (all tracks)
-```
-
 ## Development
+
+CLI bins require node ≥24 (they rely on erasable-syntax type stripping).
 
 ```bash
 cd ts && ./node_modules/.bin/vitest run   # full TS suite; pnpm not on PATH — use ./node_modules/.bin/
