@@ -275,6 +275,7 @@ export async function revertApply<C, E, J extends BaseJournalEntry<E>>(
   if (!adapter.enabled(options)) throw new ApplyRefused("apply is disabled");
   const snapshot = (await readJournal(adapter, workspaceRoot)).find((item) => item.applyId === applyId);
   if (snapshot === undefined) throw new ApplyError(`no apply journal for ${applyId}`);
+  if (snapshot.state !== "applied") throw new ApplyError(`apply ${applyId} is ${snapshot.state}, not applied`);
   const target = await adapter.allowlist(workspaceRoot, snapshot.targetPath);
 
   await withLocks(adapter.locks(workspaceRoot, target), async () => {
