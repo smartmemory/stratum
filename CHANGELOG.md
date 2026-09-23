@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **STRAT-DISTILL-APPLY S4:** `stratum distill list`, `apply`, `revert`, and `reconcile` CLI verbs — install reviewed `distill-2.1` drafts behind `STRATUM_DISTILL_APPLY_ENABLED=1`, record guard-ledger receipts, support reversible asset creation, and keep MCP extraction staging-only (`applied: false`). MCP surface bumps to 24 to declare candidate `scope.sourceMode`.
+
 - **STRAT-DISTILL-APPLY S3: asset adapter — staged distill drafts can be installed, reverted and
   reconciled** (library only; CLI verbs land in S4). `ts/src/distill/apply.ts` plugs into the
   S1 core with four deterministic critics: structural validity (strict frontmatter, the
