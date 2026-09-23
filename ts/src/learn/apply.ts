@@ -1,12 +1,29 @@
-import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { guardTransition, noteLegacyDigestMatch, payloadDigestForVersion, registerGuard } from "../guard/transition.js";
-import { loadRegistry, readLedger, resourceDir } from "../guard/store.js";
-import { resourceLock } from "../guard/lock.js";
+import { realpathOrSelf, realpathThroughMissing } from "../apply/paths.js";
+import {
+  applyCandidate as protocolApplyCandidate,
+  journalPath as protocolJournalPath,
+  readJournal as protocolReadJournal,
+  ledgerReceipt as protocolLedgerReceipt,
+  revertApply as protocolRevertApply,
+  reconcile as protocolReconcile,
+  ApplyError,
+  ApplyRefused,
+  type ApplyAdapter,
+  type BaseJournalEntry,
+  type AdmissionResult as ProtocolAdmissionResult,
+  type ApplyOptions,
+  type AppliedResult,
+  type Receipt,
+  type ReconcileReport,
+} from "../apply/protocol.js";
 import type { FailureRecord } from "./harvest.js";
 import type { PatchCandidate } from "./candidate.js";
+
+export { ApplyError, ApplyRefused };
+export type { ApplyOptions, AppliedResult, Receipt, ReconcileReport, JournalState } from "../apply/protocol.js";
 
 /**
  * The write half of the loop: admission, then a journalled, ledger-committed apply,
@@ -19,14 +36,6 @@ import type { PatchCandidate } from "./candidate.js";
  * ledger is hash-chained and is already the authorization record. Recovery therefore
  * asks the ledger what happened and treats the target and the journal as reconstructible.
  */
-
-export class ApplyError extends Error {}
-export class ApplyRefused extends ApplyError {}
-
-export interface ApplyOptions {
-  /** Default OFF (STRAT-GUARD / COMP-MCP-ENFORCE precedent). */
-  enabled?: boolean;
-}
 
 function isEnabled(options: ApplyOptions): boolean {
   if (options.enabled === true) return true;
@@ -49,11 +58,8 @@ export interface Verdict {
   findings: string[];
 }
 
-export interface AdmissionResult {
-  admitted: boolean;
+export interface AdmissionResult extends ProtocolAdmissionResult {
   verdicts: Verdict[];
-  candidateDigest: string;
-  poolDigest: string;
 }
 
 /**
@@ -203,29 +209,8 @@ export async function admit(candidate: PatchCandidate, pool: string): Promise<Ad
 // Journal
 // ---------------------------------------------------------------------------
 
-export type JournalState =
-  | "prepared"
-  | "applying"
-  | "applied"
-  | "reverting"
-  | "reverted"
-  | "aborted";
-
-export interface JournalEntry {
-  applyId: string;
-  state: JournalState;
-  clusterId: string;
-  revisionId: string;
-  targetPath: string;
-  before: string;
-  beforeDigest: string;
-  after: string;
-  afterDigest: string;
-  existedBefore: boolean;
-  evidence: FailureRecord[];
+export interface JournalEntry extends BaseJournalEntry<FailureRecord> {
   verdicts: Verdict[];
-  ledgerRef?: string;
-  at: string;
 }
 
 export function journalDir(workspaceRoot: string): string {
@@ -233,38 +218,12 @@ export function journalDir(workspaceRoot: string): string {
 }
 
 export function journalPath(workspaceRoot: string, applyId: string): string {
-  return join(journalDir(workspaceRoot), `${applyId}.json`);
+  return protocolJournalPath(memoryApplyAdapter, workspaceRoot, applyId);
 }
 
-export async function readJournal(workspaceRoot: string): Promise<JournalEntry[]> {
-  let names: string[];
-  try {
-    names = (await readdir(journalDir(workspaceRoot))).filter((n) => n.endsWith(".json")).sort();
-  } catch {
-    return [];
-  }
-  const out: JournalEntry[] = [];
-  for (const name of names) {
-    try {
-      out.push(JSON.parse(await readFile(join(journalDir(workspaceRoot), name), "utf8")) as JournalEntry);
-    } catch {
-      // A corrupt journal record must not hide the others.
-    }
-  }
-  return out;
+export function readJournal(workspaceRoot: string): Promise<JournalEntry[]> {
+  return protocolReadJournal(memoryApplyAdapter, workspaceRoot);
 }
-
-async function writeJournal(workspaceRoot: string, entry: JournalEntry): Promise<void> {
-  const path = journalPath(workspaceRoot, entry.applyId);
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify(entry, null, 2), "utf8");
-  await rename(temporary, path);
-}
-
-// ---------------------------------------------------------------------------
-// Apply
-// ---------------------------------------------------------------------------
 
 /**
  * G4: the target must sit inside the project's own learn directory — checked against the
@@ -295,31 +254,6 @@ async function assertAllowlisted(workspaceRoot: string, targetPath: string): Pro
   return real;
 }
 
-async function realpathOrSelf(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
-}
-
-/** realpath of the deepest existing ancestor, with the missing tail re-attached. */
-async function realpathThroughMissing(path: string): Promise<string> {
-  const tail: string[] = [];
-  let current = resolve(path);
-  for (;;) {
-    try {
-      return join(await realpath(current), ...tail);
-    } catch {
-      const parent = dirname(current);
-      // Reached the filesystem root without finding anything real.
-      if (parent === current) return resolve(path);
-      tail.unshift(current.slice(parent.length + 1));
-      current = parent;
-    }
-  }
-}
-
 /** `after` is a pure function of before + rendered content + insertion. */
 export function renderAfter(before: string, candidate: PatchCandidate): string {
   const { content, insertion } = candidate.rendered;
@@ -342,389 +276,79 @@ export function renderAfter(before: string, candidate: PatchCandidate): string {
   return lines.join("\n").replace(/\n*$/, "\n");
 }
 
-export interface AppliedResult {
-  applyId: string;
-  ledgerRef: string;
-  targetPath: string;
-}
-
-export async function applyCandidate(
-  candidate: PatchCandidate,
-  options: ApplyOptions,
-): Promise<AppliedResult> {
+export async function applyCandidate(candidate: PatchCandidate, options: ApplyOptions): Promise<AppliedResult> {
   if (!isEnabled(options)) {
     throw new ApplyRefused(
       "learn apply is disabled; enable it explicitly (STRATUM_LEARN_APPLY_ENABLED=1)",
     );
   }
-  verifyIdentity(candidate);
-  const workspaceRoot = candidate.scope.workspaceRoot;
-  const target = await assertAllowlisted(workspaceRoot, candidate.targetPath);
-
-  // Serialize on the TARGET, not the apply: two candidates racing on one file could
-  // otherwise both snapshot the same `before`, both pass the digest check, overwrite
-  // each other, and both commit — leaving one ledger entry describing bytes that are
-  // no longer on disk.
-  return resourceLock(`learn-target-${sha(target).slice(0, 32)}`, async () => {
-    // An unreconciled journal means the target's true state is unknown; applying on top
-    // would bury the ambiguity.
-    for (const entry of await readJournal(workspaceRoot)) {
-      if (entry.targetPath === target && (entry.state === "prepared" || entry.state === "applying")) {
-        throw new ApplyError(`target has an unreconciled apply (${entry.applyId}); reconcile first`);
-      }
-    }
-
-    const { content: before, existed } = await readTarget(target);
-    const admission = await admit(candidate, before);
-    if (!admission.admitted) {
-      const failed = admission.verdicts.filter((v) => !v.passes);
-      throw new ApplyRefused(
-        `admission refused: ${failed.map((v) => `${v.critic} (${v.findings.join("; ")})`).join(", ")}`,
-      );
-    }
-
-    const after = renderAfter(before, candidate);
-    // UNIQUE PER ATTEMPT. A deterministic id would reuse the guard resource when the
-    // same revision is applied again after a revert, colliding with that resource's
-    // terminal state and its spent idempotency keys.
-    const applyId = sha(randomUUID()).slice(0, 32);
-
-    // 1. Prepare.
-    const entry: JournalEntry = {
-      applyId,
-      state: "prepared",
-      clusterId: candidate.clusterId,
-      revisionId: candidate.revisionId,
-      targetPath: target,
-      before,
-      beforeDigest: sha(before),
-      after,
-      afterDigest: sha(after),
-      existedBefore: existed,
-      evidence: candidate.evidence,
-      verdicts: admission.verdicts,
-      at: new Date().toISOString(),
-    };
-    await writeJournal(workspaceRoot, entry);
-
-    // 2. Transition to `applying`, committing the ledger to this journal record.
-    const resourceId = guardResource(applyId);
-    await registerGuard(
-      resourceId,
-      // `applied` is NOT terminal: revert is a legal, ledger-recorded edge out of it.
-      // Registering it terminal made every revert an illegal transition that threw and
-      // was swallowed, leaving the ledger claiming `applied` over reverted bytes.
-      { staged: ["applying", "aborted"], applying: ["applied", "aborted"], applied: ["reverted"], aborted: [], reverted: [] },
-      {},
-      "staged",
-      ["aborted", "reverted"],
-    );
-    await guardTransition(resourceId, "staged", "applying", {
-      artifacts: { journal_digest: sha(JSON.stringify(entry)), revision_id: candidate.revisionId },
-      idempotencyKey: `${applyId}:applying`,
-    });
-    await writeJournal(workspaceRoot, { ...entry, state: "applying" });
-
-    // 3. Write, only if the target still holds what we snapshotted.
-    const current = await readTarget(target);
-    if (sha(current.content) !== entry.beforeDigest) {
-      throw new ApplyError("target changed between snapshot and write; aborting");
-    }
-    await atomicWriteFile(target, after);
-
-    // 4. Commit. This ledger append is the moment the apply becomes real.
-    const committed = await guardTransition(resourceId, "applying", "applied", {
-      artifacts: { after_digest: entry.afterDigest },
-      modifiedFiles: [target],
-      idempotencyKey: `${applyId}:applied`,
-    });
-
-    // 5. Finish. Bookkeeping; its loss is not a correctness problem, because recovery
-    //    reads the LEDGER rather than this field.
-    await writeJournal(workspaceRoot, { ...entry, state: "applied", ledgerRef: committed.ledger_ref });
-
-    return { applyId, ledgerRef: committed.ledger_ref, targetPath: target };
-  });
+  return protocolApplyCandidate(memoryApplyAdapter, candidate, { ...options, enabled: true });
 }
 
-/** A ledger receipt, or why we could not read one. */
-export type Receipt =
-  | { kind: "committed"; state: "applied" | "reverted" }
-  | { kind: "absent" }
-  | { kind: "unreadable" };
-
-/**
- * What the LEDGER says about an apply, bound to THIS journal record.
- *
- * A state string alone is not enough: it would let a modified journal borrow an
- * unrelated `applied` receipt and write different bytes, or a different allowlisted
- * target, under it. So the receipt must match the transition payload we would have
- * committed for exactly this entry.
- */
 export function ledgerReceipt(entry: JournalEntry): Receipt {
-  const resource = guardResource(entry.applyId);
-  let entries;
-  try {
-    entries = readLedger(resource);
-  } catch {
-    // Corruption must never be read as "nothing committed" — that answer authorizes a
-    // destructive rollback. Diverge instead. Every read failure is treated this way,
-    // not just LedgerCorrupt: an unexpected error tells us just as little.
-    return { kind: "unreadable" };
-  }
-
-  // readLedger TRUNCATES at a malformed trailing line rather than throwing (a partial
-  // append is normal). Truncation and "nothing was ever written" are indistinguishable
-  // from the returned array, and only one of them may authorize a rollback — so compare
-  // against the raw line count.
-  let rawLines = 0;
-  try {
-    const raw = readFileSync(join(resourceDir(resource), "ledger.jsonl"), "utf8");
-    rawLines = raw.split("\n").filter((line) => line.trim().length > 0).length;
-  } catch {
-    rawLines = 0; // no ledger file at all
-  }
-  if (rawLines > entries.length) return { kind: "unreadable" };
-  if (entries.length === 0) return { kind: "absent" };
-
-  let policyChecksum: string;
-  try {
-    const registry = loadRegistry(resource);
-    if (registry === null) return { kind: "unreadable" };
-    policyChecksum = registry.checksum;
-  } catch {
-    return { kind: "unreadable" };
-  }
-
-  let receipt: Receipt = { kind: "absent" };
-  for (const row of entries) {
-    const dict = row.toDict();
-    const appliedDigest = payloadDigestForVersion(
-      "applying", "applied", { after_digest: entry.afterDigest }, [entry.targetPath], "agent", policyChecksum,
-      row.payload_digest_version,
-    );
-    const revertedDigest = payloadDigestForVersion(
-      "applied", "reverted", { reverted_to: entry.beforeDigest }, [entry.targetPath], "agent", policyChecksum,
-      row.payload_digest_version,
-    );
-    if (dict.to_state === "applied" && dict.payload_digest === appliedDigest) {
-      if (row.payload_digest_version === 1) noteLegacyDigestMatch(resource);
-      receipt = { kind: "committed", state: "applied" };
-    }
-    if (dict.to_state === "reverted" && dict.payload_digest === revertedDigest) {
-      if (row.payload_digest_version === 1) noteLegacyDigestMatch(resource);
-      // A revert receipt wins: it is strictly later in this resource's lifecycle.
-      return { kind: "committed", state: "reverted" };
-    }
-  }
-  return receipt;
+  return protocolLedgerReceipt(memoryApplyAdapter, entry);
 }
 
-/** The guard's current state, for choosing a legal abort edge. */
-function guardState(applyId: string): string | null {
-  try {
-    const entries = readLedger(guardResource(applyId));
-    const last = entries[entries.length - 1];
-    return last === undefined ? "staged" : last.toDict().to_state;
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Revert (compare-and-swap)
-// ---------------------------------------------------------------------------
-
-export async function revertApply(
-  applyId: string,
-  workspaceRoot: string,
-  options: ApplyOptions,
-): Promise<void> {
+export async function revertApply(applyId: string, workspaceRoot: string, options: ApplyOptions): Promise<void> {
   if (!isEnabled(options)) throw new ApplyRefused("learn apply is disabled");
-  const entry = (await readJournal(workspaceRoot)).find((e) => e.applyId === applyId);
-  if (entry === undefined) throw new ApplyError(`no apply journal for ${applyId}`);
-  if (entry.state !== "applied") throw new ApplyError(`apply ${applyId} is ${entry.state}, not applied`);
-
-  // Revalidate the journalled path: a journal is a plain file, and revert writes to
-  // whatever it names.
-  const target = await assertAllowlisted(workspaceRoot, entry.targetPath);
-
-  await resourceLock(`learn-target-${sha(target).slice(0, 32)}`, async () => {
-    const current = await readTarget(target);
-    // Compare-and-swap. Restoring a snapshot over content we did not write destroys
-    // whatever landed after this apply — a data-loss bug dressed as a safety feature.
-    if (sha(current.content) !== entry.afterDigest) {
-      throw new ApplyError(
-        `target has changed since apply ${applyId} (out-of-band edit or a stacked apply); ` +
-          "revert refused — resolve explicitly or revert the newer apply first",
-      );
-    }
-    // `reverting` is durable BEFORE either the ledger or the bytes move, so every crash
-    // window below lands on a journal state reconciliation can actually see.
-    await writeJournal(workspaceRoot, { ...entry, state: "reverting" });
-    await guardTransition(guardResource(applyId), "applied", "reverted", {
-      artifacts: { reverted_to: entry.beforeDigest },
-      modifiedFiles: [target],
-      idempotencyKey: `${applyId}:reverted`,
-    });
-    await restore(target, entry);
-    await writeJournal(workspaceRoot, { ...entry, state: "reverted" });
-  });
+  return protocolRevertApply(memoryApplyAdapter, applyId, workspaceRoot, { ...options, enabled: true });
 }
 
-/** Restore the target to its pre-apply state — including not existing at all. */
-async function restore(target: string, entry: JournalEntry): Promise<void> {
-  if (!entry.existedBefore) {
-    // The apply created this file. Leaving an empty one behind is not a restore.
-    await rm(target, { force: true });
-    return;
-  }
-  await atomicWriteFile(target, entry.before);
-}
-
-// ---------------------------------------------------------------------------
-// Recovery
-// ---------------------------------------------------------------------------
-
-export interface ReconcileReport {
-  completed: number;
-  rolledBack: number;
-  reverted: number;
-  diverged: number;
-}
-
-/**
- * Drive every non-terminal journal to a terminal state, using the LEDGER as the
- * authority and refusing to mutate whenever the evidence is ambiguous.
- */
-export async function reconcile(
-  workspaceRoot: string,
-  options: ApplyOptions,
-): Promise<ReconcileReport> {
+export async function reconcile(workspaceRoot: string, options: ApplyOptions): Promise<ReconcileReport> {
   if (!isEnabled(options)) throw new ApplyRefused("learn apply is disabled");
-  const report: ReconcileReport = { completed: 0, rolledBack: 0, reverted: 0, diverged: 0 };
+  return protocolReconcile(memoryApplyAdapter, workspaceRoot, { ...options, enabled: true });
+}
 
-  for (const entry of await readJournal(workspaceRoot)) {
-    const terminal = entry.state === "applied" || entry.state === "aborted" || entry.state === "reverted";
-    // `applied` is included below only when its receipt is missing — see the revert
-    // crash window, where the ledger says reverted but the journal still says applied.
-    if (terminal && entry.state !== "applied") continue;
-
-    let target: string;
+const memoryApplyAdapter: ApplyAdapter<PatchCandidate, FailureRecord, JournalEntry> = {
+  kind: "memory",
+  enabled: isEnabled,
+  workspaceRoot: (candidate) => candidate.scope.workspaceRoot,
+  targetPath: (candidate) => candidate.targetPath,
+  evidenceFor: (candidate) => candidate.evidence,
+  ids: (candidate) => ({ clusterId: candidate.clusterId, revisionId: candidate.revisionId }),
+  verifyIdentity,
+  allowlist: assertAllowlisted,
+  pool: async (_workspaceRoot, target) => {
     try {
-      target = await assertAllowlisted(workspaceRoot, entry.targetPath);
+      const content = await readFile(target, "utf8");
+      return { target: { content, existed: true }, admissionInput: content };
     } catch {
-      report.diverged += 1;
-      continue;
+      return { target: { content: "", existed: false }, admissionInput: "" };
     }
-
-    const receipt = ledgerReceipt(entry);
-    if (receipt.kind === "unreadable") {
-      // A corrupt ledger tells us nothing, and "nothing" must not authorize a write.
-      report.diverged += 1;
-      continue;
-    }
-    if (entry.state === "applied" && receipt.kind === "committed" && receipt.state === "applied") {
-      continue; // settled
-    }
-
-    const current = await readTarget(target);
-    const digest = sha(current.content);
-
-    // The revert committed. Finish it, whatever the journal claims.
-    if (receipt.kind === "committed" && receipt.state === "reverted") {
-      if (digest === entry.beforeDigest && current.existed === entry.existedBefore) {
-        await writeJournal(workspaceRoot, { ...entry, state: "reverted" });
-        report.reverted += 1;
-      } else if (digest === entry.afterDigest) {
-        await restore(target, entry);
-        await writeJournal(workspaceRoot, { ...entry, state: "reverted" });
-        report.reverted += 1;
-      } else {
-        report.diverged += 1;
-      }
-      continue;
-    }
-
-    if (receipt.kind === "committed" && receipt.state === "applied") {
-      if (digest === entry.afterDigest) {
-        await writeJournal(workspaceRoot, { ...entry, state: "applied" });
-        report.completed += 1;
-      } else if (digest === entry.beforeDigest) {
-        // The commit happened; the write did not survive. Redo it.
-        await atomicWriteFile(target, entry.after);
-        await writeJournal(workspaceRoot, { ...entry, state: "applied" });
-        report.completed += 1;
-      } else {
-        report.diverged += 1;
-      }
-      continue;
-    }
-
-    // No receipt. A `reverting` or `applied` journal here means the revert never
-    // committed, so the apply stands.
-    if (entry.state === "reverting" || entry.state === "applied") {
-      if (digest === entry.afterDigest) {
-        await writeJournal(workspaceRoot, { ...entry, state: "applied" });
-        report.completed += 1;
-      } else {
-        report.diverged += 1;
-      }
-      continue;
-    }
-
-    if (digest === entry.afterDigest) {
-      await restore(target, entry);
-      await abort(workspaceRoot, entry);
-      report.rolledBack += 1;
-    } else if (digest === entry.beforeDigest) {
-      await abort(workspaceRoot, entry);
-      report.rolledBack += 1;
-    } else {
-      // Neither state. Guessing here is how a recovery routine destroys data.
-      report.diverged += 1;
-    }
-  }
-
-  return report;
-}
-
-async function abort(workspaceRoot: string, entry: JournalEntry): Promise<void> {
-  // Terminating the journal alone would leave the guard non-terminal forever, and state
-  // is derived from the ledger. The legal edge depends on where the guard actually is:
-  // a crash right after registration leaves it at `staged`, not `applying`.
-  const from = guardState(entry.applyId);
-  if (from === "staged" || from === "applying") {
-    await guardTransition(guardResource(entry.applyId), from, "aborted", {
-      artifacts: { aborted: "reconcile" },
-      idempotencyKey: `${entry.applyId}:aborted`,
-    }).catch(() => {
-      // Idempotent by key; a racing reconcile must not block the rollback.
-    });
-  }
-  await writeJournal(workspaceRoot, { ...entry, state: "aborted" });
-}
-
-// ---------------------------------------------------------------------------
-
-function guardResource(applyId: string): string {
-  return `learn-apply-${applyId}`;
-}
-
-async function readTarget(path: string): Promise<{ content: string; existed: boolean }> {
-  try {
-    return { content: await readFile(path, "utf8"), existed: true };
-  } catch {
-    return { content: "", existed: false };
-  }
-}
-
-async function atomicWriteFile(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, content, "utf8");
-  await rename(temporary, path);
-}
+  },
+  admit: (candidate, pool) => admit(candidate, pool.admissionInput as string),
+  renderAfter,
+  journalDir,
+  journalEntry: (_candidate, base, _admission) => ({
+    applyId: base.applyId,
+    state: base.state,
+    clusterId: base.clusterId,
+    revisionId: base.revisionId,
+    targetPath: base.targetPath,
+    before: base.before,
+    beforeDigest: base.beforeDigest,
+    after: base.after,
+    afterDigest: base.afterDigest,
+    existedBefore: base.existedBefore,
+    evidence: base.evidence,
+    verdicts: base.verdicts as Verdict[],
+    at: base.at,
+  }),
+  guardResource: (applyId) => "learn-apply-" + applyId,
+  guardRegistration: () => ({
+    graph: { staged: ["applying", "aborted"], applying: ["applied", "aborted"], applied: ["reverted"], aborted: [], reverted: [] },
+    edgePredicates: {},
+    initial: "staged",
+    terminal: ["aborted", "reverted"],
+  }),
+  transitionArtifacts: (entry, edge) => {
+    if (edge === "applying") return { journal_digest: sha(JSON.stringify(entry)), revision_id: entry.revisionId };
+    if (edge === "applied") return { after_digest: entry.afterDigest };
+    if (edge === "reverted") return { reverted_to: entry.beforeDigest };
+    return { aborted: "reconcile" };
+  },
+  locks: (_workspaceRoot, target) => ["learn-target-" + sha(target).slice(0, 32)],
+};
 
 function sha(value: string): string {
   return createHash("sha256").update(value).digest("hex");

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **STRAT-DISTILL-APPLY S1: the learn apply transaction is now a candidate-agnostic core.**
+  `ts/src/apply/protocol.ts` holds apply / revert / ledger-receipt / reconcile / abort behind an
+  adapter (critics, admission, journal shape, locks, guard registration, target paths);
+  `ts/src/apply/paths.ts` holds the shared symlink-safe realpath helpers. `learn/apply.ts` is
+  now the memory adapter with its public functions kept as same-signature wrappers. Pure
+  refactor: memory journal bytes, receipts, guard inputs and both refusal messages are
+  unchanged — the existing 30-test `tests/learn/apply.test.ts` passes unmodified, and a new
+  characterization test pins the byte contract. The asset adapter plugs into this in S3.
+
 - **STRAT-DISTILL-APPLY S2: distill staging moves to `distill-2.1`.** Staged asset candidates
   now target Claude Code's real discovery paths (`.claude/skills|agents|commands/`), record how
   their transcripts were selected (`scope.sourceMode`: `workspace` / `explicit-project` /
