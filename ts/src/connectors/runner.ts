@@ -1,3 +1,4 @@
+import { CODEX_REASONING_EFFORTS } from "./base.js";
 import { normalizePeerLabel } from "./peer-registry.js";
 import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { startBackgroundRun } from "./background.js";
@@ -168,7 +169,7 @@ export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "
     if (options.thinking !== undefined || options.allowedTools !== undefined || options.disallowedTools !== undefined) {
       throw new Error("Codex does not support Claude thinking/tool filters; select a Codex sandboxMode instead");
     }
-    if (options.effort !== undefined && !["minimal", "low", "medium", "high", "xhigh"].includes(options.effort)) {
+    if (options.effort !== undefined && !CODEX_REASONING_EFFORTS.includes(options.effort)) {
       throw new Error(`unsupported Codex reasoning effort ${JSON.stringify(options.effort)}`);
     }
   } else {

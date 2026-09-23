@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **STRAT-AGENT-RUN-MODEL-VALIDATE: Codex model ids are checked before dispatch.** Every Codex
+  run (foreground, background, flow step, Codex judge, and a `CODEX_MODEL` default) now passes
+  `codexModelWithEffort`'s allowlist check first: an unknown id fails naming the accepted ids,
+  a retired id (`gpt-5.3-codex-spark`) fails as "retired upstream 2026-09-16", and a
+  provider-prefixed id (`chatgpt/…`) is told to pass the bare model id — instead of spending a
+  dispatch to surface an opaque vendor 400. The allowlist IS `MODEL_PRICING` minus
+  `RETIRED_MODELS`, so a dispatchable model is always priced. Added `gpt-6-sol` (2/10) and
+  `gpt-6-luna` (0.10/0.50) from OpenAI's 2026-09-22 announcement (not yet checked against
+  LiteLLM; cache rates inferred at 0.1x). `modelIdentity` and `baseModel` now share one parse
+  rule (split on the last slash only when the suffix is a known effort), and the effort
+  vocabulary (`minimal|low|medium|high|xhigh`) is one shared constant. Background runs validate
+  before creating a run directory, so a rejected model leaves no orphaned prompt on disk.
+  `stratum_agent_run` rejects an `agent` other than `codex`/`claude` up front. Claude model
+  names are not validated (no local table; the SDK accepts aliases). MCP surface unchanged.
+
 - **STRAT-DISTILL-APPLY review round 1: three recovery fixes in the shared apply core** (affect
   `stratum learn` as well as `stratum distill`; two were inherited from the original memory
   apply). Reconcile and revert now re-read the journal entry under the pool/target locks, so a

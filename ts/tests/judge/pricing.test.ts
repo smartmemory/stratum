@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseModel, MODEL_PRICING, usdFromTokens } from "../../src/judge/pricing.js";
+import { baseModel, dispatchableModels, RETIRED_MODELS, MODEL_PRICING, usdFromTokens } from "../../src/judge/pricing.js";
 
 describe("judge pricing", () => {
   it.each([
@@ -17,13 +17,13 @@ describe("judge pricing", () => {
   // be priced, never what the judge may route to. Assert the judge tiers are all present
   // and priced rather than pinning the table closed.
   it("prices every judge tier", () => {
-    for (const model of ["gpt-5.3-codex-spark", "gpt-5.6-terra", "gpt-6-astra"]) {
+    for (const model of ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"]) {
       expect(usdFromTokens(model, { inputTokens: 1_000, outputTokens: 1_000 })).toBeGreaterThan(0);
     }
   });
 
   it("prices every model the codex connector may dispatch, so none reaches a consumer cost-unknown", () => {
-    for (const model of ["gpt-5.3-codex-spark", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"]) {
+    for (const model of dispatchableModels()) {
       expect(usdFromTokens(model, { inputTokens: 1_000, outputTokens: 1_000 })).toBeGreaterThan(0);
     }
   });
@@ -51,4 +51,12 @@ describe("judge pricing", () => {
     expect(usdFromTokens("unknown", { inputTokens: 100, outputTokens: 100 })).toBe(0);
     expect(usdFromTokens("gpt-5.6-sol/high", { inputTokens: -1, outputTokens: Number.NaN })).toBe(0);
   });
+});
+
+it("prices new models and excludes only retired models from dispatch", () => {
+  expect(MODEL_PRICING["gpt-6-sol"]).toEqual({ input: 2, output: 10, cacheRead: 0.2 });
+  expect(MODEL_PRICING["gpt-6-luna"]).toEqual({ input: 0.1, output: 0.5, cacheRead: 0.01 });
+  expect(RETIRED_MODELS.has("gpt-5.3-codex-spark")).toBe(true);
+  expect(dispatchableModels()).toEqual(Object.keys(MODEL_PRICING).filter(id => !RETIRED_MODELS.has(id)).sort());
+  expect(dispatchableModels()).not.toContain("gpt-5.3-codex-spark");
 });

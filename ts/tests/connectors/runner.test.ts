@@ -109,19 +109,19 @@ describe("provider settings are enforced at dispatch", () => {
   it("binds Claude thinking, effort and exact tool restrictions to the SDK", async () => {
     let received: Record<string, unknown> | undefined;
     const query: QueryFunction = async function* ({ options }) { received = options; yield { type: "result", subtype: "success", result: "ok" }; };
-    await runAgent({ agent: "claude", prompt: "p", thinking: { type: "adaptive" }, effort: "high", allowedTools: ["Read"], disallowedTools: ["Write"] }, { claudeQuery: query });
-    expect(received).toMatchObject({ thinking: { type: "adaptive" }, effort: "high", tools: ["Read", "ToolSearch"], disallowedTools: ["Write"] });
+    await runAgent({ agent: "claude", model: "custom-claude-alias", prompt: "p", thinking: { type: "adaptive" }, effort: "high", allowedTools: ["Read"], disallowedTools: ["Write"] }, { claudeQuery: query });
+    expect(received).toMatchObject({ model: "custom-claude-alias", thinking: { type: "adaptive" }, effort: "high", tools: ["Read", "ToolSearch"], disallowedTools: ["Write"] });
   });
   it("rejects unsupported provider options before execution", async () => {
     await expect(runAgent({ agent: "codex", prompt: "p", allowedTools: ["Read"] })).rejects.toThrow("does not support");
     await expect(runAgent({ agent: "codex", prompt: "p", thinking: { type: "adaptive" } })).rejects.toThrow("does not support");
     await expect(runAgent({ agent: "claude", prompt: "p", thinking: { type: "enabled", budgetTokens: -1 } })).rejects.toThrow("invalid Claude thinking");
     await expect(runAgent({ agent: "claude", prompt: "p", effort: "turbo" })).rejects.toThrow("unsupported Claude effort");
-    await expect(runAgent({ agent: "codex", prompt: "p", model: "gpt-5/high", effort: "low" })).rejects.toThrow("conflicts");
+    await expect(runAgent({ agent: "codex", prompt: "p", model: "gpt-5.6-terra/high", effort: "low" })).rejects.toThrow("conflicts");
   });
   it("binds explicit Codex effort into the actual CLI arguments", async () => {
     const spawn = fakeCodexSpawn();
-    await runAgent({ agent: "codex", prompt: "p", model: "gpt-5", effort: "low" }, { codexSpawn: spawn });
+    await runAgent({ agent: "codex", prompt: "p", model: "gpt-5.6-terra", effort: "low" }, { codexSpawn: spawn });
     expect(spawn).toHaveBeenCalledWith("codex", expect.arrayContaining(['model_reasoning_effort="low"']), expect.any(Object));
   });
 

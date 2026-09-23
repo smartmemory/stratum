@@ -183,6 +183,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
       let succeeded = false;
       let teardownFailure: Error | undefined;
       try {
+        const agent = request.agent;
+        if (tool === "stratum_agent_run" && agent !== "codex" && agent !== "claude") {
+          throw await inputValidationError("agent", `Unknown agent ${JSON.stringify(agent)}; expected codex or claude`);
+        }
         if (tool === "stratum_agent_run" && request.peerLabel !== undefined) {
           if (request.background !== true) throw await inputValidationError("peerLabel", "peerLabel is background-only");
           try { normalizePeerLabel(request.peerLabel); }
@@ -220,7 +224,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             registryId = await createForegroundRun({
               foreground: true,
               state: "starting",
-              agent: String(request.agent) as "claude" | "codex",
+              agent: agent as "claude" | "codex",
               cancellationId,
               serverPid: process.pid,
               ...(serverStartTime !== undefined ? { serverProcStartTime: serverStartTime } : {}),
@@ -336,7 +340,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             ? optionalArray(request, "disallowedTools")
             : undefined;
           const executed = await agentRun({
-            agent: string(request, "agent") as "claude" | "codex",
+            agent: agent as "claude" | "codex",
             ...(cancellationId !== undefined ? { ownProcessGroup: true } : {}),
             ...(registryId !== undefined ? {
               onSpawn: (pid: number) => {

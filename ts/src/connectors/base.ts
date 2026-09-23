@@ -81,12 +81,14 @@ export interface ConnectorEvent {
 
 export type ConnectorEventHandler = (event: ConnectorEvent) => void | Promise<void>;
 
+export const CODEX_REASONING_EFFORTS: readonly string[] = ["minimal", "low", "medium", "high", "xhigh"];
+
 export function modelIdentity(modelId: string): { model: string; effort?: string } {
-  const slash = modelId.indexOf("/");
+  const slash = modelId.lastIndexOf("/");
   if (slash < 0) return { model: modelId };
   const model = modelId.slice(0, slash);
   const effort = modelId.slice(slash + 1);
-  return effort ? { model, effort } : { model };
+  return CODEX_REASONING_EFFORTS.includes(effort) ? { model, effort } : { model: modelId };
 }
 
 export function finiteNonnegative(value: unknown): number {

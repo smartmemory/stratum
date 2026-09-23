@@ -5,10 +5,10 @@ import { delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { Codex, type CodexOptions, type ModelReasoningEffort, type ThreadEvent, type ThreadOptions, type TurnOptions } from "@openai/codex-sdk";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
-import { finiteNonnegative, modelIdentity, SMARTMEMORY_SCRUB_VARS } from "./base.js";
+import { CODEX_REASONING_EFFORTS, finiteNonnegative, modelIdentity, SMARTMEMORY_SCRUB_VARS } from "./base.js";
 import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
-import { usdFromTokens } from "../judge/pricing.js";
+import { dispatchableModels, RETIRED_MODELS, usdFromTokens } from "../judge/pricing.js";
 
 import { linkAbort, cancellationGraceMs, processTermination, requireProcessGroups } from "./cancellation.js";
 
@@ -535,7 +535,7 @@ function stringEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
 }
 
 function reasoningEffort(value: string): ModelReasoningEffort {
-  if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh") return value;
+  if (CODEX_REASONING_EFFORTS.includes(value)) return value as ModelReasoningEffort;
   throw new Error(`unsupported Codex reasoning effort ${JSON.stringify(value)}`);
 }
 
@@ -682,6 +682,16 @@ function stdoutOverrunError(limit: number): Error {
 
 export function codexModelWithEffort(model: string, effort?: string): string {
   const identity = modelIdentity(model);
+  if (RETIRED_MODELS.has(identity.model)) {
+    throw new Error(`Codex model ${JSON.stringify(identity.model)} retired upstream 2026-09-16`);
+  }
+  const accepted = dispatchableModels();
+  if (!accepted.includes(identity.model)) {
+    const hint = identity.model.includes("/")
+      ? "; provider-prefixed ids are not supported; pass the bare model id"
+      : "";
+    throw new Error(`Unknown Codex model ${JSON.stringify(identity.model)}; accepted models: ${accepted.join(", ")}${hint}`);
+  }
   if (effort !== undefined && identity.effort !== undefined && effort !== identity.effort) {
     throw new Error("Codex effort conflicts with the effort suffix in model");
   }
