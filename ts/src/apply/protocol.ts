@@ -144,7 +144,7 @@ export async function applyCandidate<C, E, J extends BaseJournalEntry<E>>(
 
   return withLocks(adapter.locks(workspaceRoot, target), async () => {
     for (const entry of await readJournal(adapter, workspaceRoot)) {
-      if (entry.targetPath === target && (entry.state === "prepared" || entry.state === "applying")) {
+      if (entry.targetPath === target && (entry.state === "prepared" || entry.state === "applying" || entry.state === "reverting")) {
         throw new ApplyError(`target has an unreconciled apply (${entry.applyId}); reconcile first`);
       }
     }
@@ -273,12 +273,14 @@ export async function revertApply<C, E, J extends BaseJournalEntry<E>>(
   adapter: ApplyAdapter<C, E, J>, applyId: string, workspaceRoot: string, options: ApplyOptions,
 ): Promise<void> {
   if (!adapter.enabled(options)) throw new ApplyRefused("apply is disabled");
-  const entry = (await readJournal(adapter, workspaceRoot)).find((item) => item.applyId === applyId);
-  if (entry === undefined) throw new ApplyError(`no apply journal for ${applyId}`);
-  if (entry.state !== "applied") throw new ApplyError(`apply ${applyId} is ${entry.state}, not applied`);
-  const target = await adapter.allowlist(workspaceRoot, entry.targetPath);
+  const snapshot = (await readJournal(adapter, workspaceRoot)).find((item) => item.applyId === applyId);
+  if (snapshot === undefined) throw new ApplyError(`no apply journal for ${applyId}`);
+  const target = await adapter.allowlist(workspaceRoot, snapshot.targetPath);
 
   await withLocks(adapter.locks(workspaceRoot, target), async () => {
+    const entry = (await readJournal(adapter, workspaceRoot)).find((item) => item.applyId === applyId);
+    if (entry === undefined) throw new ApplyError(`no apply journal for ${applyId}`);
+    if (entry.state !== "applied") throw new ApplyError(`apply ${applyId} is ${entry.state}, not applied`);
     const current = await readTarget(target, adapter.kind === "asset");
     if (sha(current.content) !== entry.afterDigest) {
       throw new ApplyError(
@@ -311,19 +313,23 @@ export async function reconcile<C, E, J extends BaseJournalEntry<E>>(
   if (!adapter.enabled(options)) throw new ApplyRefused("apply is disabled");
   const report: ReconcileReport = { completed: 0, rolledBack: 0, reverted: 0, diverged: 0 };
 
-  for (const entry of await readJournal(adapter, workspaceRoot)) {
-    const terminal = entry.state === "applied" || entry.state === "aborted" || entry.state === "reverted";
-    if (terminal && entry.state !== "applied") continue;
+  for (const snapshot of await readJournal(adapter, workspaceRoot)) {
+    if (snapshot.state === "aborted" || snapshot.state === "reverted") continue;
 
     let target: string;
     try {
-      target = await adapter.allowlist(workspaceRoot, entry.targetPath);
+      target = await adapter.allowlist(workspaceRoot, snapshot.targetPath);
     } catch {
       report.diverged += 1;
       continue;
     }
 
     await withLocks(adapter.locks(workspaceRoot, target), async () => {
+      // The pre-lock snapshot only identifies the work; another operation may
+      // have settled it while we waited for the pool/target locks.
+      const entry = (await readJournal(adapter, workspaceRoot)).find((item) => item.applyId === snapshot.applyId);
+      if (entry === undefined) { report.diverged += 1; return; }
+      if (entry.state === "aborted" || entry.state === "reverted") return;
       const receipt = ledgerReceipt(adapter, entry);
       if (receipt.kind === "unreadable") {
         report.diverged += 1;
@@ -339,7 +345,7 @@ export async function reconcile<C, E, J extends BaseJournalEntry<E>>(
         if (digest === entry.beforeDigest && current.existed === entry.existedBefore) {
           await writeJournal(adapter, workspaceRoot, { ...entry, state: "reverted" });
           report.reverted += 1;
-        } else if (digest === entry.afterDigest) {
+        } else if (digest === entry.afterDigest && current.existed) {
           await restore(target, entry);
           await writeJournal(adapter, workspaceRoot, { ...entry, state: "reverted" });
           report.reverted += 1;
@@ -350,10 +356,10 @@ export async function reconcile<C, E, J extends BaseJournalEntry<E>>(
       }
 
       if (receipt.kind === "committed" && receipt.state === "applied") {
-        if (digest === entry.afterDigest) {
+        if (digest === entry.afterDigest && current.existed) {
           await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
           report.completed += 1;
-        } else if (digest === entry.beforeDigest) {
+        } else if (digest === entry.beforeDigest && current.existed === entry.existedBefore) {
           await atomicWriteFile(target, entry.after);
           await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
           report.completed += 1;
@@ -364,7 +370,7 @@ export async function reconcile<C, E, J extends BaseJournalEntry<E>>(
       }
 
       if (entry.state === "reverting" || entry.state === "applied") {
-        if (digest === entry.afterDigest) {
+        if (digest === entry.afterDigest && current.existed) {
           await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
           report.completed += 1;
         } else {
@@ -373,11 +379,11 @@ export async function reconcile<C, E, J extends BaseJournalEntry<E>>(
         return;
       }
 
-      if (digest === entry.afterDigest) {
+      if (digest === entry.afterDigest && current.existed) {
         await restore(target, entry);
         await abort(adapter, workspaceRoot, entry);
         report.rolledBack += 1;
-      } else if (digest === entry.beforeDigest) {
+      } else if (digest === entry.beforeDigest && current.existed === entry.existedBefore) {
         await abort(adapter, workspaceRoot, entry);
         report.rolledBack += 1;
       } else {

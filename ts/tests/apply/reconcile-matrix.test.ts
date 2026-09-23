@@ -43,10 +43,10 @@ scenarios.push({ state: "applying", receipt: "truncated", target: "after", count
 const temporary: string[] = [];
 afterEach(async () => { setGuardsDir(GUARDS_DIR); await Promise.all(temporary.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function put(path: string, bytes: string) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes); }
-async function setup(h: Harness, scenario: Scenario, existed: boolean) {
+async function setup(h: Harness, scenario: Scenario, existed: boolean, before = existed ? "before\r\nexact\n" : "", after = "after\n") {
   const root = await realpath(await mkdtemp(join(tmpdir(), "reconcile-matrix-"))); temporary.push(root); setGuardsDir(join(root, ".stratum", "guard"));
   const base: BaseJournalEntry<unknown> = { applyId: "matrix", state: scenario.state, clusterId: "cluster", revisionId: "revision", targetPath: h.target(root),
-    before: existed ? "before\r\nexact\n" : "", beforeDigest: sha(existed ? "before\r\nexact\n" : ""), after: "after\n", afterDigest: sha("after\n"),
+    before, beforeDigest: sha(before), after, afterDigest: sha(after),
     existedBefore: existed, evidence: [], verdicts: [], at: "2026-09-23T00:00:00.000Z" };
   const entry = h.kind === "asset" ? { ...base, kind: "asset", lineage: { poolSnapshot: [], authoringInputsDigest: sha("inputs"), poolDigestAtAdmission: sha("[]") }, sourceMode: "workspace" } as AssetJournalEntry : base;
   const resource = h.resource(entry.applyId);
@@ -71,6 +71,51 @@ function runReconcileMatrix(h: Harness) {
         expect((await h.read(root))[0]!.state).toBe(s.finalState);
         if (s.finalTarget === "before" && !existed) await expect(readFile(entry.targetPath)).rejects.toMatchObject({ code: "ENOENT" });
         else expect(await readFile(entry.targetPath, "utf8")).toBe(s.finalTarget === "before" ? entry.before : s.finalTarget === "after" ? entry.after : "third");
+      });
+    }
+    for (const existedBefore of [false, true]) for (const existsNow of [false, true]) {
+      it(`committed apply with empty before: existed=${existedBefore}, current=${existsNow}`, async () => {
+        const s: Scenario = { state: "applying", receipt: "applied", target: "before", counter: "completed", finalState: "applied", finalTarget: "after" };
+        const { root, entry } = await setup(h, s, existedBefore, "");
+        if (existsNow) await put(entry.targetPath, "");
+        else await rm(entry.targetPath, { force: true });
+        const matches = existedBefore === existsNow;
+        expect(await h.reconcile(root)).toEqual({ completed: matches ? 1 : 0, rolledBack: 0, reverted: 0, diverged: matches ? 0 : 1 });
+        expect((await h.read(root))[0]!.state).toBe(matches ? "applied" : "applying");
+        if (matches || existsNow) expect(await readFile(entry.targetPath, "utf8")).toBe(matches ? entry.after : "");
+        else await expect(readFile(entry.targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    }
+    for (const receipt of ["absent", "applied", "reverted"] as const) {
+      it(`${receipt} receipt never mistakes a missing target for empty installed bytes`, async () => {
+        const s: Scenario = { state: "applying", receipt, target: "after", counter: "diverged", finalState: "applying", finalTarget: "third" };
+        const { root, entry } = await setup(h, s, true, "original", "");
+        await rm(entry.targetPath);
+        expect(await h.reconcile(root)).toEqual({ completed: 0, rolledBack: 0, reverted: 0, diverged: 1 });
+        expect((await h.read(root))[0]!.state).toBe("applying");
+        await expect(readFile(entry.targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    }
+    for (const state of ["applied", "reverting"] as const) {
+      it(`${state} without a receipt requires an existing after target`, async () => {
+        const s: Scenario = { state, receipt: "absent", target: "after", counter: "diverged", finalState: state, finalTarget: "third" };
+        const { root, entry } = await setup(h, s, true, "original", "");
+        await rm(entry.targetPath);
+        expect(await h.reconcile(root)).toEqual({ completed: 0, rolledBack: 0, reverted: 0, diverged: 1 });
+        expect((await h.read(root))[0]!.state).toBe(state);
+        await expect(readFile(entry.targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    }
+    for (const existedBefore of [false, true]) {
+      it(`uncommitted empty before requires matching existence: existed=${existedBefore}`, async () => {
+        const s: Scenario = { state: "applying", receipt: "absent", target: "before", counter: "diverged", finalState: "applying", finalTarget: "third" };
+        const { root, entry } = await setup(h, s, existedBefore, "");
+        if (existedBefore) await rm(entry.targetPath);
+        else await put(entry.targetPath, "");
+        expect(await h.reconcile(root)).toEqual({ completed: 0, rolledBack: 0, reverted: 0, diverged: 1 });
+        expect((await h.read(root))[0]!.state).toBe("applying");
+        if (existedBefore) await expect(readFile(entry.targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+        else expect(await readFile(entry.targetPath, "utf8")).toBe("");
       });
     }
     it("allowlist revalidation failure diverges without mutation", async () => {

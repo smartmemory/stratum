@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **STRAT-DISTILL-APPLY review round 1: three recovery fixes in the shared apply core** (affect
+  `stratum learn` as well as `stratum distill`; two were inherited from the original memory
+  apply). Reconcile and revert now re-read the journal entry under the pool/target locks, so a
+  stale pre-lock snapshot can no longer delete a file that was reverted and re-applied while
+  reconcile waited. An unfinished `reverting` journal now blocks a new apply to the same target
+  until reconcile settles it. Recovery requires the target's existence, not just its digest, to
+  match before restoring or redoing, so an independently created empty file is never mistaken
+  for "absent" and overwritten.
+
 - **STRAT-DISTILL-APPLY S4:** `stratum distill list`, `apply`, `revert`, and `reconcile` CLI verbs — install reviewed `distill-2.1` drafts behind `STRATUM_DISTILL_APPLY_ENABLED=1`, record guard-ledger receipts, support reversible asset creation, and keep MCP extraction staging-only (`applied: false`). MCP surface bumps to 24 to declare candidate `scope.sourceMode`.
 
 - **STRAT-DISTILL-APPLY S3: asset adapter — staged distill drafts can be installed, reverted and
