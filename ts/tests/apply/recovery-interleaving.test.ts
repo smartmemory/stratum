@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,5 +106,18 @@ for (const kind of ["memory", "asset"] as const) describe(`${kind} recovery inte
     expect(await f.reconcile()).toEqual({ completed: 0, rolledBack: 0, reverted: 0, diverged: 0 });
     expect(await readFile(second.targetPath, "utf8")).toBe(entry.after);
     expect((await f.read()).find(e => e.applyId === second.applyId)!.state).toBe("applied");
+  });
+});
+
+describe("asset recovery interleaving", () => {
+  it("reports the reverted state before rejecting a symlink target", async () => {
+    const f = await fixture("asset");
+    const first = await f.apply();
+    await f.revert(first.applyId);
+    await symlink(join(f.root, "symlink-destination"), first.targetPath);
+
+    await expect(f.revert(first.applyId)).rejects.toMatchObject({
+      message: `apply ${first.applyId} is reverted, not applied`,
+    });
   });
 });
