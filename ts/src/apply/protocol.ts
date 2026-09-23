@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { resourceLock } from "../guard/lock.js";
 import { loadRegistry, readLedger, resourceDir } from "../guard/store.js";
@@ -191,8 +191,8 @@ export async function applyCandidate<C, E, J extends BaseJournalEntry<E>>(
     });
     await writeJournal(adapter, workspaceRoot, { ...entry, state: "applying" });
 
-    const current = await readTarget(target);
-    if (sha(current.content) !== entry.beforeDigest) {
+    const current = await readTarget(target, adapter.kind === "asset");
+    if (sha(current.content) !== entry.beforeDigest || (adapter.kind === "asset" && current.existed !== entry.existedBefore)) {
       throw new ApplyError("target changed between snapshot and write; aborting");
     }
     await atomicWriteFile(target, after);
@@ -279,7 +279,7 @@ export async function revertApply<C, E, J extends BaseJournalEntry<E>>(
   const target = await adapter.allowlist(workspaceRoot, entry.targetPath);
 
   await withLocks(adapter.locks(workspaceRoot, target), async () => {
-    const current = await readTarget(target);
+    const current = await readTarget(target, adapter.kind === "asset");
     if (sha(current.content) !== entry.afterDigest) {
       throw new ApplyError(
         `target has changed since apply ${applyId} (out-of-band edit or a stacked apply); ` +
@@ -323,66 +323,67 @@ export async function reconcile<C, E, J extends BaseJournalEntry<E>>(
       continue;
     }
 
-    const receipt = ledgerReceipt(adapter, entry);
-    if (receipt.kind === "unreadable") {
-      report.diverged += 1;
-      continue;
-    }
-    if (entry.state === "applied" && receipt.kind === "committed" && receipt.state === "applied") {
-      continue;
-    }
+    await withLocks(adapter.locks(workspaceRoot, target), async () => {
+      const receipt = ledgerReceipt(adapter, entry);
+      if (receipt.kind === "unreadable") {
+        report.diverged += 1;
+        return;
+      }
+      if (entry.state === "applied" && receipt.kind === "committed" && receipt.state === "applied") return;
+      let current;
+      try { current = await readTarget(target, adapter.kind === "asset"); }
+      catch { report.diverged += 1; return; }
+      const digest = sha(current.content);
 
-    const current = await readTarget(target);
-    const digest = sha(current.content);
+      if (receipt.kind === "committed" && receipt.state === "reverted") {
+        if (digest === entry.beforeDigest && current.existed === entry.existedBefore) {
+          await writeJournal(adapter, workspaceRoot, { ...entry, state: "reverted" });
+          report.reverted += 1;
+        } else if (digest === entry.afterDigest) {
+          await restore(target, entry);
+          await writeJournal(adapter, workspaceRoot, { ...entry, state: "reverted" });
+          report.reverted += 1;
+        } else {
+          report.diverged += 1;
+        }
+        return;
+      }
 
-    if (receipt.kind === "committed" && receipt.state === "reverted") {
-      if (digest === entry.beforeDigest && current.existed === entry.existedBefore) {
-        await writeJournal(adapter, workspaceRoot, { ...entry, state: "reverted" });
-        report.reverted += 1;
-      } else if (digest === entry.afterDigest) {
+      if (receipt.kind === "committed" && receipt.state === "applied") {
+        if (digest === entry.afterDigest) {
+          await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
+          report.completed += 1;
+        } else if (digest === entry.beforeDigest) {
+          await atomicWriteFile(target, entry.after);
+          await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
+          report.completed += 1;
+        } else {
+          report.diverged += 1;
+        }
+        return;
+      }
+
+      if (entry.state === "reverting" || entry.state === "applied") {
+        if (digest === entry.afterDigest) {
+          await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
+          report.completed += 1;
+        } else {
+          report.diverged += 1;
+        }
+        return;
+      }
+
+      if (digest === entry.afterDigest) {
         await restore(target, entry);
-        await writeJournal(adapter, workspaceRoot, { ...entry, state: "reverted" });
-        report.reverted += 1;
-      } else {
-        report.diverged += 1;
-      }
-      continue;
-    }
-
-    if (receipt.kind === "committed" && receipt.state === "applied") {
-      if (digest === entry.afterDigest) {
-        await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
-        report.completed += 1;
+        await abort(adapter, workspaceRoot, entry);
+        report.rolledBack += 1;
       } else if (digest === entry.beforeDigest) {
-        await atomicWriteFile(target, entry.after);
-        await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
-        report.completed += 1;
+        await abort(adapter, workspaceRoot, entry);
+        report.rolledBack += 1;
       } else {
         report.diverged += 1;
       }
-      continue;
-    }
-
-    if (entry.state === "reverting" || entry.state === "applied") {
-      if (digest === entry.afterDigest) {
-        await writeJournal(adapter, workspaceRoot, { ...entry, state: "applied" });
-        report.completed += 1;
-      } else {
-        report.diverged += 1;
-      }
-      continue;
-    }
-
-    if (digest === entry.afterDigest) {
-      await restore(target, entry);
-      await abort(adapter, workspaceRoot, entry);
-      report.rolledBack += 1;
-    } else if (digest === entry.beforeDigest) {
-      await abort(adapter, workspaceRoot, entry);
-      report.rolledBack += 1;
-    } else {
-      report.diverged += 1;
-    }
+    });
   }
 
   return report;
@@ -401,10 +402,16 @@ export async function abort<C, E, J extends BaseJournalEntry<E>>(
   await writeJournal(adapter, workspaceRoot, { ...entry, state: "aborted" });
 }
 
-async function readTarget(path: string): Promise<{ content: string; existed: boolean }> {
+async function readTarget(path: string, strict = false): Promise<{ content: string; existed: boolean }> {
   try {
-    return { content: await readFile(path, "utf8"), existed: true };
-  } catch {
+    if (strict) {
+      const stat = await lstat(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new ApplyError(`invalid asset target: ${path}`);
+    }
+    const bytes = await readFile(path);
+    return { content: strict ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) : bytes.toString("utf8"), existed: true };
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return { content: "", existed: false };
   }
 }
