@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **STRAT-DISTILL-APPLY S2: distill staging moves to `distill-2.1`.** Staged asset candidates
+  now target Claude Code's real discovery paths (`.claude/skills|agents|commands/`), record how
+  their transcripts were selected (`scope.sourceMode`: `workspace` / `explicit-project` /
+  `projects-root`), and render template v2: skill and command drafts carry
+  `disable-model-invocation: true` plus a promotion sentence, and commands omit `name`.
+  `sourceMode` moves `revisionId` (via `authoringInputsDigest`) but not `clusterId`, so the same
+  workflow keeps its asset name and install path however it was selected. Old `distill-2.0`
+  sidecar rows are kept as read-only legacy summaries instead of being silently discarded.
+  Staging still writes only the sidecar; nothing installs yet (apply lands in S3/S4).
+
 - **STRAT-USAGE-SPLIT closed: the token split is verified in production, not just in fixtures.**
   Wiring shipped in `56529e2` (surface 16) and Codex pricing in `9e6363a`/`00ff4db`; this closes
   the ticket on real data. Flow `14550460` (2026-09-19) carries `split.input/output/cacheRead/

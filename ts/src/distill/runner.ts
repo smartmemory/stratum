@@ -4,7 +4,7 @@ import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { appendCandidates, sidecarPath } from "./candidate.js";
-import type { AssetCandidate } from "./candidate.js";
+import type { AssetCandidate, SourceMode } from "./candidate.js";
 import { detect } from "./detector.js";
 import type { WorkflowCandidate } from "./detector.js";
 import { compare, integer, loadSessions, missing } from "./harvest.js";
@@ -15,7 +15,7 @@ export class DistillError extends Error {
   constructor(type: DistillError["errorType"], message: string) { super(message); this.errorType = type; }
 }
 export interface DistillOptions { workspaceRoot?: string; projectDir?: string; all?: boolean; projectsRoot?: string; minCount?: number; windowDays?: number; cwd?: string }
-export interface ResolvedDistillRequest { workspaceRoot: string; projectDirs: string[]; minCount: number; windowDays: number; outPath: string; rootSource: "explicit" | "git" | "cwd" }
+export interface ResolvedDistillRequest { workspaceRoot: string; projectDirs: string[]; sourceMode: SourceMode; minCount: number; windowDays: number; outPath: string; rootSource: "explicit" | "git" | "cwd" }
 export interface DistillDiagnostics extends HarvestDiagnostics { malformedRows: number; unsupportedRows: number; authoringSkipped: number }
 export interface DistillInspection { workflows: WorkflowCandidate[]; workspace_root: string; project_dirs: string[]; out_path: string; diagnostics: DistillDiagnostics }
 export interface DistillResult extends Omit<DistillInspection, "workflows"> { status: "ok"; candidates: AssetCandidate[]; evaluated: number; written: number; reason: string; applied: false }
@@ -37,16 +37,22 @@ export async function resolveDistillRequest(options: DistillOptions): Promise<Re
   try { root = await realpath(resolve(cwd, root)); if (!(await stat(root)).isDirectory()) invalid("workspace root must be an existing directory"); }
   catch { invalid("workspace root must be an existing directory"); }
   let projectDirs: string[];
+  let sourceMode: SourceMode;
   if (options.all) {
+    sourceMode = "projects-root";
     const projectsRoot = await sourcePath(resolve(cwd, options.projectsRoot!));
     try {
       const entries = await readdir(projectsRoot, { withFileTypes: true });
       projectDirs = entries.filter(e => e.isDirectory() && !e.isSymbolicLink()).map(e => join(projectsRoot, e.name)).sort(compare);
     } catch (error) { if (missing(error)) projectDirs = []; else throw new DistillError("source_read_error", "cannot enumerate transcript projects"); }
+  } else if (options.projectDir !== undefined) {
+    sourceMode = "explicit-project";
+    projectDirs = [await sourcePath(resolve(cwd, options.projectDir))];
   } else {
-    projectDirs = [await sourcePath(options.projectDir === undefined ? join(homedir(), ".claude", "projects", root.replace(/\//g, "-")) : resolve(cwd, options.projectDir))];
+    sourceMode = "workspace";
+    projectDirs = [await sourcePath(join(homedir(), ".claude", "projects", root.replace(/\//g, "-")))];
   }
-  return { workspaceRoot: root, projectDirs, minCount, windowDays, outPath: sidecarPath(root), rootSource };
+  return { workspaceRoot: root, projectDirs, sourceMode, minCount, windowDays, outPath: sidecarPath(root), rootSource };
 }
 export async function inspectWorkflows(request: ResolvedDistillRequest): Promise<DistillInspection> {
   const diagnostics: DistillDiagnostics = { sessions: 0, skippedFiles: 0, droppedLines: 0, droppedEvents: 0, mtimeFailures: 0, malformedRows: 0, unsupportedRows: 0, authoringSkipped: 0 };
@@ -65,7 +71,7 @@ export async function runDistill(request: ResolvedDistillRequest, options: { wri
   const candidates: AssetCandidate[] = [];
   try {
     for (const workflow of workflows) {
-      const candidate = synthesize(workflow, { workspaceRoot: request.workspaceRoot, minCount: request.minCount });
+      const candidate = synthesize(workflow, { workspaceRoot: request.workspaceRoot, sourceMode: request.sourceMode, minCount: request.minCount });
       if (candidate) candidates.push(candidate); else inspection.diagnostics.authoringSkipped++;
     }
   } catch { throw new DistillError("candidate_error", "cannot author distill candidate"); }
