@@ -1,3 +1,4 @@
+import { isolatedStateRoot } from "../helpers/state-root.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
@@ -12,7 +13,7 @@ import { createMcpServer, type McpDependencies } from "../../src/mcp/server.js";
 // -32001 at exactly the client timeout.
 
 async function connected(dependencies: McpDependencies) {
-  const server = await createMcpServer(dependencies);
+  const server = await createMcpServer({ flowStateRoot: isolatedStateRoot(), ...dependencies });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "heartbeat-test", version: "0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

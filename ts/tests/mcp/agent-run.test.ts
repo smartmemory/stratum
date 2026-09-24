@@ -1,3 +1,4 @@
+import { isolatedStateRoot } from "../helpers/state-root.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 // ts/tests/mcp/agent-run.test.ts
@@ -33,7 +34,7 @@ import { createMcpServer, createToolDispatcher, type McpDependencies } from "../
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function connected(dependencies: McpDependencies) {
-  const server = await createMcpServer(dependencies);
+  const server = await createMcpServer({ flowStateRoot: isolatedStateRoot(), ...dependencies });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "agent-run-test", version: "0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

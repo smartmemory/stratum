@@ -1,3 +1,4 @@
+import { isolatedStateRoot } from "../helpers/state-root.js";
 import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -38,7 +39,7 @@ const gateFlow = {
 };
 
 async function connected(dependencies: McpDependencies) {
-  const server = await createMcpServer(dependencies);
+  const server = await createMcpServer({ flowStateRoot: isolatedStateRoot(), ...dependencies });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "p5-test", version: "0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -703,7 +704,9 @@ describe("P5 CLI and MCP process boundaries", () => {
     const root = await mkdtemp(join(tmpdir(), "stratum-p5-cli-bin-")); roots.push(root);
     const spec = join(root, "valid.json"); await writeFile(spec, JSON.stringify(simpleFlow));
     const bin = fileURLToPath(new URL("../../src/cli/bin.mjs", import.meta.url));
-    const result = await execFileAsync(process.execPath, [bin, "validate", spec]);
+    const result = await execFileAsync(process.execPath, [bin, "validate", spec], {
+      env: { ...process.env, STRATUM_STATE_ROOT: isolatedStateRoot() },
+    });
     expect(result.stdout).toContain('"valid":true');
   });
 
@@ -898,7 +901,10 @@ describe("stratum_agent_run T1 contract changes", () => {
 
 async function initializeMcpBin(bin: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bin], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [bin], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, STRATUM_STATE_ROOT: isolatedStateRoot() },
+    });
     let output = ""; let stderr = "";
     const timeout = setTimeout(() => { child.kill(); reject(new Error(`MCP bin did not initialize: ${stderr}`)); }, 5_000);
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });

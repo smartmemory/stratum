@@ -1,3 +1,4 @@
+import { isolatedStateRoot } from "../helpers/state-root.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,7 +35,7 @@ async function stateRoot(): Promise<string> {
 
 describe("STRAT-FLOW-CANCEL-FG stratum_flow_cancel — edge cases", () => {
   it("an unknown run id reaches the caller as a declared MCP error, not a raw ENOENT", async () => {
-    const server = await createMcpServer({});
+    const server = await createMcpServer({ flowStateRoot: isolatedStateRoot() });
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "flow-cancel-edge-test", version: "0" });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
