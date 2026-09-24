@@ -3,6 +3,14 @@
 **Status:** IN_PROGRESS (Step 1) · **Created:** 2026-09-24 · **Owner:** stratum (compose touch points noted)
 **Review:** Codex gpt-6-astra/medium — r1 NOT CLEAN (3H/4M, all upheld on spot-check), r2 REVIEW CLEAN.
 
+**Progress (2026-09-24):** 1a/1b DONE → [collection report](2026-09-24-self-tuning-collection-report.md).
+1c test isolation DONE: compose `798f1b7`, stratum `e643734` (stratum full suite 1802/1802, 0 real-store
+writes). **Resume here:** (1) compose full suite once (`node --test` glob + `npm run test:ui`, stopped
+by owner, not failed); (2) quarantine is NOT done — needs owner OK on the manifest; (3) 1d gate: owner
+decisions on lesson set, trigger (report recommends `emitFlowTerminal` pre-early-return), which other
+1a defects to fix (Claude cost presence, distill sources, fanout harvest, routing reported effort),
+routing loop stays shadow.
+
 ## Related Documents
 
 - [`STRAT-LEARN-INLINE-TS-1/design.md`](../features/STRAT-LEARN-INLINE-TS-1/design.md) — the automatic
