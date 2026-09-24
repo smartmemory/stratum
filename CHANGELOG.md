@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- **Judge `cheap` tier moves to `gpt-6-luna`** (was `gpt-5.6-luna`), per owner directive to use the
+  6-series luna/sol wherever a model is chosen. Priced at 0.10/0.50 per MTok. `default`
+  (`gpt-5.6-terra`) and `paranoid` (`gpt-6-astra`) are unchanged; the 5.6 entries stay in
+  `MODEL_PRICING` so historical rows remain priceable.
+
 - **STRAT-AGENT-RUN-MODEL-VALIDATE: Codex model ids are checked before dispatch.** Every Codex
   run (foreground, background, flow step, Codex judge, and a `CODEX_MODEL` default) now passes
   `codexModelWithEffort`'s allowlist check first: an unknown id fails naming the accepted ids,
