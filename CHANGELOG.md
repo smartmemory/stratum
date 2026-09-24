@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-24
+
 - **Stratum defaults move to `gpt-6-sol/medium`.** The default Codex model and judge `default`
   tier move from `gpt-5.6-terra/high` to `gpt-6-sol/medium`, per owner directive and consistent
   with compose's standard tier. `gpt-5.6-terra` stays priced and dispatchable.
