@@ -5,7 +5,7 @@ import type { Budget } from "../engine/ledger.js";
 import { usdFromTokens } from "./pricing.js";
 
 export type Stakes = "cheap" | "default" | "paranoid";
-export type ReasoningEffort = "low" | "high";
+export type ReasoningEffort = "low" | "medium" | "high";
 
 export interface JudgeTier {
   model: string;
@@ -18,7 +18,7 @@ export const STAKES_MODEL: Readonly<Record<Stakes, JudgeTier>> = Object.freeze({
   // directive, the cheap tier uses `gpt-6-luna` (priced at 0.10/0.50 in
   // pricing.ts).
   cheap: { model: "gpt-6-luna", effort: "low" },
-  default: { model: "gpt-5.6-terra", effort: "high" },
+  default: { model: "gpt-6-sol", effort: "medium" },
   paranoid: { model: "gpt-6-astra", effort: "high" },
 });
 

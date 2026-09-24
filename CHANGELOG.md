@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- **Stratum defaults move to `gpt-6-sol/medium`.** The default Codex model and judge `default`
+  tier move from `gpt-5.6-terra/high` to `gpt-6-sol/medium`, per owner directive and consistent
+  with compose's standard tier. `gpt-5.6-terra` stays priced and dispatchable.
+
 - **Judge `cheap` tier moves to `gpt-6-luna`** (was `gpt-5.6-luna`), per owner directive to use the
   6-series luna/sol wherever a model is chosen. Priced at 0.10/0.50 per MTok. `default`
   (`gpt-5.6-terra`) and `paranoid` (`gpt-6-astra`) are unchanged; the 5.6 entries stay in
