@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Isolate TypeScript tests from the live flow store with a Vitest temp-root safeguard,
+  explicit MCP helper and child-process roots, and hermetic missing-run cancellation coverage.
+
 ## [0.6.1] — 2026-09-24
 
 - **Stratum defaults move to `gpt-6-sol/medium`.** The default Codex model and judge `default`

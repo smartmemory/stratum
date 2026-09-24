@@ -1,3 +1,4 @@
+import { isolatedStateRoot } from "../helpers/state-root.js";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -18,7 +19,7 @@ it("dispatcher uses the stateless adapter, with preview and default staging", as
   expect(await dispatcher.call("stratum_distill", request)).toMatchObject({ status: "ok", written: 0, reason: "already staged" });
 });
 it("SDK lists and calls the tool against the real surface contract", async () => {
-  const root = await scratch(); const server = await createMcpServer(); const client = new Client({ name: "distill-test", version: "1" });
+  const root = await scratch(); const server = await createMcpServer({ flowStateRoot: isolatedStateRoot() }); const client = new Client({ name: "distill-test", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   try {
