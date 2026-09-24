@@ -19,14 +19,14 @@ describe("judged predicates", () => {
   it("ships the canonical stakes to model and effort table", () => {
     expect(STAKES_MODEL).toEqual({
       cheap: { model: "gpt-6-luna", effort: "low" },
-      default: { model: "gpt-5.6-terra", effort: "high" },
+      default: { model: "gpt-6-sol", effort: "medium" },
       paranoid: { model: "gpt-6-astra", effort: "high" },
     });
   });
 
   it.each([
     ["cheap", "gpt-6-luna/low", "low"],
-    ["default", "gpt-5.6-terra/high", "high"],
+    ["default", "gpt-6-sol/medium", "medium"],
     ["paranoid", "gpt-6-astra/high", "high"],
   ] as const)("routes %s through its model tier", async (stakes, model, effort) => {
     generateObjectMock.mockResolvedValue(generated());
@@ -46,10 +46,9 @@ describe("judged predicates", () => {
       holds: false,
       reason: "not enough evidence",
       stakes: "default",
-      model: "gpt-5.6-terra/high",
-      // 0.008, not the old 0.01: terra was cut from 2.5/15 to 2/12 on 2026-07-30 and
-      // this table was stale. 1_000 input * 2 + 500 output * 12 per MTok = 0.008.
-      usage: { tokens: 1_500, usd: 0.008 },
+      model: "gpt-6-sol/medium",
+      // sol is priced at 2/10 per MTok: 1_000 input * 2 + 500 output * 10 = 0.007.
+      usage: { tokens: 1_500, usd: 0.007 },
     });
   });
 

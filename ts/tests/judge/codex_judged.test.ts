@@ -60,7 +60,7 @@ describe("evaluateJudgedViaCodex", () => {
   it("strips code fences from the verdict", async () => {
     const { run } = fakeRun('```json\n{"holds":false,"reason":"missing evidence"}\n```');
     const result = await evaluateJudgedViaCodex({ statement: "s" }, {}, { run });
-    expect(result).toMatchObject({ holds: false, reason: "missing evidence", model: "gpt-5.6-terra/high" });
+    expect(result).toMatchObject({ holds: false, reason: "missing evidence", model: "gpt-6-sol/medium" });
   });
 
   it("fails closed on an unparseable verdict but still charges the paid dispatch", async () => {

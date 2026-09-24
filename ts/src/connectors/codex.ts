@@ -140,7 +140,7 @@ export function applyHeadlessShellEnv(env: NodeJS.ProcessEnv, home?: string): vo
 }
 
 export function defaultCodexModel(): string {
-  return process.env.CODEX_MODEL ?? "gpt-5.6-terra/high";
+  return process.env.CODEX_MODEL ?? "gpt-6-sol/medium";
 }
 
 export function resolveCodexTransport(env: NodeJS.ProcessEnv = process.env): CodexTransport {
