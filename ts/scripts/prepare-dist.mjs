@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 
 if (process.argv[2] === "--clean") {
   await rm(new URL("../dist/", import.meta.url), { recursive: true, force: true });
@@ -58,3 +58,23 @@ for (const name of ["events.json", "mcp-surface.json"]) {
     : source;
   await writeFile(new URL("guard-signers.allowed", distContracts), shipped);
 }
+
+// Generated protocol types have no runtime behavior. Fail closed if a binding
+// ever starts emitting executable code; retain the pinned version module.
+async function removeProtocolStubs(directory) {
+  for (const entry of await readdir(directory, {withFileTypes:true})) {
+    const file = new URL(entry.name + (entry.isDirectory() ? "/" : ""), directory);
+    if (entry.isDirectory()) {
+      await removeProtocolStubs(file);
+    } else if (entry.name.endsWith(".js") && entry.name !== "pinned-version.js") {
+      const source = await readFile(file, "utf8");
+      const body = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, "").trim();
+      if (!/^export\s*\{\s*\}\s*;?$/.test(body)) {
+        throw new Error(`Protocol binding is not an empty type-only module: ${file.pathname}`);
+      }
+      await rm(file);
+      await rm(new URL(`${entry.name}.map`, directory), {force:true});
+    }
+  }
+}
+await removeProtocolStubs(new URL("../dist/connectors/codex-appserver-protocol/", import.meta.url));
