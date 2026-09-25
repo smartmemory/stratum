@@ -1,0 +1,41 @@
+[
+  {
+    "type": "thread.started",
+    "thread_id": "01a0d7b3-4294-7492-920e-50dc2b4e56ae"
+  },
+  {
+    "type": "turn.started"
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "exec-8e02c7d3-c2c8-4882-9476-11de8f8ada3b",
+      "type": "command_execution",
+      "command": "/bin/zsh -lc 'sleep 150'",
+      "aggregated_output": "",
+      "exit_code": 0,
+      "status": "completed"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "msg_059cd1d760283098016ab632a8db3887d0b3ddf7f68efc1e42",
+      "type": "agent_message",
+      "text": "Completed `sleep 150`.\n\n137c608d4f479287fef9a1244f377ef1e581f161ed75add6"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 110704,
+      "cached_input_tokens": 94720,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 232,
+      "reasoning_output_tokens": 0
+    }
+  },
+  {
+    "__t2f5_done__": 0
+  }
+]

@@ -1,0 +1,142 @@
+{
+  "nonce": "PEER3_temp_ordinary_1790325052485",
+  "osWritableOutside": true,
+  "poll": {
+    "status": "complete",
+    "runId": "4c94412bd480",
+    "peer": {
+      "name": "codex-luna-4c9441",
+      "registered": false
+    },
+    "sandboxAudit": {
+      "policy": {
+        "filesystemMode": "workspace-write",
+        "networkAccess": false,
+        "writableRoots": [
+          "/tmp/peer3-s5b-162753/sandbox/.private-voNgw3/writable"
+        ],
+        "approvalPolicy": "never"
+      },
+      "provenance": {
+        "filesystemMode": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "networkAccess": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "writableRoots": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "approvalPolicy": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        }
+      }
+    },
+    "text": "I’ll run the specified command once, without changing the script.done",
+    "usage": {
+      "usd": 0.0011752400000000001,
+      "tokens": 37550
+    },
+    "split": {
+      "input": 37433,
+      "output": 117,
+      "cacheRead": 29184
+    },
+    "usdSource": "estimated",
+    "exitCode": 0,
+    "telemetry": {
+      "durationMs": 18425,
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b0-5d5a-7e20-97c1-6363ce086053"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_00da4c17aa01d82e016ab63149848087d0b506fb9c16cdef24",
+        "type": "agent_message",
+        "text": "I’ll run the specified command once, without changing the script."
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "exec-516aa8f8-39ea-4ea9-9472-d1a949fca30a",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc \"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/tmp/peer3-s5b-162753/sandbox/.private-voNgw3/workspace/tool.cjs'\"",
+        "aggregated_output": "PEER3_temp_ordinary_1790325052485={\"workspace\":{\"writable\":true},\"writableRoot\":{\"writable\":true},\"outside\":{\"writable\":false,\"code\":\"EPERM\"},\"TMPDIR\":{\"writable\":true},\"slashTmp\":{\"writable\":true}}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_00da4c17aa01d82e016ab6314e42f887d09a49237c05eb30f4",
+        "type": "agent_message",
+        "text": "done"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 37433,
+        "cached_input_tokens": 29184,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 117,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "observed": {
+    "workspace": true,
+    "writableRoot": true,
+    "outside": false,
+    "TMPDIR": true,
+    "slashTmp": true
+  },
+  "expected": {
+    "workspace": true,
+    "writableRoot": true,
+    "outside": false,
+    "TMPDIR": true,
+    "slashTmp": true
+  },
+  "policy": {
+    "filesystemMode": "workspace-write",
+    "networkAccess": false,
+    "writableRoots": [
+      "/tmp/peer3-s5b-162753/sandbox/.private-voNgw3/writable"
+    ],
+    "approvalPolicy": "never"
+  },
+  "execBaseline": "exec-baseline/ordinary.json",
+  "artifacts": [
+    "exec-baseline/ordinary.json"
+  ],
+  "tempComparison": {
+    "TMPDIR": {
+      "exec": true,
+      "appServer": true
+    },
+    "slashTmp": {
+      "exec": true,
+      "appServer": true
+    }
+  }
+}

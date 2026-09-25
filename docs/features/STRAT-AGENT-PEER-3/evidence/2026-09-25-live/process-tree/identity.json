@@ -1,0 +1,42 @@
+{
+  "codex": {
+    "command": "codex",
+    "args": [
+      "--version"
+    ],
+    "pid": 34981,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 7,
+    "stdout": "codex-cli 0.155.1\n",
+    "stderr": ""
+  },
+  "claude": {
+    "command": "claude",
+    "args": [
+      "--version"
+    ],
+    "pid": 34983,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 7,
+    "stdout": "2.1.282 (Claude Code)\n",
+    "stderr": ""
+  },
+  "head": {
+    "command": "git",
+    "args": [
+      "rev-parse",
+      "HEAD"
+    ],
+    "pid": 35003,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 13,
+    "stdout": "ff8e983e9cdc11cd3613dcfc0548aac00828950e\n",
+    "stderr": ""
+  }
+}

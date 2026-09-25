@@ -1,0 +1,150 @@
+{
+  "mode": "process-tree",
+  "model": "gpt-6-luna/low",
+  "startedAt": "2026-09-25T08:31:28.566Z",
+  "cases": [
+    {
+      "case": "cancel-initialize",
+      "outcome": "passed",
+      "evidence": [
+        "cancel-initialize.json",
+        "cancel-initialize.before.ps",
+        "cancel-initialize.after.ps",
+        "cancel-initialize.err",
+        "cancel-initialize.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:31:28.627Z",
+        "elapsedMs": 1455
+      }
+    },
+    {
+      "case": "cancel-active",
+      "outcome": "passed",
+      "evidence": [
+        "cancel-active.json",
+        "cancel-active.before.ps",
+        "cancel-active.after.ps",
+        "cancel-active.err",
+        "cancel-active.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:31:30.082Z",
+        "elapsedMs": 3606
+      }
+    },
+    {
+      "case": "cancel-pending-steer",
+      "outcome": "passed",
+      "evidence": [
+        "cancel-pending-steer.json",
+        "cancel-pending-steer.before.ps",
+        "cancel-pending-steer.after.ps",
+        "cancel-pending-steer.err",
+        "cancel-pending-steer.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:31:33.688Z",
+        "elapsedMs": 4084
+      }
+    },
+    {
+      "case": "sigterm-ignore",
+      "outcome": "passed",
+      "evidence": [
+        "sigterm-ignore.json",
+        "sigterm-ignore.before.ps",
+        "sigterm-ignore.after.ps",
+        "sigterm-ignore.err",
+        "sigterm-ignore.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:31:37.772Z",
+        "elapsedMs": 24097
+      }
+    },
+    {
+      "case": "parent-death",
+      "outcome": "passed",
+      "evidence": [
+        "parent-death.json",
+        "parent-death.before.ps",
+        "parent-death.after.ps",
+        "parent-death.err",
+        "parent-death.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:32:01.869Z",
+        "elapsedMs": 35716
+      }
+    },
+    {
+      "case": "driver-sigkill",
+      "outcome": "passed",
+      "evidence": [
+        "driver-sigkill.json",
+        "driver-sigkill.before.ps",
+        "driver-sigkill.after.ps",
+        "driver-sigkill.err",
+        "driver-sigkill.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:32:37.585Z",
+        "elapsedMs": 3587
+      }
+    },
+    {
+      "case": "completion-wins",
+      "outcome": "passed",
+      "evidence": [
+        "completion-wins.json",
+        "completion-wins.before.ps",
+        "completion-wins.after.ps",
+        "completion-wins.err",
+        "completion-wins.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:32:41.172Z",
+        "elapsedMs": 16299
+      }
+    },
+    {
+      "case": "cancellation-wins",
+      "outcome": "passed",
+      "evidence": [
+        "cancellation-wins.json",
+        "cancellation-wins.before.ps",
+        "cancellation-wins.after.ps",
+        "cancellation-wins.err",
+        "cancellation-wins.peer.err"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:32:57.471Z",
+        "elapsedMs": 14371
+      }
+    }
+  ],
+  "codex": {
+    "command": "codex",
+    "args": [
+      "--version"
+    ],
+    "pid": 35014,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 8,
+    "stdout": "codex-cli 0.155.1\n",
+    "stderr": ""
+  },
+  "limitations": "Sidecars may linger. Tool descendants in separate groups are outside driver/app-server reap scope; ps retains their tree columns. No process-name killing.",
+  "executable": "/opt/homebrew/bin/codex"
+}

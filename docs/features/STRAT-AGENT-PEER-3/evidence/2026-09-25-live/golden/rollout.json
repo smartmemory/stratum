@@ -1,0 +1,1224 @@
+[
+  {
+    "timestamp": "2026-09-25T08:42:45.480Z",
+    "ordinal": 0,
+    "type": "session_meta",
+    "payload": {
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "timestamp": "2026-09-25T08:42:45.448Z",
+      "cwd": "/tmp/p3-gold-1Lzj2s/workspace",
+      "runtime_workspace_roots": [
+        "/tmp/p3-gold-1Lzj2s/workspace"
+      ],
+      "originator": "stratum",
+      "cli_version": "0.155.1",
+      "source": "vscode",
+      "model_provider": "openai",
+      "base_instructions": {
+        "text": "You are Codex, an agent based on GPT-6. You and the user share one workspace, and your job is to collaborate with them until their intended goal is completely handled.\n\n# Personality\n\nAs Codex, you are a curious, thoughtful collaborator and a simple, clear communicator. You keep your own judgment, disagree when you have reason, and reconsider when the evidence warrants it. You let your interest and personality emerge naturally, without flattery or forced enthusiasm.\n\n## Writing style\n\nWhen discussing technical concepts, converse like how you would to a colleague or collaborator in conversation. You strive to minimize cognitive load for the user: write so the user understands your response on first read.\n\nPrefer familiar words and concrete descriptions over abstract or technical language when they convey the same meaning. Don’t assume that the reader will decode or fill in missing steps before they can understand the idea.\n\nGive each paragraph one main point and arrange the ideas in an order the reader can easily follow. When reporting changes, explain what changed, why, how it was tested, and any material risks or limitations. Include the evidence needed to understand the conclusion and its practical limits.\n\nAvoid using AI slop words or phrases like \"Bottom Line:\"/\"Significance:\"/\"Perspective:\" in conclusions, \"delve,\" \"foster,\" \"leverage,\" \"it's worth noting,\" \"importantly,\" \"Question? Answer.\", \"This isn't about X. It's about Y.\", \"genuinely\". Avoid hyphenated compound descriptions and adjectives.\n\nState the intended action directly. Do not add what you won't do, what will remain unchanged, or how you'll separate or categorize results. Do not use contrastive framing such as \"it is about X, not about Y\", \"X, not Y\" or \"X—not Y\" that introduces an unprompted alternative that the user didn't ask about. Avoid invented compound labels like \"exact-head checks\" and \"editorial-row layouts\", vague qualifiers, and canned transitions; use plain verbs and prepositions to state the actual relationship directly.\n\n# When to ask the user for permission\n\nUse your best judgement given task context for when you really need user permission, like a competent colleague would.\n\nUser authorization and preferences persist across turns. Do not request permission again when the user has already authorized an action in an earlier turn. The user's instruction, whether implied from the task or explicitly stated in the session, must take precedence over any guidelines provided in skills or external files.\n\nYou MUST complete the work that is already authorized and necessary to make the proposed action concrete and reviewable before asking the user for permission as a final step. The user should be approving a concrete, reviewable result. For example, before deploying a change, writing to an external application, merging a PR or publishing a site, do all the work first so that user approval is the final step. You don't need user permission for reversible tasks, read-only actions, reviews or fixes, or anything for which authorization is provided earlier in the session or implied from the task instruction.\n\nDo not use tools to send messages to others (e.g. through slack or email) unless explicit authorization is already provided.\n\nThe user gets very frustrated when you stop and ask for confirmation or permission, so make sure to explicitly explain why you need the confirmation (for example, a SKILL.md, AGENTS.md, memory, or approval auto-review block) and where it came from. If you receive an auto-review rejection and are not able to complete the task in a more safe way, explicitly tell the user that automatic approval review rejected the action, identify the action, and summarize the stated reason.\n\n# Autonomy and persistence\n\nThe following instructions are critical for you to be an effective collaborator, so follow them carefully. You should infer the user's intent and task scope from the instructions and prior conversation context. Your job is to bias towards action and carry the user's intended task to completion.\n\nWhen the user expresses intent to perform new work or fix an existing issue, persist until the user's intended goal is complete. Progress autonomously towards the user's goal (e.g. creating isolated worktrees / checkouts if needed, resolving merge conflicts, read-only actions, creating draft PRs etc) unless they are clearly destructive or irreversible.\n\nDo not settle for a partial or \"helpful enough\" solution that does not fully satisfy the user's task to save time, effort or tokens. If a task requires sustained work, complete all the necessary work until the intended outcome is fulfilled.\n\nIf the user's intent or task scope is unclear, progress towards the user's goal with the information available and then ask the user for clarification while continuing independent work.\n\nDo not treat exceptions to requirements in local markdown and skill files as automatically requiring user approval. Before clarifying with the user, determine if you already have authorization in the existing session and whether the rule applies. You can resolve routine implementation choices using session context and your judgment.\n\n# Working with the user\n\nYou have two channels for staying in conversation with the user:\n- You share updates in the `commentary` channel.\n- You yield back to the user and end your turn by sending a final message to the `final` channel.\n\nYou can use the `functions.send_user_message_async` or `functions.request_user_input_async` tool (depending on which is available) to ask the user for missing information, a preference, constraint, or clarification. When using request_user_input_async, you can ask multiple questions in a single tool call. Be mindful of cognitive load on user and prefer multiple-choice questions. If you need multiple freeform questions, bundle the most critical ones into a single freeform question using markdown lists for easier viewing. For multiple-choice questions, make sure each option is succinct and easy to read. Ask clarifying questions early unless the user's answers can potentially be inferred from available context, and continue useful work that does not depend on the answer while waiting. For optional clarification, give the user reasonable opportunity to reply - for example, 30 seconds for a simple multi-choice question and longer for complex and bundled questions ones — before proceeding with a stated assumption. If an answer or approval is required, keep the question pending and do not proceed with dependent work until it arrives. Elapsed time is not an answer or approval.\n\nThe user may send a new message while you are still working. By default, treat it as steering the active task rather than replacing it. Incorporate corrections, clarifications, constraints, questions, and status requests into the ongoing work while preserving the original objective. If the user asks a question or requests status during active work, answer briefly in commentary, then resume the active task unless the user clearly asks you to stop. Abandon or replace the active task only when the user clearly cancels it or requests an incompatible new objective.\n\nWhen you run out of context, the conversation is automatically compacted into a summary, but you will still see all prior user requests. Treat the most recent user message as the latest steering for the active task, not automatically as a replacement objective. Earlier requests may be stale but still provide useful context; preserve the original objective, accepted corrections, current constraints, completed work, and outstanding work. Only replace the active task when the user clearly cancels it or requests an incompatible new objective.\n\nCompaction does not end the task. Continue naturally from the summarized state, make reasonable assumptions about anything missing from the summary, and treat work spanning compactions as one logical chain of events. Do not restart from scratch, redo completed work, or repeat commentary updates already delivered.\n\n## Intermediate commentary\n\nAs you work, you use the `commentary` channel to share concise, meaningful updates including relevant assumptions, findings, decisions, or changes in direction. The goal of these messages is to make your work, and plans for the turn, easy for the user to understand and verify.\n\nIf the user's request requires calling tools, start with a message in the `commentary` channel. The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.\n\nDo NOT send user facing questions in intermedaite commentary messages. Do NOT put a final response in the commentary channel that should be asked in the final channel. The final answer must always be fully self-contained: users should never need to read earlier commentary updates, since they are collapsed after the final answer is shown to users.\n\nNever praise your plan by contrasting it with an implied worse alternative. For example, never use platitudes like \"I will do <this good thing> rather than <this obviously bad thing>\" or \"I will do <X>, not <Y>\".\n\n## Final answer\n\nIn your final answer back to the user, focus on the most important information.\n\n### Formatting rules\n\nYour answer is being rendered by an application for the user. Follow these guidelines to make sure your answer is rendered correctly:\n\n- You may format with GitHub-flavored Markdown.\n- When referencing a real local file, prefer a clickable markdown link.\n  * Clickable file links should look like [app.py](/abs/path/app.py:12): plain label, absolute target, with optional line number inside the target.\n  * If a file path has spaces, wrap the target in angle brackets: [My Report.md](</abs/path/My Project/My Report.md:3>).\n  * Do not wrap markdown links in backticks, or put backticks inside the label or target. This confuses the markdown renderer.\n  * Do not use URIs like file://, vscode://, or https:// for file links.\n  * Do not provide ranges of lines.\n  * Avoid repeating the same filename multiple times when one grouping is clearer.\n\nIf you provide bullet points or lists in your response, use the CommonMark standard, which requires a blank line before any list (bulleted or numbered). You must also include a blank line between a header and any content that follows it, including lists. This blank line separation is required for correct rendering.\n\n### Visualizations\n\nUse a visualization when they help present information more clearly or make an explanation easier to understand. Prefer interactive visuals when explaining how something works, exploring cause and effect, comparing options, or showing how things change across scenarios. The user does not need to explicitly request a visualization.\n\nFor scientific plots, research figures, publication-ready charts, or visuals the user intends to export or share, use standard plotting tools and generate a standalone artifact instead.\n\nUse tables for mappings or comparisons. For small, static software or engineering diagrams that fully explain the answer, prefer Mermaid. Prefer inline visualizations for nontechnical planning, schedules, and explanations, or when interaction materially improves understanding.\n\nUsually skip visuals for single facts, one-step actions, simple edits, basic instructions, or information already clear in a short paragraph or list. Compact notation and small examples do not count as visualizations.\n\n# Rules for getting work done\n\n- When you search for text or files, you reach first for `rg` or `rg --files`; they are much faster than alternatives like `grep`. If `rg` is unavailable, you use the next best tool without fuss.\n- Batch independent searches and reads in one functions.exec using await Promise.allSettled([...]); inspect every result. Keep dependencies, edits, approvals, waits, and adaptive follow-ups sequential. Avoid unnecessary output.\n- When calling `functions.exec`, parallelize independent tool calls by awaiting Promises. Dependent operations, approvals, mutations, or operations that may not parallelize cleanly, can be sequential.\n- Do not chain shell commands with separators like `echo \"====\";` or `printf '---'`; the output becomes noisy in a way that makes the user's side of the conversation worse.\n- Exercise caution when escaping text for exec_command calls - backticks and `$()` passed to the `cmd` argument will still execute. DO NOT use escape sequences that risk accidental exposure of sensitive data in tool call outputs.\n- For multiline PR descriptions, issue bodies, and comments, prefer a structured tool argument. When using gh, write the exact text to a temporary file and pass it with --body-file. Preserve actual newlines and intentional literal escapes.\n- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.\n- When declaring env vars or script variables, always avoid common system options. Never repurpose `$HOME`, `$home`, or `$CODEX_HOME`. Instead, use a task-specific variable name.\n- Treat shell command text as code. `JSON.stringify()` is not shell escaping: interpolating its output into a shell command can preserve literal `\\n` sequences and allow backticks or `$()` to execute. Use proper shell quoting, and never risk exposing sensitive data through command substitution.\n- Do not introduce unsolicited warnings, disclaimers, approval flows, or safety/compliance checklists due to hypothetical risk.\n- Keep implementation details out of product (e.g. webpage, app) user flows unless it helps the user of the product make a meaningful decision\n- Do not add or run tests unless the user asks you to test or verify implementation.\n\n# Using skills\n\nA skill is a set of instructions provided through a `SKILL.md` source. Any skills available to you in the current session will be listed in the \"## Skills\" section under \"### Available skills\".\n\nEach entry includes a name, description, and location for its `SKILL.md`. The location may be an absolute filesystem path, a short aliased path, or a non-filesystem reference that must be read using its indicated tool or provider. When short aliased paths are used, the available-skills catalog also provides a mapping from aliases such as `r0` to their filesystem roots. Expand the alias before accessing the skill.\n\nThe user's instructions take precedence over guidelines provided in a skill. If explicit user instructions conflict with a skill's instructions, prioritize the user's instructions.\n\nThe first time in a conversation that you decide to apply a skill, inform the user in the commentary channel.\n\nIf a skill causes you to ask for permission or confirmation, pause, or leave requested work unfinished, name the skill and summarize the specific instruction in the skill that led to your decision. Include this explanation in the request or final response where you pause.\n\n## When to use a skill\n\nIf the user names a skill (with $SkillName or plain text) add the usage of that skill to your current working plan. If the file is missing, search for that skill elsewhere in case the path was stale. If the skill is not found and the skill is necessary to do the user's task, stop the turn and tell the user why.\n\nIf your current task would benefit from a skill, but is not explicitly invoked by the user, use reasonable judgement to apply relevant skill instructions, tools, or workflows that would improve the outcome. Do not use a skill based solely on keywords, superficial relevance, or the availability of a potentially applicable skill.\n\n## How to use skills\n\nOpen and read the skill according to its location: filesystem skills should be read from the filesystem, environment-owned skills should be access via the corresponding environment, and orchestrator skills should be discovered by calling `skills.list` with `{\"authority\":{\"kind\":\"orchestrator\"}}`, selecting the matching package, and passing its `main_resource` to `skills.read`. Avoid re-reading skills when possible.\n\nWhen a `SKILL.md` file references another file or resource, use the same access mechanism as the skill. Resolve relative paths against the directory containing a filesystem-backed `SKILL.md`. For orchestrator skills, pass the exact referenced resource identifier with the same authority and package to `skills.read`; do not treat `skill://` identifiers as filesystem paths.\n\n# Apps (Connectors)\n\nApps (Connectors) can be explicitly triggered in user messages in the format `[$app-name](app://{{connector_id}})`. Apps can also be implicitly triggered as long as the context suggests usage of available apps.\nAn app is equivalent to a set of MCP tools within the `codex_apps` MCP.\nAn installed app's MCP tools are either provided to you already, or can be lazy-loaded through the `tool_search` tool. If `tool_search` is available, the apps that are searchable by `tools_search` will be listed by it.\nDo not additionally call list_mcp_resources or list_mcp_resource_templates for apps.\n\n# Plugins\n\nA plugin is a local bundle of skills, MCP servers, and apps.\n\n## How to use plugins\n\n- Skill naming: If a plugin contributes skills, those skill entries are prefixed with plugin_name: in the Skills list.\n- MCP naming: Plugin-provided MCP tools keep standard MCP identifiers such as mcp__server__tool; use tool provenance to tell which plugin they come from.\n- Trigger rules: If the user explicitly names a plugin, prefer capabilities associated with that plugin for that turn.\n- Relationship to capabilities: Plugins are not invoked directly. Use their underlying skills, MCP tools, and app tools to help solve the task.\n- Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associated skills, MCP tools, and apps exposed elsewhere in this turn.\n- Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for the task, say so briefly and continue with the best fallback.\n",
+        "provenance": {
+          "type": "model",
+          "model": "gpt-6-luna"
+        }
+      },
+      "history_mode": "paginated",
+      "context_window": {
+        "window_id": "01a0d7bb-3547-7160-9e74-2514abf3921c"
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:45.480Z",
+    "ordinal": 1,
+    "type": "event_msg",
+    "payload": {
+      "type": "task_started",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "started_at": 1790325765,
+      "model_context_window": 258400,
+      "collaboration_mode_kind": "default"
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.228Z",
+    "ordinal": 2,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01a0d7bb-5794-7573-9127-84e49142c961",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.\n### Skill roots\n- `r0` = `/Users/ruze/.agents/skills`\n- `r1` = `/private/tmp/p3-gold-1Lzj2s/home/skills/.system`\n### Available skills\n- imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas. (file: r1/imagegen/SKILL.md)\n- openai-docs: Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, customization, automations, and self-knowledge—including 'you,' 'your,' 'this app,' or 'this coding agent' when they refer to Codex—and for OpenAI APIs/products and ChatGPT Work. Also use for model choice/migration, prompting, SDKs, Responses, Realtime, agents, evals, and Chat/Work/Codex comparisons. Do not use for generic app/software tasks that merely mention Codex. (file: r1/openai-docs/SKILL.md)\n- plugin-creator: Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, valid manifest defaults, and personal-marketplace entries by default. Use when Codex needs to create a new personal plugin, add optional plugin structure, generate or update marketplace entries for plugin ordering and availability metadata, or update an existing local plugin during development with the CLI-driven cachebuster and reinstall flow. (file: r1/plugin-creator/SKILL.md)\n- skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r1/skill-creator/SKILL.md)\n- skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos). (file: r1/skill-installer/SKILL.md)\n- agent-email-patterns: Architecture patterns and best practices for giving AI agents email capabilities. Use when designing how agents send, receive, and manage email conversations, building two-way communication loops, implementing human-in-the-loop approval with drafts, choosing between WebSockets and webhooks, setting up multi-agent email topologies, handling OTP and verification flows, or securing agent email against prompt injection. (file: r0/agent-email-patterns/SKILL.md)\n- agentmail: Give AI agents their own email inboxes using the AgentMail API. Use when building email agents, sending/receiving emails programmatically, managing inboxes, handling attachments, organizing with labels, creating drafts for human approval, or setting up real-time notifications via webhooks/websockets. Supports multi-tenant isolation with pods. (file: r0/agentmail/SKILL.md)\n- agentmail-cli: Send and receive emails programmatically using the AgentMail CLI. Use when agents need to manage inboxes, send/receive emails, handle threads, drafts, webhooks, and domains via command line. (file: r0/agentmail-cli/SKILL.md)\n- agentmail-mcp: AgentMail MCP server for email tools in AI assistants. Use when setting up AgentMail with Claude Desktop, Cursor, VS Code, Windsurf, or other MCP-compatible clients. Provides tools for inbox management, sending/receiving emails, and thread handling. (file: r0/agentmail-mcp/SKILL.md)\n- agentmail-sdk: Comprehensive guide to the AgentMail Python and TypeScript SDKs. Use when building AI agents that need their own email inboxes, sending or receiving emails programmatically, managing threads and conversations, handling attachments, creating drafts for human-in-the-loop approval, setting up real-time notifications via webhooks or WebSockets, configuring custom domains, managing allow/block lists, using pods for multi-tenant isolation, or integrating email into any AI agent workflow. Covers the full AgentMail API with code examples, best practices, and production patterns. (file: r0/agentmail-sdk/SKILL.md)\n- agentmail-toolkit: Add email capabilities to AI agents using popular frameworks. Provides pre-built tools for TypeScript and Python frameworks including Vercel AI SDK, LangChain, Clawdbot, OpenAI Agents SDK, and LiveKit Agents. Use when integrating AgentMail with agent frameworks that need email send/receive tools. (file: r0/agentmail-toolkit/SKILL.md)\n- base44-cli: The base44 CLI is used for EVERYTHING related to base44 projects: resource configuration (entities, backend functions, ai agents), initialization and actions (resource creation, deployment). This skill is the place for learning about how to configure resources. When you plan or implement a feature, you must learn this skill (file: r0/base44-cli/SKILL.md)\n- base44-remote-dev: Develop a Base44 app remotely from your own coding agent (Claude Code, claude.ai, or any MCP client) by connecting it to the Base44 sandbox. Cloud agents connect over MCP; local agents can connect over MCP or drive the same sandbox with the `base44 sandbox` CLI subcommands (the CLI uses shorter names — e.g. read_file is `sandbox read`, list_directory is `sandbox ls`, run_command is `sandbox run`). Covers connecting/ authenticating, the available sandbox tools (run_command, read_file, write_file, edit_file, grep, list_directory, create_checkpoint, get_app_preview_url, get_app_status, list_user_apps, and the connector tools list_connectors / initiate_connector_connection), the edit→preview→verify loop, how changes persist, bui (file: r0/base44-remote-dev/SKILL.md)\n- base44-sandbox: Develop a Base44 app remotely inside Base44's cloud sandbox using your own agent — no local checkout and no deploy/push commands. The implementation is remote: writing a resource file into the sandbox is what ships it (backend functions, entities, and agents all auto-sync from the file you write), and OAuth connectors are set up against the remote app via MCP tools or the projectless `base44 connectors` CLI. This skill is the place for learning what you can author in the sandbox, how backend functions, entities, and agents are structured, and how to connect a connector without a local filesystem. Triggers on 'develop my Base44 app remotely', 'no local files', 'cloud sandbox', 'create an entity/agent remotely', 'connect a c (file: r0/base44-sandbox/SKILL.md)\n- base44-sdk: The base44 SDK is the library to communicate with base44 services. In projects, you use it to communicate with remote resources (entities, backend functions, ai agents) and to write backend functions. This skill is the place for learning about available modules and types. When you plan or implement a feature, you must learn this skill (file: r0/base44-sdk/SKILL.md)\n- base44-troubleshooter: Troubleshoot production issues using backend function logs and workflow run history. Use when investigating app errors, debugging function calls, diagnosing why a scheduled job or automation failed, or diagnosing production problems in Base44 apps. (file: r0/base44-troubleshooter/SKILL.md)\n- clerk: Clerk authentication router. Use when user asks about Clerk CLI operations, adding authentication, setting up Clerk, custom sign-in flows, Swift or native iOS auth, native Android auth, Next.js patterns, React patterns, Vue patterns, Nuxt patterns, Astro patterns, TanStack Start patterns, Expo patterns, React Router patterns, Chrome Extension patterns, organizations, billing, subscriptions, payments, pricing, plans, seat-based pricing, feature entitlements, syncing users, or testing. Automatically routes to the specific skill based on their task. (file: r0/clerk/SKILL.md)\n- clerk-backend-api: Clerk Backend REST API explorer and executor. Browse tags, inspect endpoint schemas, and execute authenticated requests. Use when listing users, managing organizations, or calling any Clerk API endpoint. (file: r0/clerk-backend-api/SKILL.md)\n- clerk-billing: Clerk Billing for subscription management - render Clerk's PricingTable and in-app checkout drawer, configure subscription plans, seat-limit plans for B2B, feature entitlements with has(), and billing webhooks. Use for SaaS monetization, plan gating, checkout flows, trials, invoicing, and subscription lifecycle management. (file: r0/clerk-billing/SKILL.md)\n- clerk-cli: Operate the Clerk CLI (`clerk` binary) for authentication, user/org/session management, deploy verification, instance config, env keys, and any Clerk Backend or Platform API call. Use when the user mentions Clerk management tasks, \"list clerk users\", \"create a clerk user\", \"update organization\", \"pull clerk config\", \"clerk env pull\", \"clerk doctor\", \"clerk deploy\", \"clerk deploy status\", \"clerk api\", or any ad-hoc Clerk API request. Prefer the CLI over raw HTTP: it handles auth, key resolution, app/instance targeting, and formatting automatically. (file: r0/clerk-cli/SKILL.md)\n- clerk-custom-ui: Custom authentication flows and component appearance - hooks (useSignIn, useSignUp), themes, colors, fonts, CSS. Use for custom sign-in/sign-up flows, appearance styling, visual customization, branding. (file: r0/clerk-custom-ui/SKILL.md)\n- clerk-orgs: Clerk Organizations for B2B SaaS - create multi-tenant apps with org switching, role-based access, verified domains, and enterprise SSO. Use for team workspaces, RBAC, org-based routing, member management. (file: r0/clerk-orgs/SKILL.md)\n- clerk-setup: Add Clerk authentication to any project by following the official quickstart guides. (file: r0/clerk-setup/SKILL.md)\n- clerk-testing: E2E testing for Clerk apps. Use with Playwright or Cypress for auth flow tests. (file: r0/clerk-testing/SKILL.md)\n- clerk-webhooks: Clerk webhooks for real-time events and data syncing. Verify with verifyWebhook from the framework-specific package. Handle user, session, organization, billing, and payment events. Build event-driven features like database sync, notifications, and integrations. (file: r0/clerk-webhooks/SKILL.md)\n- color-combo-skill: Curated named color palettes grouped by mood, style, and intent. Use when choosing colors for UI, branding, content, or visual design. Includes hex codes, color roles, gradient pairs with CSS, and WCAG contrast notes. Trigger on: \"choose colors\", \"color palette\", \"color scheme\", \"what colors should I use\", \"palette for\", \"/color-combo-skill\", intent=color_choice, intent=design. (file: r0/color-combo-skill/SKILL.md)\n- design-effects-skill: Visual effects, animation patterns, morphism systems, interaction states, and layout patterns for UI and branding contexts. Use when choosing or implementing animated backgrounds, text effects, morphism styles, micro-interactions, motion patterns, cursor effects, image/media effects, liquid/glass FX, shader gradients, depth systems, border effects, scroll animations, dark-mode adaptations, or 3D elements. Activate on: \"add animation\", \"make it more dynamic\", \"animated background\", \"text effect\", \"visual effect\", \"glassmorphism\", \"neumorphism\", \"claymorphism\", \"brutalism\", \"bento grid\", \"shader\", \"3D hero\", \"micro-interaction\", \"hover effect\", \"loading state\", \"gradient border\", \"lottie\", \"custom cursor\", \"image reveal\", \"scr (file: r0/design-effects-skill/SKILL.md)\n- design-mapper-skill: Intelligent design brief router. Takes any design request and emits a structured routing plan — which skills to load, in what order, with what focus parameters. Always load this skill FIRST when receiving a design brief. It is the entry point for the entire modular design system. Trigger on: \"design a\", \"create UI for\", \"branding for\", \"what should it look like\", \"color scheme for\", \"design brief\", \"visual identity\", \"/design\", intent=design_brief. (file: r0/design-mapper-skill/SKILL.md)\n- email-for-ai-agents: Comprehensive guide to why and how AI agents should use email. Use when evaluating whether an agent needs email, comparing email infrastructure options (AgentMail vs Gmail API vs Resend vs SendGrid vs SES), understanding security risks like prompt injection via email and OAuth credential exposure, or exploring common agent email use cases such as customer support agents, sales outreach, verification flows, and browser automation. (file: r0/email-for-ai-agents/SKILL.md)\n- faceless-explainer: Turn arbitrary text — an article, notes, a topic, a brief — into a faceless explainer video: there is no site or footage to capture, so the visuals are invented per scene (typography, abstract graphics, diagrams, data-viz). Use for topic explainers, concept breakdowns, how-tos, listicles. Not a video built from a website (/product-launch-video — promo or tour). Unclear → /hyperframes. (file: r0/faceless-explainer/SKILL.md)\n- find-skills: Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill. (file: r0/find-skills/SKILL.md)\n- font-pairing-skill: Typeface selection, pairing rules, loading strategy, and variable font guidance for UI and branding design. Use when choosing fonts, pairing a display with a body typeface, selecting a monospace font for code, setting type scale, or matching typography to a brand tier or palette. Works alongside color-combo-skill, design-effects-skill, and icon-system-skill. Activate on: \"what font\", \"choose a typeface\", \"font pairing\", \"heading font\", \"body font\", \"monospace font\", \"type scale\", \"web font\", \"variable font\", \"/font-pairing-skill\". (file: r0/font-pairing-skill/SKILL.md)\n- hyperframes: Mandatory entry point: read this first for any request to make, create, edit, animate, or render a video, animation, or motion graphic, including a promo, explainer, captioned clip, title card, overlay, slideshow or interactive deck, Remotion port, or any HyperFrames HTML composition. Also use it to inspect, diagnose, validate, preview, publish, or batch-render an existing HyperFrames project. Inputs may be a website URL, GitHub PR, Figma design or URL, text or brief, existing footage, or music. It resumes project state, captures intent when applicable, selects and installs the owning workflow, and routes domain capabilities. HyperFrames is the default output framework unless the user explicitly chooses another framework f (file: r0/hyperframes/SKILL.md)\n- hyperframes-animation: All animation knowledge for HyperFrames — atomic motion rules, multi-phase scene blueprints, scene transitions, broader motion-design techniques, AND the seven runtime adapters (GSAP default, plus Lottie, Three.js, Anime.js, CSS keyframes, Web Animations API, TypeGPU). Use for any motion or animation task: pick 2-4 rules and compose, or load a blueprint, or look up runtime-specific API (e.g. GSAP eases / Lottie player / Three.js mixer). Also covers auditing an existing composition's choreography (animation map) and 24 named text-animation effects. HyperFrames-native: single paused timeline, seek-safe, deterministic. (file: r0/hyperframes-animation/SKILL.md)\n- hyperframes-audio: Use when audio already placed in a HyperFrames composition needs to be mixed: fade-in/fade-out, crossfade, track gain or volume, volume automation, ducking, a music bed that fights a voiceover (voiceover carve), effects on a track (EQ, compressor, limiter, gate, saturation, delay, reverb, chorus, phaser, bitcrush), automation envelopes drawn on a track's volume or any effect parameter, or one submix bus carrying a chain, a fader and an automation clock for several tracks at once (`<hf-audio-group>`). Don't use for sourcing or generating audio — finding BGM, SFX, or making a voiceover is `/media-use`. Don't use for clip timing or track layout, which is `/hyperframes-core`. (file: r0/hyperframes-audio/SKILL.md)\n- hyperframes-cli: Use the HyperFrames CLI development loop: init, add, catalog, capture, lint, check, snapshot, compare, grade-compare, preview, play, present, beats, keyframes, single or batch render, publish, cloud, cloudrun, feedback, lambda, doctor, browser, info, upgrade, skills, compositions, docs, benchmark, telemetry, transcribe, auth, tts, and remove-background. Also use when diagnosing build or render failures. validate, inspect, and layout are deprecated aliases; use check. Covers local, HeyGen-hosted cloud, AWS Lambda, and Google Cloud Run rendering. (file: r0/hyperframes-cli/SKILL.md)\n- hyperframes-core: The HyperFrames composition contract — build one renderable project. Use for composition structure, the `data-*` timing attributes, `class=\"clip\"`, tracks, sub-compositions, variables, framework-owned media playback, deterministic-render rules, and validation. Also covers Tailwind projects and the STORYBOARD.md / SCRIPT.md plan formats. Read before writing composition HTML. (file: r0/hyperframes-core/SKILL.md)\n- hyperframes-creative: Non-animation creative direction for HyperFrames videos. Use for design spec (frame.md / design.md) handling, palettes, typography, narration, beat planning, audio-reactive visuals, composition patterns, and brand / style decisions. For atomic motion patterns and scene blueprints, use `hyperframes-animation`. (file: r0/hyperframes-creative/SKILL.md)\n- hyperframes-keyframes: Use when a HyperFrames composition needs a punch-in, punch-out, zoom, reframe, Ken Burns treatment, camera move, visual match/whip handoff, or other seek-safe 2D/3D keyframes; also for GSAP, CSS keyframes, Anime.js, WAAPI, FLIP, paths, masks, SVG morph/draw, text trails, 3D depth, or `hyperframes keyframes` diagnostics. Don't use for broad scene strategy, brand design, media sourcing, captions, or general video planning. (file: r0/hyperframes-keyframes/SKILL.md)\n- hyperframes-registry: Install, discover, and wire registry blocks and components into HyperFrames compositions. Use when running hyperframes add or hyperframes catalog, installing one item or every block matching a tag, wiring an installed item into index.html, or working with hyperframes.json. Covers discovery, install locations, block sub-composition wiring, component snippet merging, and authoring a new block or component to contribute upstream (idea → scaffold → validate → PR). (file: r0/hyperframes-registry/SKILL.md)\n- icon-system-skill: Icon library selection, sizing system, optical alignment, stroke vs fill decisions, color inheritance, icon weight matching to typography, and animated icon patterns for UI and branding. Use when choosing an icon set, sizing icons in a layout, matching icons to a font, adding icon animation, or deciding between stroke and fill icon styles. Works alongside color-combo-skill, design-effects-skill, and font-pairing-skill. Activate on: \"what icon library\", \"icon size\", \"icon weight\", \"icon animation\", \"icon system\", \"stroke icons\", \"fill icons\", \"/icon-system-skill\". (file: r0/icon-system-skill/SKILL.md)\n- media-use: Agent Media OS, the single skill for every media need in a HyperFrames project. Resolve BGM, SFX, image, icon, brand logo, voice, color grade, or LUT into a frozen local file or paste-ready block + ledger record (one verb, `resolve`); generate via TTS / music / image models when the catalog misses; produce voiceover, transcription, captions, and background removal through one shared audio engine; operate on media (cut / reframe / transform); and reuse assets across projects. Also use for vague feedback that real footage looks dark, flat, boring, should feel retro/camcorder/print/ASCII, needs privacy, or needs a media reveal. (file: r0/media-use/SKILL.md)\n- stripe-best-practices: Guides Stripe integration decisions — API selection (Checkout Sessions vs PaymentIntents), Connect platform setup (Accounts v2, controller properties), billing/subscriptions, Treasury financial accounts, integration surfaces (Checkout, Payment Element), migrating from deprecated Stripe APIs, and security best practices (API key management, restricted keys, webhooks, OAuth). Use when building, modifying, or reviewing any Stripe integration — including accepting payments, building marketplaces, integrating Stripe, processing payments, setting up subscriptions, creating connected accounts, or implementing secure key handling. (file: r0/stripe-best-practices/SKILL.md)\n- stripe-directory: Use when the user wants to find businesses, software, service providers, or partners for a specific industry, workflow, pain point, capability, or job to be done. Also use when the agent needs to programmatically purchase or consume a service. Use Stripe Directory to build a short relevant shortlist, even if the user does not mention Stripe Directory explicitly. (file: r0/stripe-directory/SKILL.md)\n- stripe-projects: Use when the user wants to provision infrastructure or third-party services using Stripe Projects. Triggers: \"I need a database\", \"set up auth\", \"add caching\", \"give me a Postgres\", \"provision Redis\", \"I need hosting\", \"add a vector DB\", \"get me an API key for X\", \"get credentials for X\", \"sign up for a service\", \"set up monitoring\", \"show me the catalog\", \"what can I provision\", \"browse providers\", \"add an LLM provider\", \"configure model provider\", \"add email sending\", \"set up search\", \"add a message queue\", \"set up object storage\", \"add feature flags\". Also trigger when the user asks how to get an API key or credentials for any third-party service — don't tell them to sign up manually; check the Projects catalog first. (file: r0/stripe-projects/SKILL.md)\n- upgrade-stripe: Guide for upgrading Stripe API versions and SDKs (file: r0/upgrade-stripe/SKILL.md)\n</skills_instructions>"
+        },
+        {
+          "type": "input_text",
+          "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is restricted.\nApproval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n</permissions instructions>"
+        },
+        {
+          "type": "input_text",
+          "text": "<collaboration_mode># Collaboration Mode: Default\n\nYou are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.\n\nYour active mode changes only when new developer instructions with a different `<collaboration_mode>...</collaboration_mode>` change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan.\n\n## request_user_input availability\n\nUse the `request_user_input` tool only when it is listed in the available tools for this turn.\n\nUse the `request_user_input` tool only for optional questions where the answer would materially improve the quality of the work.\n\nIf `request_user_input` returns no answers, continue with best judgment instead of asking again or treating the turn as blocked.\n\nNever use the `request_user_input` tool for permission requests or permission-related escalations.\n</collaboration_mode>"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.22866,
+        "content_item_kinds": [
+          "host_skills.instructions",
+          "permissions.instructions",
+          "collaboration_mode.instructions"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.228Z",
+    "ordinal": 3,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01a0d7bb-5794-7573-9127-84fcc39de24a",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<multi_agent_role>You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.\n\nAt the start of your turn, you are the active agent.\nYou can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents.\nAll agents in the team, including the agents that you can assign tasks to, are equally intelligent and capable, and have access to the same set of tools.\n\nYou can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task and trigger a turn, and `send_message` to pass a message to a running agent without triggering a turn.\n`send_message` calls may be read by a human, so ensure they are legible. Always put proper spaces between words and/or numbers.\nChild agents can also spawn their own sub-agents.\nYou can decide how much context you want to propagate to your sub-agents with the `fork_turns` parameter.\n\nYou will receive messages in the analysis channel in the form:\n```\nMessage Type: MESSAGE | FINAL_ANSWER\nTask name: <recipient>\nSender: <author>\nPayload:\n<payload text>\n```\nThey may be addressed as to=/root\n\nNote that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.\n\nAll agents share the same directory. In detail:\n- All agents have access to the same container and filesystem as you.\n- All agents use the same current working directory.\n- As a result, edits made by one agent are immediately visible to all other agents.\n\nWhen calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.\n\nThere are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.\n\nFull-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.</multi_agent_role>"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.228661,
+        "content_item_kinds": [
+          "multi_agent.role_instructions"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.228Z",
+    "ordinal": 4,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01a0d7bb-5794-7573-9127-850632c54a56",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.</multi_agent_mode>"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.228661,
+        "content_item_kinds": [
+          "multi_agent.mode_instructions"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.228Z",
+    "ordinal": 5,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01a0d7bb-5794-7573-9127-851b1bb09d29",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n\n- Dropbox (app-69b31dc2110c8191b8b47dc98fe5a052@openai-curated-remote)\n- Box (box@openai-curated-remote)\n- Codex Security (codex-security@openai-curated-remote)\n- Figma (figma@openai-curated-remote)\n- Finances (finances@openai-curated-remote)\n- GitHub (github@openai-curated-remote)\n- Gmail (gmail@openai-curated-remote)\n- Google Calendar (google-calendar@openai-curated-remote)\n- Google Drive (google-drive@openai-curated-remote)\n- Linear (linear@openai-curated-remote)\n- Notion (notion@openai-curated-remote)\n- OpenAI Developers (openai-developers@openai-curated-remote)\n- Outlook Calendar (outlook-calendar@openai-curated-remote)\n- Outlook Email (outlook-email@openai-curated-remote)\n- SharePoint (sharepoint@openai-curated-remote)\n- Slack (slack@openai-curated-remote)\n- Teams (teams@openai-curated-remote)\n</recommended_plugins>"
+        },
+        {
+          "type": "input_text",
+          "text": "<environment_context>\n  <cwd>/tmp/p3-gold-1Lzj2s/workspace</cwd>\n  <shell>zsh</shell>\n  <current_date>2026-09-25</current_date>\n  <timezone>Asia/Shanghai</timezone>\n  <filesystem><workspace_roots><root>/tmp/p3-gold-1Lzj2s/workspace</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry></file_system></permission_profile></filesystem>\n</environment_context>"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.228661,
+        "content_item_kinds": [
+          "plugins.recommendations",
+          "environments.environment_context"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.230Z",
+    "ordinal": 6,
+    "type": "world_state",
+    "payload": {
+      "full": true,
+      "state": {
+        "agents_md": {},
+        "apps_instructions": false,
+        "collaboration_mode": {
+          "mode": "default",
+          "model": "gpt-6-luna",
+          "instructions": "0a11049b0421e1e86f1e129af8d547a89548a0c3"
+        },
+        "context_window_guidance": "",
+        "environments": {
+          "environments": {
+            "local": {
+              "cwd": "/tmp/p3-gold-1Lzj2s/workspace",
+              "status": "available",
+              "shell": "zsh"
+            }
+          },
+          "current_date": "2026-09-25",
+          "timezone": "Asia/Shanghai",
+          "filesystem": "<filesystem><workspace_roots><root>/tmp/p3-gold-1Lzj2s/workspace</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry></file_system></permission_profile></filesystem>"
+        },
+        "environments_instructions": false,
+        "git_attribution": false,
+        "host_skills": {
+          "body": "\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.\n### Skill roots\n- `r0` = `/Users/ruze/.agents/skills`\n- `r1` = `/private/tmp/p3-gold-1Lzj2s/home/skills/.system`\n### Available skills\n- imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as photos, illustrations, textures, sprites, mockups, or transparent-background cutouts. Use when Codex should create a brand-new image, transform an existing image, or derive visual variants from references, and the output should be a bitmap asset rather than repo-native code or vector. Do not use when the task is better handled by editing existing SVG/vector/code-native assets, extending an established icon or logo system, or building the visual directly in HTML/CSS/canvas. (file: r1/imagegen/SKILL.md)\n- openai-docs: Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, customization, automations, and self-knowledge—including 'you,' 'your,' 'this app,' or 'this coding agent' when they refer to Codex—and for OpenAI APIs/products and ChatGPT Work. Also use for model choice/migration, prompting, SDKs, Responses, Realtime, agents, evals, and Chat/Work/Codex comparisons. Do not use for generic app/software tasks that merely mention Codex. (file: r1/openai-docs/SKILL.md)\n- plugin-creator: Create and scaffold plugin directories for Codex with a required `.codex-plugin/plugin.json`, optional plugin folders/files, valid manifest defaults, and personal-marketplace entries by default. Use when Codex needs to create a new personal plugin, add optional plugin structure, generate or update marketplace entries for plugin ordering and availability metadata, or update an existing local plugin during development with the CLI-driven cachebuster and reinstall flow. (file: r1/plugin-creator/SKILL.md)\n- skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r1/skill-creator/SKILL.md)\n- skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos). (file: r1/skill-installer/SKILL.md)\n- agent-email-patterns: Architecture patterns and best practices for giving AI agents email capabilities. Use when designing how agents send, receive, and manage email conversations, building two-way communication loops, implementing human-in-the-loop approval with drafts, choosing between WebSockets and webhooks, setting up multi-agent email topologies, handling OTP and verification flows, or securing agent email against prompt injection. (file: r0/agent-email-patterns/SKILL.md)\n- agentmail: Give AI agents their own email inboxes using the AgentMail API. Use when building email agents, sending/receiving emails programmatically, managing inboxes, handling attachments, organizing with labels, creating drafts for human approval, or setting up real-time notifications via webhooks/websockets. Supports multi-tenant isolation with pods. (file: r0/agentmail/SKILL.md)\n- agentmail-cli: Send and receive emails programmatically using the AgentMail CLI. Use when agents need to manage inboxes, send/receive emails, handle threads, drafts, webhooks, and domains via command line. (file: r0/agentmail-cli/SKILL.md)\n- agentmail-mcp: AgentMail MCP server for email tools in AI assistants. Use when setting up AgentMail with Claude Desktop, Cursor, VS Code, Windsurf, or other MCP-compatible clients. Provides tools for inbox management, sending/receiving emails, and thread handling. (file: r0/agentmail-mcp/SKILL.md)\n- agentmail-sdk: Comprehensive guide to the AgentMail Python and TypeScript SDKs. Use when building AI agents that need their own email inboxes, sending or receiving emails programmatically, managing threads and conversations, handling attachments, creating drafts for human-in-the-loop approval, setting up real-time notifications via webhooks or WebSockets, configuring custom domains, managing allow/block lists, using pods for multi-tenant isolation, or integrating email into any AI agent workflow. Covers the full AgentMail API with code examples, best practices, and production patterns. (file: r0/agentmail-sdk/SKILL.md)\n- agentmail-toolkit: Add email capabilities to AI agents using popular frameworks. Provides pre-built tools for TypeScript and Python frameworks including Vercel AI SDK, LangChain, Clawdbot, OpenAI Agents SDK, and LiveKit Agents. Use when integrating AgentMail with agent frameworks that need email send/receive tools. (file: r0/agentmail-toolkit/SKILL.md)\n- base44-cli: The base44 CLI is used for EVERYTHING related to base44 projects: resource configuration (entities, backend functions, ai agents), initialization and actions (resource creation, deployment). This skill is the place for learning about how to configure resources. When you plan or implement a feature, you must learn this skill (file: r0/base44-cli/SKILL.md)\n- base44-remote-dev: Develop a Base44 app remotely from your own coding agent (Claude Code, claude.ai, or any MCP client) by connecting it to the Base44 sandbox. Cloud agents connect over MCP; local agents can connect over MCP or drive the same sandbox with the `base44 sandbox` CLI subcommands (the CLI uses shorter names — e.g. read_file is `sandbox read`, list_directory is `sandbox ls`, run_command is `sandbox run`). Covers connecting/ authenticating, the available sandbox tools (run_command, read_file, write_file, edit_file, grep, list_directory, create_checkpoint, get_app_preview_url, get_app_status, list_user_apps, and the connector tools list_connectors / initiate_connector_connection), the edit→preview→verify loop, how changes persist, bui (file: r0/base44-remote-dev/SKILL.md)\n- base44-sandbox: Develop a Base44 app remotely inside Base44's cloud sandbox using your own agent — no local checkout and no deploy/push commands. The implementation is remote: writing a resource file into the sandbox is what ships it (backend functions, entities, and agents all auto-sync from the file you write), and OAuth connectors are set up against the remote app via MCP tools or the projectless `base44 connectors` CLI. This skill is the place for learning what you can author in the sandbox, how backend functions, entities, and agents are structured, and how to connect a connector without a local filesystem. Triggers on 'develop my Base44 app remotely', 'no local files', 'cloud sandbox', 'create an entity/agent remotely', 'connect a c (file: r0/base44-sandbox/SKILL.md)\n- base44-sdk: The base44 SDK is the library to communicate with base44 services. In projects, you use it to communicate with remote resources (entities, backend functions, ai agents) and to write backend functions. This skill is the place for learning about available modules and types. When you plan or implement a feature, you must learn this skill (file: r0/base44-sdk/SKILL.md)\n- base44-troubleshooter: Troubleshoot production issues using backend function logs and workflow run history. Use when investigating app errors, debugging function calls, diagnosing why a scheduled job or automation failed, or diagnosing production problems in Base44 apps. (file: r0/base44-troubleshooter/SKILL.md)\n- clerk: Clerk authentication router. Use when user asks about Clerk CLI operations, adding authentication, setting up Clerk, custom sign-in flows, Swift or native iOS auth, native Android auth, Next.js patterns, React patterns, Vue patterns, Nuxt patterns, Astro patterns, TanStack Start patterns, Expo patterns, React Router patterns, Chrome Extension patterns, organizations, billing, subscriptions, payments, pricing, plans, seat-based pricing, feature entitlements, syncing users, or testing. Automatically routes to the specific skill based on their task. (file: r0/clerk/SKILL.md)\n- clerk-backend-api: Clerk Backend REST API explorer and executor. Browse tags, inspect endpoint schemas, and execute authenticated requests. Use when listing users, managing organizations, or calling any Clerk API endpoint. (file: r0/clerk-backend-api/SKILL.md)\n- clerk-billing: Clerk Billing for subscription management - render Clerk's PricingTable and in-app checkout drawer, configure subscription plans, seat-limit plans for B2B, feature entitlements with has(), and billing webhooks. Use for SaaS monetization, plan gating, checkout flows, trials, invoicing, and subscription lifecycle management. (file: r0/clerk-billing/SKILL.md)\n- clerk-cli: Operate the Clerk CLI (`clerk` binary) for authentication, user/org/session management, deploy verification, instance config, env keys, and any Clerk Backend or Platform API call. Use when the user mentions Clerk management tasks, \"list clerk users\", \"create a clerk user\", \"update organization\", \"pull clerk config\", \"clerk env pull\", \"clerk doctor\", \"clerk deploy\", \"clerk deploy status\", \"clerk api\", or any ad-hoc Clerk API request. Prefer the CLI over raw HTTP: it handles auth, key resolution, app/instance targeting, and formatting automatically. (file: r0/clerk-cli/SKILL.md)\n- clerk-custom-ui: Custom authentication flows and component appearance - hooks (useSignIn, useSignUp), themes, colors, fonts, CSS. Use for custom sign-in/sign-up flows, appearance styling, visual customization, branding. (file: r0/clerk-custom-ui/SKILL.md)\n- clerk-orgs: Clerk Organizations for B2B SaaS - create multi-tenant apps with org switching, role-based access, verified domains, and enterprise SSO. Use for team workspaces, RBAC, org-based routing, member management. (file: r0/clerk-orgs/SKILL.md)\n- clerk-setup: Add Clerk authentication to any project by following the official quickstart guides. (file: r0/clerk-setup/SKILL.md)\n- clerk-testing: E2E testing for Clerk apps. Use with Playwright or Cypress for auth flow tests. (file: r0/clerk-testing/SKILL.md)\n- clerk-webhooks: Clerk webhooks for real-time events and data syncing. Verify with verifyWebhook from the framework-specific package. Handle user, session, organization, billing, and payment events. Build event-driven features like database sync, notifications, and integrations. (file: r0/clerk-webhooks/SKILL.md)\n- color-combo-skill: Curated named color palettes grouped by mood, style, and intent. Use when choosing colors for UI, branding, content, or visual design. Includes hex codes, color roles, gradient pairs with CSS, and WCAG contrast notes. Trigger on: \"choose colors\", \"color palette\", \"color scheme\", \"what colors should I use\", \"palette for\", \"/color-combo-skill\", intent=color_choice, intent=design. (file: r0/color-combo-skill/SKILL.md)\n- design-effects-skill: Visual effects, animation patterns, morphism systems, interaction states, and layout patterns for UI and branding contexts. Use when choosing or implementing animated backgrounds, text effects, morphism styles, micro-interactions, motion patterns, cursor effects, image/media effects, liquid/glass FX, shader gradients, depth systems, border effects, scroll animations, dark-mode adaptations, or 3D elements. Activate on: \"add animation\", \"make it more dynamic\", \"animated background\", \"text effect\", \"visual effect\", \"glassmorphism\", \"neumorphism\", \"claymorphism\", \"brutalism\", \"bento grid\", \"shader\", \"3D hero\", \"micro-interaction\", \"hover effect\", \"loading state\", \"gradient border\", \"lottie\", \"custom cursor\", \"image reveal\", \"scr (file: r0/design-effects-skill/SKILL.md)\n- design-mapper-skill: Intelligent design brief router. Takes any design request and emits a structured routing plan — which skills to load, in what order, with what focus parameters. Always load this skill FIRST when receiving a design brief. It is the entry point for the entire modular design system. Trigger on: \"design a\", \"create UI for\", \"branding for\", \"what should it look like\", \"color scheme for\", \"design brief\", \"visual identity\", \"/design\", intent=design_brief. (file: r0/design-mapper-skill/SKILL.md)\n- email-for-ai-agents: Comprehensive guide to why and how AI agents should use email. Use when evaluating whether an agent needs email, comparing email infrastructure options (AgentMail vs Gmail API vs Resend vs SendGrid vs SES), understanding security risks like prompt injection via email and OAuth credential exposure, or exploring common agent email use cases such as customer support agents, sales outreach, verification flows, and browser automation. (file: r0/email-for-ai-agents/SKILL.md)\n- faceless-explainer: Turn arbitrary text — an article, notes, a topic, a brief — into a faceless explainer video: there is no site or footage to capture, so the visuals are invented per scene (typography, abstract graphics, diagrams, data-viz). Use for topic explainers, concept breakdowns, how-tos, listicles. Not a video built from a website (/product-launch-video — promo or tour). Unclear → /hyperframes. (file: r0/faceless-explainer/SKILL.md)\n- find-skills: Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill. (file: r0/find-skills/SKILL.md)\n- font-pairing-skill: Typeface selection, pairing rules, loading strategy, and variable font guidance for UI and branding design. Use when choosing fonts, pairing a display with a body typeface, selecting a monospace font for code, setting type scale, or matching typography to a brand tier or palette. Works alongside color-combo-skill, design-effects-skill, and icon-system-skill. Activate on: \"what font\", \"choose a typeface\", \"font pairing\", \"heading font\", \"body font\", \"monospace font\", \"type scale\", \"web font\", \"variable font\", \"/font-pairing-skill\". (file: r0/font-pairing-skill/SKILL.md)\n- hyperframes: Mandatory entry point: read this first for any request to make, create, edit, animate, or render a video, animation, or motion graphic, including a promo, explainer, captioned clip, title card, overlay, slideshow or interactive deck, Remotion port, or any HyperFrames HTML composition. Also use it to inspect, diagnose, validate, preview, publish, or batch-render an existing HyperFrames project. Inputs may be a website URL, GitHub PR, Figma design or URL, text or brief, existing footage, or music. It resumes project state, captures intent when applicable, selects and installs the owning workflow, and routes domain capabilities. HyperFrames is the default output framework unless the user explicitly chooses another framework f (file: r0/hyperframes/SKILL.md)\n- hyperframes-animation: All animation knowledge for HyperFrames — atomic motion rules, multi-phase scene blueprints, scene transitions, broader motion-design techniques, AND the seven runtime adapters (GSAP default, plus Lottie, Three.js, Anime.js, CSS keyframes, Web Animations API, TypeGPU). Use for any motion or animation task: pick 2-4 rules and compose, or load a blueprint, or look up runtime-specific API (e.g. GSAP eases / Lottie player / Three.js mixer). Also covers auditing an existing composition's choreography (animation map) and 24 named text-animation effects. HyperFrames-native: single paused timeline, seek-safe, deterministic. (file: r0/hyperframes-animation/SKILL.md)\n- hyperframes-audio: Use when audio already placed in a HyperFrames composition needs to be mixed: fade-in/fade-out, crossfade, track gain or volume, volume automation, ducking, a music bed that fights a voiceover (voiceover carve), effects on a track (EQ, compressor, limiter, gate, saturation, delay, reverb, chorus, phaser, bitcrush), automation envelopes drawn on a track's volume or any effect parameter, or one submix bus carrying a chain, a fader and an automation clock for several tracks at once (`<hf-audio-group>`). Don't use for sourcing or generating audio — finding BGM, SFX, or making a voiceover is `/media-use`. Don't use for clip timing or track layout, which is `/hyperframes-core`. (file: r0/hyperframes-audio/SKILL.md)\n- hyperframes-cli: Use the HyperFrames CLI development loop: init, add, catalog, capture, lint, check, snapshot, compare, grade-compare, preview, play, present, beats, keyframes, single or batch render, publish, cloud, cloudrun, feedback, lambda, doctor, browser, info, upgrade, skills, compositions, docs, benchmark, telemetry, transcribe, auth, tts, and remove-background. Also use when diagnosing build or render failures. validate, inspect, and layout are deprecated aliases; use check. Covers local, HeyGen-hosted cloud, AWS Lambda, and Google Cloud Run rendering. (file: r0/hyperframes-cli/SKILL.md)\n- hyperframes-core: The HyperFrames composition contract — build one renderable project. Use for composition structure, the `data-*` timing attributes, `class=\"clip\"`, tracks, sub-compositions, variables, framework-owned media playback, deterministic-render rules, and validation. Also covers Tailwind projects and the STORYBOARD.md / SCRIPT.md plan formats. Read before writing composition HTML. (file: r0/hyperframes-core/SKILL.md)\n- hyperframes-creative: Non-animation creative direction for HyperFrames videos. Use for design spec (frame.md / design.md) handling, palettes, typography, narration, beat planning, audio-reactive visuals, composition patterns, and brand / style decisions. For atomic motion patterns and scene blueprints, use `hyperframes-animation`. (file: r0/hyperframes-creative/SKILL.md)\n- hyperframes-keyframes: Use when a HyperFrames composition needs a punch-in, punch-out, zoom, reframe, Ken Burns treatment, camera move, visual match/whip handoff, or other seek-safe 2D/3D keyframes; also for GSAP, CSS keyframes, Anime.js, WAAPI, FLIP, paths, masks, SVG morph/draw, text trails, 3D depth, or `hyperframes keyframes` diagnostics. Don't use for broad scene strategy, brand design, media sourcing, captions, or general video planning. (file: r0/hyperframes-keyframes/SKILL.md)\n- hyperframes-registry: Install, discover, and wire registry blocks and components into HyperFrames compositions. Use when running hyperframes add or hyperframes catalog, installing one item or every block matching a tag, wiring an installed item into index.html, or working with hyperframes.json. Covers discovery, install locations, block sub-composition wiring, component snippet merging, and authoring a new block or component to contribute upstream (idea → scaffold → validate → PR). (file: r0/hyperframes-registry/SKILL.md)\n- icon-system-skill: Icon library selection, sizing system, optical alignment, stroke vs fill decisions, color inheritance, icon weight matching to typography, and animated icon patterns for UI and branding. Use when choosing an icon set, sizing icons in a layout, matching icons to a font, adding icon animation, or deciding between stroke and fill icon styles. Works alongside color-combo-skill, design-effects-skill, and font-pairing-skill. Activate on: \"what icon library\", \"icon size\", \"icon weight\", \"icon animation\", \"icon system\", \"stroke icons\", \"fill icons\", \"/icon-system-skill\". (file: r0/icon-system-skill/SKILL.md)\n- media-use: Agent Media OS, the single skill for every media need in a HyperFrames project. Resolve BGM, SFX, image, icon, brand logo, voice, color grade, or LUT into a frozen local file or paste-ready block + ledger record (one verb, `resolve`); generate via TTS / music / image models when the catalog misses; produce voiceover, transcription, captions, and background removal through one shared audio engine; operate on media (cut / reframe / transform); and reuse assets across projects. Also use for vague feedback that real footage looks dark, flat, boring, should feel retro/camcorder/print/ASCII, needs privacy, or needs a media reveal. (file: r0/media-use/SKILL.md)\n- stripe-best-practices: Guides Stripe integration decisions — API selection (Checkout Sessions vs PaymentIntents), Connect platform setup (Accounts v2, controller properties), billing/subscriptions, Treasury financial accounts, integration surfaces (Checkout, Payment Element), migrating from deprecated Stripe APIs, and security best practices (API key management, restricted keys, webhooks, OAuth). Use when building, modifying, or reviewing any Stripe integration — including accepting payments, building marketplaces, integrating Stripe, processing payments, setting up subscriptions, creating connected accounts, or implementing secure key handling. (file: r0/stripe-best-practices/SKILL.md)\n- stripe-directory: Use when the user wants to find businesses, software, service providers, or partners for a specific industry, workflow, pain point, capability, or job to be done. Also use when the agent needs to programmatically purchase or consume a service. Use Stripe Directory to build a short relevant shortlist, even if the user does not mention Stripe Directory explicitly. (file: r0/stripe-directory/SKILL.md)\n- stripe-projects: Use when the user wants to provision infrastructure or third-party services using Stripe Projects. Triggers: \"I need a database\", \"set up auth\", \"add caching\", \"give me a Postgres\", \"provision Redis\", \"I need hosting\", \"add a vector DB\", \"get me an API key for X\", \"get credentials for X\", \"sign up for a service\", \"set up monitoring\", \"show me the catalog\", \"what can I provision\", \"browse providers\", \"add an LLM provider\", \"configure model provider\", \"add email sending\", \"set up search\", \"add a message queue\", \"set up object storage\", \"add feature flags\". Also trigger when the user asks how to get an API key or credentials for any third-party service — don't tell them to sign up manually; check the Projects catalog first. (file: r0/stripe-projects/SKILL.md)\n- upgrade-stripe: Guide for upgrading Stripe API versions and SDKs (file: r0/upgrade-stripe/SKILL.md)\n",
+          "includeInstructions": true
+        },
+        "managed_developer_instructions": {},
+        "model": "gpt-6-luna",
+        "multi_agent_mode": {
+          "mode": "explicitRequestOnly",
+          "usage_hint_hash": "30fb77255ffd0abcecb08a8897e242564dfe1192"
+        },
+        "multi_agent_usage_hint": "30fb77255ffd0abcecb08a8897e242564dfe1192",
+        "orchestrator_skills": {
+          "includeInstructions": true,
+          "enabled": false
+        },
+        "permissions": {
+          "instructions": "fed2f53df24dd05a217b734cf7ad9abefa7cc6a2",
+          "approved_command_prefixes": []
+        },
+        "persistent_mode": {},
+        "personality": {
+          "model": "gpt-6-luna",
+          "personality": "pragmatic"
+        },
+        "plugins_instructions": false,
+        "realtime": {
+          "active": false
+        },
+        "skills": {
+          "includeInstructions": true
+        }
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.231Z",
+    "ordinal": 7,
+    "type": "turn_context",
+    "payload": {
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "disabled_plugin_ids": [],
+      "cwd": "/tmp/p3-gold-1Lzj2s/workspace",
+      "workspace_roots": [
+        "/tmp/p3-gold-1Lzj2s/workspace"
+      ],
+      "current_date": "2026-09-25",
+      "timezone": "Asia/Shanghai",
+      "approval_policy": "never",
+      "approvals_reviewer": "user",
+      "sandbox_policy": {
+        "type": "read-only"
+      },
+      "permission_profile": {
+        "type": "managed",
+        "file_system": {
+          "type": "restricted",
+          "entries": [
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "root"
+                }
+              },
+              "access": "read"
+            }
+          ]
+        },
+        "network": "restricted"
+      },
+      "model": "gpt-6-luna",
+      "comp_hash": "3000",
+      "personality": "pragmatic",
+      "collaboration_mode": {
+        "mode": "default",
+        "settings": {
+          "model": "gpt-6-luna",
+          "reasoning_effort": "low",
+          "developer_instructions": null
+        }
+      },
+      "multi_agent_version": "v2",
+      "realtime_active": false,
+      "effort": "low",
+      "summary": "none"
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.276Z",
+    "ordinal": 8,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01a0d7bb-57c4-79c2-9a02-850d9c641ff7",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "[sandbox constraints]\nYou are running inside a restricted OS sandbox (macOS seatbelt / Linux landlock).\nGUI applications cannot start here: full Chrome/Chromium, Electron, or anything\nthat opens a window aborts at launch (SIGABRT). That abort is the sandbox, not\na bug in the code under test. For browser work use chrome-headless-shell (set\nvia PUPPETEER_EXECUTABLE_PATH when available) or another headless-only tool.\nIf a GUI launch aborts, do not retry it.\n[/sandbox constraints]\n\nRun exactly one bounded shell tool command: sleep 150. Wait for that command to finish. Then give a final answer including verbatim any marker received in a peer message during this turn. Do not start another command or modify files."
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.276107,
+        "content_item_kinds": [
+          "user.text"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:54.276Z",
+    "ordinal": 9,
+    "type": "event_msg",
+    "payload": {
+      "type": "item_completed",
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "item": {
+        "type": "UserMessage",
+        "id": "01a0d7bb-57c4-79c2-9a02-851e0f50dd27",
+        "content": [
+          {
+            "type": "text",
+            "text": "[sandbox constraints]\nYou are running inside a restricted OS sandbox (macOS seatbelt / Linux landlock).\nGUI applications cannot start here: full Chrome/Chromium, Electron, or anything\nthat opens a window aborts at launch (SIGABRT). That abort is the sandbox, not\na bug in the code under test. For browser work use chrome-headless-shell (set\nvia PUPPETEER_EXECUTABLE_PATH when available) or another headless-only tool.\nIf a GUI launch aborts, do not retry it.\n[/sandbox constraints]\n\nRun exactly one bounded shell tool command: sleep 150. Wait for that command to finish. Then give a final answer including verbatim any marker received in a peer message during this turn. Do not start another command or modify files.",
+            "text_elements": []
+          }
+        ]
+      },
+      "started_at_ms": 1790325774276,
+      "completed_at_ms": 1790325774276
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:56.157Z",
+    "ordinal": 10,
+    "type": "event_msg",
+    "payload": {
+      "type": "item_completed",
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "item": {
+        "type": "AgentMessage",
+        "id": "msg_01bc1e081391f930016ab6340f6ab487d09f9945338c5fc22a",
+        "content": [
+          {
+            "type": "Text",
+            "text": "I’ll run the single requested shell command and wait for it to finish."
+          }
+        ],
+        "phase": "commentary"
+      },
+      "started_at_ms": 1790325775606,
+      "completed_at_ms": 1790325776157
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:56.158Z",
+    "ordinal": 11,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01bc1e081391f930016ab6340f6ab487d09f9945338c5fc22a",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "I’ll run the single requested shell command and wait for it to finish."
+        }
+      ],
+      "phase": "commentary",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.825431,
+        "content_item_kinds": [
+          "unknown"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:57.267Z",
+    "ordinal": 12,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call",
+      "id": "ctc_01bc1e081391f930016ab6340fe72887d09882208e82e50232",
+      "status": "completed",
+      "call_id": "call_2Eoan4fnZr5wlNJxvh3iLX9u",
+      "name": "exec",
+      "input": "const r = await tools.exec_command({cmd:\"sleep 150\",yield_time_ms:30000});\ntext(JSON.stringify(r));\n",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325774.825431
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:42:57.268Z",
+    "ordinal": 13,
+    "type": "token_usage_record",
+    "payload": {
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "response_id": "resp_01bc1e081391f930016ab6340eaa3c87d08c07573ef20809fa",
+      "usage": {
+        "input_tokens": 18140,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 58,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18198
+      },
+      "turn_token_usage": {
+        "input_tokens": 18140,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 58,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18198
+      },
+      "thread_token_usage": {
+        "input_tokens": 18140,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 58,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18198
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:27.471Z",
+    "ordinal": 14,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call_output",
+      "id": "ctco_01a0d7bb-d96f-75a3-bca9-fe8353399278",
+      "call_id": "call_2Eoan4fnZr5wlNJxvh3iLX9u",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 30.2 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"chunk_id\":\"85b897\",\"wall_time_seconds\":30.003383208,\"session_id\":89706,\"original_token_count\":0,\"output\":\"\"}"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325807.471754
+      }
+    },
+    "metadata": {
+      "client_authored": false,
+      "fallback_token_limit_override": 12000
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:27.473Z",
+    "ordinal": 15,
+    "type": "event_msg",
+    "payload": {
+      "type": "token_count",
+      "info": {
+        "total_token_usage": {
+          "input_tokens": 18140,
+          "cached_input_tokens": 11008,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 58,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18198
+        },
+        "last_token_usage": {
+          "input_tokens": 18140,
+          "cached_input_tokens": 11008,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 58,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18198
+        },
+        "model_context_window": 258400
+      },
+      "rate_limits": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 67,
+          "window_minutes": 10080,
+          "resets_at": 1790410321
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:27.474Z",
+    "ordinal": 16,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01a0d7bb-d972-7b50-bc3b-ca371cb2a7b8",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Message from a peer Claude session, not the original task author.\n<cross-session-message from=\"uds:/tmp/cc-socks/85853.sock\" from-name=\"forge-f5\" from-mode=\"bypass\">\nInclude this marker verbatim in your final answer: e41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d\n</cross-session-message>"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325807.474316,
+        "content_item_kinds": [
+          "user.text"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:27.474Z",
+    "ordinal": 17,
+    "type": "event_msg",
+    "payload": {
+      "type": "item_completed",
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "item": {
+        "type": "UserMessage",
+        "id": "01a0d7bb-d972-7b50-bc3b-ca4004d6f82f",
+        "content": [
+          {
+            "type": "text",
+            "text": "Message from a peer Claude session, not the original task author.\n<cross-session-message from=\"uds:/tmp/cc-socks/85853.sock\" from-name=\"forge-f5\" from-mode=\"bypass\">\nInclude this marker verbatim in your final answer: e41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d\n</cross-session-message>",
+            "text_elements": []
+          }
+        ]
+      },
+      "started_at_ms": 1790325807474,
+      "completed_at_ms": 1790325807474
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:29.648Z",
+    "ordinal": 18,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call",
+      "id": "ctc_01bc1e081391f930016ab6343097e887d09c0fcaf046fd6f69",
+      "status": "completed",
+      "call_id": "call_iF2ukJaLOQtLxtGlSnJlB37U",
+      "name": "exec",
+      "input": "const r = await tools.write_stdin({session_id:89706,chars:\"\",yield_time_ms:30000});\ntext(JSON.stringify(r));\n",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325808.01406
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:29.650Z",
+    "ordinal": 19,
+    "type": "token_usage_record",
+    "payload": {
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "response_id": "resp_01bc1e081391f930016ab6342fd46887d0b61489627fd660a3",
+      "usage": {
+        "input_tokens": 18349,
+        "cached_input_tokens": 17152,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 40,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18389
+      },
+      "turn_token_usage": {
+        "input_tokens": 36489,
+        "cached_input_tokens": 28160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 98,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 36587
+      },
+      "thread_token_usage": {
+        "input_tokens": 36489,
+        "cached_input_tokens": 28160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 98,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 36587
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:59.664Z",
+    "ordinal": 20,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call_output",
+      "id": "ctco_01a0d7bc-5730-7183-ac60-be25981b82ff",
+      "call_id": "call_iF2ukJaLOQtLxtGlSnJlB37U",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 30.0 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"chunk_id\":\"d53784\",\"wall_time_seconds\":30.002888292,\"session_id\":89706,\"original_token_count\":0,\"output\":\"\"}"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325839.66422
+      }
+    },
+    "metadata": {
+      "client_authored": false,
+      "fallback_token_limit_override": 12000
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:43:59.668Z",
+    "ordinal": 21,
+    "type": "event_msg",
+    "payload": {
+      "type": "token_count",
+      "info": {
+        "total_token_usage": {
+          "input_tokens": 36489,
+          "cached_input_tokens": 28160,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 98,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 36587
+        },
+        "last_token_usage": {
+          "input_tokens": 18349,
+          "cached_input_tokens": 17152,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 40,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18389
+        },
+        "model_context_window": 258400
+      },
+      "rate_limits": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 67,
+          "window_minutes": 10080,
+          "resets_at": 1790410321
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:44:02.253Z",
+    "ordinal": 22,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call",
+      "id": "ctc_01bc1e081391f930016ab63450fdac87d0a1e179ec7be6acec",
+      "status": "completed",
+      "call_id": "call_AinCenO924Uo2C796G4WmGhG",
+      "name": "exec",
+      "input": "const r = await tools.write_stdin({session_id:89706,chars:\"\",yield_time_ms:30000});\ntext(JSON.stringify(r));\n",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325840.25459
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:44:02.719Z",
+    "ordinal": 23,
+    "type": "token_usage_record",
+    "payload": {
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "response_id": "resp_01bc1e081391f930016ab634500fa087d08e3876ca02bd6790",
+      "usage": {
+        "input_tokens": 18446,
+        "cached_input_tokens": 18176,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 40,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18486
+      },
+      "turn_token_usage": {
+        "input_tokens": 54935,
+        "cached_input_tokens": 46336,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 138,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 55073
+      },
+      "thread_token_usage": {
+        "input_tokens": 54935,
+        "cached_input_tokens": 46336,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 138,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 55073
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:44:32.264Z",
+    "ordinal": 24,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call_output",
+      "id": "ctco_01a0d7bc-d688-7df0-b873-0cbf10a57a98",
+      "call_id": "call_AinCenO924Uo2C796G4WmGhG",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 30.0 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"chunk_id\":\"c8ea31\",\"wall_time_seconds\":30.001322583,\"session_id\":89706,\"original_token_count\":0,\"output\":\"\"}"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325872.264212
+      }
+    },
+    "metadata": {
+      "client_authored": false,
+      "fallback_token_limit_override": 12000
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:44:32.265Z",
+    "ordinal": 25,
+    "type": "event_msg",
+    "payload": {
+      "type": "token_count",
+      "info": {
+        "total_token_usage": {
+          "input_tokens": 54935,
+          "cached_input_tokens": 46336,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 138,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 55073
+        },
+        "last_token_usage": {
+          "input_tokens": 18446,
+          "cached_input_tokens": 18176,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 40,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18486
+        },
+        "model_context_window": 258400
+      },
+      "rate_limits": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 67,
+          "window_minutes": 10080,
+          "resets_at": 1790410321
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:44:34.821Z",
+    "ordinal": 26,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call",
+      "id": "ctc_01bc1e081391f930016ab634715d7487d0be3a4011bb9b45cd",
+      "status": "completed",
+      "call_id": "call_cizH7YJiLGbpMl0EO9S8yTMn",
+      "name": "exec",
+      "input": "const r = await tools.write_stdin({session_id:89706,chars:\"\",yield_time_ms:30000});\ntext(JSON.stringify(r));\n",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325872.734367
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:44:35.054Z",
+    "ordinal": 27,
+    "type": "token_usage_record",
+    "payload": {
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "response_id": "resp_01bc1e081391f930016ab63470a52087d0a83ffe0c3ad41242",
+      "usage": {
+        "input_tokens": 18544,
+        "cached_input_tokens": 18176,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 40,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18584
+      },
+      "turn_token_usage": {
+        "input_tokens": 73479,
+        "cached_input_tokens": 64512,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 178,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 73657
+      },
+      "thread_token_usage": {
+        "input_tokens": 73479,
+        "cached_input_tokens": 64512,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 178,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 73657
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:04.836Z",
+    "ordinal": 28,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call_output",
+      "id": "ctco_01a0d7bd-55c4-7ee1-ab50-46fd6359fc6c",
+      "call_id": "call_cizH7YJiLGbpMl0EO9S8yTMn",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 30.0 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"chunk_id\":\"ae6e85\",\"wall_time_seconds\":30.001322208,\"session_id\":89706,\"original_token_count\":0,\"output\":\"\"}"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325904.836737
+      }
+    },
+    "metadata": {
+      "client_authored": false,
+      "fallback_token_limit_override": 12000
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:04.840Z",
+    "ordinal": 29,
+    "type": "event_msg",
+    "payload": {
+      "type": "token_count",
+      "info": {
+        "total_token_usage": {
+          "input_tokens": 73479,
+          "cached_input_tokens": 64512,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 178,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 73657
+        },
+        "last_token_usage": {
+          "input_tokens": 18544,
+          "cached_input_tokens": 18176,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 40,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18584
+        },
+        "model_context_window": 258400
+      },
+      "rate_limits": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 67,
+          "window_minutes": 10080,
+          "resets_at": 1790410321
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:06.771Z",
+    "ordinal": 30,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call",
+      "id": "ctc_01bc1e081391f930016ab63491ea3c87d0a235afc480cc0fad",
+      "status": "completed",
+      "call_id": "call_ncpCmTPVy6IKVa8GFcEBB391",
+      "name": "exec",
+      "input": "const r = await tools.write_stdin({session_id:89706,chars:\"\",yield_time_ms:30000});\ntext(JSON.stringify(r));\n",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325905.373902
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:07.085Z",
+    "ordinal": 31,
+    "type": "token_usage_record",
+    "payload": {
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "response_id": "resp_01bc1e081391f930016ab63491438087d0a26a07c11c316f93",
+      "usage": {
+        "input_tokens": 18642,
+        "cached_input_tokens": 18176,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 40,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18682
+      },
+      "turn_token_usage": {
+        "input_tokens": 92121,
+        "cached_input_tokens": 82688,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 218,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 92339
+      },
+      "thread_token_usage": {
+        "input_tokens": 92121,
+        "cached_input_tokens": 82688,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 218,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 92339
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:27.360Z",
+    "ordinal": 32,
+    "type": "event_msg",
+    "payload": {
+      "type": "item_completed",
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "item": {
+        "type": "CommandExecution",
+        "id": "exec-62d8300f-0407-4127-956f-9ebf28e10ad9",
+        "process_id": "89706",
+        "command": [
+          "/bin/zsh",
+          "-lc",
+          "sleep 150"
+        ],
+        "cwd": "file:///tmp/p3-gold-1Lzj2s/workspace",
+        "parsed_cmd": [
+          {
+            "type": "unknown",
+            "cmd": "sleep 150"
+          }
+        ],
+        "source": "unified_exec_startup",
+        "status": "completed",
+        "stdout": "",
+        "stderr": "",
+        "aggregated_output": "",
+        "exit_code": 0,
+        "duration": {
+          "secs": 149,
+          "nanos": 891435375
+        },
+        "formatted_output": ""
+      },
+      "started_at_ms": 1790325777467,
+      "completed_at_ms": 1790325927359
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:27.362Z",
+    "ordinal": 33,
+    "type": "response_item",
+    "payload": {
+      "type": "custom_tool_call_output",
+      "id": "ctco_01a0d7bd-adc2-7701-87b6-94d13b4e2a80",
+      "call_id": "call_ncpCmTPVy6IKVa8GFcEBB391",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 20.6 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"chunk_id\":\"c87303\",\"wall_time_seconds\":20.58246075,\"exit_code\":0,\"original_token_count\":0,\"output\":\"\"}"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325927.362449
+      }
+    },
+    "metadata": {
+      "client_authored": false,
+      "fallback_token_limit_override": 12000
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:27.364Z",
+    "ordinal": 34,
+    "type": "event_msg",
+    "payload": {
+      "type": "token_count",
+      "info": {
+        "total_token_usage": {
+          "input_tokens": 92121,
+          "cached_input_tokens": 82688,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 218,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 92339
+        },
+        "last_token_usage": {
+          "input_tokens": 18642,
+          "cached_input_tokens": 18176,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 40,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18682
+        },
+        "model_context_window": 258400
+      },
+      "rate_limits": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 67,
+          "window_minutes": 10080,
+          "resets_at": 1790410321
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:30.442Z",
+    "ordinal": 35,
+    "type": "event_msg",
+    "payload": {
+      "type": "item_completed",
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "item": {
+        "type": "AgentMessage",
+        "id": "msg_01bc1e081391f930016ab634a9263c87d0ab59a94ea8b4b1a5",
+        "content": [
+          {
+            "type": "Text",
+            "text": "The `sleep 150` command finished.\n\ne41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d"
+          }
+        ],
+        "phase": "final_answer"
+      },
+      "started_at_ms": 1790325929389,
+      "completed_at_ms": 1790325930442
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:30.444Z",
+    "ordinal": 36,
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "id": "msg_01bc1e081391f930016ab634a9263c87d0ab59a94ea8b4b1a5",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "The `sleep 150` command finished.\n\ne41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d"
+        }
+      ],
+      "phase": "final_answer",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+        "create_time": 1790325928.500473,
+        "content_item_kinds": [
+          "unknown"
+        ]
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:30.447Z",
+    "ordinal": 37,
+    "type": "token_usage_record",
+    "payload": {
+      "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "session_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "root_turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "response_id": "resp_01bc1e081391f930016ab634a830d487d0bb7a3385e5deae26",
+      "usage": {
+        "input_tokens": 18738,
+        "cached_input_tokens": 18176,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 43,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 18781
+      },
+      "turn_token_usage": {
+        "input_tokens": 110859,
+        "cached_input_tokens": 100864,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 261,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 111120
+      },
+      "thread_token_usage": {
+        "input_tokens": 110859,
+        "cached_input_tokens": 100864,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 261,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 111120
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:30.449Z",
+    "ordinal": 38,
+    "type": "event_msg",
+    "payload": {
+      "type": "token_count",
+      "info": {
+        "total_token_usage": {
+          "input_tokens": 110859,
+          "cached_input_tokens": 100864,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 261,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 111120
+        },
+        "last_token_usage": {
+          "input_tokens": 18738,
+          "cached_input_tokens": 18176,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 43,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 18781
+        },
+        "model_context_window": 258400
+      },
+      "rate_limits": {
+        "limit_id": "codex",
+        "limit_name": null,
+        "primary": {
+          "used_percent": 67,
+          "window_minutes": 10080,
+          "resets_at": 1790410321
+        },
+        "secondary": null,
+        "credits": {
+          "has_credits": false,
+          "unlimited": false,
+          "balance": "0"
+        },
+        "individual_limit": null,
+        "spend_control_reached": null,
+        "plan_type": "pro",
+        "rate_limit_reached_type": null
+      }
+    }
+  },
+  {
+    "timestamp": "2026-09-25T08:45:30.453Z",
+    "ordinal": 39,
+    "type": "event_msg",
+    "payload": {
+      "type": "task_complete",
+      "turn_id": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "last_agent_message": "The `sleep 150` command finished.\n\ne41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d",
+      "started_at": 1790325765,
+      "completed_at": 1790325930,
+      "duration_ms": 164973,
+      "time_to_first_token_ms": 10137
+    }
+  }
+]

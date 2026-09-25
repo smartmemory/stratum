@@ -1,0 +1,286 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 35195,
+      "role": "driver",
+      "start": "1790325093.690516",
+      "pgid": 35195,
+      "after": "dead"
+    },
+    {
+      "pid": 35197,
+      "role": "shim",
+      "start": "1790325093.724289",
+      "pgid": 35195,
+      "after": "dead"
+    },
+    {
+      "pid": 35199,
+      "role": "app-server",
+      "start": "1790325093.749092",
+      "pgid": 35195,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "controlled-shim",
+  "artifacts": [
+    "cancel-pending-steer.before.ps",
+    "cancel-pending-steer.after.ps",
+    "cancel-pending-steer.err",
+    "cancel-pending-steer.peer.err"
+  ],
+  "activeBeforeAction": true,
+  "callbackFrames": [
+    {
+      "type": "auth",
+      "authenticated": true
+    },
+    {
+      "type": "control",
+      "action": "peer_message_status",
+      "orig_msg_id": "s5a-pending",
+      "from": "uds:/tmp/p3-life-JCtBle/35198.sock",
+      "from_mode": "bypass",
+      "status": "dropped",
+      "status_detail": "unknown"
+    }
+  ],
+  "senderReplies": [],
+  "sentFrame": {
+    "type": "user",
+    "msg_id": "s5a-pending",
+    "from": "uds:/tmp/p3-life-JCtBle/34970.sock",
+    "from_mode": "bypass",
+    "message": {
+      "role": "user",
+      "content": "<cross-session-message from-name=\"probe\">Keep waiting.</cross-session-message>"
+    }
+  },
+  "action": {
+    "kind": "cancel",
+    "records": [
+      {
+        "type": "thread.started",
+        "thread_id": "01a0d7b0-ff9a-70a0-bc72-f25fa89b3295"
+      },
+      {
+        "type": "turn.started"
+      }
+    ],
+    "time": 1790325096502
+  },
+  "cancel": {
+    "status": "cancelled",
+    "runId": "512ca8597614"
+  },
+  "poll": {
+    "status": "error",
+    "runId": "512ca8597614",
+    "peer": {
+      "name": "codex-luna-512ca8",
+      "registered": true,
+      "pid": 35198,
+      "sock": "/tmp/p3-life-JCtBle/35198.sock"
+    },
+    "reason": "child_died_without_sentinel",
+    "textTail": "",
+    "stderrTail": "Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads\nPython runtime state: finalizing (tstate=0x0000000102781348)\n\nCurrent thread 0x00000001f5bae1c0 (most recent call first):\n  <no Python frame>",
+    "eventsSeen": 2,
+    "streamPath": "/tmp/p3-life-JCtBle/runs/512ca8597614/stream.jsonl"
+  },
+  "ipc": [
+    {
+      "time": 1790325093757,
+      "pid": 35198,
+      "direction": "sidecar-to-driver",
+      "message": {
+        "type": "owner-ready",
+        "runId": "512ca8597614"
+      }
+    },
+    {
+      "time": 1790325093775,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "runId": "512ca8597614",
+        "threadId": null,
+        "turnId": null
+      }
+    },
+    {
+      "time": 1790325093775,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "runId": "512ca8597614",
+        "threadId": null,
+        "turnId": null
+      }
+    },
+    {
+      "time": 1790325096391,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "runId": "512ca8597614",
+        "threadId": "01a0d7b0-ff9a-70a0-bc72-f25fa89b3295",
+        "turnId": "01a0d7b0-ffc4-7ad1-8d08-efd3de281c55"
+      }
+    },
+    {
+      "time": 1790325096398,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "runId": "512ca8597614",
+        "threadId": "01a0d7b0-ff9a-70a0-bc72-f25fa89b3295",
+        "turnId": "01a0d7b0-ffc4-7ad1-8d08-efd3de281c55"
+      }
+    },
+    {
+      "time": 1790325096405,
+      "pid": 35198,
+      "direction": "sidecar-to-driver",
+      "message": {
+        "type": "steer",
+        "runId": "512ca8597614",
+        "reqId": "5169a57a-735f-4307-ac7b-45703e20fc6c",
+        "senderFrom": "uds:/tmp/p3-life-JCtBle/34970.sock",
+        "msgId": "s5a-pending",
+        "expectedTurnId": "01a0d7b0-ffc4-7ad1-8d08-efd3de281c55",
+        "text": "Message from a peer Claude session, not the original task author.\n<cross-session-message from-name=\"probe\">Keep waiting.</cross-session-message>"
+      }
+    },
+    {
+      "time": 1790325096589,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "runId": "512ca8597614",
+        "threadId": "01a0d7b0-ff9a-70a0-bc72-f25fa89b3295",
+        "turnId": null
+      }
+    },
+    {
+      "time": 1790325096590,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "steer-result",
+        "reqId": "5169a57a-735f-4307-ac7b-45703e20fc6c",
+        "outcome": "dropped",
+        "detail": "unknown"
+      }
+    },
+    {
+      "time": 1790325097603,
+      "pid": 35198,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "run-finalized",
+        "runId": "512ca8597614"
+      }
+    }
+  ],
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b0-ff9a-70a0-bc72-f25fa89b3295"
+    },
+    {
+      "type": "turn.started"
+    }
+  ],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325093.748939,
+      "pid": 35197
+    },
+    {
+      "event": "real-server",
+      "time": 1790325093.750808,
+      "pid": 35199
+    },
+    {
+      "event": "client",
+      "time": 1790325093.751023,
+      "method": "initialize"
+    },
+    {
+      "event": "server",
+      "time": 1790325093.797771,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325093.797867,
+      "method": "remoteControl/status/changed"
+    },
+    {
+      "event": "client",
+      "time": 1790325093.798346,
+      "method": "initialized"
+    },
+    {
+      "event": "client",
+      "time": 1790325093.798421,
+      "method": "thread/start"
+    },
+    {
+      "event": "server",
+      "time": 1790325096.387648,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325096.38786,
+      "method": "thread/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325096.387948,
+      "method": "mcpServer/startupStatus/updated"
+    },
+    {
+      "event": "client",
+      "time": 1790325096.388567,
+      "method": "turn/start"
+    },
+    {
+      "event": "server",
+      "time": 1790325096.391134,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325096.3979142,
+      "method": "thread/status/changed"
+    },
+    {
+      "event": "server",
+      "time": 1790325096.397999,
+      "method": "turn/started"
+    },
+    {
+      "event": "client",
+      "time": 1790325096.405694,
+      "method": "turn/steer"
+    },
+    {
+      "event": "held-steer-response",
+      "time": 1790325096.405987
+    },
+    {
+      "event": "shim-sigterm",
+      "time": 1790325096.589679
+    }
+  ]
+}

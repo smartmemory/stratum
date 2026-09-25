@@ -1,0 +1,166 @@
+{
+  "mode": "sandbox-baseline",
+  "model": "gpt-6-luna/low",
+  "node": "v22.22.3",
+  "runs": [
+    {
+      "mode": "built-in",
+      "targets": {
+        "workspace": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/built-in.marker",
+        "writableRoot": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/extra-root/built-in.marker",
+        "TMPDIR": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/env-tmp/built-in.marker",
+        "slashTmp": "/tmp/peer3-slash-tmp-LQksz1/built-in.marker"
+      },
+      "results": {
+        "workspace": {
+          "writable": true
+        },
+        "writableRoot": {
+          "writable": true
+        },
+        "TMPDIR": {
+          "writable": true
+        },
+        "slashTmp": {
+          "writable": true
+        }
+      },
+      "observed": {
+        "workspace": true,
+        "writableRoot": true,
+        "TMPDIR": true,
+        "slashTmp": true
+      },
+      "toolRecords": [
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "/bin/zsh -lc \"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-built-in.cjs'\"",
+            "aggregated_output": "PEER3_TOOL_RESULTS={\"workspace\":{\"writable\":true},\"writableRoot\":{\"writable\":true},\"TMPDIR\":{\"writable\":true},\"slashTmp\":{\"writable\":true}}\n",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "ordinary",
+      "targets": {
+        "workspace": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/ordinary.marker",
+        "writableRoot": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/extra-root/ordinary.marker",
+        "TMPDIR": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/env-tmp/ordinary.marker",
+        "slashTmp": "/tmp/peer3-slash-tmp-LQksz1/ordinary.marker"
+      },
+      "results": {
+        "workspace": {
+          "writable": true
+        },
+        "writableRoot": {
+          "writable": true
+        },
+        "TMPDIR": {
+          "writable": true
+        },
+        "slashTmp": {
+          "writable": true
+        }
+      },
+      "observed": {
+        "workspace": true,
+        "writableRoot": true,
+        "TMPDIR": true,
+        "slashTmp": true
+      },
+      "toolRecords": [
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_2",
+            "type": "command_execution",
+            "command": "/bin/zsh -lc \"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-ordinary.cjs'\"",
+            "aggregated_output": "PEER3_TOOL_RESULTS={\"workspace\":{\"writable\":true},\"writableRoot\":{\"writable\":true},\"TMPDIR\":{\"writable\":true},\"slashTmp\":{\"writable\":true}}\n",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "mode": "override",
+      "targets": {
+        "workspace": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/override.marker",
+        "writableRoot": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/extra-root/override.marker",
+        "TMPDIR": "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/env-tmp/override.marker",
+        "slashTmp": "/tmp/peer3-slash-tmp-LQksz1/override.marker"
+      },
+      "results": {
+        "workspace": {
+          "writable": true
+        },
+        "writableRoot": {
+          "writable": true
+        },
+        "TMPDIR": {
+          "writable": false,
+          "code": "EPERM"
+        },
+        "slashTmp": {
+          "writable": false,
+          "code": "EPERM"
+        }
+      },
+      "observed": {
+        "workspace": true,
+        "writableRoot": true,
+        "TMPDIR": false,
+        "slashTmp": false
+      },
+      "toolRecords": [
+        {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "command_execution",
+            "command": "/bin/zsh -lc \"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-override.cjs'\"",
+            "aggregated_output": "PEER3_TOOL_RESULTS={\"workspace\":{\"writable\":true},\"writableRoot\":{\"writable\":true},\"TMPDIR\":{\"writable\":false,\"code\":\"EPERM\"},\"slashTmp\":{\"writable\":false,\"code\":\"EPERM\"}}\n",
+            "exit_code": 0,
+            "status": "completed"
+          }
+        }
+      ]
+    }
+  ],
+  "note": "Ordinary config/auth copied into a disposable CODEX_HOME. Absolute config references remain unchanged; relative references may resolve differently. No network denial claim is made by this probe.",
+  "codex": {
+    "command": "codex",
+    "args": [
+      "--version"
+    ],
+    "pid": 29550,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 8,
+    "stdout": "codex-cli 0.155.1\n",
+    "stderr": ""
+  },
+  "comparison": {
+    "TMPDIR": {
+      "builtIn": true,
+      "ordinary": true,
+      "override": false,
+      "ordinaryMatchesBuiltIn": true,
+      "overrideChangesOrdinary": true
+    },
+    "slashTmp": {
+      "builtIn": true,
+      "ordinary": true,
+      "override": false,
+      "ordinaryMatchesBuiltIn": true,
+      "overrideChangesOrdinary": true
+    }
+  },
+  "parityPrerequisite": true
+}

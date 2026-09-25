@@ -1,0 +1,270 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 37483,
+      "role": "driver",
+      "start": "1790325161.174271",
+      "pgid": 37483,
+      "after": "dead"
+    },
+    {
+      "pid": 37485,
+      "role": "shim",
+      "start": "1790325161.206288",
+      "pgid": 37483,
+      "after": "dead"
+    },
+    {
+      "pid": 37487,
+      "role": "app-server",
+      "start": "1790325161.230378",
+      "pgid": 37483,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "controlled-shim",
+  "artifacts": [
+    "completion-wins.before.ps",
+    "completion-wins.after.ps",
+    "completion-wins.err",
+    "completion-wins.peer.err"
+  ],
+  "completedBeforeCancel": true,
+  "sentinelBeforeCancel": false,
+  "action": {
+    "kind": "cancel",
+    "records": [
+      {
+        "type": "thread.started",
+        "thread_id": "01a0d7b2-0798-7c02-87f5-bd6cf07952d6"
+      },
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "item.completed",
+        "item": {
+          "id": "msg_00f13232530f2fdc016ab631b87f6c87d0a20c85516f1d5416",
+          "type": "agent_message",
+          "text": "peer3 complete."
+        }
+      },
+      {
+        "type": "turn.completed",
+        "usage": {
+          "input_tokens": 18094,
+          "cached_input_tokens": 11008,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 8,
+          "reasoning_output_tokens": 0
+        }
+      }
+    ],
+    "time": 1790325177236
+  },
+  "cancel": {
+    "status": "cancelled",
+    "runId": "662c937e4946"
+  },
+  "poll": {
+    "status": "complete",
+    "runId": "662c937e4946",
+    "peer": {
+      "name": "codex-luna-662c93",
+      "registered": false
+    },
+    "text": "peer3 complete.",
+    "usage": {
+      "usd": 0.0008226800000000001,
+      "tokens": 18102
+    },
+    "split": {
+      "input": 18094,
+      "output": 8,
+      "cacheRead": 11008
+    },
+    "usdSource": "estimated",
+    "exitCode": 0,
+    "telemetry": {
+      "durationMs": 16149,
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b2-0798-7c02-87f5-bd6cf07952d6"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_00f13232530f2fdc016ab631b87f6c87d0a20c85516f1d5416",
+        "type": "agent_message",
+        "text": "peer3 complete."
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 18094,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 8,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325161.23024,
+      "pid": 37485
+    },
+    {
+      "event": "real-server",
+      "time": 1790325161.2312992,
+      "pid": 37487
+    },
+    {
+      "event": "client",
+      "time": 1790325161.2315269,
+      "method": "initialize"
+    },
+    {
+      "event": "server",
+      "time": 1790325161.28781,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325161.287894,
+      "method": "remoteControl/status/changed"
+    },
+    {
+      "event": "client",
+      "time": 1790325161.288358,
+      "method": "initialized"
+    },
+    {
+      "event": "client",
+      "time": 1790325161.2884438,
+      "method": "thread/start"
+    },
+    {
+      "event": "server",
+      "time": 1790325163.959569,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325163.9597461,
+      "method": "thread/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325163.959818,
+      "method": "mcpServer/startupStatus/updated"
+    },
+    {
+      "event": "client",
+      "time": 1790325163.96018,
+      "method": "turn/start"
+    },
+    {
+      "event": "server",
+      "time": 1790325163.962689,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325163.967274,
+      "method": "thread/status/changed"
+    },
+    {
+      "event": "server",
+      "time": 1790325163.967347,
+      "method": "turn/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325169.235771,
+      "method": "mcpServer/startupStatus/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325173.7787552,
+      "method": "item/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325173.779556,
+      "method": "item/completed"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.118135,
+      "method": "item/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.118498,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.1190898,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.119315,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.119474,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.119767,
+      "method": "item/completed"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.1235719,
+      "method": "thread/tokenUsage/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.123725,
+      "method": "account/rateLimits/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.1256561,
+      "method": "thread/status/changed"
+    },
+    {
+      "event": "server",
+      "time": 1790325177.125804,
+      "method": "turn/completed"
+    },
+    {
+      "event": "driver-eof",
+      "time": 1790325177.1335511
+    },
+    {
+      "event": "shim-sigterm",
+      "time": 1790325177.321769
+    }
+  ]
+}

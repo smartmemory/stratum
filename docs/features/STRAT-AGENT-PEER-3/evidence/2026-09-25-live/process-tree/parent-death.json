@@ -1,0 +1,122 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 36671,
+      "role": "launcher",
+      "start": "1790325121.870984",
+      "pgid": 29026,
+      "after": "dead"
+    },
+    {
+      "pid": 36674,
+      "role": "driver",
+      "start": "1790325121.908554",
+      "pgid": 36674,
+      "after": "dead"
+    },
+    {
+      "pid": 36684,
+      "role": "app-server",
+      "start": "1790325121.943104",
+      "pgid": 36674,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "native-signal",
+  "artifacts": [
+    "parent-death.before.ps",
+    "parent-death.after.ps",
+    "parent-death.err",
+    "parent-death.peer.err"
+  ],
+  "activeBeforeAction": true,
+  "action": {
+    "kind": "parent-sigkill",
+    "records": [
+      {
+        "type": "thread.started",
+        "thread_id": "01a0d7b1-6cee-76f2-8c4a-3f327a1be74f"
+      },
+      {
+        "type": "turn.started"
+      }
+    ],
+    "time": 1790325124442
+  },
+  "parentGone": true,
+  "driverAliveAfterParentDeath": true,
+  "poll": {
+    "status": "complete",
+    "runId": "2d7da4a63d83",
+    "peer": {
+      "name": "codex-luna-2d7da4",
+      "registered": false
+    },
+    "text": "peer3 complete.",
+    "usage": {
+      "usd": 0.0011297,
+      "tokens": 36369
+    },
+    "split": {
+      "input": 36301,
+      "output": 68,
+      "cacheRead": 28160
+    },
+    "usdSource": "estimated",
+    "exitCode": 0,
+    "telemetry": {
+      "durationMs": 35493,
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b1-6cee-76f2-8c4a-3f327a1be74f"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "exec-0ace3d8a-78be-4bbf-a26e-be0dc119d10a",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'sleep 20'",
+        "aggregated_output": "",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_02bb5ef0061f5139016ab631a4f8dc87d0817c7510e31291d1",
+        "type": "agent_message",
+        "text": "peer3 complete."
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 36301,
+        "cached_input_tokens": 28160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 68,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325121.966916,
+      "pid": 36684
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "mode": "sandbox",
+  "model": "gpt-6-luna/low",
+  "startedAt": "2026-09-25T08:27:54.010Z",
+  "cases": [
+    {
+      "case": "read-only",
+      "outcome": "passed",
+      "evidence": [
+        "read-only.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:28:56.291Z",
+        "elapsedMs": 15140
+      }
+    },
+    {
+      "case": "workspace-write",
+      "outcome": "passed",
+      "evidence": [
+        "workspace-write.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:29:11.431Z",
+        "elapsedMs": 29690
+      }
+    },
+    {
+      "case": "network-on",
+      "outcome": "passed",
+      "evidence": [
+        "network-on.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:29:41.121Z",
+        "elapsedMs": 28179
+      }
+    },
+    {
+      "case": "network-off",
+      "outcome": "passed",
+      "evidence": [
+        "network-off.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:30:09.300Z",
+        "elapsedMs": 15523
+      }
+    },
+    {
+      "case": "temp-built-in",
+      "outcome": "passed",
+      "evidence": [
+        "temp-built-in.json",
+        "exec-baseline/built-in.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:30:24.823Z",
+        "elapsedMs": 27661
+      }
+    },
+    {
+      "case": "temp-ordinary",
+      "outcome": "passed",
+      "evidence": [
+        "temp-ordinary.json",
+        "exec-baseline/ordinary.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:30:52.484Z",
+        "elapsedMs": 18543
+      }
+    },
+    {
+      "case": "temp-override",
+      "outcome": "passed",
+      "evidence": [
+        "temp-override.json",
+        "exec-baseline/override.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:31:11.027Z",
+        "elapsedMs": 17506
+      }
+    }
+  ],
+  "codex": {
+    "command": "codex",
+    "args": [
+      "--version"
+    ],
+    "pid": 29539,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 8,
+    "stdout": "codex-cli 0.155.1\n",
+    "stderr": ""
+  }
+}

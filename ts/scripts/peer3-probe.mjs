@@ -3,8 +3,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { createRequire } from 'node:module';
 /** Opt-in live evidence. Importing this module never starts a model turn. */
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, copyFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, platform, release, arch } from 'node:os';
 import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -150,15 +151,26 @@ export async function sandboxBaseline({ model, out }) {
 
 export async function main(args) {
   const [mode, ...options] = args;
-  if (!['sandbox-baseline', 'server-requests', 'preflight', 'sandbox', 'process-tree'].includes(mode)) throw new Error('Usage: peer3-probe.mjs preflight|sandbox|process-tree|sandbox-baseline|server-requests --out DIRECTORY [--model MODEL/EFFORT]');
+  const action = mode === 'golden' ? options.shift() : undefined;
+  if (!['sandbox-baseline', 'server-requests', 'preflight', 'sandbox', 'process-tree', 'golden', 'verify-evidence'].includes(mode)) throw new Error('Usage: peer3-probe.mjs preflight|sandbox|process-tree|sandbox-baseline|server-requests|golden start|golden collect|verify-evidence --out DIRECTORY [--model MODEL/EFFORT] [--transcript PATH]');
   const parsed = {};
   for (let i = 0; i < options.length; i += 2) {
     const key = options[i];
-    if (!['--model', '--out', '--case'].includes(key) || !options[i + 1] || parsed[key.slice(2)]) throw new Error('Invalid or duplicate probe option');
+    if (!['--model', '--out', '--case', '--transcript'].includes(key) || !options[i + 1] || parsed[key.slice(2)]) throw new Error('Invalid or duplicate probe option');
     parsed[key.slice(2)] = options[i + 1];
   }
+  if (parsed.transcript && !(mode === 'golden' && action === 'collect')) throw new Error('--transcript is only supported for golden collect');
   if (parsed.case && mode !== 'process-tree') throw new Error('--case is only supported for process-tree');
-  if (mode === 'preflight') await preflight(parsed);
+  if (mode === 'golden') {
+    if (action === 'start') await goldenStart(parsed);
+    else if (action === 'collect') await goldenCollect(parsed);
+    else throw new Error('golden requires start or collect');
+  } else if (mode === 'verify-evidence') {
+    const report = await verifyEvidence(parsed);
+    console.table(report.rows);
+    console.log(JSON.stringify(report.methods, null, 2));
+    if (!report.passed) throw new Error('Evidence gate incomplete: see per-AC table');
+  } else if (mode === 'preflight') await preflight(parsed);
   else if (mode === 'sandbox') await sandboxProbe(parsed);
   else if (mode === 'process-tree') await processTree(parsed);
   else if (mode === 'server-requests') await serverRequests(parsed);
@@ -191,31 +203,45 @@ export const serverRequestTriggers = [
 /** Recompute acceptance from transcripts, including requests outside the table.
  * Conservatively reject every answered run that fails or never completes; an
  * unrelated model error can be retried, but must not mask a rejected reply. */
-export function assessServerRequests(runs, replyFor) {
-  const proven = new Map();
+export function assessServerRequests(runs, replyFor, { report = false } = {}) {
+  const proven = new Map(), failed = new Map();
   for (const run of runs) {
-    const traffic = run.transcript;
+    const traffic = Array.isArray(run.transcript) ? run.transcript : [];
+    if (!Array.isArray(run.transcript)) {
+      if (!report) throw new Error('Server request missing transcript');
+      for (const method of requiredServerMethods.filter(m => run.trigger?.methods?.includes(m))) failed.set(method, 'Server request missing transcript');
+    }
     for (let index = 0; index < traffic.length; index++) {
       const request = traffic[index];
       if (request.direction !== 'server' || typeof request.frame?.method !== 'string' || request.frame.id === undefined) continue;
       const { method, id } = request.frame;
-      const reply = traffic.findIndex((entry, i) => i > index && entry.direction === 'client' && entry.frame?.id === id && !entry.frame.method);
-      if (reply < 0) throw new Error(`${method}: elicited request has no reply`);
-      const expected = { id, ...replyFor(method) };
-      if (!isDeepStrictEqual(traffic[reply].frame, expected)) throw new Error(`${method}: incorrect reply`);
-      const terminal = traffic.findIndex((entry, i) => i > reply && entry.direction === 'server' && entry.frame?.method === 'turn/completed' && entry.frame.params?.turn?.status === 'completed');
-      const failure = traffic.slice(reply + 1).some(entry => entry.direction === 'server' &&
-        ((entry.frame?.method === 'error' && entry.frame.params?.willRetry !== true) ||
-         (entry.frame?.method === 'turn/completed' && entry.frame.params?.turn?.status !== 'completed') || entry.frame?.error));
-      if (run.claim !== 'completed' || terminal < 0 || failure) throw new Error(`${method}: answered request followed by failed or hung run`);
-      const evidence = proven.get(method) ?? [];
-      evidence.push({ file: run.file, request: index, reply, terminal }); proven.set(method, evidence);
+      try {
+        if (run.validationError) throw new Error(run.validationError);
+        const reply = traffic.findIndex((entry, i) => i > index && entry.direction === 'client' && entry.frame?.id === id && !entry.frame.method);
+        if (reply < 0) throw new Error(`${method}: elicited request has no reply`);
+        const expected = { id, ...replyFor(method) };
+        if (!isDeepStrictEqual(traffic[reply].frame, expected)) throw new Error(`${method}: incorrect reply`);
+        const terminal = traffic.findIndex((entry, i) => i > reply && entry.direction === 'server' && entry.frame?.method === 'turn/completed' && entry.frame.params?.turn?.status === 'completed');
+        const failure = traffic.slice(reply + 1).some(entry => entry.direction === 'server' &&
+          ((entry.frame?.method === 'error' && entry.frame.params?.willRetry !== true) ||
+           (entry.frame?.method === 'turn/completed' && entry.frame.params?.turn?.status !== 'completed') || entry.frame?.error));
+        if (run.claim !== 'completed' || terminal < 0 || failure) throw new Error(`${method}: answered request followed by failed or hung run`);
+        const evidence = proven.get(method) ?? [];
+        evidence.push({ file: run.file, request: index, reply, terminal }); proven.set(method, evidence);
+      } catch (error) {
+        if (!report) throw error;
+        failed.set(method, error.message);
+      }
     }
   }
-  return requiredServerMethods.map(method => {
+  return [...new Set([...requiredServerMethods, ...failed.keys(), ...proven.keys()])].map(method => {
+    if (failed.has(method)) return { method, status: 'failed', reason: failed.get(method) };
     if (proven.has(method)) return { method, status: 'proven', evidence: proven.get(method) };
-    const triggers = runs.filter(run => run.trigger?.methods.includes(method)).map(run => ({ file: run.file, ...run.trigger }));
-    if (!triggers.length) throw new Error(`${method}: no recorded trigger attempt`);
+    const triggers = runs.filter(run => run.trigger?.methods?.includes(method)).map(run => ({ file: run.file, ...run.trigger }));
+    if (!triggers.length) {
+      if (report) return { method, status: 'failed', reason: `${method}: no recorded trigger attempt` };
+      throw new Error(`${method}: no recorded trigger attempt`);
+    }
     return { method, status: 'unreached', triggers };
   });
 }
@@ -229,6 +255,7 @@ export async function serverRequests({ model, out }) {
   const root = await mkdtemp(join(tmpdir(), 'peer3-requests-'));
   const report = { mode: 'server-requests', model, node: process.version, runs: [], methods: [] };
   try {
+    await recordIdentity(output);
     const { runAppServerDriver } = await import(new URL('../src/connectors/codex-appserver-driver.ts', import.meta.url));
     const home = join(root, 'home'), cwd = join(root, 'workspace');
     await mkdir(home, { mode: 0o700 }); await mkdir(cwd, { mode: 0o700 });
@@ -364,7 +391,7 @@ async function modeRunner(mode, { out, model, case: selectedCase }, body) {
     summary.cases.push({ case: name, outcome: error ? (data.reached === false ? 'unreached' : 'failed') : 'passed',
       evidence: [`${name}.json`, ...(data.artifacts ?? [])], exitCode: error ? 1 : 0, timings: { startedAt, elapsedMs: Date.now() - start } });
   };
-  try { await body({ output, summary, runCase }); } catch (e) { summary.error = e.message; }
+  try { await recordIdentity(output); await body({ output, summary, runCase }); } catch (e) { summary.error = e.message; }
   finally {
     for (const name of cases) if (!summary.cases.some(c => c.case === name)) summary.cases.push({ case: name, outcome: 'unreached', evidence: ['summary.json'], exitCode: null, timings: { elapsedMs: 0 } });
     try { await writeEvidence(join(output, 'summary.json'), summary); }
@@ -724,8 +751,8 @@ export async function probePeerSender({ root, sessionsDir, data }) {
   try { await writeEvidence(keyPath, {peerToken: token}); }
   catch (error) { await new Promise(r => server.close(r)); throw error; }
   return {
-    async send(peerSock, peerToken) {
-      const frame = {type: 'user', msg_id: 's5a-pending', from: `uds:${sock}`, from_mode: 'bypass',
+    async send(peerSock, peerToken, msgId = 's5a-pending') {
+      const frame = {type: 'user', msg_id: msgId, from: `uds:${sock}`, from_mode: 'bypass',
         message: {role: 'user', content: '<cross-session-message from-name="probe">Keep waiting.</cross-session-message>'}};
       data.sentFrame = frame;
       await new Promise((resolveSend, reject) => {
@@ -865,6 +892,381 @@ await writeFile(${JSON.stringify(resultPath)},JSON.stringify(run),{mode:0o600});
       }
     });
   });
+}
+
+
+// S5b: all verdicts below are reconstructed from retained observations, never summaries.
+async function recordIdentity(output) {
+  const identity = {};
+  for (const [key, command, args] of [['codex', 'codex', ['--version']], ['claude', 'claude', ['--version']], ['head', 'git', ['rev-parse', 'HEAD']]]) {
+    identity[key] = await runBounded(command, args, { timeoutMs: 10_000 });
+  }
+  await writeEvidence(join(output, 'identity.json'), identity);
+  assessIdentities([identity]);
+  return identity;
+}
+export function assessIdentities(identities) {
+  for (const value of identities) for (const key of ['codex', 'claude', 'head']) {
+    const raw = value?.[key];
+    if (!raw || raw.code !== 0 || raw.reason || raw.signal || !raw.stdout?.trim()) throw new Error('Identity command failed'); // S5B:identity-command
+    if (raw.stdout.trim() !== identities[0][key].stdout.trim()) throw new Error('Identity version/HEAD mismatch'); // S5B:identity-match
+  }
+  return true;
+}
+
+/** Retain content blocks only: never their surrounding conversation messages.
+ * Structured JSON callback payloads may occur directly or in text blocks. Unknown
+ * transcript representations fail closed rather than matching words in prose. */
+function payloads(block) {
+  if (!block || typeof block !== 'object') return [];
+  if (block.action || block.status || typeof block.success === 'boolean') return [block];
+  const content = block.content ?? block.text;
+  if (Array.isArray(content)) return content.flatMap(payloads);
+  if (typeof content === 'object') return payloads(content);
+  if (typeof content !== 'string') return [];
+  try { return payloads(JSON.parse(content)); } catch { return []; }
+}
+function deliveryNotice(b, state) {
+  return b.type === 'text' && b.role === 'user' && b.text?.startsWith('[Cross-session delivery notice]') &&
+    b.text.match(/\(recipient: ([^)]+)\)/)?.[1] === `uds:${state.peer.sock}`;
+}
+function idleNotice(b, state) {
+  return b.type === 'text' && b.role === 'user' &&
+    b.text?.startsWith(`[Cross-session idle notice] "${state.peerName}", which you asked to be notified about, is idle now`);
+}
+export function extractController(records, state) {
+  // Preserve only role/time provenance, never surrounding conversation content.
+  const blocks = records.filter(r => r.type !== 'queue-operation').flatMap(r => {
+    const content = Array.isArray(r.message?.content) ? r.message.content : typeof r.message?.content === 'string' ? [{type: 'text', text: r.message.content}] : [];
+    return content.map(b => ({...b, role: r.message.role, time: Date.parse(r.timestamp)}));
+  });
+  const uses = blocks.filter(b => b.type === 'tool_use' && b.name === 'SendMessage' && [state.peerName, state.peer.sock, `uds:${state.peer.sock}`].includes(b.input?.to));
+  const ids = new Set(uses.map(b => b.id));
+  return blocks.filter(b => uses.includes(b) || (b.type === 'tool_result' && ids.has(b.tool_use_id)) ||
+    deliveryNotice(b, state) || idleNotice(b, state));
+}
+export function assessGolden(data) {
+  const { state: s, prompt, records, rollout, controller, poll, ipc, wire, second, before, after } = data;
+  if (!s?.marker || s.marker.length < 32 || !s.runId || s.peerName !== s.peer?.name || !s.label || !Number.isFinite(s.startedAt)) throw new Error('Golden state identity'); // S5B:state
+  if (typeof prompt !== 'string' || prompt.includes(s.marker)) throw new Error('Marker in original prompt'); // S5B:prompt
+  if (poll?.status !== 'complete' || poll.runId !== s.runId || poll.exitCode !== 0) throw new Error('Golden poll incomplete'); // S5B:poll
+  const text = records.filter(r => r.type === 'item.completed' && r.item?.type === 'agent_message').map(r => r.item.text).join('');
+  if (!text.includes(s.marker) || poll.text !== text) throw new Error('Golden concatenated output/marker'); // S5B:text
+  const commands = records.filter(r => r.type === 'item.completed' && r.item?.type === 'command_execution');
+  if (commands.length !== 1 || commands[0].item.exit_code !== 0 || !/\bsleep\s+150\b/.test(commands[0].item.command ?? '')) throw new Error('Golden bounded tool command'); // S5B:tool
+  const turns = records.filter(r => r.type === 'turn.completed');
+  if (records.filter(r => r.type === 'turn.started').length !== 1 || turns.length !== 1 || records.filter(r => Object.hasOwn(r, '__t2f5_done__')).length !== 1 || records.find(r => Object.hasOwn(r, '__t2f5_done__'))?.__t2f5_done__ !== 0 || records.some(r => ['turn.failed', 'error'].includes(r.type))) throw new Error('Golden requires exactly one successful turn'); // S5B:turns
+  const usage = turns[0].usage;
+  if (!(Number.isFinite(usage?.input_tokens) && Number.isFinite(usage?.output_tokens) && usage.input_tokens > 0 && usage.output_tokens > 0) || poll.split?.input !== usage.input_tokens || poll.split?.output !== usage.output_tokens || poll.usage?.tokens !== usage.input_tokens + usage.output_tokens || !(Number.isFinite(poll.usage?.usd) && poll.usage.usd > 0) || poll.usdSource !== 'estimated') throw new Error('Golden nonzero accounting'); // S5B:usage
+  const thread = records.filter(r => r.type === 'thread.started');
+  if (thread.length !== 1 || !thread[0].thread_id || rollout.filter(r => r.type === 'session_meta' && r.payload?.id === thread[0].thread_id).length !== 1) throw new Error('Golden rollout thread'); // S5B:thread
+  const userMessages = rollout.filter(r => r.type === 'response_item' && r.payload?.type === 'message' && r.payload.role === 'user');
+  const visible = r => (r.payload.content ?? []).filter(c => c.type === 'input_text').map(c => c.text).join('');
+  if (rollout.filter(r => r.type === 'event_msg' && r.payload?.type === 'task_started').length !== 1) throw new Error('Golden rollout second turn'); // S5B:rollout-turn
+  const requests = ipc.filter(e => e.direction === 'sidecar-to-driver' && e.message?.type === 'steer' && e.message.text?.includes(s.marker));
+  if (requests.length !== 1 || requests[0].message.runId !== s.runId) throw new Error('Golden steer request'); // S5B:steer
+  const request = requests[0], active = ipc.slice(0, ipc.indexOf(request)).findLast(e => e.direction === 'driver-to-sidecar' && e.message?.type === 'active-turn-state');
+  const result = ipc.find(e => e.direction === 'driver-to-sidecar' && e.message?.type === 'steer-result' && e.message.reqId === request.message.reqId);
+  if (!active?.message.turnId || active.message.turnId !== request.message.expectedTurnId || active.message.threadId !== thread[0].thread_id || active.message.runId !== s.runId || active.time > request.time || !result || ipc.indexOf(result) < ipc.indexOf(request) || result.time < request.time || result.message.outcome !== 'delivered') throw new Error('Golden active steer result'); // S5B:active
+  // The retained rollout identifies task input separately from startup context.
+  const tasks = userMessages.filter(r => r.payload.internal_chat_message_metadata_passthrough?.content_item_kinds?.includes('user.text'));
+  const start = rollout.find(r => r.type === 'event_msg' && r.payload?.type === 'task_started');
+  const ends = rollout.filter(r => r.type === 'event_msg' && r.payload?.type === 'task_complete');
+  const injected = userMessages.filter(r => visible(r) === request.message.text);
+  const original = tasks[0], steer = injected[0], end = ends[0];
+  if (!original || visible(original) !== prompt || injected.length !== 1 || tasks.length !== 2 || tasks[1] !== steer ||
+      start?.payload.turn_id !== request.message.expectedTurnId || ends.length !== 1 || end.payload.turn_id !== request.message.expectedTurnId ||
+      [original, steer].some(r => r.payload.internal_chat_message_metadata_passthrough?.turn_id !== request.message.expectedTurnId) ||
+      !(rollout.indexOf(start) < rollout.indexOf(original) && rollout.indexOf(original) < rollout.indexOf(steer) && rollout.indexOf(steer) < rollout.indexOf(end)) ||
+      !Number.isFinite(Date.parse(steer?.timestamp)) || Date.parse(steer.timestamp) < request.time || Date.parse(steer.timestamp) > Date.parse(end?.timestamp) ||
+      rollout.slice(0, rollout.indexOf(steer)).some(r => r.type === 'response_item' && JSON.stringify(r.payload).includes(s.marker))) throw new Error('Golden model-visible rollout marker'); // S5B:rollout
+  const uses = controller.filter(b => b.type === 'tool_use' && b.name === 'SendMessage' && [s.peerName, s.peer.sock, `uds:${s.peer.sock}`].includes(b.input?.to));
+  const markerUses = uses.filter(b => typeof b.input.message === 'string' && b.input.message.includes(s.marker));
+  if (markerUses.length !== 1 || uses.length !== 1) throw new Error('Golden controller marker tool'); // S5B:controller
+  const replies = controller.filter(b => b.type === 'tool_result' && b.tool_use_id === markerUses[0].id && !b.is_error);
+  const reply = replies.flatMap(payloads);
+  const sent = wire.filter(e => e.direction === 'in' && e.frame.type === 'user' && e.frame.msg_id === request.message.msgId);
+  const delivered = wire.filter(e => e.direction === 'out' && e.frame.action === 'peer_message_status' && e.frame.orig_msg_id === request.message.msgId && e.frame.from === `uds:${s.peer.sock}` && e.frame.status === 'delivered' && e.frame.status_detail === undefined);
+  const receipt = reply.find(p => p.msg_id === request.message.msgId && p.success === true);
+  if (sent.length !== 1 || sent[0].frame.from !== request.message.senderFrom || !sent[0].frame.message?.content?.includes(s.marker) || delivered.length !== 1 || !receipt) throw new Error('Golden delivered callback, not ack'); // S5B:delivered
+  const delivery = controller.filter(b => deliveryNotice(b, s));
+  if (delivery.length !== 1 || !delivery[0].text.includes('approved and released') || /\b(refused|held|expired)\b/i.test(delivery[0].text)) throw new Error('Golden controller delivery notice'); // S5B:delivery-notice
+  if (replies.length !== 1 || controller.indexOf(delivery[0]) <= controller.indexOf(replies[0]) || !Number.isFinite(replies[0].time) || !Number.isFinite(delivery[0].time) || delivery[0].time < replies[0].time) throw new Error('Golden controller delivery ordering'); // S5B:delivery-order
+  if (wire.some(e => e.direction === 'out' && e.frame.action === 'peer_message_status' && e.frame.orig_msg_id === request.message.msgId && /^(held|refused|expired)$/.test(e.frame.status))) throw new Error('Golden conflicting delivery status'); // S5B:delivery-conflict
+  const subscriptions = uses.filter(b => b.input.notify_when_idle === true);
+  const subscribed = wire.filter(e => e.direction === 'in' && e.frame.action === 'notify_when_idle');
+  const notices = wire.filter(e => e.direction === 'out' && e.frame.action === 'peer_idle_notice').map(e => e.frame);
+  const admitted = controller.filter(b => idleNotice(b, s));
+  if (subscriptions.length !== 1 || subscribed.length !== 1 || notices.length !== 1 || admitted.length !== 1 || notices[0].state !== 'idle' || notices[0].finished_at < s.startedAt) throw new Error('Golden exactly one idle notice'); // S5B:idle
+  if (!Number.isFinite(admitted[0].time) || admitted[0].time < notices[0].finished_at || notices[0].from !== `uds:${s.peer.sock}`) throw new Error('Golden controller idle completion'); // S5B:idle-completion
+  // Recipient-only renderer notices are attributable only in a single-message run.
+  const runUsers = wire.filter(e => e.direction === 'in' && e.frame.type === 'user' && e.time <= admitted[0].time);
+  const runDeliveries = wire.filter(e => e.direction === 'out' && e.frame.action === 'peer_message_status' && e.frame.status === 'delivered' && e.time <= admitted[0].time);
+  if (runUsers.length !== 1 || runUsers[0] !== sent[0] || runDeliveries.length !== 1 || runDeliveries[0] !== delivered[0]) throw new Error('Golden ambiguous delivery window'); // S5B:window
+  const subscriptionReply = controller.filter(b => b.type === 'tool_result' && b.tool_use_id === subscriptions[0].id && !b.is_error).flatMap(payloads);
+  if (!subscriptionReply.some(p => p.success === true || (p.msg_id ?? p.orig_msg_id) === notices[0].orig_msg_id) || subscribed[0].frame.msg_id !== notices[0].orig_msg_id || subscribed[0].frame.from !== sent[0].frame.from) throw new Error('Golden idle correlation'); // S5B:idle-id
+  if (![active.time, request.time, result.time, sent[0].time, delivered[0].time, notices[0].finished_at].every(Number.isFinite) || delivered[0].time < result.time || sent[0].time > request.time || request.time < s.startedAt || result.time > notices[0].finished_at) throw new Error('Golden lifecycle ordering'); // S5B:order
+  const wrapperMode = sent[0].frame.message.content.match(/^<cross-session-message\b[^>]*\sfrom-mode="([^"]+)"/)?.[1];
+  if (!wrapperMode || typeof subscribed[0].frame.from_mode !== 'string' || !subscribed[0].frame.from_mode || wrapperMode !== subscribed[0].frame.from_mode || notices[0].from_mode !== subscribed[0].frame.from_mode) throw new Error('Golden from_mode echo'); // S5B:mode
+  const secondIn = wire.filter(e => e.direction === 'in' && e.frame.type === 'user' && e.frame.msg_id === second?.sentFrame?.msg_id);
+  const secondOut = wire.filter(e => e.direction === 'out' && (e.time >= second?.sentAt || e.frame.orig_msg_id === second?.sentFrame?.msg_id));
+  const refusal = p => p?.action === 'peer_message_status' && p.orig_msg_id === second.sentFrame?.msg_id && p.status === 'expired' && p.status_detail === 'refused' && p.from === `uds:${s.peer.sock}` && p.from_mode === second.sentFrame.from_mode;
+  if (!Number.isFinite(second?.sentAt) || !Number.isFinite(s.lingerMs) || s.lingerMs <= 0 ||
+      !second.sentFrame?.msg_id || second.sentFrame.msg_id === request.message.msgId || second.sentFrame.type !== 'user' ||
+      second.callbackFrames?.length !== 2 || second.callbackFrames[0].type !== 'auth' || second.callbackFrames[0].authenticated !== true || !refusal(second.callbackFrames[1]) ||
+      !Array.isArray(second.senderReplies) || second.senderReplies.length !== 0 ||
+      secondIn.length !== 1 || !isDeepStrictEqual(secondIn[0].frame, second.sentFrame) ||
+      secondOut.length !== 1 || !refusal(secondOut[0].frame) || !isDeepStrictEqual(secondOut[0].frame, second.callbackFrames[1]) ||
+      !Number.isFinite(secondIn[0].time) || !Number.isFinite(secondOut[0].time) || secondIn[0].time < second.sentAt || secondOut[0].time < secondIn[0].time ||
+      second.sentAt < admitted[0].time || second.sentAt < notices[0].finished_at || second.sentAt > notices[0].finished_at + s.lingerMs ||
+      ipc.some(e => e.time >= second.sentAt && (e.message?.type === 'steer' || (e.message?.type === 'active-turn-state' && e.message.turnId))) ||
+      rollout.some(r => r.type === 'event_msg' && r.payload?.type === 'task_started' && Date.parse(r.timestamp) >= second.sentAt)) throw new Error('Golden post-completion refusal'); // S5B:refusal
+  const pids = s.pids.filter(p => ['driver', 'app-server'].includes(p.role));
+  if (!pids.some(p => p.role === 'driver') || !pids.some(p => p.role === 'app-server') || pids.some(p => !p.start || !Number.isInteger(p.pid) || !before.split('\n').some(l => Number(l.trim().split(/\s+/)[0]) === p.pid) || after.split('\n').some(l => Number(l.trim().split(/\s+/)[0]) === p.pid) || data.identitiesAfter?.find(a => a.pid === p.pid && a.start === p.start)?.state !== 'dead')) throw new Error('Golden process exit evidence'); // S5B:pids
+  return true;
+}
+
+/** Probe-only observer in the sidecar process; never logs authentication frames.
+ * Captures actual incoming modes and outgoing callbacks, since Claude renders idle
+ * notices as prose and omits wire fields from its SendMessage tool result. */
+export function goldenTraceSource() { return ipcTraceSource() + String.raw`
+import { Socket } from 'node:net';
+if (process.env.STRATUM_PEER_OWNER_KIND === 'codex-appserver') {
+  const buffers = new WeakMap();
+  const capture = (socket, direction, chunk) => {
+    if (typeof chunk !== 'string' && !Buffer.isBuffer(chunk)) return;
+    const parts = buffers.get(socket) ?? {in: '', out: ''};
+    parts[direction] += chunk.toString();
+    let end;
+    while ((end = parts[direction].indexOf('\n')) >= 0) {
+      const line = parts[direction].slice(0, end); parts[direction] = parts[direction].slice(end + 1);
+      try {
+        const frame = JSON.parse(line);
+        if (frame.type === 'user' || (frame.type === 'control' && ['notify_when_idle', 'peer_message_status', 'peer_idle_notice'].includes(frame.action)))
+          appendFileSync(process.env.PEER3_IPC + '.wire', JSON.stringify({time: Date.now(), direction, frame}) + '\n', {mode: 0o600});
+      } catch { /* Non-JSON is not evidence. */ }
+    }
+    if (parts[direction].length > 1024 * 1024) parts[direction] = '';
+    buffers.set(socket, parts);
+  };
+  const emit = Socket.prototype.emit, end = Socket.prototype.end;
+  Socket.prototype.emit = function(event, ...args) { if (event === 'data') capture(this, 'in', args[0]); return emit.call(this, event, ...args); };
+  Socket.prototype.end = function(chunk, ...args) { capture(this, 'out', chunk); return end.call(this, chunk, ...args); };
+}
+`; }
+
+export async function goldenStart({ model, out }) {
+  if (!model || !out) throw new Error('golden start requires --model and --out');
+  const output = join(resolve(out), 'golden');
+  await mkdir(resolve(out), { recursive: true, mode: 0o700 });
+  await mkdir(output, { mode: 0o700 });
+  const root = await mkdtemp('/tmp/p3-gold-'), pids = [];
+  let run;
+  try {
+    await recordIdentity(output); await pinCheck();
+    const home = await privateHome(root), cwd = join(root, 'workspace'), registryRoot = join(root, 'runs');
+    await mkdir(cwd, { mode: 0o700 });
+    const { resolveSessionsDir } = await production('peer-registry');
+    const sessionsDir = resolveSessionsDir(process.env); // Resolve BEFORE replacing CODEX_HOME. Real Claude registry.
+    const trace = join(root, 'trace.mjs'); await writeFile(trace, goldenTraceSource(), { mode: 0o600 });
+    const label = `golden-${randomBytes(6).toString('hex')}`, marker = randomBytes(24).toString('hex'), startedAt = Date.now(), lingerMs = 120_000;
+    const prompt = 'Run exactly one bounded shell tool command: sleep 150. Wait for that command to finish. Then give a final answer including verbatim any marker received in a peer message during this turn. Do not start another command or modify files.';
+    const { startBackgroundRun } = await production('background');
+    run = await startBackgroundRun({ agent: 'codex', model, prompt, cwd, registryRoot, sessionsDir, peerLabel: label, lingerMs,
+      sandboxMode: 'read-only', approvalPolicy: 'never', env: { ...process.env, CODEX_HOME: home, STRATUM_CODEX_BG_STRATEGY: 'app-server', STRATUM_PEER_REGISTER: '1',
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${trace}`, PEER3_IPC: join(root, 'ipc.jsonl') } });
+    pids.push(await capturePid(run.pid, 'driver'));
+    const peerPath = join(dirname(run.streamPath), 'peer.json');
+    await waitFor(async () => await exists(peerPath) && (await recordsAt(run.streamPath)).some(r => r.type === 'turn.started'), 60_000);
+    const peer = await json(peerPath);
+    if (!run.peerName || run.peerName !== peer.name) throw new Error('Real peer registration failed');
+    await waitFor(async () => {
+      const ps = await runBounded('ps', ['-axo', 'pid,ppid,command'], {timeoutMs: 5000});
+      if (ps.code !== 0) throw new Error('Cannot discover app-server');
+      const row = ps.stdout.split('\n').find(l => Number(l.trim().split(/\s+/)[1]) === run.pid && /\bcodex\b.*\bapp-server\b/.test(l));
+      if (!row) return false;
+      pids.push(await capturePid(Number(row.trim().split(/\s+/)[0]), 'app-server')); return true;
+    }, 10_000);
+    if ((await recordsAt(run.streamPath)).some(r => r.type === 'turn.completed')) throw new Error('Turn already finished');
+    await snapshot(join(output, 'before.ps'), pids);
+    await writeFile(join(output, 'prompt.txt'), await readFile(`${run.streamPath}.in`), {mode: 0o600});
+    const state = { ...run, peerName: peer.name, label, marker, peer, pids, startedAt, lingerMs, root, home, registryRoot, sessionsDir };
+    await writeEvidence(join(output, 'state.json'), state);
+    console.log(JSON.stringify({peerName: peer.name, marker, runId: run.runId, collectBefore: new Date(startedAt + 270_000).toISOString()}, null, 2));
+    return state;
+  } catch (error) {
+    if (run) await (await production('background')).cancelBackgroundRun(run.runId, {registryRoot: join(root, 'runs')}).catch(() => {});
+    await reapCaptured(pids).catch(() => {}); await rm(root, {recursive: true, force: true}); throw error;
+  }
+}
+async function findRollout(home, threadId) {
+  async function walk(dir) {
+    const found = [];
+    for (const entry of await readdir(dir, {withFileTypes: true})) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) found.push(...await walk(path));
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        const records = await strictRecords(path);
+        if (records.some(r => r.type === 'session_meta' && r.payload?.id === threadId)) found.push(records);
+      }
+    }
+    return found;
+  }
+  const matches = await walk(join(home, 'sessions'));
+  if (matches.length !== 1) throw new Error('Missing unique Codex thread rollout');
+  return matches[0];
+}
+export async function loadGolden(output) {
+  const data = {};
+  for (const key of ['state', 'records', 'rollout', 'controller', 'poll', 'ipc', 'wire', 'second', 'identitiesAfter']) data[key] = await json(join(output, `${key}.json`));
+  data.prompt = await readFile(join(output, 'prompt.txt'), 'utf8');
+  data.before = await readFile(join(output, 'before.ps'), 'utf8');
+  data.after = await readFile(join(output, 'after.ps'), 'utf8');
+  return data;
+}
+async function strictRecords(path) {
+  return (await readFile(path, 'utf8')).split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
+}
+export async function goldenCollect({ out, transcript }) {
+  if (!out || !transcript) throw new Error('golden collect requires --out and --transcript');
+  const output = join(resolve(out), 'golden'), state = await json(join(output, 'state.json'));
+  if (await exists(join(output, 'summary.json'))) throw new Error('Golden collection already attempted; use a fresh root');
+  let sender, failure;
+  const started = Date.now();
+  try {
+    const poll = await finishRun(state, state.registryRoot);
+    await writeEvidence(join(output, 'poll.json'), poll);
+    // Wait for the sidecar's actual terminal observation before testing refusal.
+    await waitFor(async () => (await recordsAt(join(state.root, 'ipc.jsonl.wire'))).some(e => e.direction === 'out' && e.frame?.action === 'peer_idle_notice'), 10_000);
+    // Do this before slower gathering, while the real sidecar is within linger.
+    const second = {sentAt: Date.now()};
+    sender = await probePeerSender({root: dirname(state.peer.sock), sessionsDir: state.sessionsDir, data: second});
+    const { keyFileName } = await production('peer-registry');
+    const { peerToken } = await json(join(state.sessionsDir, keyFileName(state.peer.pid, state.peer.sock)));
+    try {
+      await sender.send(state.peer.sock, peerToken, `s5b-finished-${randomBytes(8).toString('hex')}`);
+      await waitFor(() => second.callbackFrames.some(f => f.action === 'peer_message_status'), 10_000);
+    } finally { await writeEvidence(join(output, 'second.json'), second); }
+    await sender.close(); sender = undefined;
+    await waitFor(async () => (await Promise.all(state.pids.map(pidState))).every(s => s === 'dead'), 10_000);
+    await snapshot(join(output, 'after.ps'), state.pids);
+    await writeEvidence(join(output, 'identitiesAfter.json'), await Promise.all(state.pids.map(async p => ({...p, state: await pidState(p)}))));
+    const records = await strictRecords(state.streamPath);
+    await writeEvidence(join(output, 'records.json'), records);
+    await writeEvidence(join(output, 'ipc.json'), await strictRecords(join(state.root, 'ipc.jsonl')));
+    await writeEvidence(join(output, 'wire.json'), await strictRecords(join(state.root, 'ipc.jsonl.wire')));
+    await writeEvidence(join(output, 'rollout.json'), await findRollout(state.home, records.find(r => r.type === 'thread.started')?.thread_id));
+    // Read repeatedly to allow the controller to persist both user notices. Only
+    // selected blocks are ever written to the evidence bundle, including on failure.
+    await waitFor(async () => {
+      const selected = extractController(await strictRecords(transcript), state);
+      await writeEvidence(join(output, 'controller.json'), selected);
+      return selected.some(b => idleNotice(b, state)) && selected.some(b => deliveryNotice(b, state));
+    }, 15_000);
+    assessGolden(await loadGolden(output));
+  } catch (error) { failure = error.message; }
+  finally {
+    if (sender) await sender.close();
+    await writeEvidence(join(output, 'summary.json'), {mode: 'golden', outcome: failure ? 'failed' : 'passed', error: failure, elapsedMs: Date.now() - started});
+    // Never turn cleanup into evidence of successful natural reaping.
+    if (failure) {
+      await (await production('background')).cancelBackgroundRun(state.runId, {registryRoot: state.registryRoot}).catch(() => {});
+      await reapCaptured(state.pids).catch(() => {});
+    }
+    await rm(join(state.home, 'auth.json'), {force: true});
+    // Leave run files until sidecar linger ends; no credentials or unrelated transcript retained.
+  }
+  if (failure) throw new Error(failure);
+}
+
+// The row accepts the amended AC; individual methods retain their raw verdicts.
+export function scoreServerRequests(methods) {
+  if (methods.some(m => !['proven', 'unreached'].includes(m.status))) throw new Error('Elicited method not proven'); // S5B:amended-elicited
+  if (requiredServerMethods.some(method => !methods.some(m => m.method === method)) || methods.some(m => m.status === 'unreached' && !m.triggers?.length)) throw new Error('Unreached method has no recorded trigger'); // S5B:amended-triggers
+  const proven = methods.filter(m => m.status === 'proven').length;
+  if (!proven) throw new Error('No proven server request method'); // S5B:amended-proven
+  const unreached = methods.filter(m => m.status === 'unreached').length;
+  return {status: unreached ? 'passed-amended' : 'passed', reason: `${proven} proven, ${unreached} unreached (recorded with triggers)`};
+}
+
+export function assessLiveRows(rows) {
+  if (rows.some(r => r.status !== 'passed' && !(r.ac === 'AC05 rerun' && r.status === 'passed-amended'))) throw new Error('Required live gate incomplete'); // S5B:verify-complete
+  return true;
+}
+
+export async function verifyEvidence({ out }) {
+  if (!out) throw new Error('verify-evidence requires --out');
+  const root = resolve(out), rows = [], methods = [];
+  const check = async (ac, fn) => {
+    try { const result = await fn(); rows.push({ac, status: 'passed', reason: '', ...result}); }
+    catch (e) { rows.push({ac, status: e.code === 'ENOENT' ? 'unreached' : 'failed', reason: e.message}); }
+  };
+  await check('preflight', async () => {
+    for (const name of requiredCases.preflight) {
+      const raw = await json(join(root, 'preflight', `${name}.json`));
+      const { PINNED_APP_SERVER_VERSION } = await import(new URL('../src/connectors/codex-appserver-protocol/pinned-version.ts', import.meta.url));
+      if (!assessPreflight(name, raw, PINNED_APP_SERVER_VERSION)) throw new Error(`Preflight ${name} failed`); // S5B:verify-preflight
+    }
+  });
+  await check('AC03', async () => {
+    const dir = join(root, 'sandbox'), raw = {};
+    for (const mode of ['built-in', 'ordinary', 'override']) raw[mode] = await json(join(dir, 'exec-baseline', `${mode}.json`));
+    const baseline = assessExecBaseline(await json(join(dir, 'exec-baseline/report.json')), raw);
+    for (const name of requiredCases.sandbox) {
+      const data = await json(join(dir, `${name}.json`));
+      if (data.error) throw new Error(data.error);
+      assessSandboxCase(name, data);
+      if (name.startsWith('temp-')) for (const key of ['TMPDIR', 'slashTmp']) {
+        const value = baseline[name.slice(5)][key];
+        if (data.observed[key] !== value || !isDeepStrictEqual(data.tempComparison[key], {exec: value, appServer: value})) throw new Error('Exec/app-server temp mismatch'); // S5B:verify-temp
+      }
+    }
+  });
+  await check('AC13', async () => {
+    for (const name of requiredCases['process-tree']) {
+      const dir = join(root, 'process-tree'), data = await json(join(dir, `${name}.json`));
+      if (data.error) throw new Error(data.error);
+      assessProcessCase(name, data);
+      for (const suffix of ['before', 'after']) {
+        const ps = await readFile(join(dir, `${name}.${suffix}.ps`), 'utf8');
+        if (!ps.trim() || data.pids.filter(p => ['driver', 'app-server'].includes(p.role)).some(p => ps.split('\n').some(line => Number(line.trim().split(/\s+/)[0]) === p.pid) !== (suffix === 'before'))) throw new Error('Process snapshot PID mismatch'); // S5B:process-ps
+      }
+    }
+  });
+  let serverRoot = join(root, 'server-requests');
+  if (!await exists(join(serverRoot, 'report.json')) && await exists(join(root, 'report.json'))) serverRoot = root;
+  await check('AC05 rerun', async () => {
+    const runs = [], errors = [];
+    for (const [i, trigger] of serverRequestTriggers.entries()) {
+      let run;
+      try {
+        run = await json(join(serverRoot, `run-${i}.json`));
+        if (!isDeepStrictEqual(run.trigger, trigger) || run.claim !== 'completed') throw new Error('Server request trigger/terminal mismatch'); // S5B:verify-trigger
+        const client = run.transcript.filter(e => e.direction === 'client').map(e => e.frame);
+        const thread = client.find(f => f.method === 'thread/start')?.params, turn = client.find(f => f.method === 'turn/start')?.params;
+        if (thread?.approvalPolicy !== trigger.approvalPolicy || thread?.sandbox !== trigger.filesystemMode || turn?.sandboxPolicy || !turn?.input?.some(v => v.type === 'text' && v.text === trigger.prompt)) throw new Error('Server request launch mismatch'); // S5B:verify-launch
+        if (!run.transcript.some(e => e.direction === 'server' && e.frame?.method === 'turn/completed' && e.frame.params?.turn?.status === 'completed')) throw new Error('Server request missing terminal'); // S5B:verify-terminal
+      } catch (error) {
+        errors.push(error);
+        if (run) run.validationError = error.message;
+      }
+      if (run) runs.push({...run, file: `run-${i}.json`});
+    }
+    methods.push(...assessServerRequests(runs, (await production('codex-appserver-driver')).respondToServerRequest, {report: true}));
+    if (errors.length) throw errors[0];
+    return scoreServerRequests(methods);
+  });
+  await check('AC07', async () => { assessGolden(await loadGolden(join(root, 'golden'))); });
+  await check('AC16', async () => {
+    const identities = await Promise.all(['preflight', 'sandbox', 'process-tree', 'golden'].map(mode => json(join(root, mode, 'identity.json'))));
+    identities.push(await json(join(serverRoot, 'identity.json')));
+    assessIdentities(identities);
+    for (const [key, file] of [['codex', 'codex-version'], ['claude', 'claude-version'], ['head', 'git-head']]) {
+      if (identities[0][key].stdout.trim() !== (await json(join(root, 'preflight', `${file}.json`))).stdout.trim()) throw new Error('Preflight identity mismatch'); // S5B:verify-identity
+    }
+    assessLiveRows(rows);
+  });
+  return {passed: rows.find(r => r.ac === 'AC16')?.status === 'passed', rows, methods};
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

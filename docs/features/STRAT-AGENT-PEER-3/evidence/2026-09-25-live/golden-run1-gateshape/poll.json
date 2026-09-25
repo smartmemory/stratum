@@ -1,0 +1,27 @@
+{
+  "status": "complete",
+  "runId": "1a10931fc7c7",
+  "peer": {
+    "name": "codex-luna-1a10931fc7c7-golden-b457496ca690",
+    "registered": true,
+    "pid": 38989,
+    "sock": "/tmp/cc-socks/38989.sock"
+  },
+  "text": "Completed `sleep 150`.\n\n137c608d4f479287fef9a1244f377ef1e581f161ed75add6",
+  "usage": {
+    "usd": 0.0026616000000000005,
+    "tokens": 110936
+  },
+  "split": {
+    "input": 110704,
+    "output": 232,
+    "cacheRead": 94720
+  },
+  "usdSource": "estimated",
+  "exitCode": 0,
+  "telemetry": {
+    "durationMs": 176468,
+    "model": "gpt-6-luna",
+    "effort": "low"
+  }
+}

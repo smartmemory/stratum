@@ -1,0 +1,69 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 37396,
+      "role": "driver",
+      "start": "1790325157.587526",
+      "pgid": 37396,
+      "after": "dead"
+    },
+    {
+      "pid": 37398,
+      "role": "app-server",
+      "start": "1790325157.620545",
+      "pgid": 37396,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "native-signal",
+  "artifacts": [
+    "driver-sigkill.before.ps",
+    "driver-sigkill.after.ps",
+    "driver-sigkill.err",
+    "driver-sigkill.peer.err"
+  ],
+  "activeBeforeAction": true,
+  "action": {
+    "kind": "driver-sigkill",
+    "records": [
+      {
+        "type": "thread.started",
+        "thread_id": "01a0d7b1-fbbf-7993-a499-d5ee4966cc82"
+      },
+      {
+        "type": "turn.started"
+      }
+    ],
+    "time": 1790325161015
+  },
+  "poll": {
+    "status": "error",
+    "runId": "8746b4dd3d7a",
+    "peer": {
+      "name": "codex-luna-8746b4",
+      "registered": false
+    },
+    "reason": "child_died_without_sentinel",
+    "textTail": "",
+    "stderrTail": "",
+    "eventsSeen": 2,
+    "streamPath": "/tmp/p3-life-urIu2A/runs/8746b4dd3d7a/stream.jsonl"
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b1-fbbf-7993-a499-d5ee4966cc82"
+    },
+    {
+      "type": "turn.started"
+    }
+  ],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325157.6449332,
+      "pid": 37398
+    }
+  ]
+}

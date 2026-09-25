@@ -1,0 +1,81 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 35016,
+      "role": "driver",
+      "start": "1790325088.637422",
+      "pgid": 35016,
+      "after": "dead"
+    },
+    {
+      "pid": 35018,
+      "role": "shim",
+      "start": "1790325088.669688",
+      "pgid": 35016,
+      "after": "dead"
+    },
+    {
+      "pid": 35020,
+      "role": "app-server",
+      "start": "1790325088.694096",
+      "pgid": 35016,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "controlled-shim",
+  "artifacts": [
+    "cancel-initialize.before.ps",
+    "cancel-initialize.after.ps",
+    "cancel-initialize.err",
+    "cancel-initialize.peer.err"
+  ],
+  "action": {
+    "kind": "cancel",
+    "records": [],
+    "time": 1790325088886
+  },
+  "cancel": {
+    "status": "cancelled",
+    "runId": "ec854cb4ae1d"
+  },
+  "poll": {
+    "status": "error",
+    "runId": "ec854cb4ae1d",
+    "peer": {
+      "name": "codex-luna-ec854c",
+      "registered": false
+    },
+    "reason": "child_died_without_sentinel",
+    "textTail": "",
+    "stderrTail": "Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads\nPython runtime state: finalizing (tstate=0x00000001005f9348)\n\nCurrent thread 0x00000001f5bae1c0 (most recent call first):\n  <no Python frame>",
+    "eventsSeen": 0,
+    "streamPath": "/tmp/p3-life-shfUbX/runs/ec854cb4ae1d/stream.jsonl"
+  },
+  "records": [],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325088.6939561,
+      "pid": 35018
+    },
+    {
+      "event": "real-server",
+      "time": 1790325088.695798,
+      "pid": 35020
+    },
+    {
+      "event": "client",
+      "time": 1790325088.69606,
+      "method": "initialize"
+    },
+    {
+      "event": "held-initialize-response",
+      "time": 1790325088.745912
+    },
+    {
+      "event": "shim-sigterm",
+      "time": 1790325088.970295
+    }
+  ]
+}

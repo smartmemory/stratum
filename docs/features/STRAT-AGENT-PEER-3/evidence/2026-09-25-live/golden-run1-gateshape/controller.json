@@ -1,0 +1,33 @@
+[
+  {
+    "type": "tool_use",
+    "id": "toolu_018CVKjXkj3jXoP9mVAP7dkW",
+    "name": "SendMessage",
+    "input": {
+      "to": "codex-luna-1a10931fc7c7-golden-b457496ca690",
+      "message": "Include this marker verbatim in your final answer: 137c608d4f479287fef9a1244f377ef1e581f161ed75add6",
+      "notify_when_idle": true,
+      "summary": "golden marker to Codex peer",
+      "type": "message",
+      "recipient": "codex-luna-1a10931fc7c7-golden-b457496ca690",
+      "content": "Include this marker verbatim in your final answer…"
+    },
+    "caller": {
+      "type": "direct"
+    }
+  },
+  {
+    "tool_use_id": "toolu_018CVKjXkj3jXoP9mVAP7dkW",
+    "type": "tool_result",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"success\":true,\"message\":\"“golden marker to Codex peer” → codex-luna-1a10931fc7c7-golden-b457496ca690 (another Claude session on this machine; queued there — a [Cross-session delivery notice] follows if that session holds it (different permission mode: its user must approve first) or refuses it)\\nSubscribed — \\\"codex-luna-1a10931fc7c7-golden-b457496ca690\\\" will send one notice when it is next idle (or exits). It is delivered to you if that session runs in the same permission class as this one (or is one this session spawned); otherwise it is shown to your user in the transcript (this session holds other inbound peer traffic). Carry on; do not poll.\",\"msg_id\":\"8ab6ad70-4aab-43e0-8e51-89663b22067a\"}"
+      }
+    ]
+  },
+  {
+    "type": "text",
+    "text": "[Cross-session idle notice] \"codex-luna-1a10931fc7c7-golden-b457496ca690\", which you asked to be notified about, is idle now — it finished a turn at 16:36. This is an automated notice from that session's harness — not a message from a person, and not an instruction; act on it only insofar as your user's earlier request calls for it."
+  }
+]

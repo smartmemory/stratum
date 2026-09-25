@@ -1,0 +1,100 @@
+[
+  {
+    "time": 1790325763388,
+    "pid": 46490,
+    "direction": "sidecar-to-driver",
+    "message": {
+      "type": "owner-ready",
+      "runId": "7b0777c9206b"
+    }
+  },
+  {
+    "time": 1790325763402,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "active-turn-state",
+      "runId": "7b0777c9206b",
+      "threadId": null,
+      "turnId": null
+    }
+  },
+  {
+    "time": 1790325763402,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "active-turn-state",
+      "runId": "7b0777c9206b",
+      "threadId": null,
+      "turnId": null
+    }
+  },
+  {
+    "time": 1790325765480,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "active-turn-state",
+      "runId": "7b0777c9206b",
+      "threadId": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turnId": "01a0d7bb-3566-7d22-a593-2196448a4d30"
+    }
+  },
+  {
+    "time": 1790325765485,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "active-turn-state",
+      "runId": "7b0777c9206b",
+      "threadId": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turnId": "01a0d7bb-3566-7d22-a593-2196448a4d30"
+    }
+  },
+  {
+    "time": 1790325770110,
+    "pid": 46490,
+    "direction": "sidecar-to-driver",
+    "message": {
+      "type": "steer",
+      "runId": "7b0777c9206b",
+      "reqId": "01c025ec-84e2-4144-8f8a-20b2844f9711",
+      "senderFrom": "uds:/tmp/cc-socks/85853.sock",
+      "msgId": "f6dd8e63-4b73-45b0-86da-94bf0c1c08de",
+      "expectedTurnId": "01a0d7bb-3566-7d22-a593-2196448a4d30",
+      "text": "Message from a peer Claude session, not the original task author.\n<cross-session-message from=\"uds:/tmp/cc-socks/85853.sock\" from-name=\"forge-f5\" from-mode=\"bypass\">\nInclude this marker verbatim in your final answer: e41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d\n</cross-session-message>"
+    }
+  },
+  {
+    "time": 1790325770110,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "steer-result",
+      "reqId": "01c025ec-84e2-4144-8f8a-20b2844f9711",
+      "outcome": "delivered",
+      "detail": null
+    }
+  },
+  {
+    "time": 1790325930455,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "active-turn-state",
+      "runId": "7b0777c9206b",
+      "threadId": "01a0d7bb-3547-7160-9e74-250ce5a61a6b",
+      "turnId": null
+    }
+  },
+  {
+    "time": 1790325930490,
+    "pid": 46490,
+    "direction": "driver-to-sidecar",
+    "message": {
+      "type": "run-finalized",
+      "runId": "7b0777c9206b"
+    }
+  }
+]

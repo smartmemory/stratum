@@ -1,0 +1,252 @@
+{
+  "mode": "server-requests",
+  "model": "gpt-6-luna/low",
+  "node": "v22.22.3",
+  "runs": [
+    {
+      "file": "run-0.json",
+      "claim": "completed",
+      "trigger": {
+        "methods": [
+          "item/commandExecution/requestApproval",
+          "execCommandApproval",
+          "item/permissions/requestApproval"
+        ],
+        "approvalPolicy": "on-request",
+        "filesystemMode": "read-only",
+        "prompt": "Request approval to run a shell command outside the sandbox, then request permission to write a file outside the workspace. Respect any refusal; report it and finish."
+      }
+    },
+    {
+      "file": "run-1.json",
+      "claim": "completed",
+      "trigger": {
+        "methods": [
+          "item/fileChange/requestApproval",
+          "applyPatchApproval"
+        ],
+        "approvalPolicy": "on-request",
+        "filesystemMode": "read-only",
+        "prompt": "Use your apply_patch (patch) tool to create peer3-file-approval.txt in the current working directory containing exactly peer3. The sandbox is read-only: request file-change approval if required. Do not use a shell to write the file. Respect refusal and finish."
+      }
+    },
+    {
+      "file": "run-2.json",
+      "claim": "completed",
+      "trigger": {
+        "methods": [
+          "mcpServer/elicitation/request",
+          "item/tool/requestUserInput",
+          "item/tool/call",
+          "unknown",
+          "account/chatgptAuthTokens/refresh",
+          "attestation/generate"
+        ],
+        "approvalPolicy": "untrusted",
+        "filesystemMode": "read-only",
+        "prompt": "Call the peer3_probe ask MCP tool once. Then use request_user_input to ask a question. If available, invoke a dynamic client tool, refresh authentication, and request attestation through supported tools. Do not invent tools or credentials. Respect refusal or unavailable capabilities and finish."
+      }
+    }
+  ],
+  "methods": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "status": "proven",
+      "evidence": [
+        {
+          "file": "run-0.json",
+          "request": 61,
+          "reply": 62,
+          "terminal": 111
+        }
+      ]
+    },
+    {
+      "method": "item/fileChange/requestApproval",
+      "status": "proven",
+      "evidence": [
+        {
+          "file": "run-1.json",
+          "request": 20,
+          "reply": 21,
+          "terminal": 50
+        }
+      ]
+    },
+    {
+      "method": "execCommandApproval",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-0.json",
+          "methods": [
+            "item/commandExecution/requestApproval",
+            "execCommandApproval",
+            "item/permissions/requestApproval"
+          ],
+          "approvalPolicy": "on-request",
+          "filesystemMode": "read-only",
+          "prompt": "Request approval to run a shell command outside the sandbox, then request permission to write a file outside the workspace. Respect any refusal; report it and finish."
+        }
+      ]
+    },
+    {
+      "method": "applyPatchApproval",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-1.json",
+          "methods": [
+            "item/fileChange/requestApproval",
+            "applyPatchApproval"
+          ],
+          "approvalPolicy": "on-request",
+          "filesystemMode": "read-only",
+          "prompt": "Use your apply_patch (patch) tool to create peer3-file-approval.txt in the current working directory containing exactly peer3. The sandbox is read-only: request file-change approval if required. Do not use a shell to write the file. Respect refusal and finish."
+        }
+      ]
+    },
+    {
+      "method": "item/permissions/requestApproval",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-0.json",
+          "methods": [
+            "item/commandExecution/requestApproval",
+            "execCommandApproval",
+            "item/permissions/requestApproval"
+          ],
+          "approvalPolicy": "on-request",
+          "filesystemMode": "read-only",
+          "prompt": "Request approval to run a shell command outside the sandbox, then request permission to write a file outside the workspace. Respect any refusal; report it and finish."
+        }
+      ]
+    },
+    {
+      "method": "mcpServer/elicitation/request",
+      "status": "proven",
+      "evidence": [
+        {
+          "file": "run-2.json",
+          "request": 22,
+          "reply": 23,
+          "terminal": 81
+        }
+      ]
+    },
+    {
+      "method": "item/tool/requestUserInput",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-2.json",
+          "methods": [
+            "mcpServer/elicitation/request",
+            "item/tool/requestUserInput",
+            "item/tool/call",
+            "unknown",
+            "account/chatgptAuthTokens/refresh",
+            "attestation/generate"
+          ],
+          "approvalPolicy": "untrusted",
+          "filesystemMode": "read-only",
+          "prompt": "Call the peer3_probe ask MCP tool once. Then use request_user_input to ask a question. If available, invoke a dynamic client tool, refresh authentication, and request attestation through supported tools. Do not invent tools or credentials. Respect refusal or unavailable capabilities and finish."
+        }
+      ]
+    },
+    {
+      "method": "account/chatgptAuthTokens/refresh",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-2.json",
+          "methods": [
+            "mcpServer/elicitation/request",
+            "item/tool/requestUserInput",
+            "item/tool/call",
+            "unknown",
+            "account/chatgptAuthTokens/refresh",
+            "attestation/generate"
+          ],
+          "approvalPolicy": "untrusted",
+          "filesystemMode": "read-only",
+          "prompt": "Call the peer3_probe ask MCP tool once. Then use request_user_input to ask a question. If available, invoke a dynamic client tool, refresh authentication, and request attestation through supported tools. Do not invent tools or credentials. Respect refusal or unavailable capabilities and finish."
+        }
+      ]
+    },
+    {
+      "method": "attestation/generate",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-2.json",
+          "methods": [
+            "mcpServer/elicitation/request",
+            "item/tool/requestUserInput",
+            "item/tool/call",
+            "unknown",
+            "account/chatgptAuthTokens/refresh",
+            "attestation/generate"
+          ],
+          "approvalPolicy": "untrusted",
+          "filesystemMode": "read-only",
+          "prompt": "Call the peer3_probe ask MCP tool once. Then use request_user_input to ask a question. If available, invoke a dynamic client tool, refresh authentication, and request attestation through supported tools. Do not invent tools or credentials. Respect refusal or unavailable capabilities and finish."
+        }
+      ]
+    },
+    {
+      "method": "item/tool/call",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-2.json",
+          "methods": [
+            "mcpServer/elicitation/request",
+            "item/tool/requestUserInput",
+            "item/tool/call",
+            "unknown",
+            "account/chatgptAuthTokens/refresh",
+            "attestation/generate"
+          ],
+          "approvalPolicy": "untrusted",
+          "filesystemMode": "read-only",
+          "prompt": "Call the peer3_probe ask MCP tool once. Then use request_user_input to ask a question. If available, invoke a dynamic client tool, refresh authentication, and request attestation through supported tools. Do not invent tools or credentials. Respect refusal or unavailable capabilities and finish."
+        }
+      ]
+    },
+    {
+      "method": "unknown",
+      "status": "unreached",
+      "triggers": [
+        {
+          "file": "run-2.json",
+          "methods": [
+            "mcpServer/elicitation/request",
+            "item/tool/requestUserInput",
+            "item/tool/call",
+            "unknown",
+            "account/chatgptAuthTokens/refresh",
+            "attestation/generate"
+          ],
+          "approvalPolicy": "untrusted",
+          "filesystemMode": "read-only",
+          "prompt": "Call the peer3_probe ask MCP tool once. Then use request_user_input to ask a question. If available, invoke a dynamic client tool, refresh authentication, and request attestation through supported tools. Do not invent tools or credentials. Respect refusal or unavailable capabilities and finish."
+        }
+      ]
+    }
+  ],
+  "codex": {
+    "command": "codex",
+    "args": [
+      "--version"
+    ],
+    "pid": 37929,
+    "code": 0,
+    "signal": null,
+    "reason": null,
+    "elapsedMs": 8,
+    "stdout": "codex-cli 0.155.1\n",
+    "stderr": ""
+  }
+}
