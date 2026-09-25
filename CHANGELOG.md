@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **STRAT-LEARN-DELIVER-1 slice 1:** Template v2 adds contract-derived enum/type agent guidance to approved notes, binds guidance and scope metadata into shared revision identity verification, checks cluster-key consistency, and labels guidance-free learn-list rows “note only”.
+
 ## [0.6.3] — 2026-09-25
 
 - **License: Licensor corrected to Regression Analytics LLC.** 0.6.2's `LICENSE` named "SmartMemory" as Licensor and copyright holder. The copyright owner is Regression Analytics LLC. `LICENSE` and `ts/LICENSE` now name it in the Licensor and Licensed Work parameters. The BUSL-1.1 terms, Additional Use Grant, Change Date and Change License are unchanged, and commercial licensing contact stays help@smartmemory.ai.

@@ -10,7 +10,7 @@ import { canonicalJson } from "../../src/guard/canonical.js";
 import { guardTransition } from "../../src/guard/transition.js";
 import { harvest } from "../../src/learn/harvest.js";
 import { classify } from "../../src/learn/classify.js";
-import { authorCandidate, type PatchCandidate } from "../../src/learn/candidate.js";
+import { authorCandidate, computeRevisionId, type PatchCandidate } from "../../src/learn/candidate.js";
 import {
   ApplyError,
   ApplyRefused,
@@ -21,6 +21,7 @@ import {
   readJournal,
   reconcile,
   revertApply,
+  verifyIdentity,
   type JournalEntry,
 } from "../../src/learn/apply.js";
 
@@ -43,8 +44,9 @@ async function workspace(): Promise<string> {
 /** The real corpus lesson, retargeted at a scratch workspace. */
 async function candidateIn(root: string): Promise<PatchCandidate> {
   const { records } = await harvest(FIXTURES);
-  const cluster = classify(records).find((c) => c.class === "durable")!;
-  return authorCandidate({ ...cluster, scope: { ...cluster.scope, workspaceRoot: root } });
+  const cluster = classify(records.map((record) => ({ ...record, workspaceRoot: root })))
+    .find((c) => c.class === "durable")!;
+  return authorCandidate(cluster);
 }
 
 const ON = { enabled: true };
@@ -64,21 +66,11 @@ async function findLedger(dir: string): Promise<string[]> {
 
 /** Recompute a candidate's content-addressed identity after editing its bytes. */
 function reid(candidate: PatchCandidate): PatchCandidate {
-  return {
+  const withClusterId = {
     ...candidate,
-    revisionId: createHash("sha256")
-      .update(
-        [
-          candidate.clusterId,
-          candidate.rendered.templateVersion,
-          candidate.rendered.content,
-          candidate.targetPath,
-          candidate.rendered.insertion.mode,
-          candidate.rendered.insertion.section,
-        ].join("\u0000"),
-      )
-      .digest("hex"),
+    clusterId: createHash("sha256").update(candidate.clusterKey).digest("hex"),
   };
+  return { ...withClusterId, revisionId: computeRevisionId(withClusterId) };
 }
 
 function legacyPayloadDigest(
@@ -191,6 +183,7 @@ describe("apply", () => {
 
     const content = await readFile(candidate.targetPath, "utf8");
     expect(content).toContain(candidate.rendered.content);
+    expect(content).toContain(`  **Agent guidance:** ${candidate.rendered.guidance}`);
     expect(content).toContain(candidate.rendered.insertion.section);
 
     const [entry] = await readJournal(root);
@@ -207,7 +200,7 @@ describe("apply", () => {
     await applyCandidate(first, ON);
     const second: PatchCandidate = reid({
       ...first,
-      clusterId: "other-cluster",
+      clusterKey: first.clusterKey.replace(/[^\u0000]+$/, createHash("sha256").update("other-cluster").digest("hex")),
       // Realistic: names its flow, scoped to its evidence — the critics reject
       // anything less, which is the point of them.
       rendered: {
@@ -275,7 +268,7 @@ describe("revert is compare-and-swap (G3)", () => {
     await applyCandidate(
       reid({
         ...first,
-        clusterId: "second",
+        clusterKey: first.clusterKey.replace(/[^\u0000]+$/, createHash("sha256").update("second").digest("hex")),
         rendered: {
           ...first.rendered,
           content: `- A later lesson in flow \`${first.scope.flowName}\`.`,
@@ -331,7 +324,7 @@ describe("review regressions", () => {
 
     const second = reid({
       ...first,
-      clusterId: "second-cluster",
+      clusterKey: first.clusterKey.replace(/[^\u0000]+$/, createHash("sha256").update("second-cluster").digest("hex")),
       rendered: {
         ...first.rendered,
         content: `- Another lesson in flow \`${first.scope.flowName}\`.`,
@@ -552,5 +545,79 @@ describe("recovery", () => {
     await expect(
       applyCandidate({ ...candidate, revisionId: "next", clusterId: "next" }, ON),
     ).rejects.toThrow(ApplyError);
+  });
+});
+
+
+describe("template v2 identity", () => {
+  it("rejects comma-colliding edits to contract.expected", async () => {
+    const base = await candidateIn(await workspace());
+    const original = reid({ ...base, contract: { ...base.contract, expected: ["a", "b", "c"] } });
+    expect(() => verifyIdentity(original)).not.toThrow();
+    const edited = { ...original, contract: { ...original.contract, expected: ["a,b", "c"] } };
+    expect(() => verifyIdentity(edited)).toThrow("identity does not match");
+  });
+
+  it("keeps the revision unchanged when only contract.expected order changes", async () => {
+    const base = await candidateIn(await workspace());
+    const original = reid({ ...base, contract: { ...base.contract, expected: ["a", "b", "c"] } });
+    const reordered = {
+      ...original,
+      contract: { ...original.contract, expected: [...original.contract.expected].reverse() },
+    };
+    expect(computeRevisionId(reordered)).toBe(original.revisionId);
+    expect(() => verifyIdentity(reordered)).not.toThrow();
+  });
+
+  it("accepts an authored candidate and normalized step order", async () => {
+    const base = await candidateIn(await workspace());
+    expect(() => verifyIdentity(base)).not.toThrow();
+    expect(() => verifyIdentity({ ...base, scope: { ...base.scope, stepIds: [...base.scope.stepIds].reverse() } })).not.toThrow();
+  });
+
+  it("rejects edits to every bound guidance and matching field", async () => {
+    const base = await candidateIn(await workspace());
+    const cases: Array<[PatchCandidate, string]> = [
+      [{ ...base, rendered: { ...base.rendered, guidance: "edited" } }, "identity does not match"],
+      [{ ...base, scope: { ...base.scope, flowName: "edited" } }, "scope.flowName"],
+      [{ ...base, scope: { ...base.scope, stepIds: ["edited"] } }, "identity does not match"],
+      [{ ...base, groupingKey: "step-scoped" }, "groupingKey"],
+      [{ ...base, contract: { ...base.contract, expected: ["edited"] } }, "identity does not match"],
+      [{ ...base, contract: { ...base.contract, code: "edited" } }, "identity does not match"],
+      [{ ...base, contract: { ...base.contract, path: "edited" } }, "identity does not match"],
+      [{ ...base, clusterKey: base.clusterKey + "edited" }, "clusterId does not match its clusterKey"],
+      [{ ...base, clusterId: "edited" }, "clusterId does not match its clusterKey"],
+      [{ ...base, shape: "ensure" }, "does not match its shape"],
+    ];
+    for (const [candidate, message] of cases) {
+      expect(() => verifyIdentity(candidate)).toThrow(ApplyError);
+      expect(() => verifyIdentity(candidate)).toThrow(message);
+    }
+  });
+
+  it("checks cluster-key metadata even when the revision was recomputed", async () => {
+    const base = await candidateIn(await workspace());
+    for (const [candidate, message] of [
+      [{ ...base, scope: { ...base.scope, workspaceRoot: "/elsewhere" } }, "scope.workspaceRoot"],
+      [{ ...base, scope: { ...base.scope, flowName: "edited" } }, "scope.flowName"],
+      [{ ...base, shape: "ensure" as const }, "does not match its shape"],
+      [{ ...base, groupingKey: "step-scoped" as const }, "groupingKey"],
+    ] as const) {
+      expect(() => verifyIdentity(reid(candidate))).toThrow(message);
+    }
+  });
+
+  it("requires the single step-scoped step to match the key", async () => {
+    // Build the step-scoped key with the same layout as groupRecords().
+    const base = await candidateIn(await workspace());
+    const parts = base.clusterKey.split("\u0000");
+    parts.splice(2, 0, base.scope.stepIds[0]!);
+    const scoped = reid({ ...base, groupingKey: "step-scoped", clusterKey: parts.join("\u0000"),
+      scope: { ...base.scope, stepIds: [base.scope.stepIds[0]!] } });
+    expect(() => verifyIdentity(scoped)).not.toThrow();
+    for (const stepIds of [[], ["edited"], [...scoped.scope.stepIds, "extra"]]) {
+      expect(() => verifyIdentity(reid({ ...scoped, scope: { ...scoped.scope, stepIds } })))
+        .toThrow("scope.stepIds for step-scoped grouping");
+    }
   });
 });
