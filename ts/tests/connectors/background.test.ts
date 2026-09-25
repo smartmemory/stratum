@@ -116,6 +116,38 @@ describe("P3 background run gate", () => {
     expect(meta.procStartTime).toBeTruthy();
   });
 
+  it.each([
+    { model: "gpt-6-astra/medium", reported: undefined, expectedUsd: 1.469586, source: "estimated" },
+    { model: "gpt-6-astra/medium", reported: 0.25, expectedUsd: 0.25, source: "reported" },
+    { model: "unpriced-model/medium", reported: undefined, expectedUsd: undefined, source: undefined },
+  ])("polls Codex cached tokens and cost for $model with reported=$reported", async ({ model, reported, expectedUsd, source }) => {
+    const registryRoot = await root();
+    const runId = "aabbcc112233";
+    await writeRegistryRun(registryRoot, runId, [
+      AGENT_MSG,
+      { type: "turn.completed", usage: {
+        input_tokens: 585903, cached_input_tokens: 524416,
+        cache_write_input_tokens: 0, output_tokens: 6606, reasoning_output_tokens: 648,
+        ...(reported !== undefined ? { total_cost_usd: reported } : {}),
+      } },
+      { [T2F5_DONE_SENTINEL]: 0 },
+    ]);
+    const meta = await readMeta(registryRoot, runId);
+    await writeFile(join(registryRoot, runId, "meta.json"), JSON.stringify({ ...meta, model }));
+
+    const result = await pollBackgroundRun(runId, { registryRoot });
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") throw new Error("expected completed Codex run");
+    expect(result.split).toEqual({ input: 585903, output: 6606, cacheRead: 524416 });
+    expect(result.usage.tokens).toBe(592509);
+    expect(result.usdSource).toBe(source);
+    if (expectedUsd === undefined) expect(result.usage.usd).toBeUndefined();
+    else {
+      expect(result.usage.usd).toBeGreaterThan(0);
+      expect(result.usage.usd).toBeCloseTo(expectedUsd, 8);
+    }
+  });
+
   it("polls a nonzero wrapper result as error with stderr", async () => {
     const registryRoot = await root();
     const started = await startBackgroundRun({

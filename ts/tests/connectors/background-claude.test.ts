@@ -132,7 +132,7 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     // Write a synthetic stream with text + sentinel
     const records = [
       { type: "item.completed", item: { type: "agent_message", text: "done text" } },
-      { type: "turn.completed", usage: { input_tokens: 3, output_tokens: 4 } },
+      { type: "turn.completed", usage: { input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 20, cache_creation_input_tokens: 10, total_cost_usd: 0.125 } },
       { [T2F5_DONE_SENTINEL]: 0 },
     ];
     await writeFile(streamPath, records.map((r) => JSON.stringify(r) + "\n").join(""), "utf8");
@@ -147,7 +147,9 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     expect(result.status).toBe("complete");
     if (result.status !== "complete") return;
     expect(result.text).toBe("done text");
-    expect(result.usage).toMatchObject({ tokens: 7 });
+    expect(result.usage).toEqual({ tokens: 7, usd: 0.125 });
+    expect(result.split).toEqual({ input: 3, output: 4, cacheRead: 20, cacheCreation: 10 });
+    expect(result.usdSource).toBe("reported");
   });
 
   it("poll after error returns error status", async () => {
