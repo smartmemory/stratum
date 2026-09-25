@@ -13,9 +13,9 @@ const roots: string[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const methods = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'execCommandApproval', 'applyPatchApproval', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', 'item/tool/requestUserInput', 'account/chatgptAuthTokens/refresh', 'attestation/generate', 'item/tool/call', 'unknown'];
 const options: DriverOptions = { runId: "abcdef012345", model: "gpt-6-luna/low", cwd: process.cwd(), prompt: "fixture", policy: { filesystemMode: "read-only", writableRoots: [], networkAccess: false, approvalPolicy: "never" } };
-async function run(scenario: Record<string, unknown> = {}, extra: Partial<DriverBoundaries> = {}) {
+async function run(scenario: Record<string, unknown> = {}, extra: Partial<DriverBoundaries> = {}, policy = options.policy) {
   const records: any[] = [], order: string[] = [], logs: string[] = [];
-  const result = await runAppServerDriver({ ...options, command: [process.execPath, fake, JSON.stringify(scenario)] }, {
+  const result = await runAppServerDriver({ ...options, policy, command: [process.execPath, fake, JSON.stringify(scenario)] }, {
     writer: { async write(line) { records.push(JSON.parse(line)); order.push(Object.hasOwn(records.at(-1), "__t2f5_done__") ? "sentinel" : "record"); }, async flush() { order.push("flush"); } },
     log: message => logs.push(message), timings: { eof: 20, term: 20 }, ...extra,
   });
@@ -36,6 +36,24 @@ const snapshot = (n: number) => ({ method: "thread/tokenUsage/updated", params: 
 function sentinel(records: any[], value: number | undefined) {
   expect(records.filter(r => Object.hasOwn(r, "__t2f5_done__"))).toEqual(value === undefined ? [] : [{ __t2f5_done__: value }]);
 }
+
+describe("thread sandbox policy", () => {
+  it.each(["read-only", "workspace-write", "danger-full-access"] as const)("strict fake accepts %s at thread/start", async filesystemMode => {
+    const r = await run({}, {}, { ...options.policy, filesystemMode, networkAccess: true, writableRoots: ["/root with spaces"] });
+    expect(r.result).toBe("completed"); sentinel(r.records, 0);
+  });
+  it("strict fake rejects turn sandbox overrides and temp-exclusion config", async () => {
+    const { validateThreadStart, validateTurnStart } = await import(fake);
+    const thread = { model: "gpt-6-luna", cwd: "/work", approvalPolicy: "never", sandbox: "workspace-write",
+      config: { "sandbox_workspace_write.network_access": false, "sandbox_workspace_write.writable_roots": [] } };
+    expect(() => validateThreadStart(thread)).not.toThrow();
+    for (const key of ["sandbox_workspace_write.exclude_tmpdir_env_var", "sandbox_workspace_write.exclude_slash_tmp"]) {
+      expect(() => validateThreadStart({ ...thread, config: { ...thread.config, [key]: false } })).toThrow();
+    }
+    expect(() => validateThreadStart({ ...thread, config: undefined })).toThrow();
+    expect(() => validateTurnStart({ threadId: "t", input: [], sandboxPolicy: { type: "workspaceWrite" } })).toThrow();
+  });
+});
 
 describe("AC05 unattended server requests", () => {
   it.each(methods)("strict fake accepts %s and continues", async method => {

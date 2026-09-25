@@ -6,6 +6,8 @@ import { registerHooks } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import type { ThreadStartParams } from "./codex-appserver-protocol/v2/ThreadStartParams.js";
+import type { TurnStartParams } from "./codex-appserver-protocol/v2/TurnStartParams.js";
 import type { SandboxPolicy } from "../config/types.js";
 import type { DriverPeerAttachment, SteerRequest, SteerResult } from "./codex-appserver-ipc.js";
 import type { CommandExecutionRequestApprovalResponse } from "./codex-appserver-protocol/v2/CommandExecutionRequestApprovalResponse.js";
@@ -307,12 +309,12 @@ export async function runAppServerDriver(options: DriverOptions, io: DriverBound
         if (claim) return;
         assertAppServerIdentity(identity?.userAgent, clientInfo); send({ method: "initialized" });
         step = "thread/start";
-        const thread = await request(step, policy.thread);
+        const thread = await request(step, policy.thread satisfies ThreadStartParams);
         if (claim) return;
         threadStarted(thread?.thread?.id);
         if (!threadId) throw new Error("missing thread id");
         step = "turn/start";
-        const turn = await request(step, { ...policy.turn, threadId, input: [{ type: "text", text: options.prompt, text_elements: [] }] });
+        const turn = await request(step, { ...policy.turn, threadId, input: [{ type: "text", text: options.prompt, text_elements: [] }] } satisfies TurnStartParams);
         if (!claim && !turnId && typeof turn?.turn?.id === "string") { turnId = turn.turn.id; publish(); }
       } catch (error) { claimTerminal("failed", `${step}: ${(error as Error).message}`); }
     })();

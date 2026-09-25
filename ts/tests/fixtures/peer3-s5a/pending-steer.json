@@ -1,0 +1,118 @@
+{
+  "signalMode": "controlled-shim",
+  "activeBeforeAction": true,
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "thread"
+    },
+    {
+      "type": "turn.started"
+    }
+  ],
+  "poll": {
+    "status": "error",
+    "reason": "child_died_without_sentinel",
+    "runId": "run"
+  },
+  "cancel": {
+    "status": "cancelled"
+  },
+  "pids": [
+    {
+      "role": "driver",
+      "pid": 100,
+      "pgid": 100,
+      "start": "identity",
+      "after": "dead"
+    },
+    {
+      "role": "app-server",
+      "pid": 101,
+      "pgid": 100,
+      "start": "identity",
+      "after": "dead"
+    },
+    {
+      "role": "shim",
+      "pid": 102,
+      "pgid": 100,
+      "start": "identity",
+      "after": "dead"
+    }
+  ],
+  "events": [
+    {
+      "event": "client",
+      "method": "turn/steer",
+      "time": 2
+    },
+    {
+      "event": "held-steer-response",
+      "time": 3
+    }
+  ],
+  "sentFrame": {
+    "type": "user",
+    "msg_id": "message"
+  },
+  "callbackFrames": [
+    {
+      "type": "auth",
+      "authenticated": true
+    },
+    {
+      "type": "control",
+      "action": "peer_message_status",
+      "orig_msg_id": "message",
+      "status": "dropped",
+      "status_detail": "unknown"
+    }
+  ],
+  "ipc": [
+    {
+      "time": 1000,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "turnId": "turn",
+        "threadId": "thread",
+        "runId": "run"
+      }
+    },
+    {
+      "time": 2000,
+      "direction": "sidecar-to-driver",
+      "message": {
+        "type": "steer",
+        "reqId": "request",
+        "msgId": "message",
+        "expectedTurnId": "turn",
+        "runId": "run"
+      }
+    },
+    {
+      "time": 5000,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "steer-result",
+        "reqId": "request",
+        "outcome": "dropped",
+        "detail": "unknown"
+      }
+    }
+  ],
+  "action": {
+    "kind": "cancel",
+    "time": 4000,
+    "records": [
+      {
+        "type": "thread.started",
+        "thread_id": "thread"
+      },
+      {
+        "type": "turn.started"
+      }
+    ]
+  }
+}
