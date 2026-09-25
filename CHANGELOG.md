@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- **Claude cost: unknown is no longer recorded as $0.** `ClaudeConnector` used `finiteNonnegative()`, which turned an absent or invalid `total_cost_usd` into 0, labelled it `usd_source: "reported"` in step telemetry, then dropped both zero and absent from the result — so a free call and an unreported one were indistinguishable (9 real Aug-30 receipts are unrecoverable for this reason; self-tuning collection report). Now: absent/invalid → no `usd`, no `usdSource`; explicit 0 → reported 0 preserved into the receipt; positive unchanged. Budget policy is unchanged and now documented on `BudgetLedger`: an unknown amount makes no debit, so a USD cap cannot bound unreported cost.
+
+- **Distill finds a repo's sessions wherever Claude Code filed them.** The default source was the single `~/.claude/projects/<encoded repo root>` directory, so stratum found 0 transcripts while its sessions live under the parent `forge` project (103) and `stratum/ts` (18). Discovery now scans the root's own, sub-directory and ancestor project dirs, keeps only sessions whose recorded `cwd` is inside the repo, dedupes by session id (canonical dir preferred), and reports the contributing dirs in `project_dirs`. An explicit `projectDir` still overrides.
+
 - Read Codex `cache_write_input_tokens` as cache creation usage in background polls.
 - Fix background Codex polls to report cached input tokens and estimated cost when no cost is reported, preserving raw token counts and Claude-worker reported costs.
 

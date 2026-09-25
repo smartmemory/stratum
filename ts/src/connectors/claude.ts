@@ -68,7 +68,7 @@ export class ClaudeConnector {
     let cacheRead = 0;
     let cacheCreation = 0;
     let outputTokens = 0;
-    let costUsd = 0;
+    let costUsd: number | undefined;
     const terminate = (): void => {
       for (const child of children) void child.terminate();
     };
@@ -175,22 +175,21 @@ export class ClaudeConnector {
         if (raw.type !== "result") continue;
         durationMs = finiteNonnegative(raw.duration_ms);
         if (typeof raw.result === "string") finalText = raw.result;
-        costUsd = finiteNonnegative(raw.total_cost_usd);
+        costUsd = typeof raw.total_cost_usd === "number" && Number.isFinite(raw.total_cost_usd) && raw.total_cost_usd >= 0
+          ? raw.total_cost_usd : undefined;
         if (isRecord(raw.usage)) {
           inputTokens = finiteNonnegative(raw.usage.input_tokens);
           outputTokens = finiteNonnegative(raw.usage.output_tokens);
           cacheRead = finiteNonnegative(raw.usage.cache_read_input_tokens);
           cacheCreation = finiteNonnegative(raw.usage.cache_creation_input_tokens);
           // `usd_source` is stated, never inferred by the consumer from whether cost_usd
-          // is present. Claude DOES report a real cost, so this is "reported" -- and a
-          // 0 total means a genuinely free/cached-only turn, which is still a report.
+          // is present. Only a validated provider cost is reported, including zero.
           await this.emit({
             kind: "step_usage",
             metadata: {
               input_tokens: inputTokens,
               output_tokens: outputTokens,
-              cost_usd: costUsd,
-              usd_source: "reported",
+              ...(costUsd !== undefined ? { cost_usd: costUsd, usd_source: "reported" } : {}),
               cache_creation_input_tokens: cacheCreation,
               cache_read_input_tokens: cacheRead,
               model: requestedModel,
@@ -206,9 +205,8 @@ export class ClaudeConnector {
       return {
         text: finalText ?? assistantText,
         // total_cost_usd is the SDK's own price for the call — provider-reported.
-        // A zero/absent price is omitted entirely: receipts require provenance
-        // whenever `usd` is present, and there is nothing to attribute.
-        usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens, ms: durationMs },
+        // Preserve explicit zero with provenance; absent/invalid cost stays unknown.
+        usage: { ...(costUsd !== undefined ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens, ms: durationMs },
         // The Budget-shaped usage above necessarily drops the split; carry it
         // beside so receipts and downstream accounting keep input vs output
         // (STRAT-USAGE-SPLIT — before this, input_tokens read 0 everywhere).
@@ -218,16 +216,16 @@ export class ClaudeConnector {
           ...(cacheRead > 0 ? { cacheRead } : {}),
           ...(cacheCreation > 0 ? { cacheCreation } : {}),
         },
-        ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
+        ...(costUsd !== undefined ? { usdSource: "reported" as const } : {}),
         telemetry: { durationMs, model: resolvedModel },
       };
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
       Object.assign(failure, {
         telemetry: { durationMs, model: resolvedModel },
-        usage: { tokens: inputTokens + outputTokens, ms: durationMs, ...(costUsd > 0 ? { usd: costUsd } : {}) },
+        usage: { tokens: inputTokens + outputTokens, ms: durationMs, ...(costUsd !== undefined ? { usd: costUsd } : {}) },
         split: { input: inputTokens, output: outputTokens, cacheRead, cacheCreation },
-        ...(costUsd > 0 ? { usdSource: "reported" } : {}),
+        ...(costUsd !== undefined ? { usdSource: "reported" } : {}),
       });
       // Finish stderr collection and child teardown before returning a diagnostic.
       if (controller.signal.aborted) { terminate(); await Promise.all(children.map(child => child.finish())); }

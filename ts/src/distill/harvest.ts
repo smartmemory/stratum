@@ -35,6 +35,7 @@ export async function loadSessions(projectDir: string, options: { windowDays?: n
       bytes = await readFile(path);
     } catch { diagnostics.skippedFiles++; continue; }
     const observations: ToolObservation[] = [];
+    const observedCwds = new Set<string>();
     let start = 0;
     let lineNo = 0;
     for (let end = 0; end <= bytes.length; end++) {
@@ -45,7 +46,9 @@ export async function loadSessions(projectDir: string, options: { windowDays?: n
       let row: unknown;
       try { row = JSON.parse(raw.toString("utf8")); } catch { diagnostics.droppedLines++; continue; }
       if (!isRecord(row)) { diagnostics.droppedLines++; continue; }
-      if (row.isSidechain || row.type !== "assistant") continue;
+      if (row.isSidechain) continue;
+      if (typeof row.cwd === "string" && row.cwd) observedCwds.add(row.cwd);
+      if (row.type !== "assistant") continue;
       if (!isRecord(row.message) || !Array.isArray(row.message.content)) { diagnostics.droppedLines++; continue; }
       for (const [blockIndex, block] of row.message.content.entries()) {
         if (!isRecord(block) || block.type !== "tool_use") continue;
@@ -56,7 +59,7 @@ export async function loadSessions(projectDir: string, options: { windowDays?: n
       }
     }
     sessions.push({ projectDir, sessionId: name.slice(0, -6), transcriptFile: name,
-      observedCwds: [...new Set(observations.flatMap(o => o.cwd === null ? [] : [o.cwd]))].sort(compare), observations });
+      observedCwds: [...observedCwds].sort(compare), observations });
   }
   diagnostics.sessions = sessions.length;
   return { sessions, diagnostics };

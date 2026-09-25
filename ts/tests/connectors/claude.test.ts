@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeConnector, type QueryFunction } from "../../src/connectors/claude.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { StratumEngine } from "../../src/engine/engine.js";
+import { StateStore } from "../../src/engine/state.js";
+import { spineSpent } from "../../src/engine/receipts.js";
+import { createEvaluator } from "../../src/eval/expr.js";
 
 async function* messages() {
   yield { type: "system", subtype: "init", model: "claude-sonnet-4-6-20260701" };
@@ -116,13 +123,13 @@ describe("ClaudeConnector", () => {
     expect(result.usage).not.toHaveProperty("dispatches");
   });
 
-  it("omits usd and usdSource entirely for a zero-cost result (receipts require provenance whenever usd is present)", async () => {
+  it("preserves a reported zero-cost result", async () => {
     const query: QueryFunction = async function* () {
       yield { type: "result", subtype: "success", result: "free", duration_ms: 3, total_cost_usd: 0, usage: { input_tokens: 2, output_tokens: 1 } };
     };
     const result = await new ClaudeConnector({ query }).run("test");
-    expect(result.usage).toEqual({ tokens: 3, ms: 3 });
-    expect(result).not.toHaveProperty("usdSource");
+    expect(result.usage).toEqual({ tokens: 3, ms: 3, usd: 0 });
+    expect(result.usdSource).toBe("reported");
   });
 
   it("fails on an SDK terminal error result", async () => {
@@ -131,4 +138,77 @@ describe("ClaudeConnector", () => {
     };
     await expect(new ClaudeConnector({ query }).run("test")).rejects.toThrow("auth failed");
   });
+});
+
+// Replay SDK result frames at the transport seam; the connector and both engine
+// settlement paths are production code, and assertions reload receipts from disk.
+describe.each(["stepDone", "usageReport"] as const)("Claude %s receipts", (settlement) => {
+  it.each([
+    ["absent", undefined, undefined], ["zero", 0, 0], ["positive", 0.01, 0.01],
+    ["negative", -1, undefined], ["null", null, undefined], ["string", "0", undefined],
+    ["NaN", NaN, undefined], ["infinite", Infinity, undefined],
+  ])("preserves %s provider cost", async (_label, cost, expected) => {
+    const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
+    const query: QueryFunction = async function* () {
+      for await (const frame of messages()) {
+        if (frame.type !== "result") { yield frame; continue; }
+        const { total_cost_usd: _cost, ...rest } = frame;
+        yield { ...rest, ...(cost !== undefined ? { total_cost_usd: cost } : {}) };
+      }
+    };
+    const result = await new ClaudeConnector({ query, onEvent: event => { events.push(event); } }).run("test");
+    const metadata = events.find(event => event.kind === "step_usage")!.metadata;
+    const expectedUsd = expected === undefined ? {} : { usd: expected };
+    expect(result.usage).toEqual({ tokens: 7, ms: 42, ...expectedUsd });
+    if (expected === undefined) {
+      expect(result).not.toHaveProperty("usdSource");
+      expect(metadata).not.toHaveProperty("cost_usd");
+      expect(metadata).not.toHaveProperty("usd_source");
+    } else {
+      expect(result.usdSource).toBe("reported");
+      expect(metadata).toMatchObject({ cost_usd: expected, usd_source: "reported" });
+    }
+    const root = await mkdtemp(join(tmpdir(), "claude-cost-receipts-"));
+    try {
+      const engine = new StratumEngine({ stateRoot: root, evaluator: createEvaluator() });
+      const planned = await engine.plan({
+        version: 1, contracts: { Result: { value: "string" } },
+        flows: { entry: "main", main: {
+          input: {}, output: { from: "${work.output}", contract: "Result" },
+          budget: { usd: 0.005, tokens: 100 },
+          steps: [{ id: "work", do: "work", out: "Result" }],
+        } },
+      }, {});
+      if (planned.status !== "ready") throw new Error("expected ready step");
+      const dispatchId = planned.ready[0]!.dispatchToken;
+      if (settlement === "usageReport") {
+        await engine.usageReport(planned.runId, { ...result, dispatchId, stepId: "work", source: "claude" });
+      } else {
+        await engine.stepDone(planned.runId, "work", { ...result, output: { value: result.text } }, dispatchId);
+      }
+      const run = await new StateStore(root).load(planned.runId);
+      expect(run.receipts).toHaveLength(1);
+      const receipt = run.receipts![0]!;
+      expect(receipt.amount).toEqual({ tokens: 7, ms: 42, ...expectedUsd });
+      if (expected === undefined) expect(receipt).not.toHaveProperty("usdSource");
+      else expect(receipt.usdSource).toBe("reported");
+      expect(run.flowSpent).toEqual({ dispatches: 1, tokens: 7, ms: 42, ...(expected ? { usd: expected } : {}) });
+      expect(spineSpent(run)).toEqual({ tokens: 7, ms: 42, ...(expected ? { usd: expected } : {}) });
+      // Unknown cost retains the existing no-debit policy, not a known free price.
+      expect(run.status === "budget_exhausted").toBe(expected === 0.01);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+it.each([undefined, 0, 0.01])("preserves Claude error-frame cost %s", async (cost) => {
+  const query: QueryFunction = async function* () {
+    yield { type: "result", subtype: "error_during_execution", errors: ["failed"],
+      ...(cost !== undefined ? { total_cost_usd: cost } : {}) };
+  };
+  const failure = await new ClaudeConnector({ query }).run("test").catch(error => error);
+  expect(failure.usage).toEqual({ tokens: 0, ms: 0, ...(cost !== undefined ? { usd: cost } : {}) });
+  if (cost === undefined) expect(failure).not.toHaveProperty("usdSource");
+  else expect(failure.usdSource).toBe("reported");
 });
