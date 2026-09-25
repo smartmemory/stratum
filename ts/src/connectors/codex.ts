@@ -10,6 +10,8 @@ import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js"
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import { dispatchableModels, RETIRED_MODELS, usdFromTokens } from "../judge/pricing.js";
 
+import { encodeCodexPolicy } from "./codex-policy.js";
+
 import { linkAbort, cancellationGraceMs, processTermination, requireProcessGroups } from "./cancellation.js";
 
 export type SpawnProcess = (
@@ -170,27 +172,7 @@ export function codexExecArgs(
     approvalPolicy: "never",
   },
 ): string[] {
-  const { model, effort } = modelIdentity(modelId);
-  const args = [
-    "exec",
-    "--json",
-    "--skip-git-repo-check",
-    "--sandbox",
-    sandboxMode,
-    "-c",
-    `sandbox_workspace_write.network_access=${sandbox.networkAccess}`,
-    "-c",
-    `sandbox_workspace_write.writable_roots=${JSON.stringify([...sandbox.writableRoots])}`,
-    "-c",
-    `approval_policy=${JSON.stringify(sandbox.approvalPolicy)}`,
-    "-m",
-    model,
-    "-C",
-    cwd,
-  ];
-  if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
-  args.push("-");
-  return args;
+  return encodeCodexPolicy(modelId, cwd, { ...sandbox, filesystemMode: sandboxMode }, "exec");
 }
 
 export function codexCommand(
