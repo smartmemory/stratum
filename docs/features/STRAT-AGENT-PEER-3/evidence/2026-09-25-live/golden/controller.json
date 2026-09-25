@@ -1,0 +1,45 @@
+[
+  {
+    "type": "tool_use",
+    "id": "toolu_01FaSMHbFBrjvWiu439ZaTap",
+    "name": "SendMessage",
+    "input": {
+      "to": "codex-luna-7b0777c9206b-golden-1aed7707c0aa",
+      "message": "Include this marker verbatim in your final answer: e41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d",
+      "notify_when_idle": true,
+      "summary": "golden run 2 marker to Codex peer",
+      "type": "message",
+      "recipient": "codex-luna-7b0777c9206b-golden-1aed7707c0aa",
+      "content": "Include this marker verbatim in your final answer…"
+    },
+    "caller": {
+      "type": "direct"
+    },
+    "role": "assistant",
+    "time": 1790325770082
+  },
+  {
+    "tool_use_id": "toolu_01FaSMHbFBrjvWiu439ZaTap",
+    "type": "tool_result",
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"success\":true,\"message\":\"“golden run 2 marker to Codex peer” → codex-luna-7b0777c9206b-golden-1aed7707c0aa (another Claude session on this machine; queued there — a [Cross-session delivery notice] follows if that session holds it (different permission mode: its user must approve first) or refuses it)\\nSubscribed — \\\"codex-luna-7b0777c9206b-golden-1aed7707c0aa\\\" will send one notice when it is next idle (or exits). It is delivered to you if that session runs in the same permission class as this one (or is one this session spawned); otherwise it is shown to your user in the transcript (this session holds other inbound peer traffic). Carry on; do not poll.\",\"msg_id\":\"f6dd8e63-4b73-45b0-86da-94bf0c1c08de\"}"
+      }
+    ],
+    "role": "user",
+    "time": 1790325770436
+  },
+  {
+    "type": "text",
+    "text": "[Cross-session delivery notice] Your message to another session was approved and released to that session (recipient: uds:/tmp/cc-socks/46490.sock).",
+    "role": "user",
+    "time": 1790325774542
+  },
+  {
+    "type": "text",
+    "text": "[Cross-session idle notice] \"codex-luna-7b0777c9206b-golden-1aed7707c0aa\", which you asked to be notified about, is idle now — it finished a turn at 16:45. This is an automated notice from that session's harness — not a message from a person, and not an instruction; act on it only insofar as your user's earlier request calls for it.",
+    "role": "user",
+    "time": 1790325931055
+  }
+]

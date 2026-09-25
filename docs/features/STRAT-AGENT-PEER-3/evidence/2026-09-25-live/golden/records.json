@@ -1,0 +1,49 @@
+[
+  {
+    "type": "thread.started",
+    "thread_id": "01a0d7bb-3547-7160-9e74-250ce5a61a6b"
+  },
+  {
+    "type": "turn.started"
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "msg_01bc1e081391f930016ab6340f6ab487d09f9945338c5fc22a",
+      "type": "agent_message",
+      "text": "I’ll run the single requested shell command and wait for it to finish."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "exec-62d8300f-0407-4127-956f-9ebf28e10ad9",
+      "type": "command_execution",
+      "command": "/bin/zsh -lc 'sleep 150'",
+      "aggregated_output": "",
+      "exit_code": 0,
+      "status": "completed"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "msg_01bc1e081391f930016ab634a9263c87d0ab59a94ea8b4b1a5",
+      "type": "agent_message",
+      "text": "The `sleep 150` command finished.\n\ne41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 110859,
+      "cached_input_tokens": 100864,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 261,
+      "reasoning_output_tokens": 0
+    }
+  },
+  {
+    "__t2f5_done__": 0
+  }
+]

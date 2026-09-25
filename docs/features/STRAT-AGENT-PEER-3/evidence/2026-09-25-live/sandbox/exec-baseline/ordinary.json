@@ -1,0 +1,30 @@
+{
+  "command": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "workspace-write",
+    "-c",
+    "sandbox_workspace_write.network_access=false",
+    "-c",
+    "sandbox_workspace_write.writable_roots=[\"/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/extra-root\"]",
+    "-c",
+    "approval_policy=\"never\"",
+    "-m",
+    "gpt-6-luna",
+    "-C",
+    "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace",
+    "-c",
+    "model_reasoning_effort=\"low\"",
+    "-"
+  ],
+  "pid": 30250,
+  "code": 0,
+  "signal": null,
+  "reason": null,
+  "elapsedMs": 20067,
+  "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"01a0d7ad-f282-77a0-827c-5f5781961c98\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"Under-development features enabled: chronicle. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /private/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/codex-home/config.toml.\"}}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"agent_message\",\"text\":\"I’ll run the exact command once and report its stdout verbatim.\"}}\n{\"type\":\"item.started\",\"item\":{\"id\":\"item_2\",\"type\":\"command_execution\",\"command\":\"/bin/zsh -lc \\\"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-ordinary.cjs'\\\"\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_2\",\"type\":\"command_execution\",\"command\":\"/bin/zsh -lc \\\"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-ordinary.cjs'\\\"\",\"aggregated_output\":\"PEER3_TOOL_RESULTS={\\\"workspace\\\":{\\\"writable\\\":true},\\\"writableRoot\\\":{\\\"writable\\\":true},\\\"TMPDIR\\\":{\\\"writable\\\":true},\\\"slashTmp\\\":{\\\"writable\\\":true}}\\n\",\"exit_code\":0,\"status\":\"completed\"}}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_3\",\"type\":\"agent_message\",\"text\":\"PEER3_TOOL_RESULTS={\\\"workspace\\\":{\\\"writable\\\":true},\\\"writableRoot\\\":{\\\"writable\\\":true},\\\"TMPDIR\\\":{\\\"writable\\\":true},\\\"slashTmp\\\":{\\\"writable\\\":true}}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":37684,\"cached_input_tokens\":29184,\"cache_write_input_tokens\":0,\"output_tokens\":165,\"reasoning_output_tokens\":0}}\n",
+  "stderr": "2026-09-25T08:28:16.440614Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:16.694402Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:17.697508Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:18.282197Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:18.537154Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:19.540113Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:21.989346Z ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server smartmemory-2: OAuth refresh token was rejected: Server returned error response: invalid_grant: refresh token does not exist\n2026-09-25T08:28:26.348741Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:26.605119Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:27.609665Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest(\"http/request failed: error sending request for url (http://127.0.0.1:64462/stream)\")))\n2026-09-25T08:28:31.824563Z ERROR codex_rmcp_client::oauth::refresh_transaction: error=failed to refresh OAuth tokens for server smartmemory-2: OAuth refresh token was rejected: Server returned error response: invalid_grant: refresh token does not exist\n"
+}

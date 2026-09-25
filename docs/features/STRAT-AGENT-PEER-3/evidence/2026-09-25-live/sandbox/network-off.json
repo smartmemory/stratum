@@ -1,0 +1,120 @@
+{
+  "nonce": "PEER3_network_off_1790325009300",
+  "osWritableOutside": true,
+  "poll": {
+    "status": "complete",
+    "runId": "43dd746ab6b6",
+    "peer": {
+      "name": "codex-luna-43dd74",
+      "registered": false
+    },
+    "sandboxAudit": {
+      "policy": {
+        "filesystemMode": "workspace-write",
+        "networkAccess": false,
+        "writableRoots": [
+          "/tmp/peer3-s5b-162753/sandbox/.private-zYfET1/writable"
+        ],
+        "approvalPolicy": "never"
+      },
+      "provenance": {
+        "filesystemMode": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "networkAccess": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "writableRoots": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "approvalPolicy": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        }
+      }
+    },
+    "text": "done",
+    "usage": {
+      "usd": 0.00116054,
+      "tokens": 37483
+    },
+    "split": {
+      "input": 37386,
+      "output": 97,
+      "cacheRead": 29184
+    },
+    "usdSource": "estimated",
+    "exitCode": 0,
+    "telemetry": {
+      "durationMs": 15451,
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7af-b487-7e31-b8c8-adc4b4403940"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "exec-94f355da-8739-4a16-a0f9-be307f653d29",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc \"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/tmp/peer3-s5b-162753/sandbox/.private-zYfET1/workspace/tool.cjs'\"",
+        "aggregated_output": "PEER3_network_off_1790325009300={\"fetched\":false,\"error\":\"TypeError: fetch failed\",\"cause\":\"ENOTFOUND\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_073dd12f639fc0ce016ab63120165c87d092c35ed9bdf03f13",
+        "type": "agent_message",
+        "text": "done"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 37386,
+        "cached_input_tokens": 29184,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 97,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "observed": {
+    "workspace": false,
+    "writableRoot": false,
+    "outside": false,
+    "TMPDIR": false,
+    "slashTmp": false
+  },
+  "expected": {
+    "workspace": true,
+    "writableRoot": true,
+    "outside": false,
+    "TMPDIR": true,
+    "slashTmp": true
+  },
+  "policy": {
+    "filesystemMode": "workspace-write",
+    "networkAccess": false,
+    "writableRoots": [
+      "/tmp/peer3-s5b-162753/sandbox/.private-zYfET1/writable"
+    ],
+    "approvalPolicy": "never"
+  }
+}

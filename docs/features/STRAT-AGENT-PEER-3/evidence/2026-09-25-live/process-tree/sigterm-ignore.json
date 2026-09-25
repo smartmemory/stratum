@@ -1,0 +1,238 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 35407,
+      "role": "driver",
+      "start": "1790325097.774085",
+      "pgid": 35407,
+      "after": "dead"
+    },
+    {
+      "pid": 35409,
+      "role": "shim",
+      "start": "1790325097.805746",
+      "pgid": 35407,
+      "after": "dead"
+    },
+    {
+      "pid": 35411,
+      "role": "app-server",
+      "start": "1790325097.830094",
+      "pgid": 35407,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "controlled-shim",
+  "artifacts": [
+    "sigterm-ignore.before.ps",
+    "sigterm-ignore.after.ps",
+    "sigterm-ignore.err",
+    "sigterm-ignore.peer.err"
+  ],
+  "poll": {
+    "status": "complete",
+    "runId": "3554c0f8b3a9",
+    "peer": {
+      "name": "codex-luna-3554c0",
+      "registered": false
+    },
+    "text": "peer3 complete.",
+    "usage": {
+      "usd": 0.0008226800000000001,
+      "tokens": 18102
+    },
+    "split": {
+      "input": 18094,
+      "output": 8,
+      "cacheRead": 11008
+    },
+    "usdSource": "estimated",
+    "exitCode": 0,
+    "telemetry": {
+      "durationMs": 23938,
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b1-0e12-7422-8bdf-b1f27b1dafca"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_0dc6dbc96bf94376016ab6317b8a4487d09b1964c9bd80b828",
+        "type": "agent_message",
+        "text": "peer3 complete."
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 18094,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 8,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325097.829952,
+      "pid": 35409
+    },
+    {
+      "event": "real-server",
+      "time": 1790325097.831748,
+      "pid": 35411
+    },
+    {
+      "event": "client",
+      "time": 1790325097.831983,
+      "method": "initialize"
+    },
+    {
+      "event": "server",
+      "time": 1790325097.879804,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325097.879895,
+      "method": "remoteControl/status/changed"
+    },
+    {
+      "event": "client",
+      "time": 1790325097.880364,
+      "method": "initialized"
+    },
+    {
+      "event": "client",
+      "time": 1790325097.880411,
+      "method": "thread/start"
+    },
+    {
+      "event": "server",
+      "time": 1790325100.067807,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325100.0679538,
+      "method": "thread/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325100.06801,
+      "method": "mcpServer/startupStatus/updated"
+    },
+    {
+      "event": "client",
+      "time": 1790325100.0682728,
+      "method": "turn/start"
+    },
+    {
+      "event": "server",
+      "time": 1790325100.070343,
+      "method": null
+    },
+    {
+      "event": "server",
+      "time": 1790325100.0743942,
+      "method": "thread/status/changed"
+    },
+    {
+      "event": "server",
+      "time": 1790325100.07445,
+      "method": "turn/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325103.743567,
+      "method": "mcpServer/startupStatus/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325107.431919,
+      "method": "item/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325107.432737,
+      "method": "item/completed"
+    },
+    {
+      "event": "server",
+      "time": 1790325114.4374511,
+      "method": "mcpServer/startupStatus/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325115.7611709,
+      "method": "item/started"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.092393,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.092541,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.092862,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.09291,
+      "method": "item/agentMessage/delta"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.658632,
+      "method": "item/completed"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.688891,
+      "method": "thread/tokenUsage/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.689006,
+      "method": "account/rateLimits/updated"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.690227,
+      "method": "thread/status/changed"
+    },
+    {
+      "event": "server",
+      "time": 1790325116.690318,
+      "method": "turn/completed"
+    },
+    {
+      "event": "driver-eof",
+      "time": 1790325116.7054772
+    },
+    {
+      "event": "ignored-sigterm",
+      "time": 1790325119.707891
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "status": "complete",
+  "runId": "7b0777c9206b",
+  "peer": {
+    "name": "codex-luna-7b0777c9206b-golden-1aed7707c0aa",
+    "registered": true,
+    "pid": 46490,
+    "sock": "/tmp/cc-socks/46490.sock"
+  },
+  "text": "I’ll run the single requested shell command and wait for it to finish.The `sleep 150` command finished.\n\ne41c41f199c44cf259ff8dc6dc3d81b2d01bb5aa5c12115d",
+  "usage": {
+    "usd": 0.00213864,
+    "tokens": 111120
+  },
+  "split": {
+    "input": 110859,
+    "output": 261,
+    "cacheRead": 100864
+  },
+  "usdSource": "estimated",
+  "exitCode": 0,
+  "telemetry": {
+    "durationMs": 167176,
+    "model": "gpt-6-luna",
+    "effort": "low"
+  }
+}

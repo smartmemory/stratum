@@ -1,0 +1,6 @@
+{
+  "mode": "golden",
+  "outcome": "failed",
+  "error": "Golden delivered callback, not ack",
+  "elapsedMs": 126
+}

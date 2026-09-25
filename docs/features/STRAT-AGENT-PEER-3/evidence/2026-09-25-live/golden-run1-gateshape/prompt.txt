@@ -1,0 +1,10 @@
+[sandbox constraints]
+You are running inside a restricted OS sandbox (macOS seatbelt / Linux landlock).
+GUI applications cannot start here: full Chrome/Chromium, Electron, or anything
+that opens a window aborts at launch (SIGABRT). That abort is the sandbox, not
+a bug in the code under test. For browser work use chrome-headless-shell (set
+via PUPPETEER_EXECUTABLE_PATH when available) or another headless-only tool.
+If a GUI launch aborts, do not retry it.
+[/sandbox constraints]
+
+Run exactly one bounded shell tool command: sleep 150. Wait for that command to finish. Then give a final answer including verbatim any marker received in a peer message during this turn. Do not start another command or modify files.

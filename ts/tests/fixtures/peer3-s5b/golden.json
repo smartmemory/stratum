@@ -1,0 +1,275 @@
+{
+  "state": {
+    "marker": "unpredictable-marker-0123456789abcdef",
+    "runId": "run",
+    "peerName": "codex-golden-label",
+    "label": "label",
+    "peer": {
+      "name": "codex-golden-label",
+      "sock": "/tmp/test/100.sock"
+    },
+    "startedAt": 1000,
+    "lingerMs": 120000,
+    "pids": [
+      {
+        "pid": 101,
+        "start": "start-driver",
+        "role": "driver"
+      },
+      {
+        "pid": 102,
+        "start": "start-server",
+        "role": "app-server"
+      }
+    ]
+  },
+  "prompt": "Run sleep 150 then echo peer marker.",
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "thread"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "command_execution",
+        "command": "sleep 150",
+        "exit_code": 0
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "agent_message",
+        "text": "Got: "
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "type": "agent_message",
+        "text": "unpredictable-marker-0123456789abcdef"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 20,
+        "output_tokens": 10
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "poll": {
+    "status": "complete",
+    "runId": "run",
+    "exitCode": 0,
+    "text": "Got: unpredictable-marker-0123456789abcdef",
+    "split": {
+      "input": 20,
+      "output": 10
+    },
+    "usage": {
+      "tokens": 30,
+      "usd": 0.01
+    },
+    "usdSource": "estimated"
+  },
+  "rollout": [
+    {
+      "type": "session_meta",
+      "payload": {
+        "id": "thread"
+      }
+    },
+    {
+      "type": "event_msg",
+      "payload": {
+        "type": "task_started"
+      }
+    },
+    {
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Run sleep 150 then echo peer marker."
+          }
+        ]
+      }
+    },
+    {
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "unpredictable-marker-0123456789abcdef"
+          }
+        ]
+      }
+    }
+  ],
+  "ipc": [
+    {
+      "time": 1100,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "active-turn-state",
+        "runId": "run",
+        "threadId": "thread",
+        "turnId": "turn"
+      }
+    },
+    {
+      "time": 1200,
+      "direction": "sidecar-to-driver",
+      "message": {
+        "type": "steer",
+        "runId": "run",
+        "reqId": "req",
+        "msgId": "msg",
+        "expectedTurnId": "turn",
+        "text": "unpredictable-marker-0123456789abcdef",
+        "senderFrom": "uds:/tmp/controller.sock"
+      }
+    },
+    {
+      "time": 1250,
+      "direction": "driver-to-sidecar",
+      "message": {
+        "type": "steer-result",
+        "reqId": "req",
+        "outcome": "delivered"
+      }
+    }
+  ],
+  "controller": [
+    {
+      "type": "tool_use",
+      "name": "SendMessage",
+      "id": "tool",
+      "input": {
+        "to": "codex-golden-label",
+        "message": "unpredictable-marker-0123456789abcdef",
+        "notify_when_idle": true
+      },
+      "role": "assistant",
+      "time": 1120
+    },
+    {
+      "type": "tool_result",
+      "tool_use_id": "tool",
+      "content": "{\"success\": true, \"message\": \"sent\", \"msg_id\": \"msg\"}",
+      "role": "user",
+      "time": 1320
+    },
+    {
+      "type": "text",
+      "text": "[Cross-session delivery notice] Your message to another session was approved and released to that session (recipient: uds:/tmp/test/100.sock).",
+      "role": "user",
+      "time": 1400
+    },
+    {
+      "type": "text",
+      "text": "[Cross-session idle notice] \"codex-golden-label\", which you asked to be notified about, is idle now.",
+      "role": "user",
+      "time": 2050
+    }
+  ],
+  "wire": [
+    {
+      "time": 1150,
+      "direction": "in",
+      "frame": {
+        "type": "user",
+        "msg_id": "msg",
+        "from": "uds:/tmp/controller.sock",
+        "message": {
+          "content": "<cross-session-message from=\"uds:/tmp/controller.sock\" from-mode=\"bypass\">\nunpredictable-marker-0123456789abcdef\n</cross-session-message>"
+        }
+      }
+    },
+    {
+      "time": 1300,
+      "direction": "out",
+      "frame": {
+        "type": "control",
+        "action": "peer_message_status",
+        "orig_msg_id": "msg",
+        "status": "delivered",
+        "from": "uds:/tmp/test/100.sock"
+      }
+    },
+    {
+      "time": 1350,
+      "direction": "in",
+      "frame": {
+        "type": "control",
+        "action": "notify_when_idle",
+        "msg_id": "subscription",
+        "from": "uds:/tmp/controller.sock",
+        "from_mode": "bypass"
+      }
+    },
+    {
+      "time": 2000,
+      "direction": "out",
+      "frame": {
+        "type": "control",
+        "action": "peer_idle_notice",
+        "orig_msg_id": "subscription",
+        "state": "idle",
+        "finished_at": 1900,
+        "from": "uds:/tmp/test/100.sock",
+        "from_mode": "bypass"
+      }
+    }
+  ],
+  "second": {
+    "sentAt": 2100,
+    "sentFrame": {
+      "msg_id": "second",
+      "from_mode": "bypass"
+    },
+    "callbackFrames": [
+      {
+        "type": "auth",
+        "authenticated": true
+      },
+      {
+        "type": "control",
+        "action": "peer_message_status",
+        "orig_msg_id": "second",
+        "status": "expired",
+        "status_detail": "refused",
+        "from": "uds:/tmp/test/100.sock",
+        "from_mode": "bypass"
+      }
+    ]
+  },
+  "before": "PID PPID PGID STAT COMMAND\n101 1 101 S driver\n102 101 101 S codex app-server\n",
+  "after": "PID PPID PGID STAT COMMAND\n",
+  "identitiesAfter": [
+    {
+      "pid": 101,
+      "start": "start-driver",
+      "state": "dead"
+    },
+    {
+      "pid": 102,
+      "start": "start-server",
+      "state": "dead"
+    }
+  ]
+}

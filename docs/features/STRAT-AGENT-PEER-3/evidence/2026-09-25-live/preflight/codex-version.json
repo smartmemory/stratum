@@ -1,0 +1,14 @@
+{
+  "command": "codex",
+  "args": [
+    "--version"
+  ],
+  "pid": 29468,
+  "code": 0,
+  "signal": null,
+  "reason": null,
+  "elapsedMs": 9,
+  "stdout": "codex-cli 0.155.1\n",
+  "stderr": "",
+  "pinned": "0.155.1"
+}

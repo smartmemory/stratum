@@ -1,0 +1,29 @@
+{
+  "sentAt": 1790325937156,
+  "callbackFrames": [
+    {
+      "type": "auth",
+      "authenticated": true
+    },
+    {
+      "type": "control",
+      "action": "peer_message_status",
+      "orig_msg_id": "s5b-finished-cc7d28908c3a170a",
+      "from": "uds:/tmp/cc-socks/46490.sock",
+      "from_mode": "bypass",
+      "status": "expired",
+      "status_detail": "refused"
+    }
+  ],
+  "senderReplies": [],
+  "sentFrame": {
+    "type": "user",
+    "msg_id": "s5b-finished-cc7d28908c3a170a",
+    "from": "uds:/tmp/cc-socks/47871.sock",
+    "from_mode": "bypass",
+    "message": {
+      "role": "user",
+      "content": "<cross-session-message from-name=\"probe\">Keep waiting.</cross-session-message>"
+    }
+  }
+}

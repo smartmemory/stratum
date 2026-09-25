@@ -1,0 +1,14 @@
+{
+  "command": "/Users/ruze/.nvm/versions/node/v22.22.3/bin/node",
+  "args": [
+    "--version"
+  ],
+  "pid": 29480,
+  "code": 0,
+  "signal": null,
+  "reason": null,
+  "elapsedMs": 12,
+  "stdout": "v22.22.3\n",
+  "stderr": "",
+  "pinned": "0.155.1"
+}

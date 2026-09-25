@@ -1,0 +1,35 @@
+{
+  "status": "bg_started",
+  "runId": "1a10931fc7c7",
+  "pid": 38976,
+  "streamPath": "/tmp/p3-gold-olhxkz/runs/1a10931fc7c7/stream.jsonl",
+  "peerName": "codex-luna-1a10931fc7c7-golden-b457496ca690",
+  "label": "golden-b457496ca690",
+  "marker": "137c608d4f479287fef9a1244f377ef1e581f161ed75add6",
+  "peer": {
+    "pid": 38989,
+    "name": "codex-luna-1a10931fc7c7-golden-b457496ca690",
+    "sock": "/tmp/cc-socks/38989.sock",
+    "registeredAt": "2026-09-25T08:34:02.256Z"
+  },
+  "pids": [
+    {
+      "pid": 38976,
+      "role": "driver",
+      "start": "1790325242.163515",
+      "pgid": 38976
+    },
+    {
+      "pid": 38988,
+      "role": "app-server",
+      "start": "1790325242.201640",
+      "pgid": 38976
+    }
+  ],
+  "startedAt": 1790325242154,
+  "lingerMs": 120000,
+  "root": "/tmp/p3-gold-olhxkz",
+  "home": "/tmp/p3-gold-olhxkz/home",
+  "registryRoot": "/tmp/p3-gold-olhxkz/runs",
+  "sessionsDir": "/Users/ruze/.claude/sessions"
+}

@@ -1,0 +1,15 @@
+{
+  "command": "git",
+  "args": [
+    "rev-parse",
+    "HEAD"
+  ],
+  "pid": 29496,
+  "code": 0,
+  "signal": null,
+  "reason": null,
+  "elapsedMs": 13,
+  "stdout": "ff8e983e9cdc11cd3613dcfc0548aac00828950e\n",
+  "stderr": "",
+  "pinned": "0.155.1"
+}

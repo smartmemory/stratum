@@ -1,0 +1,31 @@
+{
+  "command": "codex",
+  "args": [
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "workspace-write",
+    "-c",
+    "sandbox_workspace_write.network_access=false",
+    "-c",
+    "sandbox_workspace_write.writable_roots=[\"/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/extra-root\"]",
+    "-c",
+    "approval_policy=\"never\"",
+    "-m",
+    "gpt-6-luna",
+    "-C",
+    "/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace",
+    "-c",
+    "model_reasoning_effort=\"low\"",
+    "--ignore-user-config",
+    "-"
+  ],
+  "pid": 29561,
+  "code": 0,
+  "signal": null,
+  "reason": null,
+  "elapsedMs": 22262,
+  "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"01a0d7ad-a827-73d0-b888-1f8fa51749c1\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"I’ll run the specified command once, without escalation or file changes, and return its stdout exactly.\"}}\n{\"type\":\"item.started\",\"item\":{\"id\":\"item_1\",\"type\":\"command_execution\",\"command\":\"/bin/zsh -lc \\\"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-built-in.cjs'\\\"\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"command_execution\",\"command\":\"/bin/zsh -lc \\\"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/var/folders/z_/22whr6jd3q725fk9vqhjt1w00000gn/T/peer3-baseline-9HSnhG/workspace/probe-built-in.cjs'\\\"\",\"aggregated_output\":\"PEER3_TOOL_RESULTS={\\\"workspace\\\":{\\\"writable\\\":true},\\\"writableRoot\\\":{\\\"writable\\\":true},\\\"TMPDIR\\\":{\\\"writable\\\":true},\\\"slashTmp\\\":{\\\"writable\\\":true}}\\n\",\"exit_code\":0,\"status\":\"completed\"}}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_2\",\"type\":\"agent_message\",\"text\":\"PEER3_TOOL_RESULTS={\\\"workspace\\\":{\\\"writable\\\":true},\\\"writableRoot\\\":{\\\"writable\\\":true},\\\"TMPDIR\\\":{\\\"writable\\\":true},\\\"slashTmp\\\":{\\\"writable\\\":true}}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":37715,\"cached_input_tokens\":29184,\"cache_write_input_tokens\":0,\"output_tokens\":170,\"reasoning_output_tokens\":0}}\n",
+  "stderr": ""
+}

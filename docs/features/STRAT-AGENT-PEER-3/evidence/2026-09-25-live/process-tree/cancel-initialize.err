@@ -1,0 +1,6 @@
+Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads
+Python runtime state: finalizing (tstate=0x00000001005f9348)
+
+Current thread 0x00000001f5bae1c0 (most recent call first):
+  <no Python frame>
+

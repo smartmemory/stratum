@@ -1,0 +1,78 @@
+{
+  "mode": "preflight",
+  "startedAt": "2026-09-25T08:27:53.862Z",
+  "cases": [
+    {
+      "case": "codex-version",
+      "outcome": "passed",
+      "evidence": [
+        "codex-version.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:27:53.914Z",
+        "elapsedMs": 10
+      }
+    },
+    {
+      "case": "login",
+      "outcome": "passed",
+      "evidence": [
+        "login.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:27:53.924Z",
+        "elapsedMs": 16
+      }
+    },
+    {
+      "case": "node",
+      "outcome": "passed",
+      "evidence": [
+        "node.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:27:53.940Z",
+        "elapsedMs": 14
+      }
+    },
+    {
+      "case": "os",
+      "outcome": "passed",
+      "evidence": [
+        "os.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:27:53.954Z",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "case": "git-head",
+      "outcome": "passed",
+      "evidence": [
+        "git-head.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:27:53.954Z",
+        "elapsedMs": 14
+      }
+    },
+    {
+      "case": "claude-version",
+      "outcome": "passed",
+      "evidence": [
+        "claude-version.json"
+      ],
+      "exitCode": 0,
+      "timings": {
+        "startedAt": "2026-09-25T08:27:53.968Z",
+        "elapsedMs": 8
+      }
+    }
+  ]
+}

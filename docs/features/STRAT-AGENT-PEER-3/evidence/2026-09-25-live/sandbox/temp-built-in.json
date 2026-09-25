@@ -1,0 +1,134 @@
+{
+  "nonce": "PEER3_temp_built_in_1790325024823",
+  "osWritableOutside": true,
+  "poll": {
+    "status": "complete",
+    "runId": "0c3167afb432",
+    "peer": {
+      "name": "codex-luna-0c3167",
+      "registered": false
+    },
+    "sandboxAudit": {
+      "policy": {
+        "filesystemMode": "workspace-write",
+        "networkAccess": false,
+        "writableRoots": [
+          "/tmp/peer3-s5b-162753/sandbox/.private-q5YMWs/writable"
+        ],
+        "approvalPolicy": "never"
+      },
+      "provenance": {
+        "filesystemMode": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "networkAccess": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "writableRoots": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        },
+        "approvalPolicy": {
+          "layer": "dispatch",
+          "source": "startBackgroundRun options"
+        }
+      }
+    },
+    "text": "done",
+    "usage": {
+      "usd": 0.0011575399999999999,
+      "tokens": 37489
+    },
+    "split": {
+      "input": 37401,
+      "output": 88,
+      "cacheRead": 29184
+    },
+    "usdSource": "estimated",
+    "exitCode": 0,
+    "telemetry": {
+      "durationMs": 27584,
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7af-f326-7f93-bb64-a21358dd1ece"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "exec-297b72fa-95eb-4f77-837b-32f4a03c24fa",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc \"'/Users/ruze/.nvm/versions/node/v22.22.3/bin/node' '/tmp/peer3-s5b-162753/sandbox/.private-q5YMWs/workspace/tool.cjs'\"",
+        "aggregated_output": "PEER3_temp_built_in_1790325024823={\"workspace\":{\"writable\":true},\"writableRoot\":{\"writable\":true},\"outside\":{\"writable\":false,\"code\":\"EPERM\"},\"TMPDIR\":{\"writable\":true},\"slashTmp\":{\"writable\":true}}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "msg_0e0d6c90e25996ec016ab6313b502487d0b618d476feeafa02",
+        "type": "agent_message",
+        "text": "done"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 37401,
+        "cached_input_tokens": 29184,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 88,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "__t2f5_done__": 0
+    }
+  ],
+  "observed": {
+    "workspace": true,
+    "writableRoot": true,
+    "outside": false,
+    "TMPDIR": true,
+    "slashTmp": true
+  },
+  "expected": {
+    "workspace": true,
+    "writableRoot": true,
+    "outside": false,
+    "TMPDIR": true,
+    "slashTmp": true
+  },
+  "policy": {
+    "filesystemMode": "workspace-write",
+    "networkAccess": false,
+    "writableRoots": [
+      "/tmp/peer3-s5b-162753/sandbox/.private-q5YMWs/writable"
+    ],
+    "approvalPolicy": "never"
+  },
+  "execBaseline": "exec-baseline/built-in.json",
+  "artifacts": [
+    "exec-baseline/built-in.json"
+  ],
+  "tempComparison": {
+    "TMPDIR": {
+      "exec": true,
+      "appServer": true
+    },
+    "slashTmp": {
+      "exec": true,
+      "appServer": true
+    }
+  }
+}

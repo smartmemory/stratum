@@ -1,0 +1,73 @@
+{
+  "reached": true,
+  "pids": [
+    {
+      "pid": 35094,
+      "role": "driver",
+      "start": "1790325090.83882",
+      "pgid": 35094,
+      "after": "dead"
+    },
+    {
+      "pid": 35096,
+      "role": "app-server",
+      "start": "1790325090.115556",
+      "pgid": 35094,
+      "after": "dead"
+    }
+  ],
+  "signalMode": "native-signal",
+  "artifacts": [
+    "cancel-active.before.ps",
+    "cancel-active.after.ps",
+    "cancel-active.err",
+    "cancel-active.peer.err"
+  ],
+  "activeBeforeAction": true,
+  "action": {
+    "kind": "cancel",
+    "records": [
+      {
+        "type": "thread.started",
+        "thread_id": "01a0d7b0-f3f9-7631-ae9d-1d80210c48b4"
+      },
+      {
+        "type": "turn.started"
+      }
+    ],
+    "time": 1790325093475
+  },
+  "cancel": {
+    "status": "cancelled",
+    "runId": "46e9067f8afd"
+  },
+  "poll": {
+    "status": "error",
+    "runId": "46e9067f8afd",
+    "peer": {
+      "name": "codex-luna-46e906",
+      "registered": false
+    },
+    "reason": "child_died_without_sentinel",
+    "textTail": "",
+    "stderrTail": "",
+    "eventsSeen": 2,
+    "streamPath": "/tmp/p3-life-nK6LED/runs/46e9067f8afd/stream.jsonl"
+  },
+  "records": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a0d7b0-f3f9-7631-ae9d-1d80210c48b4"
+    },
+    {
+      "type": "turn.started"
+    }
+  ],
+  "events": [
+    {
+      "event": "wrapper",
+      "time": 1790325090.1396322,
+      "pid": 35096
+    }
+  ]
+}
