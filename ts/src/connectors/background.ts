@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { usdFromTokens } from "../judge/pricing.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants, createReadStream, existsSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -449,7 +450,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     } catch { /* Missing or malformed discovery metadata cannot affect the durable run. */ }
   }
   const peerFields = peer ? {peer} : {};
-  let scan = await scanStream(streamPath);
+  let scan = await scanStream(streamPath, loaded.meta);
   let text = capText(scan.text, streamPath);
 
   if (loaded.meta.agent === "claude") {
@@ -463,7 +464,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
       // sentinel and deleted its registry entry in that window, the stale scan lacks
       // exitCode while the registry now reports gone. Rescan before declaring death so
       // we never surface a terminal status without the sentinel's exitCode (#24).
-      scan = await scanStream(streamPath);
+      scan = await scanStream(streamPath, loaded.meta);
       text = capText(scan.text, streamPath);
       if (scan.exitCode === undefined) {
         // Not in registry and still no sentinel: worker died unexpectedly (MCP server
@@ -493,7 +494,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     // sentinel and then exits, so between the stale scan and the child going away the sentinel
     // may have landed. Rescan before declaring death so a terminal status always carries its
     // exitCode (#24 — intermittent error-status-without-exitCode on slow CI).
-    scan = await scanStream(streamPath);
+    scan = await scanStream(streamPath, loaded.meta);
     text = capText(scan.text, streamPath);
     if (scan.exitCode === undefined) {
       return {
@@ -633,7 +634,7 @@ async function loadMeta(runId: string, root: string): Promise<{ meta: Background
   }
 }
 
-async function scanStream(path: string): Promise<{
+async function scanStream(path: string, meta?: Pick<BackgroundRunMeta, "agent" | "model">): Promise<{
   text: string; usage: ConnectorUsage; split: ConnectorSplit; usdSource?: "reported" | "estimated"; exitCode?: number; error?: string; eventsSeen: number;
 }> {
   let text = "";
@@ -659,23 +660,28 @@ async function scanStream(path: string): Promise<{
       text = (text + record.item.text).slice(-2 * TEXT_CAP);
     }
     if (record.type === "turn.completed" && isRecord(record.usage)) {
+      // Keep input raw, including cached tokens, as in the foreground Codex connector.
       inputTokens += finiteNonnegative(record.usage.input_tokens);
       outputTokens += finiteNonnegative(record.usage.output_tokens);
-      cacheRead += finiteNonnegative(record.usage.cache_read_input_tokens);
+      cacheRead += finiteNonnegative(record.usage.cache_read_input_tokens ?? record.usage.cached_input_tokens);
       cacheCreation += finiteNonnegative(record.usage.cache_creation_input_tokens);
       if (typeof record.usage.total_cost_usd === "number") costUsd = finiteNonnegative(record.usage.total_cost_usd);
     }
   }
+  const estimated = costUsd <= 0 && meta?.agent === "codex"
+    ? usdFromTokens(meta.model, { inputTokens, cachedInputTokens: cacheRead, outputTokens })
+    : 0;
+  const usd = costUsd > 0 ? costUsd : estimated > 0 ? estimated : undefined;
   return {
     text,
-    usage: { ...(costUsd > 0 ? { usd: costUsd } : {}), tokens: inputTokens + outputTokens },
+    usage: { ...(usd !== undefined ? { usd } : {}), tokens: inputTokens + outputTokens },
     split: {
       input: inputTokens,
       output: outputTokens,
       ...(cacheRead > 0 ? { cacheRead } : {}),
       ...(cacheCreation > 0 ? { cacheCreation } : {}),
     },
-    ...(costUsd > 0 ? { usdSource: "reported" as const } : {}),
+    ...(usd !== undefined ? { usdSource: costUsd > 0 ? "reported" as const : "estimated" as const } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(error ? { error } : {}),
     eventsSeen,

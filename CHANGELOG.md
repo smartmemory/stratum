@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix background Codex polls to report cached input tokens and estimated cost when no cost is reported, preserving raw token counts and Claude-worker reported costs.
+
 - Isolate TypeScript tests from the live flow store with a Vitest temp-root safeguard,
   explicit MCP helper and child-process roots, and hermetic missing-run cancellation coverage.
 
