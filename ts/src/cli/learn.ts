@@ -1,5 +1,7 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { canonicalWorkspace } from "../learn/workspace.js";
+import { appendLifecycle, LifecycleError, type LifecycleKind, type LifecycleRow, type ReviewKind } from "../learn/lifecycle.js";
 import { harvest } from "../learn/harvest.js";
 import { classify } from "../learn/classify.js";
 import {
@@ -16,6 +18,9 @@ import { lockedSave, lockedRead } from "../engine/run_lock.js";
 
 const USAGE =
   "Usage: stratum learn <harvest|list|apply|revert|reconcile|egress> [--root <dir>] [--stage] [--json]\n" +
+  "       stratum learn retire <clusterId> --reason <text> (--fix-ref <sha> | --withdrawn) [--root <dir>]\n" +
+  "       stratum learn <dismiss|reactivate> <clusterId> --reason <text> [--root <dir>]\n" +
+  "       stratum learn ack <clusterId> --reason <text> [--kind <review>] [--root <dir>]\n" +
   "       stratum learn egress <drain [--run <id>]|verify --run <id>|retry-dead --run <id>>";
 
 function flag(args: string[], name: string): boolean {
@@ -27,8 +32,8 @@ function option(args: string[], name: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-function rootOf(args: string[]): string {
-  return resolve(option(args, "root") ?? process.cwd());
+function rootOf(args: string[]): Promise<string> {
+  return canonicalWorkspace(option(args, "root") ?? process.cwd());
 }
 
 function sidecarDir(root: string): string {
@@ -38,6 +43,11 @@ function sidecarDir(root: string): string {
 export async function learnCommand(args: string[]): Promise<number> {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
+    case "retire":
+    case "dismiss":
+    case "reactivate":
+    case "ack":
+      return lifecycleCommand(subcommand, rest);
     case "harvest":
       return harvestCommand(rest);
     case "list":
@@ -57,9 +67,25 @@ export async function learnCommand(args: string[]): Promise<number> {
 }
 
 async function harvestCommand(args: string[]): Promise<number> {
-  const root = rootOf(args);
+  const root = await rootOf(args);
   const flowsDir = option(args, "flows") ?? join(homedir(), ".stratum", "ts", "flows");
   const { records, skipped, droppedEvents } = await harvest(flowsDir);
+  const distinctRoots = [...new Set(records.flatMap((record) =>
+    record.workspaceRoot === undefined ? [] : [record.workspaceRoot],
+  ))];
+  const canonicalRoots = new Map<string, string>();
+  let nextRoot = 0;
+  await Promise.all(Array.from({ length: Math.min(8, distinctRoots.length) }, async () => {
+    while (nextRoot < distinctRoots.length) {
+      const workspaceRoot = distinctRoots[nextRoot++]!;
+      canonicalRoots.set(workspaceRoot, await canonicalWorkspace(workspaceRoot));
+    }
+  }));
+  for (const record of records) {
+    if (record.workspaceRoot !== undefined) {
+      record.workspaceRoot = canonicalRoots.get(record.workspaceRoot)!;
+    }
+  }
   const clusters = classify(records);
 
   const candidates: PatchCandidate[] = [];
@@ -75,7 +101,7 @@ async function harvestCommand(args: string[]): Promise<number> {
   }
 
   // Staging writes a file, so it is opt-in: a plain harvest only reports.
-  const staged = flag(args, "stage") ? await appendCandidates(sidecarDir(root), candidates) : 0;
+  const staged = flag(args, "stage") ? await appendCandidates(root, candidates) : 0;
 
   if (flag(args, "json")) {
     process.stdout.write(
@@ -102,7 +128,7 @@ async function harvestCommand(args: string[]): Promise<number> {
 }
 
 async function listCommand(args: string[]): Promise<number> {
-  const root = rootOf(args);
+  const root = await rootOf(args);
   const rows = latestPerCluster(await readCandidates(sidecarDir(root)));
   if (flag(args, "json")) {
     process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
@@ -119,7 +145,7 @@ async function listCommand(args: string[]): Promise<number> {
 }
 
 async function applyCommandLine(args: string[]): Promise<number> {
-  const root = rootOf(args);
+  const root = await rootOf(args);
   const revision = args.find((arg) => !arg.startsWith("--") && arg !== option(args, "root"));
   if (revision === undefined) {
     process.stderr.write("Usage: stratum learn apply <revision-id> [--root <dir>]\n");
@@ -152,7 +178,7 @@ async function applyCommandLine(args: string[]): Promise<number> {
 }
 
 async function revertCommand(args: string[]): Promise<number> {
-  const root = rootOf(args);
+  const root = await rootOf(args);
   const applyId = args.find((arg) => !arg.startsWith("--") && arg !== option(args, "root"));
   if (applyId === undefined) {
     process.stderr.write("Usage: stratum learn revert <apply-id> [--root <dir>]\n");
@@ -170,7 +196,7 @@ async function revertCommand(args: string[]): Promise<number> {
 
 async function reconcileCommand(args: string[]): Promise<number> {
   try {
-    const report = await reconcile(rootOf(args), {});
+    const report = await reconcile(await rootOf(args), {});
     process.stdout.write(
       `completed ${report.completed}, rolled back ${report.rolledBack}, diverged ${report.diverged}\n`,
     );
@@ -237,4 +263,40 @@ function egressUsage(problem?: string): number {
   if (problem !== undefined) process.stderr.write(`stratum learn egress: ${problem}\n`);
   process.stderr.write("Usage: stratum learn egress <drain [--run <id>]|verify --run <id>|retry-dead --run <id>>\n");
   return 2;
+}
+
+async function lifecycleCommand(kind: LifecycleKind, args: string[]): Promise<number> {
+  try {
+    const values = new Map<string, string>();
+    let clusterId: string | undefined;
+    let withdrawn = false;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "--withdrawn" && kind === "retire" && !withdrawn) {
+        withdrawn = true;
+      } else if (["--root", "--reason", ...(kind === "retire" ? ["--fix-ref"] : []),
+        ...(kind === "ack" ? ["--kind"] : [])].includes(arg)) {
+        const value = args[++i];
+        if (values.has(arg) || value === undefined || value.startsWith("--")) {
+          throw new LifecycleError(`${arg} requires one value`);
+        }
+        values.set(arg, value);
+      } else if (!arg.startsWith("--") && clusterId === undefined) {
+        clusterId = arg;
+      } else {
+        throw new LifecycleError(`unexpected argument: ${arg}`);
+      }
+    }
+    const input: Omit<LifecycleRow, "at"> = { clusterId: clusterId ?? "", kind, reason: values.get("--reason") ?? "" };
+    if (values.has("--fix-ref")) input.fixRef = values.get("--fix-ref")!;
+    if (withdrawn) input.withdrawn = true;
+    if (values.has("--kind")) input.ackKinds = [values.get("--kind") as ReviewKind];
+    const root = await canonicalWorkspace(values.get("--root") ?? process.cwd());
+    const row = await appendLifecycle(root, input);
+    process.stdout.write(JSON.stringify(row) + "\n");
+    return 0;
+  } catch (error) {
+    process.stderr.write(`stratum learn ${kind}: ${error instanceof Error ? error.message : String(error)}\n`);
+    return error instanceof LifecycleError ? 2 : 1;
+  }
 }

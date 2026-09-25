@@ -144,7 +144,12 @@ surfacing redesigned), r2 NOT CLEAN (2 unresolved + 2 new, all fixed), **r3 REVI
 matching, pin-at-issuance, lifecycle, retirement reviews, goldens; 6 implementation slices) — astra r1 NOT CLEAN (12; narrowed via trust model, lifecycle log, per-run
 counting), r2 NOT CLEAN (1 unresolved + 2 new), r3 NOT CLEAN on one M (held predicate lost the
 terminal-run requirement) — fixed by restoring that clause, not re-reviewed (review budget spent;
-the clause restores r1-reviewed wording). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+the clause restores r1-reviewed wording).
+Designs committed `930a38e`. **DELIVER-1 slice 1 (guidance + template v2 identity) DONE `36c58d6`**
+(review found ambiguous comma-join encoding → JSON element; 230/1-skip). **Slice 2 (lifecycle log +
+canonical workspace + per-workspace lock) DONE** — review r1 3M (evidence roots not canonicalized,
+submodules, inherited GIT_DIR), r2 2 new (unbounded git fan-out over ~450 temp roots, newline paths),
+all fixed; 263/1-skip. Next: slice 3 selection (`activeLessons`). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 

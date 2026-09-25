@@ -190,10 +190,13 @@ Rules:
   bit if one is. A dirty bit now loses nothing: every pass stages for every enabled root found in
   the store (§A3), so triggers that arrive mid-pass need exactly one follow-up pass, whatever their
   workspaces. The triggering run ids are kept only for the diagnostic row.
-- **One lock per destination workspace, for every writer (r1 #7).** Lock file
-  `<canonical root>/.stratum/learn/.lock`, published with the run lock's atomic `link()` primitive
-  (`run_lock.ts:155-175`) and the same stale-holder reclaim. It guards read-dedupe-append in
-  `appendCandidates()` itself, so the CLI's `--stage` path (`cli/learn.ts:78`) and every engine,
+- **One lock per destination workspace, for every writer (r1 #7).** The guard lock primitive
+  `resourceLock()` (`guard/lock.ts:385`, in-process and cross-process with pid/start-time stale
+  reclaim), keyed `learn-workspace-<sha256(canonical root)>` — the same primitive learn apply already
+  uses for its target lock (`learn/apply.ts:362`). *(Corrected 2026-09-25 from the run lock's `link()`
+  primitive, which is keyed by run id; implemented in DELIVER-1 slice 2 as `withWorkspaceLock`.)* It
+  guards read-dedupe-append in `appendCandidates()` itself, so the CLI's `--stage` path
+  (`cli/learn.ts:78`) and every engine,
   whatever store it reads, serialize on the same file. Under the lock, before appending, a non-empty
   sidecar that does not end in `\n` gets one appended (r2 new-1): the torn fragment stays unreadable
   and skipped (`candidate.ts:196-203`), and the new rows stay intact.
