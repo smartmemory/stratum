@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
+import { appendJsonlUnderLock, canonicalWorkspace, withWorkspaceLock } from "./workspace.js";
 import type { FailureRecord, FailureShape } from "./harvest.js";
 import type { Cluster, ContractSummary } from "./classify.js";
 
@@ -240,15 +241,20 @@ export async function readCandidates(dir: string): Promise<PatchCandidate[]> {
 
 /** Returns how many rows were newly written. Idempotent on `revisionId`. */
 export async function appendCandidates(
-  dir: string,
+  root: string,
   candidates: readonly PatchCandidate[],
 ): Promise<number> {
-  const existing = new Set((await readCandidates(dir)).map((c) => c.revisionId));
-  const fresh = candidates.filter((c) => !existing.has(c.revisionId));
-  if (fresh.length === 0) return 0;
-  await mkdir(dir, { recursive: true });
-  await appendFile(sidecarPath(dir), fresh.map((c) => JSON.stringify(c)).join("\n") + "\n", "utf8");
-  return fresh.length;
+  root = await canonicalWorkspace(root);
+  return withWorkspaceLock(root, async () => {
+    const existing = new Set((await readCandidates(join(root, ".stratum", "learn"))).map((c) => c.revisionId));
+    const fresh = candidates.filter((c) => {
+      if (existing.has(c.revisionId)) return false;
+      existing.add(c.revisionId);
+      return true;
+    });
+    await appendJsonlUnderLock(root, "candidates.jsonl", fresh);
+    return fresh.length;
+  });
 }
 
 /** The newest revision of each cluster, by file order. */

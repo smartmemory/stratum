@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
 import { harvest } from "../../src/learn/harvest.js";
 import { classify, type Cluster } from "../../src/learn/classify.js";
 import {
@@ -16,14 +17,17 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(here, "..", "fixtures", "learn", "flows");
 
+const originalGuardsDir = GUARDS_DIR;
 const temporaries: string[] = [];
 afterEach(async () => {
+  setGuardsDir(originalGuardsDir);
   await Promise.all(temporaries.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 async function scratch(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "learn-candidate-"));
   temporaries.push(dir);
+  setGuardsDir(join(dir, "guards"));
   return dir;
 }
 
@@ -114,7 +118,7 @@ describe("sidecar", () => {
     expect(await appendCandidates(dir, [candidate])).toBe(1);
     expect(await appendCandidates(dir, [candidate])).toBe(0);
 
-    const rows = await readCandidates(dir);
+    const rows = await readCandidates(join(dir, ".stratum", "learn"));
     expect(rows.length).toBe(1);
     expect(rows[0]!.revisionId).toBe(candidate.revisionId);
     expect(rows[0]!.schemaVersion).toBe("learn-1.0");
@@ -132,7 +136,7 @@ describe("sidecar", () => {
     await appendCandidates(dir, [first]);
     await appendCandidates(dir, [second]);
 
-    const rows = await readCandidates(dir);
+    const rows = await readCandidates(join(dir, ".stratum", "learn"));
     expect(rows.length).toBe(2);
     expect(new Set(rows.map((r) => r.clusterId)).size).toBe(1);
   });
@@ -140,7 +144,7 @@ describe("sidecar", () => {
   it("writes its own file and touches no pre-existing corpus", async () => {
     const dir = await scratch();
     await appendCandidates(dir, [authorCandidate(await durableCluster())]);
-    const raw = await readFile(join(dir, "candidates.jsonl"), "utf8");
+    const raw = await readFile(join(dir, ".stratum", "learn", "candidates.jsonl"), "utf8");
     expect(raw.trimEnd().split("\n").length).toBe(1);
     expect(JSON.parse(raw.trimEnd()).schemaVersion).toBe("learn-1.0");
   });

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **STRAT-LEARN-DELIVER-1 slice 2:** Add canonical workspace locking, torn-tail-safe candidate staging, and lesson lifecycle logging with retire/dismiss/reactivate/ack commands, review watermarks, and evidence suppression helpers.
+
 - **STRAT-LEARN-DELIVER-1 slice 1:** Template v2 adds contract-derived enum/type agent guidance to approved notes, binds guidance and scope metadata into shared revision identity verification, checks cluster-key consistency, and labels guidance-free learn-list rows “note only”.
 
 ## [0.6.3] — 2026-09-25
