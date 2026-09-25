@@ -7,7 +7,7 @@ name = "stratum"
 version = "0.1.0"
 description = "Stratum — execution runtime for AI-driven development (meta-package: stratum-py + stratum-mcp)"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = {text = "PolyForm-Noncommercial-1.0.0"}
 requires-python = ">=3.11"
 authors = [{name = "Stratum", email = "stratum@regression.io"}]
 keywords = ["llm", "ai", "mcp", "claude-code", "structured-outputs"]
