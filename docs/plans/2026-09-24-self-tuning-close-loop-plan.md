@@ -149,7 +149,11 @@ Designs committed `930a38e`. **DELIVER-1 slice 1 (guidance + template v2 identit
 (review found ambiguous comma-join encoding → JSON element; 230/1-skip). **Slice 2 (lifecycle log +
 canonical workspace + per-workspace lock) DONE** — review r1 3M (evidence roots not canonicalized,
 submodules, inherited GIT_DIR), r2 2 new (unbounded git fan-out over ~450 temp roots, newline paths),
-all fixed; 263/1-skip. Next: slice 3 selection (`activeLessons`). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+all fixed; 263/1-skip. **Slice 3 (selection, `activeLessons()` in `learn/select.ts`) DONE** — review
+r1 2M: receipt throw aborted selection (fixed, per-entry catch); one-active-revision-per-cluster
+rejected as intentional, documented in DELIVER-1 §D2; r2 REVIEW CLEAN; 290/1-skip. Owner 2026-09-25:
+retire the 3 hand-fixed fixtures just before INLINE is enabled, not now. Next: slice 4 (matching + pin
++ render, D3/D4). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 

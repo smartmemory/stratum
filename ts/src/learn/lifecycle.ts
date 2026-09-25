@@ -56,7 +56,10 @@ function validateRow(value: unknown): asserts value is LifecycleRow {
 }
 
 /** Preserve file order; malformed/torn lines are counted and reported, never hidden. */
-export async function readLifecycle(root: string): Promise<{ rows: LifecycleRow[]; skipped: number }> {
+export async function readLifecycle(
+  root: string,
+  onInvalidLine?: (detail: string) => void,
+): Promise<{ rows: LifecycleRow[]; skipped: number }> {
   const path = join(await canonicalWorkspace(root), ".stratum", "learn", "lifecycle.jsonl");
   let raw: string;
   try {
@@ -67,7 +70,7 @@ export async function readLifecycle(root: string): Promise<{ rows: LifecycleRow[
   }
   const rows: LifecycleRow[] = [];
   let skipped = 0;
-  for (const line of raw.split("\n")) {
+  for (const [index, line] of raw.split("\n").entries()) {
     if (!line.trim()) continue;
     try {
       const row: unknown = JSON.parse(line);
@@ -75,9 +78,10 @@ export async function readLifecycle(root: string): Promise<{ rows: LifecycleRow[
       rows.push(row);
     } catch {
       skipped++;
+      onInvalidLine?.(`${path}:${index + 1}: invalid lifecycle row`);
     }
   }
-  if (skipped > 0) console.warn(`learn lifecycle: skipped ${skipped} invalid line(s) in ${path}`);
+  if (skipped > 0 && !onInvalidLine) console.warn(`learn lifecycle: skipped ${skipped} invalid line(s) in ${path}`);
   return { rows, skipped };
 }
 
@@ -102,8 +106,10 @@ function foldLifecycle(rows: LifecycleRow[], clusterId: string): LessonLifecycle
   return result;
 }
 
-export async function lessonLifecycle(root: string, clusterId: string): Promise<LessonLifecycle> {
-  return foldLifecycle((await readLifecycle(root)).rows, clusterId);
+export async function lessonLifecycle(
+  root: string, clusterId: string, onInvalidLine?: (detail: string) => void,
+): Promise<LessonLifecycle> {
+  return foldLifecycle((await readLifecycle(root, onInvalidLine)).rows, clusterId);
 }
 
 /** State validation and append are one transaction, including across CLI processes. */

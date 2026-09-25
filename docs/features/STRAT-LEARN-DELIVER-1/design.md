@@ -106,6 +106,13 @@ pass with it.
 Never `latestPerCluster()` (`candidate.ts:220`: newest staged by file order, no approval check).
 Any unreadable input makes that revision inactive and is logged: selection fails closed.
 
+**At most one active revision per cluster (slice 3 narrowing).** If two revisions of one cluster both
+pass 1–5 (e.g. NOTES.md was deleted out of band, so the existing-marker check let a second revision
+apply without a revert), only the one whose apply journal `at` is newest is selected (ties: greatest
+`applyId`); the other is reported as `superseded-revision`. Guidance is derived only from the contract
+(D1), so both would inject the same sentence twice and spend two of D4's budget slots on one lesson.
+Selection output is `{ lessons, diagnostics }`; diagnostics are D2's "logged".
+
 ### D3. Matching: which dispatch a lesson applies to
 
 A lesson matches a dispatch when the canonical workspace and **root** `flowName` are equal and the
