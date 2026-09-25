@@ -61,6 +61,27 @@ describe("classify", () => {
     for (const cluster of clusters) expect(cluster.class).not.toBe("durable");
   });
 
+  it("counts fanout breadth by parent run-step pairs while retaining item evidence", async () => {
+    const base = (await records()).find((r) => r.shape === "schema")!;
+    const failures = ["run-a", "run-b"].flatMap((runId) =>
+      [0, 1, 2].map((itemIndex) => ({
+        ...base, runId, stepId: "fan", itemIndex, stage: 0, attempt: 1,
+      })),
+    );
+    const clusters = classify(failures);
+    expect(clusters.length).toBeGreaterThan(0);
+    for (const cluster of clusters) {
+      expect(cluster.recurrence.distinctPairs).toBe(2);
+      expect(cluster.class).not.toBe("durable");
+      expect(cluster.evidence).toEqual(failures);
+    }
+
+    const broader = classify([...failures, { ...failures[0]!, stepId: "another-step" }]);
+    const aggregate = broader.find((c) => c.groupingKey === "step-agnostic")!;
+    expect(aggregate.recurrence.distinctPairs).toBe(3);
+    expect(aggregate.class).toBe("durable");
+  });
+
   describe("key composition — each of these independently breaks the real cluster", () => {
     it("does not key on the rejected value (would give 5 clusters, not 1)", async () => {
       const enumRecords = (await records()).filter((r) => r.reason.includes("invalid_enum_value"));
