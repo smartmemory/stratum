@@ -153,17 +153,38 @@ it.each([false, true])("steer result is independent of run outcome (refusal=%s)"
 it.each(["source", "dist"])("standalone %s entry owns real stdio child and durable sentinel", async kind => {
   const root = await mkdtemp(join(tmpdir(), "peer3-entry-")); roots.push(root);
   const streamPath = join(root, "stream.jsonl"), config = join(root, "config.json");
-  await writeFile(config, JSON.stringify({ ...options, streamPath, command: [process.execPath, fake, JSON.stringify({ events: [message("entry done")] })] }));
+  await writeFile(config, JSON.stringify({ ...options, streamPath, peer: { sessionsDir: join(root, "sessions"), sockDir: join(root, "socks"), name: "entry", lingerMs: 0, firstLineDeadlineMs: 1000 }, command: [process.execPath, fake, JSON.stringify({ events: [message("entry done")] })] }));
   const entry = resolve(kind === "source" ? "src/connectors/codex-appserver-driver.ts" : "dist/connectors/codex-appserver-driver.js");
-  const child = spawn(process.execPath, [...(kind === "source" ? ["--experimental-strip-types"] : []), entry, config], { stdio: ["ignore", "pipe", "pipe"] });
-  let stderr = ""; child.stderr.on("data", data => { stderr += data.toString(); });
+  const child = spawn(process.execPath, [...(kind === "source" ? ["--experimental-strip-types"] : []), entry, config], { stdio: ["ignore", "pipe", "pipe", "ipc"], env: { ...process.env, STRATUM_PEER_REGISTER: "0" } });
+  child.send({ type: "bootstrap", runId: options.runId, deadline: Date.now() + 2000 });
+  let stderr = ""; child.stderr!.on("data", data => { stderr += data.toString(); });
   const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
   try {
     const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
     expect(code, stderr).toBe(0);
     const records = (await readFile(streamPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records.some(record => record.item?.text === "entry done")).toBe(true);
     sentinel(records, 0); expect(records.at(-1)).toEqual({ __t2f5_done__: 0 });
   } finally { clearTimeout(timer); }
+});
+it.each(["source", "dist"].flatMap(kind => ["no IPC", "disconnect", "mismatch"].map(failure => ({ kind, failure }))))("standalone $kind bootstrap failure ($failure) writes no stream", async ({ kind, failure }) => {
+  const root = await mkdtemp(join(tmpdir(), "peer3-no-bootstrap-")); roots.push(root);
+  const streamPath = join(root, "stream.jsonl"), config = join(root, "config.json");
+  await writeFile(config, JSON.stringify({ ...options, streamPath, command: [process.execPath, fake] }));
+  const entry = resolve(kind === "source" ? "src/connectors/codex-appserver-driver.ts" : "dist/connectors/codex-appserver-driver.js");
+  const child = spawn(process.execPath, [...(kind === "source" ? ["--experimental-strip-types"] : []), entry, config], { stdio: failure === "no IPC" ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "ipc"] });
+  const disconnectTimer = failure === "disconnect" ? setTimeout(() => child.disconnect(), 250) : undefined;
+  if (failure === "mismatch") child.send({ type: "bootstrap", runId: "wrong-run", deadline: Date.now() + 2000 });
+  let stderr = ""; child.stderr!.on("data", data => { stderr += data.toString(); });
+  const stderrEnded = new Promise<void>(resolve => child.stderr!.once("end", resolve));
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+    await stderrEnded;
+    expect(code, stderr).toBe(1);
+    expect(stderr).toContain(failure === "mismatch" ? "Bootstrap runId mismatch" : failure === "disconnect" ? "parent disconnected before bootstrap" : "Missing bootstrap: no connected IPC channel");
+    await expect(readFile(streamPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { clearTimeout(timer); clearTimeout(disconnectTimer); }
 });
 it("AC06 bounds frames and ignores late output after terminal claim", async () => {
   const over = await run({ events: ["x".repeat(1024 * 1024 + 1)] }); expect(over.result).toBe("failed"); sentinel(over.records, 1);

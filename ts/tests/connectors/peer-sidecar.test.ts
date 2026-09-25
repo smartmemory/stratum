@@ -369,7 +369,7 @@ it("launches the emitted js fallback with no source files present", async () => 
   const config = await fixture(); const emitted = join(config.runDir,"dist","connectors");
   await mkdir(emitted,{recursive:true});
   await writeFile(join(config.runDir,"package.json"),await readFile(new URL("../../package.json",import.meta.url)));
-  for (const name of ["base","proc_identity","peer-registry","peer-sidecar"]) {
+  for (const name of ["base","proc_identity","peer-registry","codex-appserver-ipc","peer-sidecar"]) {
     const source = await readFile(new URL(`../../src/connectors/${name}.ts`,import.meta.url),"utf8");
     const result = transpileModule(source,{compilerOptions:{module:ModuleKind.ESNext,target:ScriptTarget.ES2022}});
     await writeFile(join(emitted,`${name}.js`),result.outputText);
@@ -918,4 +918,13 @@ it("abandons delayed startup before owner-ready without publishing a row", async
   await waitFor(() => readFile(join(config.runDir,"test-exit"),"utf8"),value => value === "2");
   expect(existsSync(join(config.runDir,"peer.json"))).toBe(false);
   expect(await readdir(config.sessionsDir)).toEqual([]);
+});
+
+it("AC15 Claude worker retains advisory user refusal and callback mode/auth", async () => {
+  const base=await fixture(), config:PeerSidecarConfig={...base,ownerKind:"claude-worker",runId:"abcdef123456"};
+  await launch(config); const registered=await peer(config), req=await requester(config);
+  await send(registered.sock,[{type:"auth",token:"wrong"},{type:"user",msg_id:"worker-user",from:`uds:${req.sock}`,from_mode:"plan"}]);
+  await waitFor(async()=>req.frames,frames=>frames.some(f=>f.action === "peer_message_status"));
+  expect(req.frames).toEqual([{type:"auth",token:"a".repeat(32)},
+    {type:"control",action:"peer_message_status",orig_msg_id:"worker-user",status:"expired",status_detail:"refused",from:`uds:${registered.sock}`,from_mode:"plan"}]);
 });

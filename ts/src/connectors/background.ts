@@ -16,6 +16,7 @@ import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexEr
 import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
 import { normalizePeerLabel, peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
 import { createWorkerPeerLifecycle } from "./peer-worker-lifecycle.js";
+import { launchCodexAppServerDriver } from "./codex-appserver-launch.js";
 import { spawnPeerSidecar } from "./peer-sidecar.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
@@ -134,6 +135,18 @@ export function agentRunsRoot(): string {
   return join(homedir(), ".stratum", "ts", "agent_runs");
 }
 
+export function resolveCodexBackgroundStrategy(options: Pick<StartBackgroundRunOptions, "env" | "command" | "approvalPolicy">): "exec" | "app-server" {
+  if (options.command !== undefined) return "exec";
+  const value = (options.env ?? process.env).STRATUM_CODEX_BG_STRATEGY ?? "exec";
+  if (value !== "exec" && value !== "app-server") {
+    throw new Error(`Invalid STRATUM_CODEX_BG_STRATEGY ${JSON.stringify(value)}; expected exec or app-server`);
+  }
+  if (value === "app-server" && options.approvalPolicy === "on-failure") {
+    throw new Error("STRATUM_CODEX_BG_STRATEGY=app-server does not support approvalPolicy=on-failure");
+  }
+  return value;
+}
+
 export async function startBackgroundRun(options: StartBackgroundRunOptions): Promise<{
   status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string;
 }> {
@@ -155,6 +168,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     return startClaudeBackgroundRun(options);
   }
 
+  const strategy = resolveCodexBackgroundStrategy(options);
   // Codex path (D6: workspace-write is now allowed — guard removed)
   const sandboxMode = options.sandboxMode ?? "read-only";
   const sandboxPolicy: SandboxPolicy = {
@@ -199,13 +213,21 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   // Stamped before spawn: durationMs is measured from here to the sentinel
   // write, so identity-lookup latency never deflates it.
   const createdAt = new Date().toISOString();
-  const child = spawn("sh", ["-c", T2F5_SHELL_WRAPPER, "sh", ...command], {
+  const launch = strategy === "app-server" ? await launchCodexAppServerDriver({
+    runId, model, cwd: options.cwd, prompt: withSandboxPreamble(options.prompt, sandboxMode),
+    policy: sandboxPolicy, streamPath,
+    peer: { name: peerName(model, runId, { label: options.peerLabel }),
+      sessionsDir: options.sessionsDir ?? resolveSessionsDir(env), sockDir: options.sockDir ?? resolveSockDir(env),
+      lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000),
+      firstLineDeadlineMs: Number(env.STRATUM_PEER_FIRST_LINE_MS ?? 30000) },
+  }, env) : undefined;
+  const child = launch?.child ?? spawn("sh", ["-c", T2F5_SHELL_WRAPPER, "sh", ...command], {
     cwd: options.cwd,
     env,
     detached: true,
     stdio: "ignore",
   });
-  await new Promise<void>((resolve, reject) => {
+  if (!launch) await new Promise<void>((resolve, reject) => {
     child.once("spawn", resolve);
     child.once("error", reject);
   });
@@ -235,6 +257,10 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     // Kill the whole process group and wait for the wrapper to exit before rejecting.
     await killDetachedProcessGroup(child, pid);
     throw error;
+  }
+  if (launch) {
+    const name = await launch.release();
+    return { status: "bg_started", runId, pid, streamPath, ...(name ? { peerName: name } : {}) };
   }
   child.unref();
   // Peer discovery is best effort and never enters the fatal metadata-write path.

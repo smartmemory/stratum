@@ -206,3 +206,13 @@ it("round trips worker config and rejects bad owner fields", async () => {
   expect(() => registry.configFromEnv({...env, STRATUM_PEER_OWNER_KIND:"thread"})).toThrow();
   expect(registry.sidecarEnv({...config,ownerKind:"process",childPid:process.pid}).STRATUM_PEER_RUN_ID).toBeUndefined();
 });
+
+it("codex-appserver owner round-trips run identity and rejects malformed identity", async () => {
+  const {sidecarEnv,configFromEnv} = await import("../../src/connectors/peer-registry.js");
+  const config = {ownerKind:"codex-appserver" as const,runId:"abcdef012345",runDir:"/tmp/run",streamPath:"/tmp/run/stream",
+    cwd:"/tmp",sessionsDir:"/tmp/sessions",sockDir:"/tmp/socks",name:"peer",lingerMs:15000,firstLineDeadlineMs:30000};
+  const env=sidecarEnv(config);
+  expect(env.STRATUM_PEER_CHILD_PID).toBeUndefined(); expect(configFromEnv(env)).toEqual(config);
+  expect(()=>configFromEnv({...env,STRATUM_PEER_RUN_ID:"stale"})).toThrow("Invalid peer run ID");
+  expect(()=>configFromEnv({...env,STRATUM_PEER_RUN_ID:undefined})).toThrow("Missing STRATUM_PEER_RUN_ID");
+});
