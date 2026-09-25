@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Read Codex `cache_write_input_tokens` as cache creation usage in background polls.
 - Fix background Codex polls to report cached input tokens and estimated cost when no cost is reported, preserving raw token counts and Claude-worker reported costs.
 
 - Isolate TypeScript tests from the live flow store with a Vitest temp-root safeguard,

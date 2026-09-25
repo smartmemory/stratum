@@ -664,7 +664,7 @@ async function scanStream(path: string, meta?: Pick<BackgroundRunMeta, "agent" |
       inputTokens += finiteNonnegative(record.usage.input_tokens);
       outputTokens += finiteNonnegative(record.usage.output_tokens);
       cacheRead += finiteNonnegative(record.usage.cache_read_input_tokens ?? record.usage.cached_input_tokens);
-      cacheCreation += finiteNonnegative(record.usage.cache_creation_input_tokens);
+      cacheCreation += finiteNonnegative(record.usage.cache_creation_input_tokens ?? record.usage.cache_write_input_tokens);
       if (typeof record.usage.total_cost_usd === "number") costUsd = finiteNonnegative(record.usage.total_cost_usd);
     }
   }

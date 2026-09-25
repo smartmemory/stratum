@@ -148,6 +148,26 @@ describe("P3 background run gate", () => {
     }
   });
 
+  it("polls Codex cache-write input tokens as cache creation", async () => {
+    const registryRoot = await root();
+    const runId = "bbccdd223344";
+    await writeRegistryRun(registryRoot, runId, [
+      AGENT_MSG,
+      { type: "turn.completed", usage: {
+        input_tokens: 585903, cached_input_tokens: 524416,
+        cache_write_input_tokens: 1234, output_tokens: 6606, reasoning_output_tokens: 648,
+      } },
+      { [T2F5_DONE_SENTINEL]: 0 },
+    ]);
+    const meta = await readMeta(registryRoot, runId);
+    await writeFile(join(registryRoot, runId, "meta.json"), JSON.stringify({ ...meta, model: "gpt-6-astra/medium" }));
+
+    const result = await pollBackgroundRun(runId, { registryRoot });
+    expect(result.status).toBe("complete");
+    if (result.status !== "complete") throw new Error("expected completed Codex run");
+    expect(result.split?.cacheCreation).toBe(1234);
+  });
+
   it("polls a nonzero wrapper result as error with stderr", async () => {
     const registryRoot = await root();
     const started = await startBackgroundRun({
