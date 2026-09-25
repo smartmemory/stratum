@@ -102,6 +102,16 @@ verifies each finding against disk before any fix is briefed.
 
 **Exit criteria:** real-only store, a named trigger, a lesson list the owner has read.
 
+**Gate outcome (owner, 2026-09-25):**
+- Quarantine: **move aside** with manifest (ambiguous/resumable/lock-owned excluded).
+- Trigger: **any terminal run**, including recovered failures — hook `emitFlowTerminal()` before its
+  `bundle_id === undefined` return (report §Trigger). STRAT-LEARN-INLINE-TS-1 design to be amended.
+- Lesson set: the 3 durable lessons are all fixed by hand (compose `ed8e333`, stratum `2968930`) —
+  they become **retirement fixtures** for 2d, not lessons to deliver.
+- Additional 1c fixes, all four approved: fan-out failures into harvest; Claude missing-vs-zero cost;
+  distill transcript source discovery; routing records reported/executed tier.
+- Routing loop: **stays shadow**; no S2/S3 plan now.
+
 ---
 
 ## Step 2 — Wire it up and close the loop
