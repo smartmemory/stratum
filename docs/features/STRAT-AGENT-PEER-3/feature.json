@@ -1,7 +1,7 @@
 {
   "code": "STRAT-AGENT-PEER-3",
   "description": "Deliver SendMessage text into running Codex background runs. Add an app-server transport so the peer sidecar can map inbound `user` frames to Codex `turn/steer` instead of replying `refused`. `codex queue` probed 2026-09-25 against a running `codex exec`: accepted, dequeued, never delivered.",
-  "status": "PLANNED",
+  "status": "COMPLETE",
   "phase": "STRAT-AGENT: Agent Surface",
   "created": "2026-09-25",
   "updated": "2026-09-25",
@@ -15,5 +15,50 @@
     "codex-app-server",
     "follow-up"
   ],
-  "impact": "medium"
+  "impact": "medium",
+  "completions": [
+    {
+      "completion_id": "STRAT-AGENT-PEER-3:c3c0fe21e792d8351eeda33d384b83cf10f350f3",
+      "feature_code": "STRAT-AGENT-PEER-3",
+      "commit_sha": "c3c0fe21e792d8351eeda33d384b83cf10f350f3",
+      "commit_sha_short": "c3c0fe21",
+      "tests_pass": true,
+      "files_changed": [
+        "CHANGELOG.md",
+        "README.md",
+        "ts/scripts/peer3-probe.mjs",
+        "ts/scripts/pin-codex-appserver.mjs",
+        "ts/scripts/prepare-dist.mjs",
+        "ts/src/connectors/background.ts",
+        "ts/src/connectors/codex-appserver-client-info.ts",
+        "ts/src/connectors/codex-appserver-contract.ts",
+        "ts/src/connectors/codex-appserver-driver.ts",
+        "ts/src/connectors/codex-appserver-ipc.ts",
+        "ts/src/connectors/codex-appserver-launch.ts",
+        "ts/src/connectors/codex-policy.ts",
+        "ts/src/connectors/codex.ts",
+        "ts/src/connectors/peer-registry.ts",
+        "ts/src/connectors/peer-sidecar.ts",
+        "ts/tests/connectors/background-appserver-launch.test.ts",
+        "ts/tests/connectors/background-appserver.test.ts",
+        "ts/tests/connectors/background-claude-peer.test.ts",
+        "ts/tests/connectors/background-codex-lifecycle.test.ts",
+        "ts/tests/connectors/codex-appserver-contract.test.ts",
+        "ts/tests/connectors/codex-appserver-driver.test.ts",
+        "ts/tests/connectors/codex-appserver.live.test.ts",
+        "ts/tests/connectors/codex-policy.test.ts",
+        "ts/tests/connectors/codex.test.ts",
+        "ts/tests/connectors/peer-registry.test.ts",
+        "ts/tests/connectors/peer-sidecar-appserver.test.ts",
+        "ts/tests/connectors/peer-sidecar-reservations.test.ts",
+        "ts/tests/connectors/peer-sidecar.test.ts",
+        "ts/tests/helpers/background-appserver-fixture.ts",
+        "ts/tests/helpers/fake-app-server.mjs"
+      ],
+      "recorded_at": "2026-09-25T09:06:40.857Z",
+      "recorded_by": "mcp:agent",
+      "notes": "S1 c966ffc, S2 f84b08a, S3+S4 c389a93, S5a ff8e983, S5b c3c0fe2. Live exit gate PASS (report.md): sandbox 7/7, process tree 8/8, golden flow with a real Claude Code session passed, AC05 passed-amended (3 proven, 8 unreached on codex 0.155.1). Full suite 2525 passed / 9 skipped / 0 failed."
+    }
+  ],
+  "commit_sha": "c3c0fe21e792d8351eeda33d384b83cf10f350f3"
 }
