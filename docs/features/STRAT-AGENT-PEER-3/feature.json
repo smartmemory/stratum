@@ -1,0 +1,19 @@
+{
+  "code": "STRAT-AGENT-PEER-3",
+  "description": "Deliver SendMessage text into running Codex background runs. Add an app-server transport so the peer sidecar can map inbound `user` frames to Codex `turn/steer` instead of replying `refused`. `codex queue` probed 2026-09-25 against a running `codex exec`: accepted, dequeued, never delivered.",
+  "status": "PLANNED",
+  "phase": "STRAT-AGENT: Agent Surface",
+  "created": "2026-09-25",
+  "updated": "2026-09-25",
+  "complexity": "L",
+  "position": 4,
+  "parent": "STRAT-AGENT-PEER-1",
+  "tags": [
+    "agent-surface",
+    "background",
+    "claude-code-interop",
+    "codex-app-server",
+    "follow-up"
+  ],
+  "impact": "medium"
+}
