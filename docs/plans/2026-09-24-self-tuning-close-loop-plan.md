@@ -112,6 +112,13 @@ verifies each finding against disk before any fix is briefed.
   distill transcript source discovery; routing records reported/executed tier.
 - Routing loop: **stays shadow**; no S2/S3 plan now.
 
+**Quarantine DONE (2026-09-25):** 974 terminal fixture runs moved `~/.stratum/ts/flows/` →
+`~/.stratum/ts/flows.fixtures/`, all hash-verified; live store 1,489 → 515 entries. Kept in place: 58 real
+runs + 449 resumable/lock-protected fixtures (445 `gsd-stuck-resume` paused mid-gate) + 6 ambiguous.
+Manifest, keep list and `restore.sh` (manifest SHA-256 `ffcc174d…`, pinned) at
+`~/.stratum/ts/flows.fixtures.manifest-2026-09-25/`. restore.sh not executed. The 445 paused fixtures are
+still in the harvest input — filter by manifest (`keep.jsonl` reason) until handled.
+
 ---
 
 ## Step 2 — Wire it up and close the loop
