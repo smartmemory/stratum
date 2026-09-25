@@ -297,8 +297,8 @@ export async function applyCandidate(candidate: PatchCandidate, options: ApplyOp
   return protocolApplyCandidate(memoryApplyAdapter, candidate, { ...options, enabled: true });
 }
 
-export function ledgerReceipt(entry: JournalEntry): Receipt {
-  return protocolLedgerReceipt(memoryApplyAdapter, entry);
+export function ledgerReceipt(entry: JournalEntry, onLegacyDigestMatch?: (resource: string) => void): Receipt {
+  return protocolLedgerReceipt(memoryApplyAdapter, entry, onLegacyDigestMatch);
 }
 
 export async function revertApply(applyId: string, workspaceRoot: string, options: ApplyOptions): Promise<void> {

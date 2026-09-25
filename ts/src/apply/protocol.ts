@@ -209,6 +209,7 @@ export async function applyCandidate<C, E, J extends BaseJournalEntry<E>>(
 
 export function ledgerReceipt<C, E, J extends BaseJournalEntry<E>>(
   adapter: ApplyAdapter<C, E, J>, entry: J,
+  onLegacyDigestMatch: (resource: string) => void = noteLegacyDigestMatch,
 ): Receipt {
   const resource = adapter.guardResource(entry.applyId);
   let entries;
@@ -248,11 +249,11 @@ export function ledgerReceipt<C, E, J extends BaseJournalEntry<E>>(
       row.payload_digest_version,
     );
     if (dict.to_state === "applied" && dict.payload_digest === appliedDigest) {
-      if (row.payload_digest_version === 1) noteLegacyDigestMatch(resource);
+      if (row.payload_digest_version === 1) onLegacyDigestMatch(resource);
       receipt = { kind: "committed", state: "applied" };
     }
     if (dict.to_state === "reverted" && dict.payload_digest === revertedDigest) {
-      if (row.payload_digest_version === 1) noteLegacyDigestMatch(resource);
+      if (row.payload_digest_version === 1) onLegacyDigestMatch(resource);
       return { kind: "committed", state: "reverted" };
     }
   }
