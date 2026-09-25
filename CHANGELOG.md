@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Lesson harvest reads fan-out failures.** `learn/harvest.ts` read only `result` and `budget_exhausted` events, so failures inside fan-out items (`fanout_attempt_result`, 6 real ones) never reached the classifier. They are now harvested with item/stage identity and retry-recovery semantics, deduped against the step's aggregate failure. Durability is unchanged: pairs still count per (run, parent step), so many failing items of one step cannot make a lesson durable on their own.
+
 - **Claude cost: unknown is no longer recorded as $0.** `ClaudeConnector` used `finiteNonnegative()`, which turned an absent or invalid `total_cost_usd` into 0, labelled it `usd_source: "reported"` in step telemetry, then dropped both zero and absent from the result — so a free call and an unreported one were indistinguishable (9 real Aug-30 receipts are unrecoverable for this reason; self-tuning collection report). Now: absent/invalid → no `usd`, no `usdSource`; explicit 0 → reported 0 preserved into the receipt; positive unchanged. Budget policy is unchanged and now documented on `BudgetLedger`: an unknown amount makes no debit, so a USD cap cannot bound unreported cost.
 
 - **Distill finds a repo's sessions wherever Claude Code filed them.** The default source was the single `~/.claude/projects/<encoded repo root>` directory, so stratum found 0 transcripts while its sessions live under the parent `forge` project (103) and `stratum/ts` (18). Discovery now scans the root's own, sub-directory and ancestor project dirs, keeps only sessions whose recorded `cwd` is inside the repo, dedupes by session id (canonical dir preferred), and reports the contributing dirs in `project_dirs`. An explicit `projectDir` still overrides.
