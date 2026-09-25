@@ -13,7 +13,11 @@ function copyBudget(budget: Budget | undefined): Budget {
   return budget ? { ...budget } : {};
 }
 
-/** A small, serializable budget ledger. Limits are only imposed for declared keys. */
+/** A small, serializable budget ledger. Limits are only imposed for declared keys.
+ * Unknown amounts make no debit (existing policy); spent is a known-amount subtotal,
+ * not proof of complete cost or a free call. USD caps cannot bound unreported cost.
+ * Receipts, not these sparse totals, retain the distinction between unknown and zero.
+ */
 export class BudgetLedger {
   readonly limits?: Budget;
   readonly spent: Budget;

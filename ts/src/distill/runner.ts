@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, basename, relative, resolve, sep } from "node:path";
 import { appendCandidates, sidecarPath } from "./candidate.js";
 import type { AssetCandidate, SourceMode } from "./candidate.js";
 import { detect } from "./detector.js";
@@ -22,6 +22,31 @@ export interface DistillResult extends Omit<DistillInspection, "workflows"> { st
 const invalid = (message: string): never => { throw new DistillError("invalid_options", message); };
 async function sourcePath(path: string): Promise<string> {
   try { return await realpath(path); } catch (error) { if (missing(error)) return resolve(path); throw new DistillError("source_read_error", "cannot resolve transcript source"); }
+}
+/** Encoded names are only a discovery hint; cwd attribution below resolves collisions. */
+async function workspaceProjects(root: string): Promise<string[]> {
+  const projectsRoot = join(homedir(), ".claude", "projects");
+  const encode = (path: string) => path.replace(/\//g, "-");
+  const ancestors = new Set<string>();
+  for (let path = dirname(root); ; path = dirname(path)) {
+    ancestors.add(encode(path));
+    if (dirname(path) === path) break;
+  }
+  try {
+    const entries = await readdir(projectsRoot, { withFileTypes: true });
+    const encodedRoot = encode(root);
+    return entries.filter(e => e.isDirectory() && !e.isSymbolicLink()
+      && (e.name === encodedRoot || e.name.startsWith(`${encodedRoot}-`) || ancestors.has(e.name)))
+      .map(e => join(projectsRoot, e.name)).sort(compare);
+  } catch (error) {
+    if (missing(error)) return [];
+    throw new DistillError("source_read_error", "cannot enumerate transcript projects");
+  }
+}
+function cwdInside(root: string, cwd: string): boolean {
+  if (!isAbsolute(cwd)) return false;
+  const path = relative(root, cwd);
+  return path === "" || path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 export async function resolveDistillRequest(options: DistillOptions): Promise<ResolvedDistillRequest> {
   const minCount = options.minCount ?? 2, windowDays = options.windowDays ?? 30;
@@ -50,21 +75,34 @@ export async function resolveDistillRequest(options: DistillOptions): Promise<Re
     projectDirs = [await sourcePath(resolve(cwd, options.projectDir))];
   } else {
     sourceMode = "workspace";
-    projectDirs = [await sourcePath(join(homedir(), ".claude", "projects", root.replace(/\//g, "-")))];
+    projectDirs = await workspaceProjects(root);
   }
   return { workspaceRoot: root, projectDirs, sourceMode, minCount, windowDays, outPath: sidecarPath(root), rootSource };
 }
 export async function inspectWorkflows(request: ResolvedDistillRequest): Promise<DistillInspection> {
   const diagnostics: DistillDiagnostics = { sessions: 0, skippedFiles: 0, droppedLines: 0, droppedEvents: 0, mtimeFailures: 0, malformedRows: 0, unsupportedRows: 0, authoringSkipped: 0 };
   const workflows: WorkflowCandidate[] = [];
-  for (const projectDir of [...new Set(request.projectDirs)].sort(compare)) {
+  const projectDirs: string[] = [], seenSessions = new Set<string>();
+  // Prefer the canonical repo source when the same session was copied between projects.
+  const canonicalName = request.workspaceRoot.replace(/\//g, "-");
+  const sources = [...new Set(request.projectDirs)].sort((a, b) => request.sourceMode === "workspace"
+    ? Number(basename(b) === canonicalName) - Number(basename(a) === canonicalName) || compare(a, b)
+    : compare(a, b));
+  for (const projectDir of sources) {
     try {
       const loaded = await loadSessions(projectDir, { windowDays: request.windowDays });
       for (const key of Object.keys(loaded.diagnostics) as Array<keyof HarvestDiagnostics>) diagnostics[key] += loaded.diagnostics[key];
-      workflows.push(...detect(loaded.sessions, { minCount: request.minCount }));
+      const sessions = request.sourceMode === "workspace" ? loaded.sessions.filter(session => {
+        if (!session.observedCwds.some(cwd => cwdInside(request.workspaceRoot, cwd)) || seenSessions.has(session.sessionId)) return false;
+        seenSessions.add(session.sessionId);
+        return true;
+      }) : loaded.sessions;
+      diagnostics.sessions -= loaded.sessions.length - sessions.length;
+      if (request.sourceMode !== "workspace" || sessions.length) projectDirs.push(projectDir);
+      workflows.push(...detect(sessions, { minCount: request.minCount }));
     } catch { throw new DistillError("source_read_error", "cannot read transcript source"); }
   }
-  return { workflows, workspace_root: request.workspaceRoot, project_dirs: request.projectDirs, out_path: request.outPath, diagnostics };
+  return { workflows, workspace_root: request.workspaceRoot, project_dirs: projectDirs.sort(compare), out_path: request.outPath, diagnostics };
 }
 export async function runDistill(request: ResolvedDistillRequest, options: { write: boolean } = { write: true }): Promise<DistillResult> {
   const { workflows, ...inspection } = await inspectWorkflows(request);
