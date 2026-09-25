@@ -30,7 +30,7 @@ async function fixture() {
   const {peerToken} = JSON.parse(await readFile(join(sessionsDir,keyFileName(peer.pid,peer.sock)),"utf8"));
   const state = (turnId: string | null) => handle.send({type:"active-turn-state",runId,threadId:"t",turnId});
   state("u");
-  return {config,child,handle,requests,peer,auth:{type:"auth",token:peerToken},state};
+  return {config,child,handle,requests,peer,auth:{type:"auth",token:peerToken},state,errors:()=>errors};
 }
 async function send(sock:string, frames:unknown[]) {
   const socket = createConnection(sock); sockets.add(socket); socket.on("close",()=>sockets.delete(socket));
@@ -73,6 +73,31 @@ const socketAvailable = await (async () => {
 })();
 
 describe.skipIf(!socketAvailable)("app-server socket/IPC lifecycle", () => {
+  it("S5a old non-PID callback is rejected before steer admission", async () => {
+    const f = await fixture();
+    await send(f.peer.sock, [f.auth, user(join(f.config.sockDir, "absent-callback.sock"))]);
+    await vi.waitFor(() => expect(f.errors()).toContain("peer frame rejected: invalid callback or msg_id"));
+    expect(f.requests).toHaveLength(0);
+  });
+  it.each(["valid", "denied"])("S5a probe sender records callback and IPC for %s auth", async mode => {
+    const {probePeerSender, assertPendingSteerReply} = await import(resolve("scripts/peer3-probe.mjs"));
+    const f = await fixture(), data: any = {};
+    const sender = await probePeerSender({root: f.config.sockDir, sessionsDir: f.config.sessionsDir, data});
+    try {
+      await sender.send(f.peer.sock, mode === "valid" ? f.auth.token : "wrong");
+      if (mode === "valid") {
+        await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+        expect(f.requests[0]).toMatchObject({msgId: "s5a-pending", expectedTurnId: "u"});
+        expect(() => assertPendingSteerReply(data)).not.toThrow();
+        f.handle.send({type: "steer-result", reqId: f.requests[0]!.reqId, outcome: "dropped", detail: "unknown"});
+      }
+      await vi.waitFor(() => expect(status(data.callbackFrames)).toHaveLength(1));
+      expect(data.callbackFrames[0]).toEqual({type: "auth", authenticated: true});
+      expect(status(data.callbackFrames)[0]).toMatchObject({status: mode === "valid" ? "dropped" : "denied", orig_msg_id: "s5a-pending"});
+      expect(() => assertPendingSteerReply(data)).toThrow("Sidecar settled before pending-steer barrier");
+      if (mode === "denied") expect(f.requests).toHaveLength(0);
+    } finally { await sender.close(); }
+  });
   it.each(["absent","wrong","late","repair"])("AC09 denies %s first-frame auth", async mode => {
     const f=await fixture(), r=await recipient(f.config.sockDir,9001), frame=user(r.sock);
     const frames = mode === "absent" ? [frame] : mode === "wrong" ? [{type:"auth",token:"wrong"},frame]

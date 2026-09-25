@@ -1,0 +1,148 @@
+{
+  "report": {
+    "mode": "sandbox-baseline",
+    "runs": [
+      {
+        "mode": "built-in",
+        "results": {
+          "workspace": {
+            "writable": true
+          },
+          "writableRoot": {
+            "writable": true
+          },
+          "TMPDIR": {
+            "writable": true
+          },
+          "slashTmp": {
+            "writable": true
+          }
+        },
+        "observed": {
+          "workspace": true,
+          "writableRoot": true,
+          "TMPDIR": true,
+          "slashTmp": true
+        },
+        "toolRecords": [
+          {
+            "type": "item.completed",
+            "item": {
+              "type": "command_execution",
+              "status": "completed",
+              "exit_code": 0,
+              "aggregated_output": "PEER3_TOOL_RESULTS={\"workspace\": {\"writable\": true}, \"writableRoot\": {\"writable\": true}, \"TMPDIR\": {\"writable\": true}, \"slashTmp\": {\"writable\": true}}"
+            }
+          }
+        ]
+      },
+      {
+        "mode": "ordinary",
+        "results": {
+          "workspace": {
+            "writable": true
+          },
+          "writableRoot": {
+            "writable": true
+          },
+          "TMPDIR": {
+            "writable": true
+          },
+          "slashTmp": {
+            "writable": true
+          }
+        },
+        "observed": {
+          "workspace": true,
+          "writableRoot": true,
+          "TMPDIR": true,
+          "slashTmp": true
+        },
+        "toolRecords": [
+          {
+            "type": "item.completed",
+            "item": {
+              "type": "command_execution",
+              "status": "completed",
+              "exit_code": 0,
+              "aggregated_output": "PEER3_TOOL_RESULTS={\"workspace\": {\"writable\": true}, \"writableRoot\": {\"writable\": true}, \"TMPDIR\": {\"writable\": true}, \"slashTmp\": {\"writable\": true}}"
+            }
+          }
+        ]
+      },
+      {
+        "mode": "override",
+        "results": {
+          "workspace": {
+            "writable": true
+          },
+          "writableRoot": {
+            "writable": true
+          },
+          "TMPDIR": {
+            "writable": false,
+            "code": "EPERM"
+          },
+          "slashTmp": {
+            "writable": false,
+            "code": "EPERM"
+          }
+        },
+        "observed": {
+          "workspace": true,
+          "writableRoot": true,
+          "TMPDIR": false,
+          "slashTmp": false
+        },
+        "toolRecords": [
+          {
+            "type": "item.completed",
+            "item": {
+              "type": "command_execution",
+              "status": "completed",
+              "exit_code": 0,
+              "aggregated_output": "PEER3_TOOL_RESULTS={\"workspace\": {\"writable\": true}, \"writableRoot\": {\"writable\": true}, \"TMPDIR\": {\"writable\": false, \"code\": \"EPERM\"}, \"slashTmp\": {\"writable\": false, \"code\": \"EPERM\"}}"
+            }
+          }
+        ]
+      }
+    ],
+    "comparison": {
+      "TMPDIR": {
+        "builtIn": true,
+        "ordinary": true,
+        "override": false,
+        "ordinaryMatchesBuiltIn": true,
+        "overrideChangesOrdinary": true
+      },
+      "slashTmp": {
+        "builtIn": true,
+        "ordinary": true,
+        "override": false,
+        "ordinaryMatchesBuiltIn": true,
+        "overrideChangesOrdinary": true
+      }
+    },
+    "parityPrerequisite": true
+  },
+  "raw": {
+    "built-in": {
+      "code": 0,
+      "signal": null,
+      "reason": null,
+      "stdout": "{\"type\": \"turn.started\"}\n{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"status\": \"completed\", \"exit_code\": 0, \"aggregated_output\": \"PEER3_TOOL_RESULTS={\\\"workspace\\\": {\\\"writable\\\": true}, \\\"writableRoot\\\": {\\\"writable\\\": true}, \\\"TMPDIR\\\": {\\\"writable\\\": true}, \\\"slashTmp\\\": {\\\"writable\\\": true}}\"}}\n{\"type\": \"turn.completed\"}"
+    },
+    "ordinary": {
+      "code": 0,
+      "signal": null,
+      "reason": null,
+      "stdout": "{\"type\": \"turn.started\"}\n{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"status\": \"completed\", \"exit_code\": 0, \"aggregated_output\": \"PEER3_TOOL_RESULTS={\\\"workspace\\\": {\\\"writable\\\": true}, \\\"writableRoot\\\": {\\\"writable\\\": true}, \\\"TMPDIR\\\": {\\\"writable\\\": true}, \\\"slashTmp\\\": {\\\"writable\\\": true}}\"}}\n{\"type\": \"turn.completed\"}"
+    },
+    "override": {
+      "code": 0,
+      "signal": null,
+      "reason": null,
+      "stdout": "{\"type\": \"turn.started\"}\n{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"status\": \"completed\", \"exit_code\": 0, \"aggregated_output\": \"PEER3_TOOL_RESULTS={\\\"workspace\\\": {\\\"writable\\\": true}, \\\"writableRoot\\\": {\\\"writable\\\": true}, \\\"TMPDIR\\\": {\\\"writable\\\": false, \\\"code\\\": \\\"EPERM\\\"}, \\\"slashTmp\\\": {\\\"writable\\\": false, \\\"code\\\": \\\"EPERM\\\"}}\"}}\n{\"type\": \"turn.completed\"}"
+    }
+  }
+}

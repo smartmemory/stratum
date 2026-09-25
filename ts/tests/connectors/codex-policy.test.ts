@@ -168,24 +168,33 @@ describe("AC02 app-server policy placement", () => {
       return;
     }
     const effort = model.includes("/") ? model.split("/")[1] : undefined;
-    const expectedSandbox = policy.filesystemMode === "read-only"
-      ? {type:"readOnly",networkAccess:false}
-      : policy.filesystemMode === "danger-full-access" ? {type:"dangerFullAccess"}
-      : {type:"workspaceWrite",writableRoots:[...policy.writableRoots],networkAccess:policy.networkAccess,
-        excludeTmpdirEnvVar:false,excludeSlashTmp:false};
     const result = encodeCodexPolicy(model,cwd,policy,"app-server");
     expect(result).toEqual({
-      thread:{model:"gpt-6-luna",cwd,approvalPolicy:policy.approvalPolicy},
-      turn:{sandboxPolicy:expectedSandbox,...(effort ? {effort} : {})},
+      thread:{model:"gpt-6-luna",cwd,approvalPolicy:policy.approvalPolicy,sandbox:policy.filesystemMode,
+        ...(policy.filesystemMode === "workspace-write" ? {config:{
+          "sandbox_workspace_write.network_access":policy.networkAccess,
+          "sandbox_workspace_write.writable_roots":[...policy.writableRoots],
+        }} : {})},
+      turn:effort ? {effort} : {},
     });
+    expect(JSON.stringify(result)).not.toMatch(/sandboxPolicy|exclude/i);
+    const exec = encodeCodexPolicy(model,cwd,policy,"exec");
+    const workspaceConfig = Object.fromEntries(exec.flatMap((arg, i) => {
+      const entry = exec[i + 1];
+      if (arg !== "-c" || !entry?.startsWith("sandbox_workspace_write.")) return [];
+      const equals = entry.indexOf("=");
+      return [[entry.slice(0, equals), JSON.parse(entry.slice(equals + 1))]];
+    }));
+    if (policy.filesystemMode === "workspace-write") expect(result.thread.config).toEqual(workspaceConfig);
+    else expect(result.thread).not.toHaveProperty("config");
     if (!effort) expect(result.turn).not.toHaveProperty("effort");
   });
   it("retains full-access authorization at the dispatch boundary", () => {
     expect(() => assertCodexSandboxAllowed("danger-full-access",{})).toThrow(/ALLOW_FULL_ACCESS/);
     expect(() => assertCodexSandboxAllowed("danger-full-access",{STRATUM_CODEX_ALLOW_FULL_ACCESS:"1"})).not.toThrow();
-    expect(encodeCodexPolicy("gpt-6-luna","/work",{filesystemMode:"danger-full-access",networkAccess:false,writableRoots:[],approvalPolicy:"never"},"app-server").turn.sandboxPolicy).toEqual({type:"dangerFullAccess"});
+    expect(encodeCodexPolicy("gpt-6-luna","/work",{filesystemMode:"danger-full-access",networkAccess:false,writableRoots:[],approvalPolicy:"never"},"app-server").thread.sandbox).toBe("danger-full-access");
   });
   it("keeps an unrecognized effort suffix in the model name", () => {
-    expect(encodeCodexPolicy("vendor/model/unknown","/work",{filesystemMode:"read-only",networkAccess:false,writableRoots:[],approvalPolicy:"never"},"app-server")).toEqual({thread:{model:"vendor/model/unknown",cwd:"/work",approvalPolicy:"never"},turn:{sandboxPolicy:{type:"readOnly",networkAccess:false}}});
+    expect(encodeCodexPolicy("vendor/model/unknown","/work",{filesystemMode:"read-only",networkAccess:false,writableRoots:[],approvalPolicy:"never"},"app-server")).toEqual({thread:{model:"vendor/model/unknown",cwd:"/work",approvalPolicy:"never",sandbox:"read-only"},turn:{}});
   });
 });

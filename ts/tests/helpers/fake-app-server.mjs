@@ -10,6 +10,24 @@ export function expectedReply(method) {
   if (method === serverMethods[5]) return { result: { action: 'decline', content: null, _meta: null } };
   return { error: { code: -32601, message: 'unsupported by unattended driver' } };
 }
+export function validateThreadStart(params) {
+  const workspace = params.sandbox === 'workspace-write';
+  assert.deepEqual(Object.keys(params).sort(), ['model', 'cwd', 'approvalPolicy', 'sandbox', ...(workspace ? ['config'] : [])].sort());
+  assert.equal(typeof params.model, 'string');
+  assert.equal(typeof params.cwd, 'string');
+  assert.ok(['never', 'on-request', 'untrusted'].includes(params.approvalPolicy));
+  assert.ok(['read-only', 'workspace-write', 'danger-full-access'].includes(params.sandbox));
+  if (workspace) {
+    assert.deepEqual(Object.keys(params.config).sort(), ['sandbox_workspace_write.network_access', 'sandbox_workspace_write.writable_roots']);
+    assert.equal(typeof params.config['sandbox_workspace_write.network_access'], 'boolean');
+    assert.ok(Array.isArray(params.config['sandbox_workspace_write.writable_roots']));
+    assert.ok(params.config['sandbox_workspace_write.writable_roots'].every(root => typeof root === 'string'));
+  }
+}
+export function validateTurnStart(params) {
+  assert.equal(Object.hasOwn(params, 'sandboxPolicy'), false);
+  assert.deepEqual(Object.keys(params).sort(), ['threadId', 'input', ...(Object.hasOwn(params, 'effort') ? ['effort'] : [])].sort());
+}
 export function serveScenario(scenario = {}) {
   const send = frame => process.stdout.write(JSON.stringify(frame) + '\n');
   const notify = (method, params = {}) => send({ method, params: { threadId: 't', turnId: 'u', ...params } });
@@ -33,11 +51,13 @@ export function serveScenario(scenario = {}) {
       if (frame.method === 'initialized') { initialized = true; return; }
       if (frame.method === 'thread/start') {
         assert.equal(initialized, true);
+        validateThreadStart(frame.params);
         if (scenario.reject === frame.method) return send({ id: frame.id, error: { message: 'fixture rejection' } });
         notify('thread/started', { thread: { id: 't' } });
         return send({ id: frame.id, result: { thread: { id: 't' } } });
       }
       if (frame.method === 'turn/start') {
+        validateTurnStart(frame.params);
         assert.equal(frame.params.threadId, 't'); started = true;
         if (scenario.reject === frame.method) return send({ id: frame.id, error: { message: 'fixture rejection' } });
         send({ id: frame.id, result: { turn: { id: 'u' } } });

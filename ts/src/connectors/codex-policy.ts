@@ -4,8 +4,8 @@ import type { ThreadStartParams } from "./codex-appserver-protocol/v2/ThreadStar
 import type { TurnStartParams } from "./codex-appserver-protocol/v2/TurnStartParams.js";
 
 export interface AppServerPolicy {
-  thread: Pick<ThreadStartParams, "model" | "cwd" | "approvalPolicy">;
-  turn: Pick<TurnStartParams, "effort" | "sandboxPolicy">;
+  thread: Pick<ThreadStartParams, "model" | "cwd" | "approvalPolicy" | "sandbox" | "config">;
+  turn: Pick<TurnStartParams, "effort">;
 }
 
 /** Encoding only: full-access authorization remains at the dispatch boundary. */
@@ -15,11 +15,16 @@ export function encodeCodexPolicy(
   modelId: string, cwd: string, policy: SandboxPolicy, target: "exec" | "app-server",
 ): string[] | AppServerPolicy {
   const { model, effort } = modelIdentity(modelId);
+  // One source for exec overrides and thread config. Omit temp exclusions so
+  // both transports inherit the user's ambient values.
+  const workspaceConfig = {
+    "sandbox_workspace_write.network_access": policy.networkAccess,
+    "sandbox_workspace_write.writable_roots": [...policy.writableRoots],
+  } satisfies NonNullable<ThreadStartParams["config"]>;
   if (target === "exec") {
     const args = [
       "exec", "--json", "--skip-git-repo-check", "--sandbox", policy.filesystemMode,
-      "-c", `sandbox_workspace_write.network_access=${policy.networkAccess}`,
-      "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify([...policy.writableRoots])}`,
+      ...Object.entries(workspaceConfig).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`]),
       "-c", `approval_policy=${JSON.stringify(policy.approvalPolicy)}`,
       "-m", model, "-C", cwd,
     ];
@@ -30,15 +35,11 @@ export function encodeCodexPolicy(
   if (policy.approvalPolicy === "on-failure") {
     throw new Error('Codex app-server does not support approval policy "on-failure"');
   }
-  const sandboxPolicy: NonNullable<TurnStartParams["sandboxPolicy"]> =
-    policy.filesystemMode === "read-only" ? { type: "readOnly", networkAccess: false } :
-    policy.filesystemMode === "danger-full-access" ? { type: "dangerFullAccess" } : {
-      type: "workspaceWrite", writableRoots: [...policy.writableRoots], networkAccess: policy.networkAccess,
-      // Proposed exec defaults; live sandbox parity is a later slice's gate.
-      excludeTmpdirEnvVar: false, excludeSlashTmp: false,
-    };
   return {
-    thread: { model, cwd, approvalPolicy: policy.approvalPolicy },
-    turn: { sandboxPolicy, ...(effort ? { effort } : {}) },
+    thread: {
+      model, cwd, approvalPolicy: policy.approvalPolicy, sandbox: policy.filesystemMode,
+      ...(policy.filesystemMode === "workspace-write" ? { config: workspaceConfig } : {}),
+    },
+    turn: effort ? { effort } : {},
   };
 }

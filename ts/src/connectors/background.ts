@@ -215,6 +215,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   const createdAt = new Date().toISOString();
   const launch = strategy === "app-server" ? await launchCodexAppServerDriver({
     runId, model, cwd: options.cwd, prompt: withSandboxPreamble(options.prompt, sandboxMode),
+    // Keep the Stratum policy intact; the driver encodes sandbox/config at thread/start.
     policy: sandboxPolicy, streamPath,
     peer: { name: peerName(model, runId, { label: options.peerLabel }),
       sessionsDir: options.sessionsDir ?? resolveSessionsDir(env), sockDir: options.sockDir ?? resolveSockDir(env),
