@@ -200,9 +200,18 @@ export function classify(
   return clusters.sort((a, b) => a.key.localeCompare(b.key));
 }
 
+function evidenceIdentity(record: FailureRecord): string {
+  const step = record.itemIndex === undefined ? record.stepId ?? ""
+    : JSON.stringify([record.stepId, record.itemIndex, record.stage]);
+  const parts = [record.runId, step, record.at];
+  // Fast retries may share a timestamp; retain each fanout attempt as evidence.
+  if (record.itemIndex !== undefined) parts.push(String(record.attempt));
+  return parts.join("\u0000");
+}
+
 function identity(unit: IssueUnit): string {
   const { record } = unit;
-  return [record.runId, record.stepId ?? "", record.at, unit.fingerprint].join("\u0000");
+  return [evidenceIdentity(record), unit.fingerprint].join("\u0000");
 }
 
 function build(
@@ -248,7 +257,7 @@ function build(
   const evidence: FailureRecord[] = [];
   const seen = new Set<string>();
   for (const record of rows) {
-    const id = [record.runId, record.stepId ?? "", record.at].join("\u0000");
+    const id = evidenceIdentity(record);
     if (seen.has(id)) continue;
     seen.add(id);
     evidence.push(record);

@@ -8,7 +8,8 @@ import { join } from "node:path";
  * nothing but failures. Deliberately NOT wired into the engine: a harvest crash must
  * never be able to fail a user's flow, and the read path has no coupling to change.
  *
- * Two sources, not one. Step failures are `result` events carrying `detail.failure`.
+ * Step failures are `result` events carrying `detail.failure`; fanout attempts
+ * carry item/stage failures in `fanout_attempt_result` events.
  * Flow-level failures — budget exhaustion above all — never appear there; they are
  * `budget_exhausted` events plus the run's top-level `failure` context. A reader that
  * takes only the first source produces zero `transient` records, which leaves the
@@ -22,6 +23,9 @@ export interface FailureRecord {
   flowName: string;
   /** null for flow-level failures, which belong to no step. */
   stepId: string | null;
+  /** Fanout identity within the parent step; absent for ordinary step failures. */
+  itemIndex?: number;
+  stage?: number;
   /** Spec revision. Carried and reported, never used as a grouping key — it changes
    * on every spec edit, so keying on it splits one lesson into one cluster per edit. */
   specDigest?: string;
@@ -94,19 +98,50 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
   const events = Array.isArray(run.events) ? (run.events as RawEvent[]) : [];
 
   let dropped = 0;
+  // Reset at each aggregate result so earlier batches cannot hide a later failure.
+  const fanoutFailures = new Set<string>();
 
   for (const [index, event] of events.entries()) {
     const type = str(event.type);
     const detail = isRecord(event.detail) ? event.detail : undefined;
     if (detail === undefined) continue;
 
+    if (type === "fanout_attempt_result") {
+      if (!("failure" in detail)) continue;
+      const failure = isRecord(detail.failure) ? detail.failure : undefined;
+      const reason = str(failure?.reason);
+      const stepId = str(event.stepId);
+      const itemIndex = indexOf(detail.itemIndex);
+      const stage = indexOf(detail.stage);
+      const attempt = num(detail.attempt);
+      if (reason === undefined || stepId === undefined || itemIndex === undefined
+        || stage === undefined || attempt === undefined || detail.success !== false) {
+        dropped += 1;
+        continue;
+      }
+      fanoutFailures.add(stepId);
+      out.push({
+        runId, flowName, stepId, itemIndex, stage, attempt, reason,
+        ...(specDigest !== undefined ? { specDigest } : {}),
+        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+        shape: shapeOf(reason),
+        at: str(event.at) ?? "",
+        recovered: fanoutSucceededAfter(events, stepId, itemIndex, stage, index),
+      });
+      continue;
+    }
+
     if (type === "result") {
+      const hasFanoutFailures = fanoutFailures.delete(str(event.stepId) ?? "");
       if (!("failure" in detail)) continue;
       // `failure` is a string in some drifted runs: failure-shaped but unusable.
       const failure = isRecord(detail.failure) ? detail.failure : undefined;
       if (failure === undefined) { dropped += 1; continue; }
       const reason = str(failure.reason);
       if (reason === undefined) { dropped += 1; continue; }
+      // The require failure summarizes the item failures already collected. Keep
+      // standalone aggregate failures (e.g. no items) and unrelated step failures.
+      if (hasFanoutFailures && /^fanout require .+ not met \(\d+\/\d+ succeeded\)$/.test(reason)) continue;
       const stepId = str(event.stepId) ?? null;
       out.push({
         runId,
@@ -158,6 +193,20 @@ function succeededAfter(events: RawEvent[], stepId: string, afterIndex: number):
     if (detail !== undefined && !isRecord(detail.failure)) return true;
   }
   return false;
+}
+
+/** Aggregate success or another item's/stage's success is not recovery. */
+function fanoutSucceededAfter(events: RawEvent[], stepId: string, itemIndex: number, stage: number, afterIndex: number): boolean {
+  return events.slice(afterIndex + 1).some((event) => {
+    if (event.type !== "fanout_attempt_result" || event.stepId !== stepId || !isRecord(event.detail)) return false;
+    return event.detail.itemIndex === itemIndex && event.detail.stage === stage
+      && event.detail.success === true && !("failure" in event.detail);
+  });
+}
+
+function indexOf(value: unknown): number | undefined {
+  const index = num(value);
+  return index !== undefined && Number.isInteger(index) && index >= 0 ? index : undefined;
 }
 
 function shapeOf(reason: string): FailureShape {
