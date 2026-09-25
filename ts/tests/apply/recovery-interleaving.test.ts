@@ -32,8 +32,8 @@ async function fixture(kind: "memory" | "asset") {
   temporary.push(root);
   setGuardsDir(join(root, "guards"));
   const { records } = await harvest(join(dirname(fileURLToPath(import.meta.url)), "../fixtures/learn/flows"));
-  const cluster = classify(records).find(item => item.class === "durable")!;
-  const candidate = authorCandidate({ ...cluster, scope: { ...cluster.scope, workspaceRoot: root } });
+  const cluster = classify(records.map((record) => ({ ...record, workspaceRoot: root }))).find(item => item.class === "durable")!;
+  const candidate = authorCandidate(cluster);
   return { root, apply: () => memory.applyCandidate(candidate, { enabled: true }),
     revert: (id: string) => memory.revertApply(id, root, { enabled: true }),
     reconcile: () => memory.reconcile(root, { enabled: true }),

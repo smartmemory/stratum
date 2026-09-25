@@ -149,3 +149,63 @@ describe("sidecar", () => {
     expect(await readCandidates(await scratch())).toEqual([]);
   });
 });
+
+
+describe("template v2 guidance", () => {
+  it("renders exact enum guidance and places it after impact in the note", async () => {
+    const cluster = await durableCluster();
+    const candidate = authorCandidate(cluster);
+    const guidance = "When `outcome` has a non-null value, it must be exactly one of: `complete`, `failed`, `skipped`.";
+    expect(candidate.rendered.guidance).toBe(guidance);
+    expect(candidate.rendered.templateVersion).toBe("2");
+    expect(candidate.clusterKey).toBe(cluster.key);
+    expect(candidate.shape).toBe(cluster.shape);
+    expect(candidate.contract).toEqual(cluster.contract);
+    expect(candidate.rendered.content).toMatch(/  \*\*Why it matters:\*\*[^\n]+\n  \*\*Agent guidance:\*\*/);
+    expect(candidate.rendered.content).toContain(`  **Agent guidance:** ${guidance}`);
+    expect(candidate.rendered.content.indexOf(guidance)).toBeLessThan(candidate.rendered.content.indexOf("<!-- learn:"));
+  });
+
+  it("renders exact guidance from a real Zod type issue", async () => {
+    const { records } = await harvest(FIXTURES);
+    const cluster = classify(records, { minRuns: 1, minPairs: 1 })
+      .find((c) => c.contract.code === "invalid_type" && c.class === "durable" && c.applyEligible)!;
+    expect(cluster.contract).toEqual({ code: "invalid_type", path: "commit_hash", expected: ["string"] });
+    expect(authorCandidate(cluster).rendered.guidance)
+      .toBe("When `commit_hash` has a non-null value, it must be a `string`.");
+  });
+
+  it("keeps guidance identical when evidence, observed values and counts change", async () => {
+    const cluster = await durableCluster();
+    const first = authorCandidate(cluster);
+    const grown = authorCandidate({ ...cluster,
+      evidence: [...cluster.evidence, { ...cluster.evidence[0]!, runId: "new-run", recovered: false }],
+      observedValues: ["a different rejected value"],
+      recurrence: { records: cluster.recurrence.records + 1, distinctRuns: 3, distinctPairs: 7 },
+    });
+    expect(grown.rendered.guidance).toBe(first.rendered.guidance);
+    expect(grown.clusterId).toBe(first.clusterId);
+    expect(grown.revisionId).not.toBe(first.revisionId);
+  });
+
+  it("omits guidance for unsupported shapes, codes and incomplete contracts", async () => {
+    const cluster = await durableCluster();
+    const variants: Cluster[] = [
+      ...(["ensure", "gate", "other", "budget"] as const).map((shape) => ({ ...cluster, shape })),
+      ...[
+        { code: "unrecognized_keys", path: "outcome", expected: ["extra"] },
+        { code: "invalid_value", path: "outcome", expected: ["complete"] },
+        { code: "invalid_enum_value", path: "", expected: ["complete"] },
+        { code: "invalid_enum_value", path: "outcome", expected: [] },
+        { code: "invalid_type", path: "", expected: ["string"] },
+        { code: "invalid_type", path: "outcome", expected: [] },
+        { code: "invalid_type", path: "outcome", expected: ["number", "string"] },
+      ].map((contract) => ({ ...cluster, contract })),
+    ];
+    for (const variant of variants) {
+      const candidate = authorCandidate(variant);
+      expect(candidate.rendered).not.toHaveProperty("guidance");
+      expect(candidate.rendered.content).not.toContain("**Agent guidance:**");
+    }
+  });
+});

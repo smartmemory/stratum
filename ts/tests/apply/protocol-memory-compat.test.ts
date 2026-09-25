@@ -24,8 +24,8 @@ it("keeps prepared journal bytes and guard receipts compatible", async () => {
   temporaries.push(root);
   setGuardsDir(join(root, "guards"));
   const { records } = await harvest(fixtures);
-  const cluster = classify(records).find((item) => item.class === "durable")!;
-  const candidate = authorCandidate({ ...cluster, scope: { ...cluster.scope, workspaceRoot: root } });
+  const cluster = classify(records.map((record) => ({ ...record, workspaceRoot: root }))).find((item) => item.class === "durable")!;
+  const candidate = authorCandidate(cluster);
   const result = await applyCandidate(candidate, { enabled: true });
   const [entry] = await readJournal(root);
   expect(entry).toBeDefined();

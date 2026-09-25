@@ -113,7 +113,7 @@ async function listCommand(args: string[]): Promise<number> {
     return 0;
   }
   for (const row of rows) {
-    process.stdout.write(`${row.revisionId.slice(0, 12)}  ${row.claim}\n`);
+    process.stdout.write(`${row.revisionId.slice(0, 12)}  ${row.claim}${row.rendered.guidance === undefined ? "  (note only)" : ""}\n`);
   }
   return 0;
 }

@@ -20,7 +20,7 @@ import {
   type ReconcileReport,
 } from "../apply/protocol.js";
 import type { FailureRecord } from "./harvest.js";
-import type { PatchCandidate } from "./candidate.js";
+import { computeRevisionId, type PatchCandidate } from "./candidate.js";
 
 export { ApplyError, ApplyRefused };
 export type { ApplyOptions, AppliedResult, Receipt, ReconcileReport, JournalState } from "../apply/protocol.js";
@@ -167,16 +167,28 @@ function noteSubject(line: string): string | null {
 
 /** The bytes must be the bytes the revision id names. */
 export function verifyIdentity(candidate: PatchCandidate): void {
-  const expected = sha(
-    [
-      candidate.clusterId,
-      candidate.rendered.templateVersion,
-      candidate.rendered.content,
-      candidate.targetPath,
-      candidate.rendered.insertion.mode,
-      candidate.rendered.insertion.section,
-    ].join("\u0000"),
-  );
+  if (typeof candidate.clusterKey !== "string" || sha(candidate.clusterKey) !== candidate.clusterId) {
+    throw new ApplyError("candidate clusterId does not match its clusterKey");
+  }
+  const parts = candidate.clusterKey.split("\u0000");
+  const stepScoped = candidate.groupingKey === "step-scoped";
+  if ((!stepScoped && candidate.groupingKey !== "step-agnostic") ||
+      parts.length !== (stepScoped ? 5 : 4)) {
+    throw new ApplyError("candidate clusterKey does not match its groupingKey");
+  }
+  if (parts[0] !== candidate.scope.workspaceRoot) {
+    throw new ApplyError("candidate clusterKey does not match scope.workspaceRoot");
+  }
+  if (parts[1] !== candidate.scope.flowName) {
+    throw new ApplyError("candidate clusterKey does not match scope.flowName");
+  }
+  if (stepScoped && (candidate.scope.stepIds.length !== 1 || parts[2] !== candidate.scope.stepIds[0])) {
+    throw new ApplyError("candidate clusterKey does not match scope.stepIds for step-scoped grouping");
+  }
+  if (parts[stepScoped ? 3 : 2] !== candidate.shape) {
+    throw new ApplyError("candidate clusterKey does not match its shape");
+  }
+  const expected = computeRevisionId(candidate);
   if (expected !== candidate.revisionId) {
     throw new ApplyError(
       "candidate identity does not match its content; the sidecar row was edited after staging",

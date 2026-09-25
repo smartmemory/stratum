@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
-import type { FailureRecord } from "./harvest.js";
-import type { Cluster } from "./classify.js";
+import type { FailureRecord, FailureShape } from "./harvest.js";
+import type { Cluster, ContractSummary } from "./classify.js";
 
 /**
  * Turns a durable cluster into a staged, immutable candidate.
@@ -18,11 +18,12 @@ import type { Cluster } from "./classify.js";
  */
 
 export const SCHEMA_VERSION = "learn-1.0";
-export const TEMPLATE_VERSION = "1";
+export const TEMPLATE_VERSION = "2";
 
 export class CandidateError extends Error {}
 
 export interface RenderedAsset {
+  guidance?: string;
   content: string;
   templateId: string;
   templateVersion: string;
@@ -32,6 +33,9 @@ export interface RenderedAsset {
 export interface PatchCandidate {
   /** Stable across re-harvests: the lesson's identity. */
   clusterId: string;
+  clusterKey: string;
+  shape: FailureShape;
+  contract: ContractSummary;
   /** Content-addressed: the bytes' identity. Apply always names one of these. */
   revisionId: string;
   schemaVersion: typeof SCHEMA_VERSION;
@@ -91,29 +95,21 @@ export function authorCandidate(cluster: Cluster): PatchCandidate {
   if (workspaceRoot === null) throw new CandidateError("durable cluster has no workspaceRoot");
 
   const claim = renderClaim(cluster);
+  const guidance = renderGuidance(cluster);
   const rendered: RenderedAsset = {
-    content: renderNote(cluster, claim),
+    ...(guidance === undefined ? {} : { guidance }),
+    content: renderNote(cluster, claim, guidance),
     templateId: `learn/${cluster.shape}`,
     templateVersion: TEMPLATE_VERSION,
     insertion: { mode: "append-to-section", section: SECTION },
   };
 
   const clusterId = sha(cluster.key);
-  return {
+  const candidate = {
     clusterId,
-    // Binds the whole WRITE, not just the bytes: target path and insertion mode change
-    // what gets written (mode "create" discards the existing file), so an identity that
-    // omits them lets an edited sidecar row apply different effects under the same id.
-    revisionId: sha(
-      [
-        clusterId,
-        rendered.templateVersion,
-        rendered.content,
-        targetPathFor(workspaceRoot),
-        rendered.insertion.mode,
-        rendered.insertion.section,
-      ].join("\u0000"),
-    ),
+    clusterKey: cluster.key,
+    shape: cluster.shape,
+    contract: cluster.contract,
     schemaVersion: SCHEMA_VERSION,
     targetKind: "memory",
     targetPath: targetPathFor(workspaceRoot),
@@ -136,7 +132,44 @@ export function authorCandidate(cluster: Cluster): PatchCandidate {
     authoringInputsDigest: sha(
       JSON.stringify({ key: cluster.key, fingerprint: cluster.fingerprint, recurrence: cluster.recurrence }),
     ),
-  };
+  } satisfies Omit<PatchCandidate, "revisionId">;
+  return { ...candidate, revisionId: computeRevisionId(candidate) };
+}
+
+/** Binds the write bytes, destination, and guidance scope in a fixed order. */
+export function computeRevisionId(candidate: Omit<PatchCandidate, "revisionId">): string {
+  return sha([
+    candidate.clusterId,
+    candidate.rendered.templateVersion,
+    candidate.rendered.content,
+    candidate.targetPath,
+    candidate.rendered.insertion.mode,
+    candidate.rendered.insertion.section,
+    JSON.stringify({
+      guidance: candidate.rendered.guidance ?? null,
+      flowName: candidate.scope.flowName,
+      stepIds: [...candidate.scope.stepIds].sort(),
+      groupingKey: candidate.groupingKey,
+      shape: candidate.shape,
+      contract: {
+        code: candidate.contract.code,
+        path: candidate.contract.path,
+        expected: [...candidate.contract.expected].sort(),
+      },
+    }),
+  ].join("\u0000"));
+}
+
+function renderGuidance(cluster: Cluster): string | undefined {
+  const { code, path, expected } = cluster.contract;
+  if (cluster.shape !== "schema" || path.length === 0) return undefined;
+  if (code === "invalid_enum_value" && expected.length > 0) {
+    return `When \`${path}\` has a non-null value, it must be exactly one of: ${expected.map((value) => `\`${value}\``).join(", ")}.`;
+  }
+  if (code === "invalid_type" && expected.length === 1) {
+    return `When \`${path}\` has a non-null value, it must be a \`${expected[0]}\`.`;
+  }
+  return undefined;
 }
 
 function renderClaim(cluster: Cluster): string {
@@ -158,7 +191,7 @@ function renderClaim(cluster: Cluster): string {
   return `In flow \`${cluster.scope.flowName}\`, step(s) ${steps} failed the same \`${cluster.shape}\` check on ${field}, ${seen}.`;
 }
 
-function renderNote(cluster: Cluster, claim: string): string {
+function renderNote(cluster: Cluster, claim: string, guidance?: string): string {
   const recovered = cluster.evidence.filter((record) => record.recovered).length;
   // Only claim what the evidence shows. "Recovered on retry" is the invisible-waste
   // story, and it is a different (weaker) finding when most of these actually failed.
@@ -171,6 +204,7 @@ function renderNote(cluster: Cluster, claim: string): string {
   const lines = [
     `- **${cluster.scope.flowName}: recurring ${cluster.shape} failure on ${cluster.contract.path || "step output"}** — ${claim}`,
     `  **Why it matters:** ${impact}.`,
+    ...(guidance === undefined ? [] : [`  **Agent guidance:** ${guidance}`]),
     `  **Fix target:** the declared contract or the step instruction — a spec change, which this loop deliberately will not make for you.`,
     `  <!-- learn:${sha(cluster.key).slice(0, 12)} -->`,
   ];
