@@ -110,7 +110,7 @@ After a claim has been set, EOF or exit is **expected** and changes nothing.
 
 **Cancel API vs. poll state.** `cancelBackgroundRun` scans once, then signals and returns `cancelled` immediately (`background.ts:578-586`). It reports `already_complete` only when the sentinel is already visible to that first scan. If a completion sentinel lands between the scan and the signal, the API still says `cancelled`, but the claim is already `completed`, so the eventual poll is `complete`. That same acknowledgement-vs-outcome gap exists for exec runs today. It is documented, not changed.
 
-- **Driver death (SIGKILL, crash):** no sentinel → poll `child_died_without_sentinel` (`background.ts:472`), unchanged. The app-server loses its stdin pipe. That it then exits must be verified live (see ACs).
+- **Driver death (SIGKILL, crash):** no sentinel → poll `child_died_without_sentinel` (Codex branch `background.ts:500` at `148af46`; corrected from `:472`, which is the Claude branch), unchanged. The app-server loses its stdin pipe. That it then exits must be verified live (see ACs).
 - **Tool descendants in their own groups** are not reached by the group kill. This limitation already applies to exec runs today and is **not** made worse. The no-orphan acceptance criterion is scoped to driver + app-server, with a live process-tree check.
 
 ### 3. Stream parity: the driver writes the exec vocabulary (r1 #2)
@@ -243,7 +243,7 @@ The 0600 token file limits token possession to the same OS user. It does **not**
 
 ## Risks
 
-- **Experimental protocol.** Pin the `generate-ts` output as a contract fixture, and fail loudly on drift at driver startup (the `initialize` response carries the server version), the same way PEER-1 version-allowlists Claude Code.
+- **Experimental protocol.** Pin the `generate-ts` output as a contract fixture, and fail closed at driver startup when the `initialize` response's `userAgent` does not name a pinned, recognized version. The response has no dedicated version field (generated `InitializeResponse.ts`). A version check cannot detect schema changes within one version, and the fixture is what catches those. *Corrected 2026-09-25 (plan review): r3 said this mirrored a PEER-1 Claude Code version allowlist. None exists; `peer-registry.ts:121` checks only `peerProtocol`.*
 - **Silent-drop precedent.** `delivered` only on a returned `turnId` (§5).
 - **Translation drift.** If exec's `--json` vocabulary changes, the driver's output drifts from it. The golden flow parses a real run, not a fixture.
 - **Cost.** One more Node process per app-server background run.
