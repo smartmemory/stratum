@@ -89,6 +89,14 @@ describe("CodexConnector", () => {
     expect(() => resolveCodexTransport({ STRATUM_CODEX_TRANSPORT: "rescue" })).toThrow("expected sdk or exec");
   });
 
+  it("AC01 foreground transport ignores the background strategy", () => {
+    for (const strategy of ["app-server", "exec", "invalid"]) {
+      expect(resolveCodexTransport({ STRATUM_CODEX_BG_STRATEGY: strategy })).toBe("sdk");
+      expect(resolveCodexTransport({ STRATUM_CODEX_BG_STRATEGY: strategy, STRATUM_CODEX_TRANSPORT: "exec" })).toBe("exec");
+      expect(() => resolveCodexTransport({ STRATUM_CODEX_BG_STRATEGY: strategy, STRATUM_CODEX_TRANSPORT: "app-server" })).toThrow("expected sdk or exec");
+    }
+  });
+
   it("uses the Codex SDK by default and awaits the turn before returning", async () => {
     let finish: (() => void) | undefined;
     const blocked = new Promise<void>((resolve) => { finish = resolve; });

@@ -3,7 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import type { SandboxPolicy } from "../config/types.js";
@@ -26,8 +26,7 @@ const hooks = import.meta.url.endsWith(".ts") ? registerHooks({ resolve(specifie
   return next(specifier, context);
 } }) : undefined;
 function moduleUrl(name: string): URL {
-  const source = new URL(`./${name}.ts`, import.meta.url);
-  return existsSync(source) ? source : new URL(`./${name}.js`, import.meta.url);
+  return new URL(`./${name}.${import.meta.url.endsWith(".ts") ? "ts" : "js"}`, import.meta.url);
 }
 const { encodeCodexPolicy }: typeof import("./codex-policy.js") = await import(moduleUrl("codex-policy").href);
 const { assertAppServerIdentity }: typeof import("./codex-appserver-contract.js") = await import(moduleUrl("codex-appserver-contract").href);
@@ -45,6 +44,7 @@ export interface DriverBoundaries {
   writer: DriverWriter;
   spawn?: () => ChildProcessWithoutNullStreams;
   peer?: DriverPeerAttachment;
+  attachPeer?: () => Promise<DriverPeerAttachment | undefined>;
   signals?: NodeJS.EventEmitter;
   log?: (message: string) => void;
   timings?: { startup?: number; stall?: number; eof?: number; term?: number; steer?: number };
@@ -80,7 +80,8 @@ export async function runAppServerDriver(options: DriverOptions, io: DriverBound
   const highWatermark = 64, lowWatermark = 32;
   let finish!: (claim: TerminalClaim) => void, failWriter!: (error: unknown) => void;
   const done = new Promise<TerminalClaim>((resolve, reject) => { finish = resolve; failWriter = reject; });
-  const publish = () => { try { io.peer?.send({ type: "active-turn-state", runId: options.runId, threadId, turnId: claim ? null : turnId }); } catch (error) { log(`peer: ${error}`); } };
+  let peer = io.peer;
+  const publish = () => { try { peer?.send({ type: "active-turn-state", runId: options.runId, threadId, turnId: claim ? null : turnId }); } catch (error) { log(`peer: ${error}`); } };
   function writeExecRecord(record: unknown) {
     queued++;
     if (queued >= highWatermark) { paused = true; child?.stdout.pause(); }
@@ -157,15 +158,16 @@ export async function runAppServerDriver(options: DriverOptions, io: DriverBound
     } finally {
       signals.off("SIGTERM", signal); signals.off("SIGINT", signal);
       detach?.();
-      try { io.peer?.send({ type: "run-finalized", runId: options.runId }); io.peer?.close(); } catch (error) { log(`peer: ${error}`); }
+      try { peer?.send({ type: "run-finalized", runId: options.runId }); peer?.close(); } catch (error) { log(`peer: ${error}`); }
     }
   }
   async function steer(message: SteerRequest): Promise<SteerResult> {
     const base = { type: "steer-result" as const, reqId: message.reqId };
-    if (claim || !turnId) return { ...base, outcome: "expired", detail: "refused" };
+    if (claim || !turnId || (message.expectedTurnId !== undefined && message.expectedTurnId !== turnId)) return { ...base, outcome: "expired", detail: "refused" };
     try {
-      const result = await request("turn/steer", { threadId, expectedTurnId: turnId, input: [{ type: "text", text: message.text, text_elements: [] }] }, timing.steer);
-      return typeof result?.turnId === "string" ? { ...base, outcome: "delivered", detail: null } : { ...base, outcome: "expired", detail: "refused" };
+      const expectedTurnId = turnId;
+      const result = await request("turn/steer", { threadId, expectedTurnId, input: [{ type: "text", text: message.text, text_elements: [] }] }, timing.steer);
+      return result?.turnId === expectedTurnId ? { ...base, outcome: "delivered", detail: null } : { ...base, outcome: "dropped", detail: "unknown" };
     } catch (error) {
       return { ...base, outcome: (error as Error).message.startsWith("RPC:") ? "expired" : "dropped", detail: (error as Error).message.startsWith("RPC:") ? "refused" : "unknown" };
     }
@@ -286,10 +288,18 @@ export async function runAppServerDriver(options: DriverOptions, io: DriverBound
       consumeFrames();
     }
     child.stdout.on("end", endInput);
-    try { detach = io.peer?.subscribe(message => {
-      if (message.type === "owner-ready") publish();
-      else void steer(message).then(result => { try { io.peer?.send(result); } catch (error) { log(`peer: ${error}`); } });
-    }); } catch (error) { log(`peer attachment: ${error}`); }
+    function attachPeer(attachment: DriverPeerAttachment | undefined) {
+      if (!attachment) return;
+      if (claim) { try { attachment.close(); } catch (error) { log(`peer: ${error}`); } return; }
+      peer = attachment;
+      try { detach = peer.subscribe(message => {
+        if (message.runId !== undefined && message.runId !== options.runId) return;
+        if (message.type === "owner-ready") publish();
+        else void steer(message).then(result => { try { peer?.send(result); } catch (error) { log(`peer: ${error}`); } });
+      }); publish(); } catch (error) { log(`peer attachment: ${error}`); }
+    }
+    attachPeer(peer);
+    if (io.attachPeer) void Promise.resolve().then(io.attachPeer).then(attachPeer, error => log(`peer attachment: ${error}`));
     void (async () => {
       let step = "initialize";
       try {
@@ -303,7 +313,7 @@ export async function runAppServerDriver(options: DriverOptions, io: DriverBound
         if (!threadId) throw new Error("missing thread id");
         step = "turn/start";
         const turn = await request(step, { ...policy.turn, threadId, input: [{ type: "text", text: options.prompt, text_elements: [] }] });
-        if (!claim && !turnId && typeof turn?.turn?.id === "string") turnId = turn.turn.id;
+        if (!claim && !turnId && typeof turn?.turn?.id === "string") { turnId = turn.turn.id; publish(); }
       } catch (error) { claimTerminal("failed", `${step}: ${(error as Error).message}`); }
     })();
   } catch (error) { exited = true; claimTerminal("failed", `spawn: ${(error as Error).message}`); }
@@ -313,10 +323,66 @@ export async function runAppServerDriver(options: DriverOptions, io: DriverBound
 export async function main(): Promise<void> {
   const configPath = process.argv[2];
   if (!configPath) throw new Error("Expected driver JSON config path");
-  const config = JSON.parse(await readFile(configPath, "utf8")) as DriverOptions & { streamPath: string };
+  // Install bootstrap listeners before reading config: a fast parent may release now.
+  const bootstrap = new Promise<{ runId: string; deadline: number } | Error>(resolve => {
+    const timer = setTimeout(() => finish(new Error("Missing bootstrap: timed out after 30s")), 30_000);
+    const disconnected = () => finish(new Error("Missing bootstrap: parent disconnected before bootstrap"));
+    const message = (value: any) => {
+      if (value?.type === "bootstrap" && typeof value.runId === "string" && Number.isFinite(value.deadline)) finish(value);
+    };
+    function finish(value: { runId: string; deadline: number } | Error) {
+      clearTimeout(timer); process.off("message", message); process.off("disconnect", disconnected); resolve(value);
+    }
+    process.on("message", message); process.once("disconnect", disconnected);
+    if (!process.connected) finish(new Error("Missing bootstrap: no connected IPC channel"));
+  });
+  const config = JSON.parse(await readFile(configPath, "utf8")) as import("./codex-appserver-launch.js").AppServerLaunchConfig;
+  const released = await bootstrap;
+  if (released instanceof Error || released.runId !== config.runId) {
+    // Failed bootstrap never starts a run or writes a sentinel. Release IPC so
+    // the entry-point error handler can terminate even if the parent stays up.
+    if (process.connected) process.disconnect();
+    throw released instanceof Error ? released : new Error(`Bootstrap runId mismatch: expected ${config.runId}, received ${released.runId}`);
+  }
+  // Bootstrap is the only parent-owned lifetime. No disconnect cancellation handler.
   const stream = await open(config.streamPath, "a", 0o600);
-  try { await runAppServerDriver(config, { writer: { async write(line) { await stream.writeFile(line); }, async flush() { await stream.sync(); } } }); }
-  finally { await stream.close(); }
+  const acknowledge = (peerName?: string) => {
+    if (process.connected) {
+      try { process.send!({ type: "bootstrap-result", runId: config.runId, peerName }, () => {
+        try { if (process.connected) process.disconnect(); } catch { /* gone */ }
+      }); } catch { /* parent already gone */ }
+    }
+  };
+  let attachment: DriverPeerAttachment | undefined;
+  let finished = false;
+  const register = async (): Promise<DriverPeerAttachment | undefined> => {
+    const { shouldRegister, sweepDeadStratumPeers } = await import(moduleUrl("peer-registry").href) as typeof import("./peer-registry.js");
+    const { spawnPeerSidecar } = await import(moduleUrl("peer-sidecar").href) as typeof import("./peer-sidecar.js");
+    const expired = () => finished || Date.now() >= released.deadline;
+    if (!(await shouldRegister(config.peer.sessionsDir, process.env)).ok || expired()) { acknowledge(); return; }
+    await sweepDeadStratumPeers(config.peer.sessionsDir, config.peer.sockDir).catch(() => 0);
+    if (expired()) { acknowledge(); return; }
+    const handle = await spawnPeerSidecar({ ...config.peer, ownerKind: "codex-appserver", runId: config.runId,
+      runDir: dirname(config.streamPath), streamPath: config.streamPath, cwd: config.cwd });
+    if (!handle) { acknowledge(); return; }
+    while (!expired()) {
+      try {
+        const record = JSON.parse(await readFile(join(dirname(config.streamPath), "peer.json"), "utf8"));
+        if (!expired() && record.name === config.peer.name && record.pid === handle.pid) {
+          attachment = handle; acknowledge(record.name); return handle;
+        }
+      } catch { /* registration has not committed */ }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await handle.abortRegistration(); acknowledge();
+    return;
+  };
+  try { await runAppServerDriver(config, {
+    writer: { async write(line) { await stream.writeFile(line); }, async flush() { await stream.sync(); } },
+    attachPeer: () => register().catch(error => { console.error("peer registration:", error); acknowledge(); return undefined; }),
+  }); }
+  finally { finished = true; attachment?.close(); await stream.close(); }
+
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -116,7 +116,7 @@ it.each([false,true])("emitted JS worker runs with no sibling sources or loader 
   await mkdir(join(emitted,"config")); await mkdir(join(emitted,"judge"));
   await writeFile(join(dir,"package.json"),await readFile(new URL("../../package.json",import.meta.url)));
   await symlink(new URL("../../node_modules",import.meta.url).pathname,join(dir,"node_modules"));
-  for (const name of ["connectors/background","connectors/claude-bg-worker","connectors/peer-worker-lifecycle","connectors/peer-sidecar","connectors/peer-registry","connectors/base","connectors/proc_identity","connectors/claude","connectors/codex","connectors/codex-policy","connectors/cancellation","config/index","config/types","judge/pricing"]) {
+  for (const name of ["connectors/codex-appserver-launch","connectors/background","connectors/claude-bg-worker","connectors/peer-worker-lifecycle","connectors/peer-sidecar","connectors/peer-registry","connectors/codex-appserver-ipc","connectors/base","connectors/proc_identity","connectors/claude","connectors/codex","connectors/codex-policy","connectors/cancellation","config/index","config/types","judge/pricing"]) {
     const source = await readFile(new URL(`../../src/${name}.ts`,import.meta.url),"utf8");
     await writeFile(join(emitted,`${name}.js`),transpileModule(source,{compilerOptions:{module:ModuleKind.ESNext,target:ScriptTarget.ES2022}}).outputText);
   }

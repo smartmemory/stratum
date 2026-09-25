@@ -40,7 +40,7 @@ function processGroupIsAlive(pid: number): boolean {
 }
 
 describe("Codex background start lifecycle", () => {
-  it("meta.json write failure kills the detached process group (no uncontrollable orphan)", async () => {
+  it.each(["exec", "app-server"])("meta.json write failure kills the detached %s process group (no uncontrollable orphan)", async strategy => {
     const registryRoot = await mkdtemp(join(tmpdir(), "stratum-codex-lifecycle-"));
     roots.push(registryRoot);
     const mockedSpawn = vi.mocked(spawn);
@@ -53,8 +53,8 @@ describe("Codex background start lifecycle", () => {
         prompt: "test",
         cwd: registryRoot,
         registryRoot,
-        command: ["sh", "-c", "sleep 30"],
-        env: { ...process.env, STRATUM_TEST_FAIL_META: "1" },
+        ...(strategy === "exec" ? { command: ["sh", "-c", "sleep 30"] } : {}),
+        env: { ...process.env, STRATUM_TEST_FAIL_META: "1", STRATUM_CODEX_BG_STRATEGY: strategy, ...(strategy === "app-server" ? {PATH:"/no-codex"} : {}) },
       })).rejects.toThrow();
 
       const last = mockedSpawn.mock.results[mockedSpawn.mock.results.length - 1];

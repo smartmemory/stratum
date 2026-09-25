@@ -15,6 +15,8 @@ function moduleUrl(name: string): URL {
 const { claudeProcStart, configFromEnv, isAllowedCallback, keyFileName, pidDomain, readPeerToken, sidecarEnv }: typeof import("./peer-registry.js") = await import(moduleUrl("peer-registry").href);
 const { processIdentity, procStartTime }: typeof import("./proc_identity.js") = await import(moduleUrl("proc_identity").href);
 
+const { AppServerPeerHandle, isDriverMessage }: typeof import("./codex-appserver-ipc.js") = await import(moduleUrl("codex-appserver-ipc").href);
+
 export interface PeerSidecarHandle { finalize(): void; abandon(): void }
 
 function workerHandle(child: ChildProcess, runId: string): PeerSidecarHandle {
@@ -63,6 +65,8 @@ function workerHandle(child: ChildProcess, runId: string): PeerSidecarHandle {
   return {finalize() { requested = true; flush(); }, abandon: stop};
 }
 
+export function spawnPeerSidecar(config: PeerSidecarConfig & {ownerKind: "codex-appserver"}): Promise<import("./codex-appserver-ipc.js").AppServerPeerHandle | undefined>;
+export function spawnPeerSidecar(config: PeerSidecarConfig): Promise<PeerSidecarHandle | undefined>;
 export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<PeerSidecarHandle | undefined> {
   let stderr: Awaited<ReturnType<typeof open>> | undefined;
   let handle: PeerSidecarHandle | undefined;
@@ -70,10 +74,11 @@ export async function spawnPeerSidecar(config: PeerSidecarConfig): Promise<PeerS
     const entry = fileURLToPath(moduleUrl("peer-sidecar"));
     stderr = await open(`${config.streamPath}.peer.err`, "a", 0o600);
     const child = spawn(process.execPath, [...(entry.endsWith(".ts") ? ["--experimental-strip-types"] : []), entry], {
-      detached: true, stdio: config.ownerKind === "claude-worker"
+      detached: true, stdio: config.ownerKind === "claude-worker" || config.ownerKind === "codex-appserver"
         ? ["ignore", "ignore", stderr.fd, "ipc"] : ["ignore", "ignore", stderr.fd], env: sidecarEnv(config),
     });
     if (config.ownerKind === "claude-worker") handle = workerHandle(child, config.runId);
+    if (config.ownerKind === "codex-appserver") handle = new AppServerPeerHandle(child, config.runId);
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
@@ -103,13 +108,20 @@ export class PeerWorkQueue {
 
 async function main(): Promise<void> {
   const config = configFromEnv(process.env);
-  const workerOwner = config.ownerKind === "claude-worker";
+  const appOwner = config.ownerKind === "codex-appserver";
+  const workerOwner = config.ownerKind === "claude-worker" || appOwner;
+  let activeTurn: string | null = null;
   if (workerOwner && (!process.connected || !process.send)) throw new Error("Worker peer requires connected IPC");
   let ownerFinalized = false;
   let ownerLost = false;
   let ownerReady = false;
   let ownerStarted = false;
   const ownerMessage = (value: unknown) => {
+    if (config.ownerKind === "codex-appserver" && isDriverMessage(value, config.runId)) {
+      if (value.type === "steer-result") settle(value.reqId, value.outcome, value.detail);
+      else if (value.type === "active-turn-state") activeTurn = ownerFinalized ? null : value.turnId;
+      else { ownerFinalized = true; activeTurn = null; if (ownerStarted) schedule("owner", checkOwner); }
+    }
     if (config.ownerKind === "claude-worker" && value && typeof value === "object"
       && (value as {type?: unknown}).type === "run-finalized"
       && (value as {runId?: unknown}).runId === config.runId) {
@@ -119,6 +131,8 @@ async function main(): Promise<void> {
   };
   const ownerDisconnect = () => {
     ownerLost = true;
+    activeTurn = null;
+    settlePending();
     if (ownerStarted) schedule("owner", checkOwner);
   };
   if (workerOwner) {
@@ -140,7 +154,19 @@ async function main(): Promise<void> {
   let serverFailed = false;
   const connections = new Set<Socket>();
   const inFlight = new Set<Promise<void>>();
-  type Callback = {to: string; frame: Record<string, unknown>; notice: boolean};
+  type Callback = {to: string; frame: Record<string, unknown>; notice: boolean; reqId?: string};
+  const reservations = new Map<string, {key: string; callback: Callback; timer: NodeJS.Timeout; settled: boolean}>();
+  const results: Callback[] = [];
+  function settle(reqId: string, status: string, detail: string | null): void {
+    const entry = reservations.get(reqId);
+    if (!entry || entry.settled) return;
+    entry.settled = true; clearTimeout(entry.timer);
+    Object.assign(entry.callback.frame, {status, ...(detail ? {status_detail:detail} : {})});
+    results.push(entry.callback); pumpCallbacks();
+  }
+  function settlePending(): void {
+    for (const reqId of reservations.keys()) settle(reqId, "dropped", "unknown");
+  }
   const callbacks: Callback[] = [];
   const activeNotices = new Set<string>();
   const abortCallbacks = new Set<() => void>();
@@ -174,13 +200,14 @@ async function main(): Promise<void> {
   function pumpCallbacks(): void {
     while (inFlight.size < 8) {
       const index = callbacks.findIndex(item => !item.notice || !activeNotices.has(item.to));
-      if (index < 0) return;
-      const callback = callbacks.splice(index, 1)[0]!;
+      if (!results.length && index < 0) return;
+      const callback = results.shift() ?? callbacks.splice(index, 1)[0]!;
       if (callback.notice) activeNotices.add(callback.to);
       const attempt = dialBack(callback).catch(error => { console.error("peer callback failed:", error); });
       inFlight.add(attempt);
       void attempt.finally(() => {
         inFlight.delete(attempt);
+        if (callback.reqId) reservations.delete(callback.reqId);
         if (callback.notice) activeNotices.delete(callback.to);
         pumpCallbacks();
       });
@@ -218,12 +245,12 @@ async function main(): Promise<void> {
       if (!callbacks[i]!.notice) { callbacks.splice(i, 1); console.error("peer callback dropped: shutdown"); }
     }
     // Share the five-second shutdown window across the bounded remaining waves.
-    callbackBudget = Math.floor(4800 / (1 + Math.ceil(callbacks.length / 8)));
+    callbackBudget = Math.floor(4800 / (1 + Math.ceil((callbacks.length + results.length) / 8)));
     const active = [...abortCallbacks];
     const release = setTimeout(() => { for (const abort of active) abort(); }, callbackBudget);
     let deadline: NodeJS.Timeout | undefined;
     const drain = async () => {
-      while (inFlight.size || callbacks.length) {
+      while (inFlight.size || callbacks.length || results.length) {
         pumpCallbacks();
         await Promise.all([...inFlight]);
       }
@@ -232,16 +259,34 @@ async function main(): Promise<void> {
       await Promise.race([drain(), new Promise<void>(resolve => { deadline = setTimeout(resolve, 5000); })]);
     } finally { clearTimeout(release); clearTimeout(deadline); }
   }
-  function receive(value: unknown): void {
+  function receive(value: unknown, authenticated: boolean): void {
     if (stopping || !value || typeof value !== "object" || Array.isArray(value)) return;
     const frame = value as Record<string, unknown>;
     const to = typeof frame.from === "string" ? isAllowedCallback(frame.from, config.sockDir) : undefined;
     if (!to || typeof frame.msg_id !== "string") { console.error("peer frame rejected: invalid callback or msg_id"); return; }
     if (frame.type === "user") {
-      console.error("peer user message refused");
-      sendControl(to, {type:"control", action:"peer_message_status", orig_msg_id:frame.msg_id,
-        status:"expired", status_detail:"refused", from:`uds:${sockPath}`,
-        ...(frame.from_mode !== undefined ? {from_mode:frame.from_mode} : {})});
+      const reply: Callback = {to, notice:false, frame:{type:"control", action:"peer_message_status", orig_msg_id:frame.msg_id,
+        from:`uds:${sockPath}`, ...(frame.from_mode !== undefined ? {from_mode:frame.from_mode} : {})}};
+      const reject = (status: string, detail?: string) => sendControl(to,
+        {...reply.frame, status, ...(detail ? {status_detail:detail} : {})});
+      if (!appOwner) { reject("expired", "refused"); return; }
+      if (!authenticated) { reject("denied"); return; }
+      const key = JSON.stringify([frame.from, frame.msg_id]);
+      if ([...reservations.values()].some(entry => entry.key === key)) return;
+      if (ownerFinalized || (terminalState && terminalState.state !== "unavailable")) { reject("expired", "refused"); return; }
+      if (ownerLost || !process.connected || !process.send) { reject("dropped", "not_sent"); return; }
+      if (!activeTurn) { reject("expired", "refused"); return; }
+      if (reservations.size >= 8) { reject("expired", "busy"); return; }
+      const content = (frame.message as {content?: unknown} | null)?.content;
+      if (typeof content !== "string") { reject("expired", "refused"); return; }
+      const reqId = randomUUID(); reply.reqId = reqId;
+      const timer = setTimeout(() => settle(reqId, "dropped", "unknown"), 10000);
+      reservations.set(reqId, {key, callback:reply, timer, settled:false});
+      try { process.send({type:"steer", runId:config.ownerKind === "codex-appserver" ? config.runId : "",
+        reqId, senderFrom:frame.from, msgId:frame.msg_id, expectedTurnId:activeTurn,
+        text:"Message from a peer Claude session, not the original task author.\n" + content},
+        error => { if (error) settle(reqId, "dropped", "unknown"); });
+      } catch { settle(reqId, "dropped", "unknown"); }
     } else if (frame.type === "control" && frame.action === "notify_when_idle") {
       // At capacity even replacements are rejected, matching the specified acceptance rule.
       if (subscriptions.size >= 32) { console.error("peer subscription rejected: full"); return; }
@@ -325,6 +370,7 @@ async function main(): Promise<void> {
     socket.on("close", () => connections.delete(socket));
     let input = Buffer.alloc(0);
     let first = true;
+    let authenticated = false;
     const deadline = setTimeout(() => socket.destroy(), config.firstLineDeadlineMs ?? 30000);
     socket.on("close", () => clearTimeout(deadline));
     socket.on("data", (data: Buffer) => {
@@ -337,8 +383,9 @@ async function main(): Promise<void> {
         try {
           const value: unknown = JSON.parse(line);
           if (wasFirst && (value as {type?: unknown} | null)?.type === "auth") {
-            if ((value as {token?: unknown}).token !== peerToken) console.error("peer auth token mismatch (advisory)");
-          } else receive(value);
+            authenticated = (value as {token?: unknown}).token === peerToken;
+            if (!authenticated) console.error("peer auth token mismatch (advisory)");
+          } else receive(value, authenticated);
         } catch { console.error("peer malformed frame ignored"); }
       }
       if (input.length > 1024 * 1024) socket.destroy();
@@ -395,6 +442,8 @@ async function main(): Promise<void> {
   function cleanup(signal = false): Promise<void> {
     cleanupPromise ??= (async () => {
       stopping = true;
+      activeTurn = null;
+      settlePending();
       // Startup can be between bind and publishing its files when a signal arrives.
       await startupDone;
       process.removeListener("message", ownerMessage);
@@ -419,9 +468,9 @@ async function main(): Promise<void> {
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => {
     void cleanup(true).then(() => process.exit(0));
   });
-  let childProcStartTime = config.ownerKind === "claude-worker" ? undefined : config.childProcStartTime;
+  let childProcStartTime = workerOwner ? undefined : (config as Extract<PeerSidecarConfig, {childPid: number}>).childProcStartTime;
   const start = async (): Promise<void> => {
-    if (config.ownerKind !== "claude-worker" && !childProcStartTime) {
+    if ((config.ownerKind === undefined || config.ownerKind === "process") && !childProcStartTime) {
       let dead = false;
       try { process.kill(config.childPid, 0); }
       catch (error) { dead = (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -498,7 +547,7 @@ async function main(): Promise<void> {
       try { watcher = watch(config.streamPath, () => schedule("scan", scan)); watcher.on("error", error => console.error(error)); }
       catch { /* The fallback also handles a stream created after registration. */ }
       timers.add(setInterval(() => schedule("scan", scan), 500));
-      if (config.ownerKind !== "claude-worker") timers.add(setInterval(() => schedule("identity", async () => {
+      if ((config.ownerKind === undefined || config.ownerKind === "process")) timers.add(setInterval(() => schedule("identity", async () => {
         if (terminalState) return;
         // Cancellation kills the child's group, never this detached shadow's group.
         let identity: "alive" | "dead" | "unknown" = "unknown";
