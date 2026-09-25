@@ -63,6 +63,8 @@ export class ClaudeConnector {
     let stderr = "";
     const requestedModel = this.options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-5";
     let resolvedModel = requestedModel;
+    const effort = this.options.effort;
+    let dispatchedEffort: { effort?: string } = {};
     let durationMs = 0;
     let inputTokens = 0;
     let cacheRead = 0;
@@ -125,7 +127,7 @@ export class ClaudeConnector {
         sdkOptions.tools = { type: "preset", preset: "claude_code" };
         if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
       }
-      if (this.options.effort !== undefined) sdkOptions.effort = this.options.effort;
+      if (effort !== undefined) sdkOptions.effort = effort;
       if (this.options.thinking !== undefined) sdkOptions.thinking = this.options.thinking;
 
       let finalText: string | undefined;
@@ -134,6 +136,8 @@ export class ClaudeConnector {
         kind: "agent_started",
         metadata: { agent: "claude", model: requestedModel, prompt_chars: prompt.length },
       });
+      // Report only the effort handed to the SDK, including when query throws.
+      dispatchedEffort = effort !== undefined ? { effort } : {};
       for await (const raw of this.query({ prompt, options: sdkOptions })) {
         if (!isRecord(raw)) continue;
         if (raw.type === "system" && raw.subtype === "init" && typeof raw.model === "string") resolvedModel = raw.model;
@@ -193,6 +197,7 @@ export class ClaudeConnector {
               cache_creation_input_tokens: cacheCreation,
               cache_read_input_tokens: cacheRead,
               model: requestedModel,
+              ...dispatchedEffort,
             },
           });
         }
@@ -217,12 +222,12 @@ export class ClaudeConnector {
           ...(cacheCreation > 0 ? { cacheCreation } : {}),
         },
         ...(costUsd !== undefined ? { usdSource: "reported" as const } : {}),
-        telemetry: { durationMs, model: resolvedModel },
+        telemetry: { durationMs, model: resolvedModel, ...dispatchedEffort },
       };
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
       Object.assign(failure, {
-        telemetry: { durationMs, model: resolvedModel },
+        telemetry: { durationMs, model: resolvedModel, ...dispatchedEffort },
         usage: { tokens: inputTokens + outputTokens, ms: durationMs, ...(costUsd !== undefined ? { usd: costUsd } : {}) },
         split: { input: inputTokens, output: outputTokens, cacheRead, cacheCreation },
         ...(costUsd !== undefined ? { usdSource: "reported" } : {}),

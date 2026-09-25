@@ -18,6 +18,41 @@ async function* messages() {
 }
 
 describe("ClaudeConnector", () => {
+  describe.each(["success", "terminal error", "SDK throw"])("%s effort telemetry", (outcome) => {
+    it.each(["low", "max", undefined])("reports only the dispatched effort (%s)", async (effort) => {
+      const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
+      const query = vi.fn<QueryFunction>(async function* () {
+        if (outcome === "SDK throw") throw new Error("SDK failed");
+        yield {
+          type: "result", subtype: outcome === "success" ? "success" : "error_during_execution",
+          result: "done", errors: ["query failed"], usage: { input_tokens: 3, output_tokens: 4 },
+        };
+      });
+      const run = new ClaudeConnector({
+        ...(effort !== undefined ? { effort } : {}), query, onEvent: event => { events.push(event); },
+      }).run("test");
+      const result = outcome === "success" ? await run : await run.catch(error => error);
+      if (outcome !== "success") expect(result).toBeInstanceOf(Error);
+      const sdkOptions = query.mock.calls[0]![0].options!;
+      const identities = [sdkOptions, result.telemetry, ...events.filter(event => event.kind === "step_usage").map(event => event.metadata)];
+      expect(events.filter(event => event.kind === "step_usage")).toHaveLength(outcome === "SDK throw" ? 0 : 1);
+      for (const identity of identities) {
+        if (effort === undefined) expect(identity).not.toHaveProperty("effort");
+        else expect(identity).toHaveProperty("effort", effort);
+      }
+    });
+  });
+
+  it("omits effort when an event handler fails before SDK dispatch", async () => {
+    const query = vi.fn<QueryFunction>(() => messages());
+    const failure = await new ClaudeConnector({
+      effort: "high", query, onEvent: () => { throw new Error("event failed"); },
+    }).run("test").catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(query).not.toHaveBeenCalled();
+    expect(failure.telemetry).not.toHaveProperty("effort");
+  });
+
   async function capturedTools(options: ConstructorParameters<typeof ClaudeConnector>[0]): Promise<unknown> {
     let tools: unknown;
     const query: QueryFunction = async function* ({ options: sdkOptions }) {

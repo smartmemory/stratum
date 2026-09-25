@@ -120,8 +120,10 @@ Manifest, keep list and `restore.sh` (manifest SHA-256 `ffcc174d…`, pinned) at
 still in the harvest input — filter by manifest (`keep.jsonl` reason) until handled.
 
 **1c data fixes (2026-09-25):** Claude missing-vs-zero cost + multi-source distill discovery `bd1041e`;
-fan-out failures harvested, durability still per parent step `01c1545` + `67a9ea1`; compose routing
-executed tier — in progress. Compose full suite on `798f1b7`: 7226 pass / 0 fail / 2 whole-file timeouts
+fan-out failures harvested, durability still per parent step `01c1545` + `67a9ea1`; routing executed
+tier: compose labels known/unknown `a9d4695`, stratum Claude telemetry reports dispatched effort (this
+commit). **Follow-up:** background Claude runs still drop effort (`connectors/background.ts:804` — owned
+by the STRAT-AGENT-PEER-3 session at the time; not edited). **Step 1 COMPLETE.** Compose full suite on `798f1b7`: 7226 pass / 0 fail / 2 whole-file timeouts
 under load (both pass standalone: build-wave-golden 16/16 in 322s, build-model-route-outcomes 34/34 in
 380s); UI 624/624; 0 real-store writes.
 
