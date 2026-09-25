@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-09-25
+
+- **License: Licensor corrected to Regression Analytics LLC.** 0.6.2's `LICENSE` named "SmartMemory" as Licensor and copyright holder. The copyright owner is Regression Analytics LLC. `LICENSE` and `ts/LICENSE` now name it in the Licensor and Licensed Work parameters. The BUSL-1.1 terms, Additional Use Grant, Change Date and Change License are unchanged, and commercial licensing contact stays help@smartmemory.ai.
+
 ## [0.6.2] — 2026-09-25
 
 - **License: Apache 2.0 → Business Source License 1.1** (replaces the unreleased PolyForm Noncommercial 1.0.0 change). Free for non-production use by anyone; production use is free for organizations whose total revenue, with affiliates, was USD 250,000 or less in their most recently completed fiscal year (Additional Use Grant); larger organizations need a commercial license from SmartMemory (help@smartmemory.ai). Each version converts to Apache 2.0 four years after its first public release (Change Date). `LICENSE` and `ts/LICENSE` carry the verbatim BUSL-1.1 terms (SPDX text) under the parameter block; `ts/package.json` and `meta/pyproject.toml` use SPDX `BUSL-1.1`; `ts/LICENSE` stays in the npm `files` list. Releases before 2026-09-25 stay Apache 2.0.
