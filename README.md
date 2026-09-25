@@ -1,6 +1,6 @@
 # Stratum
 
-[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSL%201.1-blue)](LICENSE)
 
 **State machine dispatch server for AI agent workflows.**
 
@@ -1247,6 +1247,6 @@ pipeline yet — consumers run the engine from a checkout (see Installation).
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE). Free for personal and other noncommercial use. Commercial use, including use inside a business, requires a commercial license: help@smartmemory.ai
+[Business Source License 1.1](LICENSE). Free for non-production use by anyone, and for production use by organizations whose total annual revenue (with affiliates) was USD 250,000 or less in their last fiscal year. Larger organizations need a commercial license: help@smartmemory.ai. Each version converts to Apache 2.0 four years after its release.
 
 Versions released before 2026-09-25 were distributed under Apache 2.0 and remain available under those terms.
