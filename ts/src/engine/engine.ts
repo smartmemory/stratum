@@ -15,6 +15,7 @@ import { type ValidationError, validateSpec } from "../ir/validate.js";
 import { harvestStepId, lessonBlock, pinEventDetail, pinFor, setPin, type DeliveryPin } from "../learn/deliver.js";
 import { LearnInline } from "../learn/inline.js";
 import { unreviewedLessons, type UnreviewedLesson } from "../learn/unreviewed.js";
+import { lessonReviews, type LessonReview } from "../learn/outcomes.js";
 import { canonicalWorkspace } from "../learn/workspace.js";
 import { resolveLearnConfig } from "../config/learn.js";
 import { LearnEgress, type LearnEgressDriver, type LearnEgressRuntimeOptions } from "../learn/smartmemory_egress.js";
@@ -286,8 +287,9 @@ export interface AuditTrail {
   flowSpent: Budget;
   output?: unknown;
   carry?: Record<string, CarryEntry>;
-  /** INLINE-TS-1 §A5: unreviewed lessons for this run's workspace; absent when off or empty. */
-  learn_inline?: { unreviewed: UnreviewedLesson[] };
+  /** INLINE-TS-1 §A5 / DELIVER-1 D6: what the owner must act on for this run's workspace;
+   *  each key absent when its switch is off or it is empty, the field absent when both are. */
+  learn_inline?: { unreviewed?: UnreviewedLesson[]; reviews?: LessonReview[] };
 }
 
 export interface StratumEngineOptions {
@@ -1077,18 +1079,33 @@ export class StratumEngine {
     return { runId, status: run.status, events: structuredClone(run.events), steps: structuredClone(run.steps), flowSpent: structuredClone(run.flowSpent), ...(run.output !== undefined ? { output: structuredClone(run.output) } : {}), ...(run.carry !== undefined ? { carry: structuredClone(run.carry) } : {}), ...(learnInline !== undefined ? { learn_inline: learnInline } : {}) };
   }
 
-  /** INLINE-TS-1 §A5. OFF: the config read only. Never throws: a surfacing failure omits the field. */
-  private async unreviewedFor(run: PersistedRun): Promise<{ unreviewed: UnreviewedLesson[] } | undefined> {
+  /** INLINE-TS-1 §A5 + DELIVER-1 D6. Both switches OFF: the config read only. Never throws:
+   *  a surfacing failure omits that key. Reviews recompute over this engine's own store. */
+  private async unreviewedFor(run: PersistedRun): Promise<AuditTrail["learn_inline"]> {
     if (run.workspaceRoot === undefined) return undefined;
+    let root: string;
+    let config: ReturnType<typeof resolveLearnConfig>;
     try {
-      const root = await canonicalWorkspace(run.workspaceRoot);
-      if (!resolveLearnConfig({ projectRoot: root }).inline) return undefined;
-      const unreviewed = await unreviewedLessons(root);
-      return unreviewed.length > 0 ? { unreviewed } : undefined;
+      root = await canonicalWorkspace(run.workspaceRoot);
+      config = resolveLearnConfig({ projectRoot: root });
     } catch (error) {
-      console.warn(`learn inline: audit surfacing failed for run ${run.id}: ${message(error)}`);
+      console.warn(`learn: audit surfacing failed for run ${run.id}: ${message(error)}`);
       return undefined;
     }
+    const surface: NonNullable<AuditTrail["learn_inline"]> = {};
+    if (config.inline) {
+      try {
+        const unreviewed = await unreviewedLessons(root);
+        if (unreviewed.length > 0) surface.unreviewed = unreviewed;
+      } catch (error) { console.warn(`learn inline: unreviewed lessons unavailable for run ${run.id}: ${message(error)}`); }
+    }
+    if (config.inline || config.deliver) {
+      try {
+        const reviews = await lessonReviews(this.store.root, root, { retireReviewAfter: config.retireReviewAfter });
+        if (reviews.length > 0) surface.reviews = reviews;
+      } catch (error) { console.warn(`learn: lesson reviews unavailable for run ${run.id}: ${message(error)}`); }
+    }
+    return Object.keys(surface).length > 0 ? surface : undefined;
   }
 
   /** Resolves when no inline-learning switch check or pass is in flight (INLINE-TS-1 §A2). */

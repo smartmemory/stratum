@@ -290,6 +290,23 @@ lessons (`stratum_audit` `learn_inline.reviews`, `stratum learn list --reviews`,
 summary). **A review closes** when the owner writes any lifecycle row that acknowledges it (D5); it
 **reopens** only on evidence newer than that watermark (r1 #10).
 
+**Slice 5 notes (implementation, `learn/outcomes.ts`, 2026-09-26).**
+- *Cluster membership* of a later failure is decided with the classifier's own keys
+  (`groupRecords` → `sha256(key)` = `clusterId`, both groupings) over records canonicalized like the
+  harvest, not a re-derived fingerprint. The same test finds recurrence for retired clusters that were
+  never staged (the three hand-fixed fixtures), so recurrence is checked for every cluster named in the
+  lifecycle log.
+- *An offer whose revision is no longer in the sidecar* is not attributed to any cluster and counts
+  toward nothing.
+- *Where reviews appear.* `stratum_audit.learn_inline.reviews` when `deliver` or `inline` is on (reviews
+  concern delivery, so delivery alone surfaces them); `stratum learn list --reviews`. The Compose build
+  summary is part of INLINE-TS-1's Compose slice, not built yet. The `ship` offered-not-delivered note
+  is not rendered: stratum cannot tell an intercepted step from a delivered one.
+- *Cost.* Reviews rescan the workspace's runs in the engine's store on each surface (audit, CLI). No
+  cache, per "recomputed on every surface"; revisit if audit latency shows it.
+- *Threshold* `[learn] retireReviewAfter` / `STRATUM_LEARN_RETIRE_REVIEW_AFTER`; an invalid value keeps
+  the default and never disables a switch.
+
 The default of 3 held runs is a starting guess, deliberately comparable to the promotion bar
 (≥2 runs and ≥3 pairs, `classify.ts:30`). It is a config key; no delivery data exists yet, because
 no lesson has ever been delivered.

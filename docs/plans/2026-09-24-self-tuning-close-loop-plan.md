@@ -161,7 +161,9 @@ Step 2 loop is done** (DELIVER-1 slices 1–6 and INLINE-TS-1); commits stay loc
 Same branch, same window: harvester subflow-echo fix `ee77495`; **INLINE-TS-1 stratum side built**
 (trigger, pass, surfacing, audit/MCP; design §A8) — it also fixed a slice-4 contract defect (lesson
 event fields undeclared → MCP audit/poll failed with delivery ON). Remaining for INLINE: Compose
-build-summary slice. All of it awaits Codex review. Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+build-summary slice. **DELIVER-1 slice 5 (outcomes + reviews, D6) built** on the same branch. All of
+it awaits Codex review. Remaining after review: Compose build-summary slice (INLINE §A5 + D6 reviews),
+slice 6 goldens (D7) + live run, retiring the 3 fixtures and the §A6 dry run before enabling. Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 

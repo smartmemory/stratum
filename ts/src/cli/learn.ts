@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { canonicalizeRecordRoots, canonicalWorkspace } from "../learn/workspace.js";
 import { resolveLearnConfig } from "../config/learn.js";
 import { unreviewedLessons, type UnreviewedLesson } from "../learn/unreviewed.js";
+import { lessonReviews } from "../learn/outcomes.js";
 import { appendLifecycle, LifecycleError, type LifecycleKind, type LifecycleRow, type ReviewKind } from "../learn/lifecycle.js";
 import { harvest } from "../learn/harvest.js";
 import { classify } from "../learn/classify.js";
@@ -21,6 +22,7 @@ import { lockedSave, lockedRead } from "../engine/run_lock.js";
 const USAGE =
   "Usage: stratum learn <harvest|list|apply|revert|reconcile|egress> [--root <dir>] [--stage] [--json]\n" +
   "       stratum learn list --unreviewed [--json] [--if-enabled] [--root <dir>]\n" +
+  "       stratum learn list --reviews [--json] [--if-enabled] [--flows <dir>] [--root <dir>]\n" +
   "       stratum learn retire <clusterId> --reason <text> (--fix-ref <sha> | --withdrawn) [--root <dir>]\n" +
   "       stratum learn <dismiss|reactivate> <clusterId> --reason <text> [--root <dir>]\n" +
   "       stratum learn ack <clusterId> --reason <text> [--kind <review>] [--root <dir>]\n" +
@@ -118,6 +120,7 @@ async function harvestCommand(args: string[]): Promise<number> {
 async function listCommand(args: string[]): Promise<number> {
   const root = await rootOf(args);
   if (flag(args, "unreviewed")) return listUnreviewed(root, args);
+  if (flag(args, "reviews")) return listReviews(root, args);
   const rows = latestPerCluster(await readCandidates(sidecarDir(root)));
   if (flag(args, "json")) {
     process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
@@ -161,6 +164,30 @@ async function listUnreviewed(root: string, args: string[]): Promise<number> {
     process.stdout.write(`${lesson.revisionId.slice(0, 12)}  ${lesson.claim}${lesson.guidance === undefined ? "  (note only)" : ""}\n`);
   }
   process.stdout.write("\napply: stratum learn apply <revision>   dismiss: stratum learn dismiss <clusterId> --reason <text>\n");
+  return 0;
+}
+
+/**
+ * DELIVER-1 D6. Recomputed over the flow store (`--flows`, default the user store) on every
+ * call. `--if-enabled` prints nothing when both `[learn] deliver` and `inline` are OFF.
+ */
+async function listReviews(root: string, args: string[]): Promise<number> {
+  const config = resolveLearnConfig({ projectRoot: root });
+  if (flag(args, "if-enabled") && !config.deliver && !config.inline) return 0;
+  const flowsDir = option(args, "flows") ?? join(homedir(), ".stratum", "ts", "flows");
+  const reviews = await lessonReviews(flowsDir, root, { retireReviewAfter: config.retireReviewAfter });
+  if (flag(args, "json")) {
+    process.stdout.write(JSON.stringify(reviews, null, 2) + "\n");
+    return 0;
+  }
+  if (reviews.length === 0) {
+    process.stdout.write("no open lesson reviews\n");
+    return 0;
+  }
+  for (const review of reviews) {
+    process.stdout.write(`${review.kind.padEnd(26)} ${review.clusterId.slice(0, 12)}  ${review.detail}\n`);
+  }
+  process.stdout.write("\nclose: stratum learn <retire|dismiss|ack> <clusterId> --reason <text> [--kind <review>]\n");
   return 0;
 }
 
