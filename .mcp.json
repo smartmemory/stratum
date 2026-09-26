@@ -1,9 +1,10 @@
 {
   "mcpServers": {
     "compose": {
-      "command": "node",
+      "command": "sh",
       "args": [
-        "../compose/server/compose-mcp.js"
+        "-c",
+        "exec node \"$(dirname \"$(git rev-parse --path-format=absolute --git-common-dir)\")/../compose/server/compose-mcp.js\""
       ]
     },
     "stratum": {

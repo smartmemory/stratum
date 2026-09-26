@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **`.mcp.json`: the `compose` server now starts from git worktrees.** Its path was `../compose/…` relative to the session directory, which only works from the stratum checkout root; a session started in `.claude/worktrees/<name>` looked for `.claude/worktrees/compose` and failed with "Connection closed". It now resolves `compose` next to the repository's shared git directory (`git rev-parse --git-common-dir`), so it works from the checkout root, any worktree and any subdirectory, still with no machine-specific path.
+
 - **STRAT-AGENT-DEVIN-1 slice S3:** Flows accept `agent: devin` on steps and fan-out stages. Engine-dispatched worktree stages give Devin write access to their worktree, and evaluator `route` accepts `devin`. Consumer-dispatched fan-outs await Compose support (`COMP-AGENT-DEVIN-1`).
 
 - **STRAT-AGENT-DEVIN-1 slice S2: background Devin runs.** Detached supervisor runs share foreground preparation and ATIF terminal verdicts, expose narration through poll, and use supervisor-only `exit.rc`/sentinel status. Cancellation verifies process identity before SIGTERM; peer registration shares the Codex exec lifecycle. `peerName` now requires an explicit agent, including both Codex launch paths. Live goldens 3/4 are controller-run.
