@@ -3,15 +3,15 @@
 ## [Unreleased]
 
 - **STRAT-LEARN Step 2 Codex review fixes.** A lesson learned on a field no longer "holds" when that field
-  becomes a list (or the reverse): candidates record the array depth of the failure (`leafArrayDepth`,
-  delivery metadata only; cluster and revision ids unchanged; legacy candidates keep any-depth matching).
+  becomes a list (or the reverse): candidates record every array depth seen across the lesson's evidence (`leafArrayDepths`,
+  matched on any; delivery metadata only; cluster and revision ids unchanged; legacy candidates keep any-depth matching).
   Enum lessons survive a reordering of the same options. A lesson pin lives only as long as its
   dispatch: every site that destroys a dispatch token clears it. Selection diagnostics are warned, not
   dropped. The subflow echo window also closes on any event of the parent's children (routing). The
   classifier strips the engine's `(no retry: identical evidence)` suffix before parsing, so a refused
   retry stays in its lesson's cluster. Lesson outcomes are decided by the latest matching failure, so
-  evidence newer than an acknowledgement reopens a review. Deleted workspaces are cached (no git storm
-  per audit); a non-object run file is skipped instead of hiding every review; unreadable corpora and
+  evidence newer than an acknowledgement reopens a review. A missing workspace path is checked before git and never cached (no git
+  storm per audit, and a path created later still canonicalizes); a non-object run file is skipped instead of hiding every review; unreadable corpora and
   invalid inline config are reported. `events.json` declares `sandbox_policy.detail.fullAccessAuthorization`
   (events contract 6 → 7) — this also fixes an existing mismatch present on main.
 

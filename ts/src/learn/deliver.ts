@@ -56,8 +56,8 @@ export function harvestStepId(stepId: string, prefix?: string): string {
 /**
  * D3 compatibility predicate: the lesson's contract still holds for this output contract.
  * The path is resolved through object fields and array elements (harvesting drops array
- * indices from the field path). At the leaf, new summaries retain the exact depth;
- * legacy summaries continue to match any element depth.
+ * indices from the field path). At the leaf, match any recorded depth, including
+ * legacy single-depth summaries. Summaries without depth metadata match any depth.
  */
 export function contractHolds(contract: z.ZodTypeAny | undefined, summary: ContractSummary): boolean {
   if (contract === undefined || summary.path.length === 0) return false;
@@ -74,11 +74,15 @@ export function contractHolds(contract: z.ZodTypeAny | undefined, summary: Contr
     nodes = next;
   }
   const expected = [...summary.expected].sort();
+  const recordedDepths = summary.leafArrayDepths
+    ?? (summary.leafArrayDepth === undefined ? undefined : [summary.leafArrayDepth]);
   const leaves = nodes.flatMap((node) => {
     const depths = withElements(node);
-    if (summary.leafArrayDepth === undefined) return depths;
-    const leaf = depths[summary.leafArrayDepth];
-    return leaf === undefined ? [] : [leaf];
+    if (recordedDepths === undefined) return depths;
+    return recordedDepths.flatMap((depth) => {
+      const leaf = depths[depth];
+      return leaf === undefined ? [] : [leaf];
+    });
   });
   return leaves.some((node) => {
     if (summary.code === "invalid_enum_value") {

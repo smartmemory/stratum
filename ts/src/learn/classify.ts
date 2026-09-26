@@ -77,7 +77,9 @@ export interface ContractSummary {
   path: string;
   /** Allowed enum options, rejected key names, or the expected type. */
   expected: string[];
-  /** Trailing array indices after the last field; absent on legacy candidates. */
+  /** Sorted, unique trailing array depths observed across the cluster's evidence. */
+  leafArrayDepths?: number[];
+  /** Legacy single-depth metadata, still read from already-written candidates. */
   leafArrayDepth?: number;
 }
 
@@ -273,13 +275,18 @@ function build(
     evidence.push(record);
   }
 
+  const { leafArrayDepth: _, ...contract } = bucket[0]?.contract ?? { code: shape, path: "", expected: [] };
+  const leafArrayDepths = [...new Set(bucket.flatMap((unit) =>
+    unit.contract.leafArrayDepth === undefined ? [] : [unit.contract.leafArrayDepth],
+  ))].sort((a, b) => a - b);
+
   return {
     key,
     groupingKey,
     shape,
     class: klass,
     fingerprint: bucket[0]?.fingerprint ?? "",
-    contract: bucket[0]?.contract ?? { code: shape, path: "", expected: [] },
+    contract: { ...contract, ...(leafArrayDepths.length > 0 ? { leafArrayDepths } : {}) },
     scope: { workspaceRoot, flowName: first.flowName, stepIds, specDigests },
     recurrence: { records: bucket.length, distinctRuns: runs.size, distinctPairs: pairs.size },
     observedValues: [
