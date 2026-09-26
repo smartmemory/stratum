@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -161,6 +161,29 @@ it("retries after git cannot be spawned", async () => {
   expect(await canonicalWorkspace(sub)).toBe(root);
 });
 
+it("a timed-out git lookup returns the input path and is retried, not cached", async () => {
+  await repo();
+  const sub = join(root, "nested");
+  await mkdir(sub);
+  const bin = join(root, "fake-bin");
+  await mkdir(bin);
+  const marker = join(root, "fake-git-ran");
+  await writeFile(join(bin, "git"), `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\nexec /bin/sleep 30\n`);
+  await chmod(join(bin, "git"), 0o755);
+  const previous = process.env.PATH;
+  try {
+    process.env.PATH = previous === undefined ? bin : `${bin}:${previous}`;
+    // The fake git really ran (the marker proves it) and was killed by the timeout —
+    // a killed child is not "not a git repository", so the result must NOT cache.
+    expect(await canonicalWorkspace(sub, 50)).toBe(sub);
+    await expect(stat(marker)).resolves.toBeDefined();
+  } finally {
+    if (previous === undefined) delete process.env.PATH;
+    else process.env.PATH = previous;
+  }
+  expect(await canonicalWorkspace(sub)).toBe(root);
+});
+
 it("retries operational git failures instead of caching the fallback", async () => {
   const sub = join(root, "not-yet-created");
   expect(await canonicalWorkspace(sub)).toBe(sub);
@@ -249,19 +272,20 @@ it("terminates torn candidate and lifecycle tails before appending", async () =>
   expect(await readFile(log, "utf8")).toBe('{"partial":\n' + JSON.stringify(written) + '\n');
 });
 
-it("folds states, since, fixRef and review watermarks by file position", async () => {
+it("folds states, since, fixRef and review watermarks", async () => {
   expect(await readLifecycle(root)).toEqual({ rows: [], skipped: 0 });
   expect((await lessonLifecycle(root, clusterId)).state).toBe("active");
   const retired = await appendLifecycle(root, { ...input("retire"), fixRef: "abc123" });
   let state = await lessonLifecycle(root, clusterId);
   expect(state).toMatchObject({ state: "retired", since: retired.at, fixRef: "abc123" });
   for (const kind of REVIEW_KINDS) expect(state.watermarks[kind]).toBe(retired.at);
-  // Deliberately decreasing clocks prove file order, not timestamp sorting.
+  // A backdated ack must not regress the watermark: file order still folds `since`,
+  // but a watermark keeps the latest `at` it has seen.
   const ack: LifecycleRow = { ...input("ack"), at: "2001-01-01T00:00:00.000Z", ackKinds: ["not-holding"] };
   await writeFile(log, [retired, ack].map((r) => JSON.stringify(r)).join("\n") + "\n");
   state = await lessonLifecycle(root, clusterId);
   expect(state.since).toBe(retired.at);
-  for (const kind of REVIEW_KINDS) expect(state.watermarks[kind]).toBe(kind === "not-holding" ? ack.at : retired.at);
+  for (const kind of REVIEW_KINDS) expect(state.watermarks[kind]).toBe(retired.at);
   const all = await appendLifecycle(root, input("ack"));
   for (const kind of REVIEW_KINDS) expect((await lessonLifecycle(root, clusterId)).watermarks[kind]).toBe(all.at);
   await appendLifecycle(root, input("reactivate"));
@@ -273,6 +297,15 @@ it("folds states, since, fixRef and review watermarks by file position", async (
   await appendLifecycle(root, input("reactivate"));
   expect((await lessonLifecycle(root, clusterId)).state).toBe("active");
   expect((await lessonLifecycle(root, "b".repeat(64))).since).toBeUndefined();
+});
+
+it("an out-of-order earlier ack does not regress the review watermark", async () => {
+  await mkdir(join(root, ".stratum", "learn"), { recursive: true });
+  const later: LifecycleRow = { ...input("ack"), at: "2026-06-01T00:00:00.000Z" };
+  const earlier: LifecycleRow = { ...input("ack"), at: "2026-01-01T00:00:00.000Z" };
+  await writeFile(log, [later, earlier].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const state = await lessonLifecycle(root, clusterId);
+  for (const kind of REVIEW_KINDS) expect(state.watermarks[kind]).toBe(later.at);
 });
 
 it("rejects illegal edges atomically, including concurrent retire/dismiss", async () => {

@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import { validateSpec } from "../../src/ir/validate.js";
 import type { PatchCandidate } from "../../src/learn/candidate.js";
-import { contractHolds, lessonBlock, matchLessons, pinEventDetail, setPin, type PinnedState } from "../../src/learn/deliver.js";
+import { contractHolds, lessonBlock, matchLessons, pinEventDetail, pinFor, setPin, type PinnedState } from "../../src/learn/deliver.js";
 import type { ActiveLesson } from "../../src/learn/select.js";
 
 /** Contracts compiled by the real validator, so the predicate sees exactly what the engine sees. */
@@ -20,13 +23,14 @@ let counter = 0;
 function lesson(overrides: {
   code?: string; path?: string; expected?: string[]; stepIds?: string[]; flowName?: string;
   groupingKey?: "step-scoped" | "step-agnostic"; records?: number; guidance?: string; clusterId?: string;
+  workspaceRoot?: string;
 } = {}): ActiveLesson {
   counter += 1;
   const clusterId = overrides.clusterId ?? counter.toString(16).padStart(64, "0");
   const candidate = {
     clusterId, revisionId: `rev-${clusterId}`,
     contract: { code: overrides.code ?? "invalid_enum_value", path: overrides.path ?? "outcome", expected: overrides.expected ?? ["complete", "failed"] },
-    scope: { workspaceRoot: "/w", flowName: overrides.flowName ?? "build", stepIds: overrides.stepIds ?? ["plan"], specDigests: [] },
+    scope: { workspaceRoot: overrides.workspaceRoot ?? "/w", flowName: overrides.flowName ?? "build", stepIds: overrides.stepIds ?? ["plan"], specDigests: [] },
     groupingKey: overrides.groupingKey ?? "step-scoped",
     recurrence: { records: overrides.records ?? 3, distinctRuns: 3, distinctPairs: 3 },
     rendered: { guidance: overrides.guidance ?? `guidance ${clusterId.slice(-4)}`, content: "", templateId: "", templateVersion: "2", insertion: { mode: "append-to-section", section: "" } },
@@ -117,6 +121,45 @@ describe("matchLessons (D3)", () => {
     const pin = matchLessons([long, tooLong, fits], target)!;
     expect(pin.lessons.map((l) => l.revisionId)).toEqual([long.candidate.revisionId, fits.candidate.revisionId]);
     expect(pin.lessonsSuppressed).toEqual([{ revisionId: tooLong.candidate.revisionId, reason: "budget" }]);
+  });
+});
+
+describe("pinFor fail-closed contract", () => {
+  const envFor = (root: string) => ({ STRATUM_CONFIG_FILE: join(root, "none.toml"), STRATUM_LEARN_DELIVER: "1" });
+
+  it("a throwing selector warns and delivers nothing — never throws", async () => {
+    const root = await mkdtemp(join(tmpdir(), "learn-deliver-pin-"));
+    try {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await expect(pinFor({
+        workspaceRoot: root, flowName: "build", stepId: "plan", contract: c.Result,
+        env: envFor(root),
+        select: async () => { throw new Error("selection store exploded"); },
+      })).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith("learn deliver: selection failed, delivering nothing: selection store exploded");
+      warn.mockRestore();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("filters out lessons whose canonical workspace differs from the run's", async () => {
+    const root = await mkdtemp(join(tmpdir(), "learn-deliver-pin-"));
+    const other = await mkdtemp(join(tmpdir(), "learn-deliver-foreign-"));
+    try {
+      const own = lesson({ workspaceRoot: root });
+      const foreign = lesson({ workspaceRoot: other });
+      const pin = await pinFor({
+        workspaceRoot: root, flowName: "build", stepId: "plan", contract: c.Result,
+        env: envFor(root),
+        select: async () => ({ lessons: [own, foreign], diagnostics: [] }),
+      });
+      expect(pin?.lessons.map((l) => l.revisionId)).toEqual([own.candidate.revisionId]);
+      expect(pin?.lessonsSuppressed).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true });
+    }
   });
 });
 

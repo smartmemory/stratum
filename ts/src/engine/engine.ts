@@ -2020,6 +2020,7 @@ export class StratumEngine {
         if (enabled !== true) {
           this.event(run, "fanout_item_skipped", step.id, { itemIndex: item.index, stage: stageIndex });
           delete item.dispatchToken;
+          setPin(item, undefined);
           if (stageIndex === step.fanout.steps.length - 1) {
             item.status = "skipped";
             await this.persist(run);
@@ -2115,6 +2116,7 @@ export class StratumEngine {
       } else {
         item.status = "failed";
         delete item.dispatchToken;
+        setPin(item, undefined);
       }
     } else {
       item.output = result.output;
@@ -2128,6 +2130,7 @@ export class StratumEngine {
         item.status = "pending";
         delete item.dispatchToken;
         delete item.acceptedDispatchToken;
+        setPin(item, undefined);
         await this.prepareConsumerItem(run, spec, contracts, flow, step, state, item);
       }
     }
@@ -2965,6 +2968,9 @@ export class StratumEngine {
       delete state.dispatchToken;
       delete state.gateToken;
       delete state.acceptedDispatchToken;
+      // The pin records an offer for an issuance this reset destroyed; a step back
+      // to `pending` must not still carry it.
+      setPin(state, undefined);
       // A live fanout for this step must be invalidated, not just cleared:
       // the epoch bump makes in-flight workers/settlement stale (they check
       // object identity) and lets the re-activated step schedule freshly.

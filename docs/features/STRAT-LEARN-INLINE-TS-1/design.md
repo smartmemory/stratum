@@ -142,7 +142,11 @@ Rules:
   whole store, the next trigger reconciles it. Guard transitions never reach `emitFlowTerminal()`.
   A test pins each exclusion.
 - **Off means off.** With the switch off the hook returns after the config read and does no other
-  I/O; engine responses, persisted runs and audit output are byte-identical to today.
+  I/O; engine responses, persisted runs and audit output are byte-identical to today. *Amended
+  2026-09-26 (owner-approved, Step-2 review inline M2):* the config read needs the project root, so
+  it is preceded by the canonical-workspace lookup (`learn/workspace.ts` `canonicalWorkspace`: up to
+  three `git rev-parse`/`worktree list` calls, memoized per path, each bounded by a 5 s timeout; a
+  timed-out lookup falls back to the raw path and is not cached). That lookup is the only other I/O.
 - **Not on the response path.** The hook enqueues and returns; `emitFlowTerminal()` stays
   synchronous and `return this.response(run)` is unchanged. Precedent for fire-and-forget
   post-persist work: `triggerLearnEgress` (`:3541`, scheduled from `persist()` at `:3617`).
