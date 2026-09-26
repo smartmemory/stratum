@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGENT_TYPES, type AgentType } from "../../src/connectors/base.js";
+import { DevinConnector } from "../../src/connectors/devin.js";
+import { mcpSurface } from "../../src/mcp/contracts.js";
 import { startBackgroundRun } from "../../src/connectors/background.js";
 import type { QueryFunction } from "../../src/connectors/claude.js";
 import type { SpawnProcess } from "../../src/connectors/codex.js";
@@ -102,8 +104,7 @@ describe("unknown agent errors name the whole set at every layer (D1)", () => {
 });
 
 describe("devin parameter equality — every codex knob is honoured or named-rejected (D1)", () => {
-  // "accepted" = validation passes and the dispatch reaches the connector
-  // (its credentials gate is the named boundary under the temp HOME).
+  // Accepted rows must reach the connector with their values intact.
   // A RegExp = the named devin rejection the parameter must produce.
   const table: Array<{ name: string; options: Partial<AgentRunOptions>; expected: "accepted" | RegExp }> = [
     { name: "model (full id)", options: { model: "swe-2-medium" }, expected: "accepted" },
@@ -136,12 +137,44 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
       expected: /STRATUM_DEVIN_ALLOW_FULL_ACCESS/ },
   ];
 
+  it("covers every parameter in the MCP validator request schema", async () => {
+    const keys = Object.keys((await mcpSurface()).tools.stratum_agent_run!.request).map(key => key.replace(/\?$/, ""));
+    // Lifecycle fields are exercised by tests/mcp/agent-run and cancellation;
+    // all provider options must have an explicit row in this table.
+    const lifecycle = ["cancellationId", "flow", "peerLabel"];
+    const covered = new Set(["agent", "prompt", "cwd", "background", ...lifecycle,
+      ...table.flatMap(row => Object.keys(row.options))]);
+    expect(keys.filter(key => !covered.has(key))).toEqual([]);
+  });
+
   it.each(table)("$name", async ({ options, expected }) => {
     const root = await temporaryRoot();
     const { env: optionEnv, ...rest } = options;
     const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, ...(optionEnv ?? {}) };
-    await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...rest }))
-      .rejects.toThrow(expected === "accepted" ? FOREGROUND_BOUNDARY : expected);
+    if (expected !== "accepted") {
+      await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...rest })).rejects.toThrow(expected);
+      return;
+    }
+    const delivered: Record<string, unknown>[] = [];
+    const run = vi.spyOn(DevinConnector.prototype, "run").mockImplementation(async function (this: DevinConnector, prompt) {
+      // The real constructor has applied runAgent's forwarding and config.
+      delivered.push({ ...(this as unknown as Record<string, unknown>), prompt });
+      return { text: "delivered", usage: { tokens: 0, ms: 0, usd: 0 }, telemetry: { durationMs: 0, model: "swe-2-high" } };
+    });
+    try {
+      await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...rest })).resolves.toMatchObject({ text: "delivered" });
+      expect(delivered).toHaveLength(1);
+      const actual = delivered[0]!;
+      expect(actual).toMatchObject({ cwd: root, prompt: "p" });
+      for (const [key, value] of Object.entries(rest)) {
+        if (key === "model" || key === "effort") continue;
+        if (key === "networkAccess") expect(actual.sandboxAudit).toMatchObject({ policy: { networkAccess: value } });
+        else expect(actual[key], key).toEqual(value);
+      }
+      const models: Record<string, string> = { "swe-2-medium": "swe-2-medium", "swe-2": "swe-2-max", "swe-2/max": "swe-2-max" };
+      expect(actual.model).toBe(options.model ? models[options.model] : options.effort ? `swe-2-${options.effort}` : "swe-2-high");
+      expect(actual.env).toMatchObject(env);
+    } finally { run.mockRestore(); }
   });
 
   it.each(table)("$name — validateAgentSettings layer agrees", ({ options, expected }) => {

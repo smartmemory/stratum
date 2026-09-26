@@ -11,6 +11,11 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { describe, expect, it } from "vitest";
+import { isolatedStateRoot } from "../helpers/state-root.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createMcpServer } from "../../src/mcp/server.js";
+import type { ConnectorResult } from "../../src/connectors/base.js";
 import { DevinConnector } from "../../src/connectors/devin.js";
 
 function devinAvailable(): boolean {
@@ -58,10 +63,10 @@ function statStamp(path: string): MetaStamp | undefined {
   }
 }
 
-/** Find THIS run's meta.json under the devin_fg root by matching the wrapper
- *  pid the connector reports via onSpawn against meta.childPid — run dirs are
+/** Find THIS run's meta.json under the devin_fg root by matching its unique
+ *  temporary cwd against meta.cwd — run dirs are
  *  mode 0700 and supervisor-owned, but the test process is not sandboxed. */
-function findRunMetaPath(fgRoot: string, wrapperPid: number): string | undefined {
+function findRunMetaPath(fgRoot: string, cwd: string): string | undefined {
   let names: string[];
   try { names = readdirSync(fgRoot); } catch { return undefined; }
   for (const name of names) {
@@ -69,7 +74,7 @@ function findRunMetaPath(fgRoot: string, wrapperPid: number): string | undefined
     try {
       const meta: unknown = JSON.parse(readFileSync(candidate, "utf8"));
       if (typeof meta === "object" && meta !== null
-        && (meta as { childPid?: unknown }).childPid === wrapperPid) return candidate;
+        && (meta as { cwd?: unknown }).cwd === cwd) return candidate;
     } catch { /* meta.json not written yet, or a different run's dir */ }
   }
   return undefined;
@@ -115,8 +120,7 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !d
    *
    * The agent learns the run dir from the STRATUM_DEVIN_RUN_DIR env var the
    * wrapper exports (devin-wrapper.ts); the test learns it independently by
-   * matching meta.json's childPid to the wrapper pid from onSpawn — both are
-   * existing connector seams, no test-only seam was needed.
+   * matching meta.json's cwd to this test's unique temporary repository.
    */
   it("golden 1 (full): the chained read succeeds and every write outside the agent dir is denied", async () => {
     const home = process.env.HOME || homedir();
@@ -144,17 +148,15 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !d
       // Watch this run's meta.json for the whole in-flight window. The run dir
       // is deleted when run() returns, so the poll keeps first/last stats and
       // the comparison happens afterwards.
-      let spawnedPid: number | undefined;
       let runSettled = false;
       const watchDeadline = Date.now() + 330_000;
       const observedMeta: { metaPath?: string; first?: MetaStamp; last?: MetaStamp } = {};
       const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
       const watcher: Promise<void> = (async () => {
-        while (spawnedPid === undefined && !runSettled && Date.now() < watchDeadline) await sleep(25);
         let metaPath: string | undefined;
         while (!runSettled && Date.now() < watchDeadline) {
-          if (metaPath === undefined && spawnedPid !== undefined) {
-            metaPath = findRunMetaPath(fgRoot, spawnedPid);
+          if (metaPath === undefined) {
+            metaPath = findRunMetaPath(fgRoot, cwd);
             if (metaPath !== undefined) observedMeta.metaPath = metaPath;
           } else if (metaPath !== undefined) {
             const stamp = statStamp(metaPath);
@@ -204,22 +206,28 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !d
         "report line, and the exact line STRATUM_DEVIN_G1_OK.",
       ].join("\n");
 
-      const connector = new DevinConnector({
-        model: "swe-2-medium",
-        cwd,
-        // Reports the wrapper's group-leader pid via onSpawn; the watcher
-        // matches it to meta.json's childPid.
-        ownProcessGroup: true,
-        onSpawn: (pid) => { spawnedPid = pid; },
-      });
-      const outcome = await connector.run(prompt).then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      runSettled = true;
-      await watcher;
-      if ("error" in outcome) throw outcome.error;
-      const result = outcome.value;
+      const server = await createMcpServer({ flowStateRoot: isolatedStateRoot() });
+      const client = new Client({ name: "devin-golden-1", version: "0" });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      let result: ConnectorResult;
+      try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+        const response = await client.callTool({
+          name: "stratum_agent_run",
+          arguments: { agent: "devin", model: "swe-2-medium", cwd, prompt, background: false, sandboxMode: "read-only" },
+        }, undefined, { timeout: 290_000 });
+        expect(response.isError).not.toBe(true);
+        const content = response.content as Array<{ type: string; text?: string }>;
+        expect(content[0]?.type).toBe("text");
+        const payload = JSON.parse(content[0]?.text ?? "") as ConnectorResult & { status: string };
+        expect(payload.status).toBe("complete");
+        result = payload;
+      } finally {
+        runSettled = true;
+        await watcher;
+        await client.close();
+        await server.close();
+      }
 
       // The result channel: final message + estimated free-model usage (D6).
       expect(result.text).toContain("STRATUM_DEVIN_G1_OK");

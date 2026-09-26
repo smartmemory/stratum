@@ -1,3 +1,5 @@
+import { spawn as nodeSpawn } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -21,10 +23,16 @@ import { runAgent } from "../../src/connectors/runner.js";
  * export, writes `exit.rc` and the sentinel, and removes the credentials copy.
  */
 
+vi.mock("../../src/connectors/proc_identity.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/connectors/proc_identity.js")>(),
+  procStartTime: vi.fn(async () => "fixture-start"),
+}));
+
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "devin");
 const fixture = (name: string): string => join(FIXTURES, name);
 
 const roots: string[] = [];
+const realKill = process.kill.bind(process);
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "stratum-devin-s1b-"));
@@ -33,6 +41,7 @@ async function temporaryRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -68,11 +77,18 @@ interface FakeOutcome {
 function fakeDevinSpawn(outcome: FakeOutcome): SpawnProcess {
   return vi.fn<SpawnProcess>((command: string, args: readonly string[], options: SpawnOptionsWithoutStdio) => {
     const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+    Object.defineProperty(child, "pid", { value: 424_242, writable: true });
     child.stdin = new PassThrough();
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = vi.fn((signal?: NodeJS.Signals) => {
       queueMicrotask(() => child.emit("close", null, signal ?? "SIGTERM"));
+      return true;
+    });
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid !== -424_242) return realKill(pid, signal);
+      if (signal === 0) throw Object.assign(new Error("fixture group exited"), { code: "ESRCH" });
+      child.kill(signal as NodeJS.Signals);
       return true;
     });
     const env = (options.env ?? {}) as NodeJS.ProcessEnv;
@@ -486,5 +502,70 @@ describe("runAgent devin dispatch (S1b wiring)", () => {
       agent: "devin", prompt: "p", cwd: root, background: true, registryRoot: root,
       env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
     })).rejects.toThrow("devin connector not implemented yet");
+  });
+});
+
+
+describe("DevinConnector — real child startup failures", () => {
+  it("retains immediate stderr while identity capture is pending", async () => {
+    const root = await temporaryRoot();
+    let closed!: Promise<void>;
+    const spawn: SpawnProcess = (_command, _args, options) => {
+      const child = nodeSpawn(process.execPath, ["-e", "process.stderr.write('sandbox startup denied\\n'); process.exit(1)"], options);
+      closed = new Promise(resolve => child.once("close", () => resolve()));
+      return child;
+    };
+    await expect(connector({ cwd: root, env: await homeEnv(root), spawn,
+      procStartTime: async () => { await closed; return "captured-start"; },
+    }).run("p")).rejects.toThrow("sandbox startup denied");
+  });
+
+  it.each(["agent_started", "onSpawn", "identity"] as const)("tears down a real wrapper on %s failure", async (failure) => {
+    const root = await temporaryRoot();
+    const env = await homeEnv(root);
+    const bin = join(root, "bin");
+    await mkdir(bin);
+    await writeFile(join(bin, "devin"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o700 });
+    env.PATH = `${bin}:/usr/bin:/bin`;
+    env.STRATUM_DEVIN_ALLOW_FULL_ACCESS = "1";
+    const controller = new AbortController();
+    let pid: number | undefined;
+    let runDir = "";
+    let sawMeta = false;
+    let copyRemovedAtClose = false;
+    const spawn: SpawnProcess = (command, args, options) => {
+      runDir = options.env!.STRATUM_DEVIN_RUN_DIR!;
+      const child = nodeSpawn(command, args, options);
+      pid = child.pid;
+      child.once("close", () => {
+        sawMeta = existsSync(join(runDir, "meta.json"));
+        copyRemovedAtClose = !existsSync(devinRunLayout(runDir).credentialsCopyPath);
+      });
+      return child;
+    };
+    const realIdentity = (await vi.importActual<typeof import("../../src/connectors/proc_identity.js")>("../../src/connectors/proc_identity.js")).procStartTime;
+    try {
+      await expect(connector({ cwd: root, env, spawn, signal: controller.signal,
+        sandboxMode: "danger-full-access", ownProcessGroup: true, cancellationGraceMs: 100,
+        procStartTime: async (wrapperPid) => {
+          // Make the identity refusal exercise a LIVE wrapper with a copy,
+          // rather than winning a race against the shell's startup.
+          await vi.waitFor(() => expect(existsSync(devinRunLayout(runDir).credentialsCopyPath)).toBe(true));
+          return failure === "identity" ? undefined : realIdentity(wrapperPid);
+        },
+        onSpawn: () => { if (failure === "onSpawn") throw new Error("onSpawn failed"); },
+        onEvent: (event) => { if (failure === "agent_started" && event.kind === "agent_started") throw new Error("agent_started failed"); },
+      }).run("p")).rejects.toThrow(failure === "identity" ? "devin wrapper identity could not be captured" : `${failure} failed`);
+      expect(pid).toBeTypeOf("number");
+      expect(() => process.kill(-pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      expect(getEventListeners(controller.signal, "abort")).toEqual([]);
+      expect(existsSync(join(runDir, "agent", "home", "data", "devin", "credentials.toml"))).toBe(false);
+      if (failure === "identity") {
+        expect(sawMeta).toBe(false);
+        expect(copyRemovedAtClose).toBe(true);
+      }
+    } finally {
+      if (pid) { try { process.kill(-pid, "SIGKILL"); } catch { /* already reaped */ } }
+    }
   });
 });

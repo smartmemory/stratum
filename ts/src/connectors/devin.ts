@@ -49,6 +49,8 @@ export interface DevinConnectorOptions {
   spawn?: SpawnProcess;
   /** Sweep oracle seam for tests. */
   identity?: (pid: number, startTime: string) => Promise<"alive" | "dead" | "unknown">;
+  /** Wrapper identity capture seam for tests. */
+  procStartTime?: typeof procStartTime;
   /** Platform seam for tests (the Linux refusal). */
   platform?: string;
   onEvent?: ConnectorEventHandler;
@@ -80,6 +82,7 @@ export class DevinConnector {
   private readonly spawn: SpawnProcess;
   private readonly identity: DevinConnectorOptions["identity"];
   private readonly platform: string;
+  private readonly captureStartTime: typeof procStartTime;
   private readonly onEvent: ConnectorEventHandler | undefined;
   private readonly onSpawn: ((pid: number) => void) | undefined;
   private readonly paths: DevinHomePaths;
@@ -112,6 +115,7 @@ export class DevinConnector {
     this.graceMs = options.cancellationGraceMs ?? cancellationGraceMs(this.env);
     this.spawn = options.spawn ?? (nodeSpawn as SpawnProcess);
     this.identity = options.identity;
+    this.captureStartTime = options.procStartTime ?? procStartTime;
     this.onEvent = options.onEvent;
     this.onSpawn = options.onSpawn;
     this.paths = devinHomePaths(this.env, homedir());
@@ -196,7 +200,6 @@ export class DevinConnector {
       stderrLog.destroy();
       throw error;
     }
-    if (this.ownProcessGroup && child.pid !== undefined) this.onSpawn?.(child.pid);
 
     // Attach the close/error watchers BEFORE any await: a wrapper that exits
     // instantly (and a synchronous test double) must never lose its terminal
@@ -223,10 +226,55 @@ export class DevinConnector {
     // must observe even a wrapper that exits before the meta write returns.
     const termination = processTermination(child, true, this.graceMs);
 
-    // The foreground meta carries the wrapper's pid and start time so the
-    // dispatch-time sweep can positively identify a dead wrapper (r5 N5).
-    const procStart = child.pid === undefined ? undefined : await procStartTime(child.pid);
+    const abort = (): void => { void termination.terminate(); };
     try {
+      const stdoutLimit = resolveStdoutLimit();
+      let pending = "";
+      let pendingBytes = 0;
+      let overrun = false;
+      let stderrTail = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      const declareOverrun = (): void => {
+        overrun = true;
+        pending = "";
+        pendingBytes = 0;
+        // Overrun means the child is producing output we can no longer bound:
+        // SIGKILL the group now (codex parity, r4 N3), teardown is awaited below.
+        void termination.terminate("SIGKILL");
+      };
+      child.stdout.on("data", (chunk: string) => {
+        if (overrun) return;
+        pending += chunk;
+        pendingBytes += Buffer.byteLength(chunk);
+        let newline = pending.indexOf("\n");
+        while (newline >= 0) {
+          const line = pending.slice(0, newline);
+          const lineBytes = Buffer.byteLength(line);
+          if (lineBytes > stdoutLimit) return declareOverrun();
+          stdoutLog.write(`${line}\n`);
+          pending = pending.slice(newline + 1);
+          pendingBytes -= lineBytes + 1;
+          newline = pending.indexOf("\n");
+        }
+        if (pendingBytes > stdoutLimit) declareOverrun();
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderrTail = (stderrTail + chunk).slice(-stdoutLimit);
+        stderrLog.write(chunk);
+      });
+
+      this.signal?.addEventListener("abort", abort, { once: true });
+      if (this.signal?.aborted) abort();
+      if (this.ownProcessGroup && child.pid !== undefined) this.onSpawn?.(child.pid);
+      // The foreground meta carries the wrapper's pid and start time so the
+      // dispatch-time sweep can positively identify a dead wrapper (r5 N5).
+      const procStart = child.pid === undefined ? undefined : await this.captureStartTime(child.pid);
+      if (child.pid === undefined) await closePromise;
+      if (spawnError) throw spawnError;
+      if (child.pid === undefined || procStart === undefined) {
+        throw new Error(`devin wrapper identity could not be captured: ${stderrTail.trim() || "no process start time"}`);
+      }
       await atomicWriteJson(layout.metaPath, {
         runId,
         agent: "devin",
@@ -235,90 +283,51 @@ export class DevinConnector {
         sandboxMode: this.sandboxMode,
         promptChars: framed.length,
         createdAt: new Date().toISOString(),
-        ...(child.pid !== undefined ? { childPid: child.pid } : {}),
-        ...(procStart !== undefined ? { procStartTime: procStart } : {}),
+        childPid: child.pid,
+        procStartTime: procStart,
         ...(this.sandboxAudit !== undefined ? { sandboxAudit: this.sandboxAudit } : {}),
         streamPath: layout.streamPath,
         stderrPath: layout.stderrPath,
       });
+      await this.emit({
+        kind: "agent_started",
+        metadata: { agent: "devin", model: this.model, prompt_chars: framed.length },
+      });
+
+      const closeCode = await closePromise;
+      if (!overrun && pending) stdoutLog.write(pending);
+      // Register the finish watches BEFORE end(): a stream that finishes during
+      // the other's drain would otherwise leave a once() waiting on an event it
+      // already missed.
+      const stdoutFlushed = new Promise<void>((resolve) => { stdoutLog.once("finish", resolve); stdoutLog.once("error", () => resolve()); });
+      const stderrFlushed = new Promise<void>((resolve) => { stderrLog.once("finish", resolve); stderrLog.once("error", () => resolve()); });
+      stdoutLog.end();
+      stderrLog.end();
+      await stdoutFlushed;
+      await stderrFlushed;
+      await termination.finish();
+      this.signal?.throwIfAborted();
+      if (overrun) {
+        throw new Error(
+          `devin stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES (current limit ${stdoutLimit} bytes). Raise the env knob and retry.`,
+        );
+      }
+      if (spawnError) throw spawnError;
+
+      // exit.rc is the status channel; the close event is only the fallback for
+      // a wrapper that died before writing it (an externally SIGKILLed wrapper
+      // — the agent cannot signal it, D3).
+      const rc = await this.exitRc(layout, closeCode, closeSignal);
+      return await this.buildResult(layout, rc, stderrTail, Date.now() - startedAt);
     } catch (error) {
-      await killWrapperGroup(child).catch(() => {});
+      await termination.terminate();
+      await termination.finish();
+      throw error;
+    } finally {
+      this.signal?.removeEventListener("abort", abort);
       stdoutLog.destroy();
       stderrLog.destroy();
-      throw error;
     }
-
-    const abort = (): void => { void termination.terminate(); };
-    this.signal?.addEventListener("abort", abort, { once: true });
-    if (this.signal?.aborted) abort();
-
-    const stdoutLimit = resolveStdoutLimit();
-    let pending = "";
-    let pendingBytes = 0;
-    let overrun = false;
-    let stderrTail = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    const declareOverrun = (): void => {
-      overrun = true;
-      pending = "";
-      pendingBytes = 0;
-      // Overrun means the child is producing output we can no longer bound:
-      // SIGKILL the group now (codex parity, r4 N3), teardown is awaited below.
-      void termination.terminate("SIGKILL");
-    };
-    child.stdout.on("data", (chunk: string) => {
-      if (overrun) return;
-      pending += chunk;
-      pendingBytes += Buffer.byteLength(chunk);
-      let newline = pending.indexOf("\n");
-      while (newline >= 0) {
-        const line = pending.slice(0, newline);
-        const lineBytes = Buffer.byteLength(line);
-        if (lineBytes > stdoutLimit) return declareOverrun();
-        stdoutLog.write(`${line}\n`);
-        pending = pending.slice(newline + 1);
-        pendingBytes -= lineBytes + 1;
-        newline = pending.indexOf("\n");
-      }
-      if (pendingBytes > stdoutLimit) declareOverrun();
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderrTail = (stderrTail + chunk).slice(-stdoutLimit);
-      stderrLog.write(chunk);
-    });
-
-    await this.emit({
-      kind: "agent_started",
-      metadata: { agent: "devin", model: this.model, prompt_chars: framed.length },
-    });
-
-    const closeCode = await closePromise
-      .finally(() => this.signal?.removeEventListener("abort", abort));
-    if (!overrun && pending) stdoutLog.write(pending);
-    // Register the finish watches BEFORE end(): a stream that finishes during
-    // the other's drain would otherwise leave a once() waiting on an event it
-    // already missed.
-    const stdoutFlushed = new Promise<void>((resolve) => { stdoutLog.once("finish", resolve); stdoutLog.once("error", () => resolve()); });
-    const stderrFlushed = new Promise<void>((resolve) => { stderrLog.once("finish", resolve); stderrLog.once("error", () => resolve()); });
-    stdoutLog.end();
-    stderrLog.end();
-    await stdoutFlushed;
-    await stderrFlushed;
-    await termination.finish();
-    this.signal?.throwIfAborted();
-    if (overrun) {
-      throw new Error(
-        `devin stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES (current limit ${stdoutLimit} bytes). Raise the env knob and retry.`,
-      );
-    }
-    if (spawnError) throw spawnError;
-
-    // exit.rc is the status channel; the close event is only the fallback for
-    // a wrapper that died before writing it (an externally SIGKILLed wrapper
-    // — the agent cannot signal it, D3).
-    const rc = await this.exitRc(layout, closeCode, closeSignal);
-    return this.buildResult(layout, rc, stderrTail, Date.now() - startedAt);
   }
 
   private async exitRc(layout: DevinRunLayout, closeCode: number | null, closeSignal: NodeJS.Signals | null): Promise<number> {
@@ -481,22 +490,6 @@ const SIGNAL_NUMBERS: Partial<Record<NodeJS.Signals, number>> = {
 
 function signalNumber(signal: NodeJS.Signals): number {
   return SIGNAL_NUMBERS[signal] ?? 1;
-}
-
-/** The meta-write-failure path: a wrapper whose identity we could not record
- *  must not run on. SIGKILL its group — the sweep then owns the credentials
- *  copy once its meta-less orphan window expires (D2). */
-async function killWrapperGroup(child: ChildProcessWithoutNullStreams): Promise<void> {
-  const exited = child.exitCode !== null || child.signalCode !== null
-    ? Promise.resolve()
-    : new Promise<void>((resolve) => child.once("exit", () => resolve()));
-  if (child.pid !== undefined) {
-    try { process.kill(-child.pid, "SIGKILL"); }
-    catch { try { child.kill("SIGKILL"); } catch { /* already dead */ } }
-  } else {
-    try { child.kill("SIGKILL"); } catch { /* already dead */ }
-  }
-  await exited;
 }
 
 function directDevinSandboxAudit(policy: SandboxPolicy, options: DevinConnectorOptions): SandboxPolicyAudit {
