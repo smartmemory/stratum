@@ -141,9 +141,12 @@ implement → independent astra review → controller verify (targeted tests) �
 (`b324f51`), Codex astra/medium reviews (17 findings, all confirmed) → fixes (`361b89b`, `153f582`),
 fixes-only reviews clean except one owner-accepted residual; Compose `fd4ab41`, `4174c88`, `56175f7`
 (review CLEAN), `58c4d96`. §A6: three hand-fixed clusters retired, dry run stages 0 of 3 (`4a7e095`).
-Live run: NOT PROVEN by design constraint, closed on the golden by the owner (`e2f1b50`). **Remaining:
-release stratum (the new `learn list` flags), then Compose; then enable `[learn]` for stratum/compose.
-Nothing is pushed yet — owner go-ahead required.**
+Live run: NOT PROVEN by design constraint, closed on the golden by the owner (`e2f1b50`).
+
+**RELEASED 2026-09-26 (owner go-ahead):** branches fast-forwarded to main; full suites green on merged main
+(stratum 2731 passed / 9 skipped, compose 7379/7379); stratum 0.7.0 (`0185889`, tag `v0.7.0`), compose and
+compose-mcp 0.7.0 (`d15d32b`, compose requires `@smartmemory/stratum ^0.7.0`), all on npm and in the MCP
+registry. **Remaining: enable `[learn]` inline/deliver for stratum/compose — owner's call.**
 
 **Step 2 progress (2026-09-25):** design docs first, per owner. Doc A = STRAT-LEARN-INLINE-TS-1
 §Amendment (trigger, staging, "show until acted on" surfacing) — astra r1 NOT CLEAN (12, all upheld;
