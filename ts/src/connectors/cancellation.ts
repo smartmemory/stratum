@@ -39,6 +39,7 @@ export function processTermination(child: ChildProcess, group: boolean, graceMs 
   let closed = false;
   const close = new Promise<void>((resolve) => child.once("close", () => { closed = true; resolve(); }));
   let teardown: Promise<void> | undefined;
+  let completingGroup = false;
   let forceKill: (() => void) | undefined;
   const send = (signal: NodeJS.Signals): void => {
     if (group && child.pid) {
@@ -49,7 +50,14 @@ export function processTermination(child: ChildProcess, group: boolean, graceMs 
   const alive = (): boolean => {
     if (!group || !child.pid) return !closed;
     try { process.kill(-child.pid, 0); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return false;
+      // macOS can briefly deny probes of exiting orphans. Normal completion
+      // must keep waiting for ESRCH, never mistake EPERM for an empty group.
+      if (completingGroup && code === "EPERM") return true;
+      throw error;
+    }
   };
   // `initial` is the signal sent FIRST. The grace window and the SIGKILL
   // escalation below are unchanged, so a caller asking for SIGKILL skips the
@@ -81,7 +89,18 @@ export function processTermination(child: ChildProcess, group: boolean, graceMs 
     void teardown.catch(() => {});
     return teardown;
   };
-  return { close, terminate, finish: () => teardown ?? Promise.resolve() };
+  // Normal completion may leave descendants after the leader closes. Opt in
+  // to the same teardown, but never signal or start a grace window for an
+  // already-empty group. Existing cancellation-only finish callers are unchanged.
+  const finishGroup = async (): Promise<void> => {
+    await close;
+    if (teardown) await teardown;
+    else {
+      completingGroup = true;
+      if (alive()) await terminate();
+    }
+  };
+  return { close, terminate, finish: () => teardown ?? Promise.resolve(), finishGroup };
 }
 
 export async function teardownDeadline<T>(operation: Promise<T>, ms: number, message: string): Promise<T> {

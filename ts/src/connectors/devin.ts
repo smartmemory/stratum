@@ -305,7 +305,9 @@ export class DevinConnector {
       stderrLog.end();
       await stdoutFlushed;
       await stderrFlushed;
-      await termination.finish();
+      // A successful wrapper can leave ACP/Node descendants writing exit-time
+      // caches. Reap its group before reading results or removing the run dir.
+      await termination.finishGroup();
       this.signal?.throwIfAborted();
       if (overrun) {
         throw new Error(

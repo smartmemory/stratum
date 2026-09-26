@@ -506,6 +506,85 @@ describe("runAgent devin dispatch (S1b wiring)", () => {
 });
 
 
+describe("DevinConnector — real process groups on normal completion", () => {
+  it.each([false, true])("reaps a leftover child before removing its run dir (ignores SIGTERM: %s)", async (ignoreTerm) => {
+    const root = await temporaryRoot();
+    let pid: number | undefined;
+    let runDir = "";
+    let descendantPid = 0;
+    let aliveAtClose = false;
+    const spawn: SpawnProcess = (_command, _args, options) => {
+      runDir = options.env!.STRATUM_DEVIN_RUN_DIR!;
+      const layout = devinRunLayout(runDir);
+      // The child acknowledges readiness over IPC, then outlives its wrapper.
+      // Ignoring stdout/stderr lets the wrapper's close fire independently.
+      const descendant = `
+        const fs = require('node:fs');
+        ${ignoreTerm ? "process.on('SIGTERM', () => {});" : ""}
+        setTimeout(() => {
+          fs.mkdirSync(${JSON.stringify(layout.agentDir)}, { recursive: true });
+          fs.writeFileSync(${JSON.stringify(join(layout.agentDir, "late-cache"))}, 'late');
+        }, 2000);
+        process.send('ready');
+        process.disconnect();
+      `;
+      const wrapper = `
+        const fs = require('node:fs');
+        const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}],
+          { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+        child.once('message', () => {
+          fs.writeFileSync(${JSON.stringify(join(root, "child.pid"))}, String(child.pid));
+          fs.writeFileSync(${JSON.stringify(layout.exportPath)}, ${JSON.stringify(readFileSync(fixture("answer.atif.json"), "utf8"))});
+          fs.writeFileSync(${JSON.stringify(layout.exitRcPath)}, '0');
+          process.exit(0);
+        });
+      `;
+      const child = nodeSpawn(process.execPath, ["-e", wrapper], options);
+      pid = child.pid;
+      child.once("close", () => {
+        descendantPid = Number(readFileSync(join(root, "child.pid"), "utf8"));
+        aliveAtClose = process.kill(descendantPid, 0);
+      });
+      return child;
+    };
+    try {
+      const result = await connector({ cwd: root, env: await homeEnv(root), spawn, cancellationGraceMs: 100 }).run("p");
+      expect(result.text).toBe("hello");
+      expect(aliveAtClose).toBe(true);
+      expect(() => process.kill(descendantPid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      expect(() => process.kill(-pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      expect(existsSync(runDir)).toBe(false);
+    } finally {
+      if (pid) { try { process.kill(-pid, "SIGKILL"); } catch { /* already reaped */ } }
+    }
+  });
+
+  it("does not signal or wait the grace period when the wrapper leaves an empty group", async () => {
+    const root = await temporaryRoot();
+    let pid: number | undefined;
+    let runDir = "";
+    let closedAt = 0;
+    const kill = vi.spyOn(process, "kill");
+    const spawn: SpawnProcess = (_command, _args, options) => {
+      runDir = options.env!.STRATUM_DEVIN_RUN_DIR!;
+      const layout = devinRunLayout(runDir);
+      const script = `const fs = require('node:fs');
+        fs.writeFileSync(${JSON.stringify(layout.exportPath)}, ${JSON.stringify(readFileSync(fixture("answer.atif.json"), "utf8"))});
+        fs.writeFileSync(${JSON.stringify(layout.exitRcPath)}, '0');`;
+      const child = nodeSpawn(process.execPath, ["-e", script], options);
+      pid = child.pid;
+      child.once("close", () => { closedAt = performance.now(); });
+      return child;
+    };
+    const result = await connector({ cwd: root, env: await homeEnv(root), spawn, cancellationGraceMs: 2000 }).run("p");
+    expect(result.text).toBe("hello");
+    expect(closedAt).toBeGreaterThan(0);
+    expect(performance.now() - closedAt).toBeLessThan(500);
+    expect(kill.mock.calls.filter(([target, signal]) => target === -pid! && signal !== 0)).toEqual([]);
+    expect(existsSync(runDir)).toBe(false);
+  });
+});
+
 describe("DevinConnector — real child startup failures", () => {
   it("retains immediate stderr while identity capture is pending", async () => {
     const root = await temporaryRoot();
