@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-26
+
+- **Release: STRAT-LEARN Step 2. Lessons are staged automatically and delivered into agent prompts (both default OFF).** `[learn] inline` / `STRATUM_LEARN_INLINE` stages lesson candidates at every terminal run. `[learn] deliver` / `STRATUM_LEARN_DELIVER` renders applied lessons into agent prompts, with outcome tracking and retirement reviews. New CLI flags `stratum learn list --unreviewed`, `--reviews` and `--if-enabled` (Compose 0.7.0 needs them). Events contract 6 → 7. Details in the entries below.
+
 - **STRAT-LEARN Step 2 Codex review fixes.** A lesson learned on a field no longer "holds" when that field
   becomes a list (or the reverse): candidates record every array depth seen across the lesson's evidence (`leafArrayDepths`,
   matched on any; delivery metadata only; cluster and revision ids unchanged; legacy candidates keep any-depth matching).
