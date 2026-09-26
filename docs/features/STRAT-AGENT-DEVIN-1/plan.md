@@ -402,6 +402,19 @@ Out of S3: `dispatch: consumer` + devin (Compose rejects it at `compose/lib/buil
 stratum does not special-case it); any consumer of `route` (none exists); a per-stage `writableRoots`
 IR field (project `stratum.toml` covers it).
 
+## Follow-ups found while landing (2026-09-26, merged tree `99e9923`)
+
+Pre-merge full suite on the merged tree: 2768/2771, two failures, both pass alone (load flakes);
+tripwire clean; live goldens 1–4 green on `99e9923`.
+- `tests/connectors/devin-background.test.ts` "SIGKILL without exit.rc…" — the test SIGKILLs the stub
+  before it is guaranteed to have written its stderr diagnostic, so under load `stderrTail` is `""`
+  (status and reason were correct). Test-side race: wait for the diagnostic before the kill.
+- `tests/learn/deliver-golden.test.ts` "retired" (STRAT-LEARN, from main) — under load the case fails
+  and its cleanup then throws `ENOTEMPTY` on `rmdir …/learn-golden-*/ws`, leaking the temp dir (two
+  removed by hand). Belongs to STRAT-LEARN-DELIVER-1, not this feature.
+- A `devin-wrapper.test.ts` "SIGTERM to the group" failure seen once under load (passed alone) — add to
+  the known-flake list if it recurs.
+
 ## Acceptance for the feature
 
 - [x] all four goldens pass on macOS against real devin (controller-run) — 1 and 2 at `2f89d2f`; 3 and 4 at
