@@ -184,12 +184,30 @@ it("a timed-out git lookup returns the input path and is retried, not cached", a
   expect(await canonicalWorkspace(sub)).toBe(root);
 });
 
-it("retries operational git failures instead of caching the fallback", async () => {
-  const sub = join(root, "not-yet-created");
-  expect(await canonicalWorkspace(sub)).toBe(sub);
-  await repo();
-  await mkdir(sub);
-  expect(await canonicalWorkspace(sub)).toBe(root);
+it.each(["ENOENT", "ENOTDIR"])("caches a missing workspace (%s) without spawning git", async (code) => {
+  const parent = join(root, "missing-parent");
+  if (code === "ENOTDIR") await writeFile(parent, "file");
+  const sub = join(parent, "checkout");
+  const bin = join(root, "fake-bin");
+  await mkdir(bin);
+  const marker = join(root, "git-count");
+  await writeFile(marker, "");
+  await writeFile(join(bin, "git"), `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\nexit 1\n`);
+  await chmod(join(bin, "git"), 0o755);
+  const previous = process.env.PATH;
+  try {
+    process.env.PATH = previous === undefined ? bin : `${bin}:${previous}`;
+    expect(await canonicalWorkspace(sub)).toBe(sub);
+    expect(await readFile(marker, "utf8")).toBe("");
+    // Make the path exist to prove the fallback was cached, not just re-statted.
+    if (code === "ENOTDIR") await rm(parent);
+    await mkdir(sub, { recursive: true });
+    expect(await canonicalWorkspace(sub)).toBe(sub);
+    expect(await readFile(marker, "utf8")).toBe("");
+  } finally {
+    if (previous === undefined) delete process.env.PATH;
+    else process.env.PATH = previous;
+  }
 });
 
 it.each(["linked", "mixed"])("CLI harvest stages %s workspace evidence in the main checkout", async (layout) => {

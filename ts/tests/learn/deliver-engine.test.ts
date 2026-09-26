@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StratumEngine } from "../../src/engine/engine.js";
-import { StateStore, type PersistedRun } from "../../src/engine/state.js";
+import { burnIssuances, StateStore, type PersistedRun } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
 import { applyCandidate } from "../../src/learn/apply.js";
@@ -165,6 +165,59 @@ describe("DELIVER-1 D3/D4 engine delivery", () => {
       expect(issuingEvents(run, surface)[0]!.detail).toMatchObject({ lessons: [lesson.revisionId] });
     },
   );
+
+  it("a budget-exhausted consumer retry persists without its destroyed pin", async () => {
+    const { root, store } = await workspace();
+    await learnFrom("consumer", root, store);
+    deliverOn();
+    const s = subject(store, () => ({ outcome: "complete" }));
+    const body = spec("consumer", { attempts: 2 });
+    Object.assign(body.flows.main, { budget: { dispatches: 1 } });
+    const issued = await issue(s, "consumer", root, body);
+    expect(pinnedState(await persisted(s, issued.runId), "consumer").lessons).toHaveLength(1);
+    await s.engine.stepDone(issued.runId, "fan/0", { output: { outcome: "done" } }, issued.dispatchToken);
+    const run = await persisted(s, issued.runId);
+    expect(run.status).toBe("budget_exhausted");
+    expect(pinnedState(run, "consumer")).toMatchObject({ status: "failed" });
+    expect(pinnedState(run, "consumer").lessons).toBeUndefined();
+    expect(pinnedState(run, "consumer").lessonsSuppressed).toBeUndefined();
+  });
+
+  it.each(["skipped", "failed"] as const)("an engine fan-out item persists %s without lessons", async (status) => {
+    const { root, store } = await workspace();
+    await learnFrom("engine", root, store);
+    deliverOn();
+    const s = subject(store, () => ({ outcome: status === "failed" ? "done" : "complete" }));
+    const body = spec("engine");
+    if ("fanout" in body.flows.main.steps[0]!) {
+      const fanout = body.flows.main.steps[0]!.fanout;
+      if (status === "skipped") fanout.steps.push({ ...fanout.steps[0]!, ...{ when: "false" } });
+    }
+    const issued = await issue(s, "engine", root, body);
+    expect(issued.do).toContain(LESSONS_HEADING);
+    const item = pinnedState(await persisted(s, issued.runId), "engine");
+    expect(item.status).toBe(status);
+    expect(item.lessons).toBeUndefined();
+    expect(item.lessonsSuppressed).toBeUndefined();
+  });
+
+  it.each(["ordinary", "subflow", "consumer"] as const)("burning %s issuances clears pins and preserves other live issuances", async (surface) => {
+    const { root, store } = await workspace();
+    await learnFrom(surface, root, store);
+    deliverOn();
+    const s = subject(store, () => ({ outcome: "complete" }));
+    const issued = await issue(s, surface, root);
+    const run = await persisted(s, issued.runId);
+    const state = pinnedState(run, surface);
+    expect(state.lessons).toHaveLength(1);
+    state.lessonsSuppressed = [{ revisionId: "suppressed", reason: "budget" }];
+    burnIssuances(run);
+    expect(state.dispatchToken).toBeUndefined();
+    expect(state.lessons).toBeUndefined();
+    expect(state.lessonsSuppressed).toBeUndefined();
+    // The independent persisted issuance remains live until it too is burned.
+    expect(pinnedState(await persisted(s, issued.runId), surface).lessons).toHaveLength(1);
+  });
 
   it("background ready-step: the connector receives the pinned block in its prompt", async () => {
     const { root, store } = await workspace();

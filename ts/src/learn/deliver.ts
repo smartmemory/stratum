@@ -55,8 +55,9 @@ export function harvestStepId(stepId: string, prefix?: string): string {
 
 /**
  * D3 compatibility predicate: the lesson's contract still holds for this output contract.
- * The path is resolved through object fields and array elements (zod drops array indices
- * from the harvested path, so any element depth at a segment is a candidate).
+ * The path is resolved through object fields and array elements (harvesting drops array
+ * indices from the field path). At the leaf, new summaries retain the exact depth;
+ * legacy summaries continue to match any element depth.
  */
 export function contractHolds(contract: z.ZodTypeAny | undefined, summary: ContractSummary): boolean {
   if (contract === undefined || summary.path.length === 0) return false;
@@ -73,12 +74,22 @@ export function contractHolds(contract: z.ZodTypeAny | undefined, summary: Contr
     nodes = next;
   }
   const expected = [...summary.expected].sort();
-  return nodes.flatMap(withElements).some((node) => {
+  const leaves = nodes.flatMap((node) => {
+    const depths = withElements(node);
+    if (summary.leafArrayDepth === undefined) return depths;
+    const leaf = depths[summary.leafArrayDepth];
+    return leaf === undefined ? [] : [leaf];
+  });
+  return leaves.some((node) => {
     if (summary.code === "invalid_enum_value") {
       return node instanceof z.ZodEnum && sameSet([...(node.options as string[])].sort(), expected);
     }
     if (summary.code === "invalid_type") {
-      return expected.length === 1 && compiledTypes(node).includes(expected[0]!);
+      if (expected.length !== 1) return false;
+      if (node instanceof z.ZodEnum) {
+        return sameSet((node.options as string[]).map((value) => `'${value}'`).sort(), expected[0]!.split(" | ").sort());
+      }
+      return compiledTypes(node).includes(expected[0]!);
     }
     return false;
   });
@@ -104,7 +115,6 @@ function compiledTypes(node: z.ZodTypeAny): string[] {
   if (node instanceof z.ZodBoolean) return ["boolean"];
   if (node instanceof z.ZodObject || node instanceof z.ZodRecord) return ["object"];
   if (node instanceof z.ZodArray) return ["array"];
-  if (node instanceof z.ZodEnum) return [(node.options as string[]).map((value) => `'${value}'`).join(" | ")];
   return [];
 }
 
@@ -172,7 +182,8 @@ export async function pinFor(options: PinOptions): Promise<DeliveryPin | undefin
     const config = resolveLearnConfig({ projectRoot: root, ...(options.env !== undefined ? { env: options.env } : {}) });
     for (const diagnostic of config.diagnostics) warnOnce(diagnostic);
     if (!config.deliver) return undefined;
-    const { lessons } = await (options.select ?? activeLessons)(root);
+    const { lessons, diagnostics } = await (options.select ?? activeLessons)(root);
+    for (const diagnostic of diagnostics) warnOnce(JSON.stringify(diagnostic));
     const inWorkspace: ActiveLesson[] = [];
     for (const lesson of lessons) {
       if (await canonicalWorkspace(lesson.candidate.scope.workspaceRoot) === root) inWorkspace.push(lesson);

@@ -82,4 +82,27 @@ describe("harvest engine-produced subflow failures", () => {
     expect(records.map((record) => record.stepId)).toEqual(["wrap/work", "wrap"]);
     expect(records[0]!.reason).toBe(records[1]!.reason);
   });
+  it("keeps a same-reason fallback set failure after a child routed event", async () => {
+    const { root, engine: e } = await engine();
+    const planned = await e.plan({
+      version: 1,
+      contracts: { Result: { outcome: "complete|failed" } },
+      flows: {
+        entry: "main",
+        main: { input: {}, output: { from: "${wrap.output}", contract: "Result" }, steps: [{ id: "wrap", run: "child", with: {} }] },
+        child: { input: {}, output: { from: "${fallback.output}", contract: "Result" }, steps: [
+          { id: "work", do: "work", out: "Result", attempts: 1, on_fail: "fallback" },
+          { id: "fallback", set: { outcome: "'done'" }, out: "Result" },
+        ] },
+      },
+    }, {});
+    await e.stepDone(planned.runId, "wrap/work", { output: { outcome: "done" } });
+    const audit = await e.audit(planned.runId);
+    expect(audit.status).toBe("failed");
+    expect(audit.events).toContainEqual(expect.objectContaining({ type: "routed", stepId: "wrap/work" }));
+    const { records } = await harvest(root);
+    expect(records.map((record) => record.stepId)).toEqual(["wrap/work", "wrap"]);
+    expect(records[0]!.reason).toBe(records[1]!.reason);
+  });
+
 });

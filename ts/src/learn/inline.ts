@@ -23,6 +23,9 @@ export interface InlinePassRow {
   /** Distinct canonical workspaces among the durable clusters. */
   roots: string[];
   records: number;
+  /** Run files and failure-shaped events that harvest could not use. */
+  skipped: number;
+  droppedEvents: number;
   clusters: number;
   durable: number;
   /** Per enabled root, the winning layer of its switch. */
@@ -41,6 +44,8 @@ export function inlineLogPath(storeRoot: string): string {
   return join(dirname(storeRoot), "learn-inline", "triggers.jsonl");
 }
 
+const warnedDiagnostics = new Set<string>();
+
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -50,11 +55,13 @@ async function isDirectory(path: string): Promise<boolean> {
 /** One full reconcile of the store (§A3). Never throws. */
 export async function runInlinePass(storeRoot: string, triggeredBy: string[], env?: NodeJS.ProcessEnv): Promise<InlinePassRow> {
   const row: InlinePassRow = {
-    at: new Date().toISOString(), storeRoot, triggeredBy, roots: [], records: 0, clusters: 0, durable: 0,
+    at: new Date().toISOString(), storeRoot, triggeredBy, roots: [], records: 0, skipped: 0, droppedEvents: 0, clusters: 0, durable: 0,
     enabled: {}, staged: {}, suppressed: {}, skippedUnattributed: [], problems: [],
   };
   try {
-    const { records } = await harvest(storeRoot);
+    const { records, skipped, droppedEvents } = await harvest(storeRoot);
+    row.skipped = skipped;
+    row.droppedEvents = droppedEvents;
     row.records = records.length;
     row.skippedUnattributed = [...new Set(records.filter((r) => r.workspaceRoot === undefined).map((r) => r.runId))];
     await canonicalizeRecordRoots(records);
@@ -152,6 +159,11 @@ export class LearnInline {
       ...(root !== undefined ? { projectRoot: root } : {}),
       ...(this.#env !== undefined ? { env: this.#env } : {}),
     });
+    for (const diagnostic of config.diagnostics) {
+      if (warnedDiagnostics.has(diagnostic)) continue;
+      warnedDiagnostics.add(diagnostic);
+      console.warn(`learn inline: ${diagnostic}`);
+    }
     if (!config.inline) return;
     this.#triggeredBy.push(run.id);
     this.#schedule();

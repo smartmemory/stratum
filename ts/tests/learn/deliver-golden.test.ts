@@ -193,7 +193,7 @@ describe("DELIVER-1 D7 negative golden cases: none are injected", () => {
     expect(staged.length).toBeGreaterThan(0);
     expect(staged.every((c) => c.rendered.guidance === undefined)).toBe(true);
     vi.stubEnv("STRATUM_LEARN_APPLY_ENABLED", "1");
-    for (const candidate of staged) await g.cli(["apply", candidate.revisionId]);
+    for (const candidate of staged) expect(await g.cli(["apply", candidate.revisionId])).toMatchObject({ code: 0 });
     vi.stubEnv("STRATUM_LEARN_APPLY_ENABLED", "");
     vi.stubEnv("STRATUM_LEARN_DELIVER", "1");
     notInjected((await g.run()).firstPrompt);
