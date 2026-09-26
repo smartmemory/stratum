@@ -1,6 +1,6 @@
 # STRAT-AGENT-DEVIN-1 — Implementation plan
 
-**Status:** IN_PROGRESS (S1, S2 COMPLETE; S3 in progress) · **Created:** 2026-09-26 · Design: `design.md` r6 (`c5d1142`), gate closed by the owner.
+**Status:** IMPLEMENTED (S1, S2, S3 COMPLETE; branch `strat-agent-devin-1` awaiting the owner's merge) · **Created:** 2026-09-26 · Design: `design.md` r6 (`c5d1142`), gate closed by the owner.
 
 ## Related Documents
 
@@ -283,7 +283,9 @@ keeps the replaced-path guard (dev/ino mismatch) and changes nothing else in the
 
 ## Slice S3 — engine/IR (design §Slices 3)
 
-**IMPLEMENTED, review pending** — golden 2 drives `stratum_plan` → `stratum_flow_poll` → `stratum_audit`
+**COMPLETE** — `40f31c2` S3 · `4c14d47` review r1 fix (1M) · `2f89d2f` review r2 fixes (2M). Codex astra/medium impl
+review: r1 NOT CLEAN 1M, r2 NOT CLEAN 2M (all in golden 2's failure-path cleanup, all upheld, fixed), r3 CLEAN.
+Golden 2 drives `stratum_plan` → `stratum_flow_poll` → `stratum_audit`
 (engine-dispatched worktree fan-out through `defaultConnector`); the merged edit is asserted in the
 original workspace. Live run: the outside write and the shell write through `link-out` failed with
 `Operation not permitted` (the seatbelt), the edit-tool write through `link-out` was refused by
@@ -393,7 +395,7 @@ real agent):**
 - [x] `tsc --noEmit` clean; `tests/engine tests/ir tests/connectors tests/mcp tests/config` green with
       the tripwire (controller-run; rerun the known load flakes alone before calling red); goldens 1, 2
       live green
-- [ ] Codex astra/medium implementation review of S3, then fixes-only rounds (budget ~3; M+ after
+- [x] Codex astra/medium implementation review of S3, then fixes-only rounds (budget ~3; M+ after
       round 3 ⇒ stop and ask the owner)
 
 Out of S3: `dispatch: consumer` + devin (Compose rejects it at `compose/lib/build.js`, fail-closed —
@@ -402,7 +404,8 @@ IR field (project `stratum.toml` covers it).
 
 ## Acceptance for the feature
 
-- [ ] all four goldens pass on macOS against real devin (controller-run)
-- [ ] equality table passes; no agent switch without a `never` default
-- [ ] CHANGELOG + README agent list updated in the same commits as the code
-- [ ] Codex implementation review CLEAN (or Low-only, adjudicated)
+- [x] all four goldens pass on macOS against real devin (controller-run) — 1 and 2 at `2f89d2f`; 3 and 4 at
+      `5c21568` (later commits touch no connector code on their path)
+- [x] equality table passes; no agent switch without a `never` default
+- [x] CHANGELOG + README agent list updated in the same commits as the code
+- [x] Codex implementation review CLEAN (or Low-only, adjudicated) — S1 r3, S2 r2 (Low fixed), S3 r3
