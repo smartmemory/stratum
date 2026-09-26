@@ -1,5 +1,5 @@
 {
-  "surface": 24,
+  "surface": 25,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -665,7 +665,8 @@
           "steps": "object",
           "flowSpent": "object",
           "output?": "any",
-          "carry?": "object"
+          "carry?": "object",
+          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
         },
         "completed": {
           "runId": "string",
@@ -673,7 +674,8 @@
           "steps": "object",
           "flowSpent": "object",
           "output?": "any",
-          "carry?": "object"
+          "carry?": "object",
+          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
         },
         "failed": {
           "runId": "string",
@@ -681,7 +683,8 @@
           "steps": "object",
           "flowSpent": "object",
           "output?": "any",
-          "carry?": "object"
+          "carry?": "object",
+          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
         },
         "budget_exhausted": {
           "runId": "string",
@@ -689,7 +692,8 @@
           "steps": "object",
           "flowSpent": "object",
           "output?": "any",
-          "carry?": "object"
+          "carry?": "object",
+          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
         },
         "cancelled": {
           "runId": "string",
@@ -697,7 +701,8 @@
           "steps": "object",
           "flowSpent": "object",
           "output?": "any",
-          "carry?": "object"
+          "carry?": "object",
+          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
         }
       }
     },

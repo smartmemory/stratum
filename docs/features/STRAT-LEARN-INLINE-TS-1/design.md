@@ -274,6 +274,29 @@ lifecycle.
   sandbox provenance surfaces only through `sandboxAudit()` (`config/index.ts:77`), so this reuses the
   same `ConfigProvenance` type rather than adding a command.
 
+### A8. Implementation notes (2026-09-26, stratum side)
+
+Built by Claude in the DELIVER-1 slice-4 worktree branch while Codex credits were exhausted; Codex
+review pending. `learn/inline.ts` (pass + `LearnInline` coalescer), `learn/unreviewed.ts`,
+`config/learn.ts` (`inline` beside `deliver`), CLI `learn list --unreviewed`, audit + MCP projection.
+Tests: `tests/learn/inline.test.ts`, `tests/learn/surface.test.ts`, `tests/config/learn.test.ts`.
+
+- **Which switch gates the trigger.** §A2 "off means off" is resolved against the *triggering run's*
+  canonical workspace (project layer) plus user and env. A run with no `workspaceRoot` resolves user
+  and env only; if that is on, the pass runs and logs the run under `skippedUnattributed`. Each root in
+  the pass is then resolved on its own (§A3).
+- **Switch validity.** An invalid `inline` value turns only `inline` off; an unknown `[learn]` key, a
+  non-table `[learn]` or a TOML parse error in a layer turns every `[learn]` switch off. All are
+  diagnostics (`problems` in the pass row, `console.warn` elsewhere); none throws.
+- **Diagnostic row** gains `enabled` (winning layer per enabled root, §A7), `suppressed` (cluster ids
+  held back by retire/dismiss) and `problems` (per-root/per-cluster errors the pass carried on past).
+- **Contracts.** The strict MCP validator rejects undeclared keys, so `stratum_audit.learn_inline`
+  needed a surface bump (24 → 25). The same check exposed a DELIVER-1 slice-4 defect: its `lessons` /
+  `lessonsSuppressed` event detail fields were undeclared, so with delivery ON `stratum_audit` and
+  `stratum_flow_poll` failed over MCP (events 5 → 6 fixes it; `tests/learn/surface.test.ts` fails
+  without it).
+- **Not built yet:** the Compose build-summary slice (§A5, separate repo).
+
 ## Acceptance criteria
 
 - [ ] ~~Judge-path `must-fix` verdicts trigger harvest+classify automatically when enabled.~~

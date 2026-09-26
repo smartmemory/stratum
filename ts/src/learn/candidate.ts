@@ -244,6 +244,14 @@ export async function appendCandidates(
   root: string,
   candidates: readonly PatchCandidate[],
 ): Promise<number> {
+  return (await stageCandidates(root, candidates)).length;
+}
+
+/** `appendCandidates()`, returning the revision ids newly written (in input order). */
+export async function stageCandidates(
+  root: string,
+  candidates: readonly PatchCandidate[],
+): Promise<string[]> {
   root = await canonicalWorkspace(root);
   return withWorkspaceLock(root, async () => {
     const existing = new Set((await readCandidates(join(root, ".stratum", "learn"))).map((c) => c.revisionId));
@@ -253,7 +261,7 @@ export async function appendCandidates(
       return true;
     });
     await appendJsonlUnderLock(root, "candidates.jsonl", fresh);
-    return fresh.length;
+    return fresh.map((c) => c.revisionId);
   });
 }
 

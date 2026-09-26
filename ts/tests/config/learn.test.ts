@@ -21,43 +21,57 @@ afterEach(async () => {
 });
 
 const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ STRATUM_CONFIG_FILE: userFile, ...extra });
+const DEFAULT = { layer: "default", source: "built-in defaults" };
 
-describe("[learn] deliver switch", () => {
-  it("defaults OFF with default provenance", () => {
+describe("[learn] switches", () => {
+  it("default OFF with default provenance", () => {
     expect(resolveLearnConfig({ projectRoot: project, env: env() })).toEqual({
-      deliver: false, provenance: { layer: "default", source: "built-in defaults" }, diagnostics: [],
+      deliver: false, inline: false, provenance: { deliver: DEFAULT, inline: DEFAULT }, diagnostics: [],
     });
   });
 
-  it("resolves user < project < env and reports the winning layer", async () => {
-    await writeFile(userFile, "[learn]\ndeliver = true\n");
+  it("resolves user < project < env per switch and reports each winning layer", async () => {
+    await writeFile(userFile, "[learn]\ndeliver = true\ninline = true\n");
     expect(resolveLearnConfig({ projectRoot: project, env: env() })).toMatchObject({
-      deliver: true, provenance: { layer: "user", source: userFile },
+      deliver: true, inline: true,
+      provenance: { deliver: { layer: "user", source: userFile }, inline: { layer: "user", source: userFile } },
     });
     await writeFile(join(project, "stratum.toml"), "[learn]\ndeliver = false\n");
     expect(resolveLearnConfig({ projectRoot: project, env: env() })).toMatchObject({
-      deliver: false, provenance: { layer: "project", source: join(project, "stratum.toml") },
+      deliver: false, inline: true,
+      provenance: { deliver: { layer: "project", source: join(project, "stratum.toml") }, inline: { layer: "user" } },
     });
-    expect(resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_DELIVER: "on" }) })).toMatchObject({
-      deliver: true, provenance: { layer: "env", source: "STRATUM_LEARN_DELIVER" },
+    expect(resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_DELIVER: "on", STRATUM_LEARN_INLINE: "0" }) })).toMatchObject({
+      deliver: true, inline: false,
+      provenance: { deliver: { layer: "env", source: "STRATUM_LEARN_DELIVER" }, inline: { layer: "env", source: "STRATUM_LEARN_INLINE" } },
     });
   });
 
-  it("resolves an invalid value OFF with a diagnostic instead of throwing", async () => {
-    await writeFile(join(project, "stratum.toml"), "[learn]\ndeliver = \"sometimes\"\n");
+  it("without a project root, resolves user and env layers only", async () => {
+    await writeFile(join(project, "stratum.toml"), "[learn]\ninline = true\n");
+    expect(resolveLearnConfig({ env: env() }).inline).toBe(false);
+    expect(resolveLearnConfig({ env: env({ STRATUM_LEARN_INLINE: "1" }) }).inline).toBe(true);
+  });
+
+  it("an invalid value turns only that switch OFF, with a diagnostic", async () => {
+    await writeFile(join(project, "stratum.toml"), "[learn]\ndeliver = \"sometimes\"\ninline = true\n");
     const resolved = resolveLearnConfig({ projectRoot: project, env: env() });
-    expect(resolved.deliver).toBe(false);
+    expect(resolved).toMatchObject({ deliver: false, inline: true });
     expect(resolved.diagnostics.join("\n")).toContain("learn.deliver");
-    const bad = resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_DELIVER: "maybe" }) });
-    expect(bad.deliver).toBe(false);
-    expect(bad.diagnostics.join("\n")).toContain("STRATUM_LEARN_DELIVER");
+    const bad = resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_INLINE: "maybe" }) });
+    expect(bad.inline).toBe(false);
+    expect(bad.diagnostics.join("\n")).toContain("STRATUM_LEARN_INLINE");
   });
 
-  it("resolves a TOML parse failure OFF with a diagnostic", async () => {
+  it("an unknown [learn] key or a TOML parse failure turns every switch OFF", async () => {
+    await writeFile(join(project, "stratum.toml"), "[learn]\ninline = true\ninline_patch = true\n");
+    const unknown = resolveLearnConfig({ projectRoot: project, env: env() });
+    expect(unknown).toMatchObject({ deliver: false, inline: false });
+    expect(unknown.diagnostics.join("\n")).toContain("learn.inline_patch");
     await writeFile(join(project, "stratum.toml"), "[learn\n");
-    const resolved = resolveLearnConfig({ projectRoot: project, env: env() });
-    expect(resolved.deliver).toBe(false);
-    expect(resolved.diagnostics.join("\n")).toContain("TOML");
+    const broken = resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_DELIVER: "" }) });
+    expect(broken).toMatchObject({ deliver: false, inline: false });
+    expect(broken.diagnostics.join("\n")).toContain("TOML");
   });
 
   it("does not change sandbox resolution, and sandbox resolution ignores [learn] contents", async () => {
@@ -69,5 +83,10 @@ describe("[learn] deliver switch", () => {
   it("keeps rejecting unknown top-level tables in the shared loader", async () => {
     await writeFile(join(project, "stratum.toml"), "[mystery]\nx = 1\n");
     expect(() => loadStratumConfig({ projectRoot: project, env: env() })).toThrow(/mystery/);
+  });
+
+  it("invalid TOML keeps failing the shared sandbox loader, as before this feature", async () => {
+    await writeFile(join(project, "stratum.toml"), "[learn\n");
+    expect(() => loadStratumConfig({ projectRoot: project, env: env() })).toThrow(/TOML parse error/);
   });
 });

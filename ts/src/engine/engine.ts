@@ -13,6 +13,10 @@ import { extractReferences, type ExtractedReference, type PathSegment, type Refe
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
 import { harvestStepId, lessonBlock, pinEventDetail, pinFor, setPin, type DeliveryPin } from "../learn/deliver.js";
+import { LearnInline } from "../learn/inline.js";
+import { unreviewedLessons, type UnreviewedLesson } from "../learn/unreviewed.js";
+import { canonicalWorkspace } from "../learn/workspace.js";
+import { resolveLearnConfig } from "../config/learn.js";
 import { LearnEgress, type LearnEgressDriver, type LearnEgressRuntimeOptions } from "../learn/smartmemory_egress.js";
 import { mergeBundleIntoSpec, policyRuleKey, predicateType, validateBundle } from "../policy/bundle.js";
 import { buildFlowTerminalEvent, buildGateResolutionEvent } from "../policy/events.js";
@@ -282,6 +286,8 @@ export interface AuditTrail {
   flowSpent: Budget;
   output?: unknown;
   carry?: Record<string, CarryEntry>;
+  /** INLINE-TS-1 §A5: unreviewed lessons for this run's workspace; absent when off or empty. */
+  learn_inline?: { unreviewed: UnreviewedLesson[] };
 }
 
 export interface StratumEngineOptions {
@@ -357,6 +363,8 @@ export class StratumEngine {
   private readonly connector: EngineConnector;
   private readonly learnEgress: LearnEgressDriver;
   private readonly learnEgressStartup: Promise<void>;
+  /** STRAT-LEARN-INLINE-TS-1: stages lessons from this engine's own store after terminal runs. */
+  private readonly learnInline: LearnInline;
   // Serializes load-modify-save per run: plan may hand out several ready steps, so
   // stepDone/resume can race in-process. The state root is owned by one engine process in v1.
   private readonly runLocks = new Map<string, Promise<unknown>>();
@@ -385,6 +393,7 @@ export class StratumEngine {
 
   constructor(options: StratumEngineOptions) {
     this.store = new StateStore(options.stateRoot);
+    this.learnInline = new LearnInline(this.store.root);
     this.lockOptions = options.lockOptions ?? {};
     this.hooks = options.hooks ?? {};
     this.identity = this.lockOptions.identity ?? processIdentity;
@@ -1064,7 +1073,27 @@ export class StratumEngine {
     // holds: audit is the consumer's discovery surface (D5) and a token minted
     // on the live object must stay invisible until its save lands.
     const run = await this.store.load(runId);
-    return { runId, status: run.status, events: structuredClone(run.events), steps: structuredClone(run.steps), flowSpent: structuredClone(run.flowSpent), ...(run.output !== undefined ? { output: structuredClone(run.output) } : {}), ...(run.carry !== undefined ? { carry: structuredClone(run.carry) } : {}) };
+    const learnInline = await this.unreviewedFor(run);
+    return { runId, status: run.status, events: structuredClone(run.events), steps: structuredClone(run.steps), flowSpent: structuredClone(run.flowSpent), ...(run.output !== undefined ? { output: structuredClone(run.output) } : {}), ...(run.carry !== undefined ? { carry: structuredClone(run.carry) } : {}), ...(learnInline !== undefined ? { learn_inline: learnInline } : {}) };
+  }
+
+  /** INLINE-TS-1 §A5. OFF: the config read only. Never throws: a surfacing failure omits the field. */
+  private async unreviewedFor(run: PersistedRun): Promise<{ unreviewed: UnreviewedLesson[] } | undefined> {
+    if (run.workspaceRoot === undefined) return undefined;
+    try {
+      const root = await canonicalWorkspace(run.workspaceRoot);
+      if (!resolveLearnConfig({ projectRoot: root }).inline) return undefined;
+      const unreviewed = await unreviewedLessons(root);
+      return unreviewed.length > 0 ? { unreviewed } : undefined;
+    } catch (error) {
+      console.warn(`learn inline: audit surfacing failed for run ${run.id}: ${message(error)}`);
+      return undefined;
+    }
+  }
+
+  /** Resolves when no inline-learning switch check or pass is in flight (INLINE-TS-1 §A2). */
+  learnInlineIdle(): Promise<void> {
+    return this.learnInline.idle();
   }
 
   /** Restart-safe read-only wait surface: events are sliced from the persisted spine. */
@@ -3578,6 +3607,9 @@ export class StratumEngine {
   }
 
   private emitFlowTerminal(run: PersistedRun): void {
+    // INLINE-TS-1 §A2: first, before the policy early return — most runs carry no bundle.
+    // Every caller persisted the terminal state already; this enqueues and returns.
+    this.learnInline.trigger(run);
     if (run.bundle_id === undefined) return;
     this.firePolicyEvent(buildFlowTerminalEvent({
       runId: run.id,

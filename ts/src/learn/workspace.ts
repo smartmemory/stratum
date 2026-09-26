@@ -96,3 +96,26 @@ export async function appendJsonlUnderLock(root: string, fileName: string, rows:
     await file.close();
   }
 }
+
+/**
+ * Rewrite each record's `workspaceRoot` to its canonical workspace, in place, before
+ * `classify()` keys on the exact string (INLINE-TS-1 §A3). Git lookups run at most 8 at a
+ * time: the live store can carry hundreds of distinct temp roots.
+ */
+export async function canonicalizeRecordRoots(
+  records: Array<{ workspaceRoot?: string }>,
+  resolveRoot: (path: string) => Promise<string> = canonicalWorkspace,
+): Promise<void> {
+  const distinct = [...new Set(records.flatMap((record) => record.workspaceRoot === undefined ? [] : [record.workspaceRoot]))];
+  const canonical = new Map<string, string>();
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(8, distinct.length) }, async () => {
+    while (next < distinct.length) {
+      const root = distinct[next++]!;
+      canonical.set(root, await resolveRoot(root));
+    }
+  }));
+  for (const record of records) {
+    if (record.workspaceRoot !== undefined) record.workspaceRoot = canonical.get(record.workspaceRoot)!;
+  }
+}

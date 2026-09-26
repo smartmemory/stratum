@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { canonicalWorkspace } from "../learn/workspace.js";
+import { canonicalizeRecordRoots, canonicalWorkspace } from "../learn/workspace.js";
+import { resolveLearnConfig } from "../config/learn.js";
+import { unreviewedLessons, type UnreviewedLesson } from "../learn/unreviewed.js";
 import { appendLifecycle, LifecycleError, type LifecycleKind, type LifecycleRow, type ReviewKind } from "../learn/lifecycle.js";
 import { harvest } from "../learn/harvest.js";
 import { classify } from "../learn/classify.js";
@@ -18,6 +20,7 @@ import { lockedSave, lockedRead } from "../engine/run_lock.js";
 
 const USAGE =
   "Usage: stratum learn <harvest|list|apply|revert|reconcile|egress> [--root <dir>] [--stage] [--json]\n" +
+  "       stratum learn list --unreviewed [--json] [--if-enabled] [--root <dir>]\n" +
   "       stratum learn retire <clusterId> --reason <text> (--fix-ref <sha> | --withdrawn) [--root <dir>]\n" +
   "       stratum learn <dismiss|reactivate> <clusterId> --reason <text> [--root <dir>]\n" +
   "       stratum learn ack <clusterId> --reason <text> [--kind <review>] [--root <dir>]\n" +
@@ -70,22 +73,7 @@ async function harvestCommand(args: string[]): Promise<number> {
   const root = await rootOf(args);
   const flowsDir = option(args, "flows") ?? join(homedir(), ".stratum", "ts", "flows");
   const { records, skipped, droppedEvents } = await harvest(flowsDir);
-  const distinctRoots = [...new Set(records.flatMap((record) =>
-    record.workspaceRoot === undefined ? [] : [record.workspaceRoot],
-  ))];
-  const canonicalRoots = new Map<string, string>();
-  let nextRoot = 0;
-  await Promise.all(Array.from({ length: Math.min(8, distinctRoots.length) }, async () => {
-    while (nextRoot < distinctRoots.length) {
-      const workspaceRoot = distinctRoots[nextRoot++]!;
-      canonicalRoots.set(workspaceRoot, await canonicalWorkspace(workspaceRoot));
-    }
-  }));
-  for (const record of records) {
-    if (record.workspaceRoot !== undefined) {
-      record.workspaceRoot = canonicalRoots.get(record.workspaceRoot)!;
-    }
-  }
+  await canonicalizeRecordRoots(records);
   const clusters = classify(records);
 
   const candidates: PatchCandidate[] = [];
@@ -129,6 +117,7 @@ async function harvestCommand(args: string[]): Promise<number> {
 
 async function listCommand(args: string[]): Promise<number> {
   const root = await rootOf(args);
+  if (flag(args, "unreviewed")) return listUnreviewed(root, args);
   const rows = latestPerCluster(await readCandidates(sidecarDir(root)));
   if (flag(args, "json")) {
     process.stdout.write(JSON.stringify(rows, null, 2) + "\n");
@@ -141,6 +130,37 @@ async function listCommand(args: string[]): Promise<number> {
   for (const row of rows) {
     process.stdout.write(`${row.revisionId.slice(0, 12)}  ${row.claim}${row.rendered.guidance === undefined ? "  (note only)" : ""}\n`);
   }
+  return 0;
+}
+
+/**
+ * INLINE-TS-1 §A5. `--if-enabled` prints nothing when `[learn] inline` is OFF for this root
+ * (Compose calls it at every build exit); without it, the question is always answered.
+ */
+async function listUnreviewed(root: string, args: string[]): Promise<number> {
+  const config = resolveLearnConfig({ projectRoot: root });
+  if (flag(args, "if-enabled") && !config.inline) return 0;
+  let lessons: UnreviewedLesson[];
+  try {
+    lessons = await unreviewedLessons(root);
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+  if (flag(args, "json")) {
+    process.stdout.write(JSON.stringify(lessons, null, 2) + "\n");
+    return 0;
+  }
+  const { layer, source } = config.provenance.inline;
+  process.stdout.write(`inline: ${config.inline ? "on" : "off"} (${layer}${layer === "default" ? "" : `: ${source}`})\n`);
+  if (lessons.length === 0) {
+    process.stdout.write("no unreviewed lessons\n");
+    return 0;
+  }
+  for (const lesson of lessons) {
+    process.stdout.write(`${lesson.revisionId.slice(0, 12)}  ${lesson.claim}${lesson.guidance === undefined ? "  (note only)" : ""}\n`);
+  }
+  process.stdout.write("\napply: stratum learn apply <revision>   dismiss: stratum learn dismiss <clusterId> --reason <text>\n");
   return 0;
 }
 
