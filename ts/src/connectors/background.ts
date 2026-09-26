@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorSplit, ConnectorUsage } from "./base.js";
 import { AGENT_TYPES, describeAgentTypes, finiteNonnegative, modelIdentity } from "./base.js";
-import { assertDevinSandboxAllowed, resolveDevinModel } from "./devin-model.js";
+import { assertDevinSandboxAllowed, devinModelIdentity, resolveDevinModel } from "./devin-model.js";
 import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
@@ -19,6 +19,8 @@ import { normalizePeerLabel, peerName, resolveSessionsDir, resolveSockDir, shoul
 import { createWorkerPeerLifecycle } from "./peer-worker-lifecycle.js";
 import { launchCodexAppServerDriver } from "./codex-appserver-launch.js";
 import { spawnPeerSidecar } from "./peer-sidecar.js";
+
+import { processTermination } from "./cancellation.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
 // Keyed by runId. Entry absent means "not running" (terminal). Deletion is the
@@ -93,7 +95,7 @@ export interface ClaudeRunMeta extends BackgroundRunMetaBase {
   disallowedTools?: string[];
 }
 
-/** S2 writes these; S1a only accepts them at the parse boundary (D8). */
+/** Durable supervisor identity and policy for devin background runs (D8). */
 export interface DevinRunMeta extends BackgroundRunMetaBase {
   agent: "devin";
   childPid: number;
@@ -107,6 +109,9 @@ export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta | DevinRunMeta;
 export interface StartBackgroundRunOptions {
   peerLabel?: string;
   workerTestReleasePath?: string;
+  /** Devin identity/meta persistence seams for failure-path tests. */
+  devinProcStartTime?: typeof procStartTime;
+  devinWriteMeta?: typeof atomicWriteJson;
   agent: AgentType;
   prompt: string;
   cwd: string;
@@ -237,7 +242,7 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     runId, model, cwd: options.cwd, prompt: withSandboxPreamble(options.prompt, sandboxMode),
     // Keep the Stratum policy intact; the driver encodes sandbox/config at thread/start.
     policy: sandboxPolicy, streamPath,
-    peer: { name: peerName(model, runId, { label: options.peerLabel }),
+    peer: { name: peerName(model, runId, { agent: "codex", label: options.peerLabel }),
       sessionsDir: options.sessionsDir ?? resolveSessionsDir(env), sockDir: options.sockDir ?? resolveSockDir(env),
       lingerMs: options.lingerMs ?? Number(env.STRATUM_PEER_LINGER_MS ?? 15000),
       firstLineDeadlineMs: Number(env.STRATUM_PEER_FIRST_LINE_MS ?? 30000) },
@@ -284,13 +289,20 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
     return { status: "bg_started", runId, pid, streamPath, ...(name ? { peerName: name } : {}) };
   }
   child.unref();
+  const name = await registerExecPeer(options, "codex", model, runId, runDir, streamPath, pid, startTime, env);
+  return { status: "bg_started", runId, pid, streamPath, ...(name ? { peerName: name } : {}) };
+}
+
+async function registerExecPeer(options: StartBackgroundRunOptions, agent: "codex" | "devin",
+  model: string, runId: string, runDir: string, streamPath: string, pid: number,
+  startTime: string | undefined, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   // Peer discovery is best effort and never enters the fatal metadata-write path.
   // cancelBackgroundRun intentionally stays unchanged: this shadow owns its own group.
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   try {
     const registration = async (): Promise<string | undefined> => {
-      const name = peerName(model, runId, {label: options.peerLabel});
+      const name = peerName(model, runId, {agent, label: options.peerLabel});
       const sessionsDir = options.sessionsDir ?? resolveSessionsDir(env);
       const sockDir = options.sockDir ?? resolveSockDir(env);
       const gate = await shouldRegister(sessionsDir, env);
@@ -315,18 +327,12 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
       }, 2000);
     });
     const name = await Promise.race([registration(), timeout]);
-    if (name) return { status: "bg_started", runId, pid, streamPath, peerName: name };
+    return name;
   } catch (error) { console.error("stratum peer registration failed:", error); }
   finally { if (timer !== undefined) clearTimeout(timer); }
-  return { status: "bg_started", runId, pid, streamPath };
+  return undefined;
 }
 
-/**
- * S1a: devin's background boundary validates through the same resolvers a real
- * run will use — D6's third model-validation layer, D3's explicit-network
- * rule, D11's approvalPolicy and full-access rules — then refuses, because the
- * dispatch path (own branch, export-derived status) lands in S2.
- */
 async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Promise<{
   status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string;
 }> {
@@ -337,8 +343,69 @@ async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Prom
     throw new Error("Codex approvalPolicy is not supported by devin");
   }
   assertDevinSandboxAllowed(options.sandboxMode ?? "read-only", options.env ?? process.env);
-  resolveDevinModel(options.model, options.effort);
-  throw new Error("devin connector not implemented yet (STRAT-AGENT-DEVIN-1 S1b)");
+  const model = resolveDevinModel(options.model, options.effort);
+  const sandboxMode = options.sandboxMode ?? "read-only";
+  // Keep other agents independent of devin's optional transport modules.
+  const { assertDevinPlatform } = await import("./devin-sandbox.js");
+  assertDevinPlatform(sandboxMode, process.platform);
+  if (options.command !== undefined) throw new Error("command is not supported for devin");
+  const { prepareDevinRun, directDevinSandboxAudit } = await import("./devin.js");
+  const sandboxAudit = options.sandboxAudit ?? directDevinSandboxAudit({
+    filesystemMode: sandboxMode, networkAccess: true,
+    writableRoots: options.writableRoots ?? [], approvalPolicy: "never",
+  }, options);
+  const { runId, layout, argv, env, framedPromptChars } = await prepareDevinRun({
+    root: options.registryRoot ?? agentRunsRoot(), prompt: options.prompt, cwd: options.cwd,
+    model, sandboxMode, writableRoots: options.writableRoots ?? [],
+    ...(options.env === undefined ? {} : { env: options.env }),
+  });
+  const stdout = await open(layout.stdoutPath, "w", 0o600);
+  let child: ChildProcess;
+  let termination: ReturnType<typeof processTermination>;
+  let spawned: Promise<void>;
+  const createdAt = new Date().toISOString();
+  try {
+    const stderr = await open(layout.stderrPath, "w", 0o600);
+    try {
+      child = spawn(layout.wrapperPath, argv, { cwd: options.cwd, env, detached: true,
+        stdio: ["ignore", stdout.fd, stderr.fd] });
+      // All lifecycle listeners must be attached before even fd-close awaits.
+      termination = processTermination(child, true);
+      spawned = new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      void spawned.catch(() => {});
+    } finally { await stderr.close(); }
+  } finally { await stdout.close(); }
+  await spawned;
+  const pid = child.pid;
+  let startTime: string | undefined;
+  try { startTime = pid === undefined ? undefined : await (options.devinProcStartTime ?? procStartTime)(pid); }
+  catch (error) {
+    await termination.terminate();
+    throw error;
+  }
+  if (pid === undefined || startTime === undefined) {
+    await termination.terminate();
+    throw new Error(`devin wrapper identity could not be captured: ${(await tailText(layout.stderrPath)).trim() || "no process start time"}`);
+  }
+  const meta: DevinRunMeta = {
+    runId, agent: "devin", model, cwd: options.cwd, sandboxMode,
+    promptChars: framedPromptChars, createdAt, childPid: pid, procStartTime: startTime,
+    ...(options.peerLabel === undefined ? {} : { peerLabel: options.peerLabel }),
+    sandboxAudit, streamPath: layout.streamPath, stderrPath: layout.stderrPath,
+  };
+  try { await (options.devinWriteMeta ?? atomicWriteJson)(layout.metaPath, meta); }
+  catch (error) {
+    await killDetachedProcessGroup(child, pid);
+    throw error;
+  }
+  child.unref();
+  const name = await registerExecPeer(options, "devin", model, runId, layout.runDir,
+    layout.streamPath, pid, startTime, env);
+  return { status: "bg_started", runId, pid, streamPath: layout.streamPath,
+    ...(name ? { peerName: name } : {}) };
 }
 
 // WorkerInput is the data passed to claude-bg-worker via workerData.
@@ -494,7 +561,7 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
   const loaded = await loadMeta(runId, options.registryRoot ?? agentRunsRoot());
   if (!loaded) return { status: "not_found", runId };
   const { streamPath, stderrPath } = loaded;
-  const sandboxAudit = loaded.meta.agent === "codex" ? loaded.meta.sandboxAudit : undefined;
+  const sandboxAudit = loaded.meta.agent !== "claude" ? loaded.meta.sandboxAudit : undefined;
   const auditFields = sandboxAudit === undefined ? {} : { sandboxAudit };
   let peer: BackgroundPeer | undefined;
   {
@@ -517,6 +584,35 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
     } catch { /* Missing or malformed discovery metadata cannot affect the durable run. */ }
   }
   const peerFields = peer ? {peer} : {};
+  if (loaded.meta.agent === "devin") {
+    const { devinTerminalVerdict } = await import("./devin.js");
+    const textTail = await tailText(loaded.narrationPath!);
+    let rc = await readDevinExitRc(loaded.exitRcPath!);
+    if (rc === undefined) {
+      if (await processIdentityMatches(loaded.meta.childPid, loaded.meta.procStartTime)) {
+        return { status: "running", runId, ...peerFields, ...auditFields,
+          textTail, eventsSeen: 0, streamPath };
+      }
+      // The wrapper may have committed exit.rc during the identity lookup.
+      rc = await readDevinExitRc(loaded.exitRcPath!);
+    }
+    const stderrTail = await tailText(stderrPath);
+    if (rc === undefined) return { status: "error", runId, ...peerFields, ...auditFields,
+      reason: "child_died_without_sentinel", textTail, stderrTail, eventsSeen: 0, streamPath };
+    const durationMs = Math.max(0, (await stat(loaded.exitRcPath!)).mtimeMs - Date.parse(loaded.meta.createdAt));
+    const telemetry = { durationMs, ...devinModelIdentity(loaded.meta.model) };
+    try {
+      const { text, metrics, usd, usdSource } = await devinTerminalVerdict({ rc,
+        exportPath: loaded.exportPath!, stderrTail, model: loaded.meta.model });
+      return { status: "complete", runId, ...peerFields, ...auditFields, text, exitCode: 0,
+        usage: { tokens: metrics.prompt + metrics.completion, ms: durationMs, usd },
+        split: { input: metrics.prompt, output: metrics.completion,
+          ...(metrics.cached > 0 ? { cacheRead: metrics.cached } : {}) }, usdSource, telemetry };
+    } catch (error) {
+      return { status: "error", runId, ...peerFields, ...auditFields, exitCode: rc,
+        reason: error instanceof Error ? error.message : String(error), textTail, stderrTail, telemetry };
+    }
+  }
   let scan = await scanStream(streamPath, loaded.meta);
   let text = capText(scan.text, streamPath);
 
@@ -642,9 +738,21 @@ export async function cancelBackgroundRun(runId: string, options: RegistryOption
     return { status: "cancelled", runId };
   }
 
-  // Codex path — unchanged:
-  const scan = await scanStream(loaded.streamPath);
-  if (scan.exitCode !== undefined) return { status: scan.exitCode === 0 && !scan.error ? "already_complete" : "already_error", runId };
+  if (loaded.meta.agent === "devin") {
+    const { devinTerminalVerdict } = await import("./devin.js");
+    const rc = await readDevinExitRc(loaded.exitRcPath!);
+    if (rc !== undefined) {
+      try {
+        await devinTerminalVerdict({ rc, exportPath: loaded.exportPath!,
+          stderrTail: await tailText(loaded.stderrPath), model: loaded.meta.model });
+        return { status: "already_complete", runId };
+      } catch { return { status: "already_error", runId }; }
+    }
+  } else {
+    const scan = await scanStream(loaded.streamPath);
+    if (scan.exitCode !== undefined) return { status: scan.exitCode === 0 && !scan.error ? "already_complete" : "already_error", runId };
+  }
+  // Shared identity-checked SIGTERM sequence; devin's wrapper owns terminal writes.
   const { childPid: pid, procStartTime: expected } = loaded.meta;
   if (!await processIdentityMatches(pid, expected)) return { status: "already_error", runId };
   if (await processGroupId(pid) !== pid) return { status: "already_error", runId };
@@ -684,7 +792,7 @@ async function killDetachedProcessGroup(child: ChildProcess, pid: number): Promi
   await exited;
 }
 
-async function loadMeta(runId: string, root: string): Promise<{ meta: BackgroundRunMeta; streamPath: string; stderrPath: string } | undefined> {
+async function loadMeta(runId: string, root: string): Promise<{ meta: BackgroundRunMeta; streamPath: string; stderrPath: string; narrationPath?: string; exitRcPath?: string; exportPath?: string } | undefined> {
   if (!RUN_ID.test(runId)) return undefined;
   try {
     const runDir = join(root, runId);
@@ -695,11 +803,25 @@ async function loadMeta(runId: string, root: string): Promise<{ meta: Background
     if (typeof raw.model !== "string") return undefined;
     // Read paths are derived from the validated run directory, never from the
     // serialized record — a substituted meta.json cannot redirect poll reads.
+    if (raw.agent === "devin") {
+      const { devinRunLayout } = await import("./devin-wrapper.js");
+      const layout = devinRunLayout(runDir);
+      return { meta: raw as unknown as DevinRunMeta, streamPath: layout.streamPath,
+        stderrPath: layout.stderrPath, narrationPath: layout.stdoutPath,
+        exitRcPath: layout.exitRcPath, exportPath: layout.exportPath };
+    }
     const streamPath = join(runDir, "stream.jsonl");
     return { meta: raw as unknown as BackgroundRunMeta, streamPath, stderrPath: `${streamPath}.err` };
   } catch {
     return undefined;
   }
+}
+
+async function readDevinExitRc(path: string): Promise<number | undefined> {
+  try {
+    const value = (await readFile(path, "utf8")).trim();
+    return /^\d+$/.test(value) ? Number(value) : undefined;
+  } catch { return undefined; }
 }
 
 async function scanStream(path: string, meta?: Pick<BackgroundRunMeta, "agent" | "model">): Promise<{

@@ -373,21 +373,23 @@ describe("DevinConnector — D4 rejection", () => {
 });
 
 describe("DevinConnector — sandbox policy gates (D3)", () => {
-  it("refuses read-only/workspace-write off macOS with a named error", () => {
+  it("refuses read-only/workspace-write off macOS with a named error", async () => {
+    const env = { HOME: await temporaryRoot(), PATH: "/usr/bin:/bin" };
     for (const sandboxMode of ["read-only", "workspace-write"] as const) {
-      expect(() => connector({ sandboxMode, platform: "linux", env: {} }))
+      expect(() => connector({ sandboxMode, platform: "linux", env }))
         .toThrow(/requires macOS seatbelt \(sandbox-exec\)/);
     }
-    expect(() => connector({ sandboxMode: "read-only", platform: "win32", env: {} }))
+    expect(() => connector({ sandboxMode: "read-only", platform: "win32", env }))
       .toThrow(/not supported on win32/);
   });
 
-  it("permits danger-full-access off macOS only with the devin opt-in", () => {
+  it("permits danger-full-access off macOS only with the devin opt-in", async () => {
+    const env = { HOME: await temporaryRoot(), PATH: "/usr/bin:/bin" };
     expect(() => connector({
       sandboxMode: "danger-full-access", platform: "linux",
-      env: { STRATUM_DEVIN_ALLOW_FULL_ACCESS: "1" },
+      env: { ...env, STRATUM_DEVIN_ALLOW_FULL_ACCESS: "1" },
     })).not.toThrow();
-    expect(() => connector({ sandboxMode: "danger-full-access", env: {} }))
+    expect(() => connector({ sandboxMode: "danger-full-access", env }))
       .toThrow("STRATUM_DEVIN_ALLOW_FULL_ACCESS");
   });
 
@@ -489,19 +491,19 @@ describe("runAgent devin dispatch (S1b wiring)", () => {
     const env = await homeEnv(root);
     const spawn = fakeDevinSpawn({ exportText: readFileSync(fixture("answer.atif.json"), "utf8") });
     const result = await runAgent(
-      { agent: "devin", prompt: "p", cwd: root, env },
+      { agent: "devin", prompt: "p", cwd: root, env, registryRoot: root },
       { devinSpawn: spawn },
     );
     expect(result).toMatchObject({ text: "hello" });
     expect(spawn).toHaveBeenCalledOnce();
   });
 
-  it("still throws the S2 boundary for background devin dispatch", async () => {
+  it("refuses background devin dispatch at the credentials gate", async () => {
     const root = await temporaryRoot();
     await expect(runAgent({
       agent: "devin", prompt: "p", cwd: root, background: true, registryRoot: root,
-      env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
-    })).rejects.toThrow("devin connector not implemented yet");
+      env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, PATH: "/usr/bin:/bin" },
+    })).rejects.toThrow("devin is not logged in (run `devin auth`)");
   });
 });
 

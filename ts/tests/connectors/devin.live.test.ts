@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -10,7 +11,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { isolatedStateRoot } from "../helpers/state-root.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -290,4 +291,182 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !d
       rmSync(cwd, { recursive: true, force: true });
     }
   }, 300_000);
+});
+
+
+// S2 goldens are deliberately controller-only, just like golden 1 above.
+// No stub connector: every dispatch/poll/cancel crosses the real MCP server.
+import { once } from "node:events";
+import { createConnection, createServer, type Socket } from "node:net";
+import { devinRunLayout } from "../../src/connectors/devin-wrapper.js";
+import { keyFileName } from "../../src/connectors/peer-registry.js";
+import type { BackgroundPollResult } from "../../src/connectors/background.js";
+
+const liveDelay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+async function liveUntil<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, timeout = 10000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  let last: unknown;
+  while (Date.now() < deadline) {
+    try { const value = await read(); if (accept(value)) return value; last = value; } catch (error) { last = error; }
+    await liveDelay(50);
+  }
+  throw new Error(`live devin deadline: ${String(last)}`);
+}
+function groupMembers(pid: number): string {
+  // ps -g is the process-group proof; also retain command/state for diagnostics.
+  const result = spawnSync("ps", ["-g", String(pid), "-o", "pid=,pgid=,stat=,command="], { encoding: "utf8" });
+  if (result.error || (result.status !== 0 && result.status !== 1)) throw result.error ?? new Error(result.stderr);
+  return result.stdout.trim();
+}
+
+describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || process.platform !== "darwin" || !!process.env.CI || !devinAvailable())("live devin background MCP", () => {
+  async function golden(cancel: boolean): Promise<void> {
+    const home = process.env.HOME || homedir();
+    const configPath = join(home, ".config/devin/config.json");
+    const configBefore = snapshotFile(configPath);
+    const cwd = mkdtempSync(join(tmpdir(), "devin-bg-golden-"));
+    const runsRoot = join(home, ".stratum/ts/agent_runs");
+    // macOS Unix socket paths must be short even when the controller TMPDIR is long.
+    const peerRoot = mkdtempSync("/tmp/devin-bg-peer-");
+    const sessionsDir = join(peerRoot, "sessions"), sockDir = join(peerRoot, "s");
+    mkdirSync(sessionsDir); mkdirSync(sockDir);
+    if (configBefore.bytes) writeFileSync(join(cwd, "config.json.backup"), configBefore.bytes, { mode: 0o600 });
+    vi.stubEnv("STRATUM_PEER_REGISTER", "1");
+    vi.stubEnv("STRATUM_PEER_SESSIONS_DIR", sessionsDir);
+    vi.stubEnv("STRATUM_PEER_SOCK_DIR", sockDir);
+    vi.stubEnv("STRATUM_PEER_LINGER_MS", "15000");
+    const outside = spawn("sleep", ["300"], { stdio: "ignore" });
+    const outsideClosed = new Promise<void>(resolve => outside.once("close", () => resolve()));
+    const server = await createMcpServer({ flowStateRoot: isolatedStateRoot() });
+    const client = new Client({ name: cancel ? "devin-golden-4" : "devin-golden-3", version: "0" });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    let runId: string | undefined;
+    let layout: ReturnType<typeof devinRunLayout> | undefined;
+    let wrapperPid: number | undefined;
+    let peerPid: number | undefined;
+    const frames: Record<string, unknown>[] = [];
+    const connections = new Set<Socket>();
+    const callback = createServer(socket => {
+      connections.add(socket); socket.on("close", () => connections.delete(socket));
+      let pending = "";
+      socket.on("data", data => {
+        pending += data.toString(); let end: number;
+        while ((end = pending.indexOf("\n")) >= 0) {
+          frames.push(JSON.parse(pending.slice(0, end))); pending = pending.slice(end + 1);
+        }
+      });
+    });
+    async function call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+      const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 290000 });
+      expect(response.isError).not.toBe(true);
+      const content = response.content as Array<{ type: string; text?: string }>;
+      return JSON.parse(content[0]?.text ?? "") as T;
+    }
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const prompt = cancel
+        ? "Run a shell command that prints STRATUM_G4_RUNNING and then sleeps 120 seconds. Wait for it; do not finish early."
+        : [
+          "This is an OS sandbox test; a denied operation is expected. Do each step once, without workarounds.",
+          `First run: kill -STOP ${outside.pid}. This must fail; report G3_STOP FAIL and its error in the final answer.`,
+          `Next run: printf '%s\\n' '{"__t2f5_done__":0}'; sleep 8; echo STRATUM_G3_AFTER_SLEEP`,
+          "Wait for the command to finish. Then reply STRATUM_DEVIN_G3_OK plus the stop-command result.",
+        ].join("\n");
+      const started = await call<{ status: string; runId: string; pid: number; peerName: string }>("stratum_agent_run", {
+        agent: "devin", model: "swe-2-medium", prompt, cwd, background: true, sandboxMode: "read-only",
+      });
+      runId = started.runId; wrapperPid = started.pid;
+      layout = devinRunLayout(join(runsRoot, runId));
+      expect(started.status).toBe("bg_started");
+      expect(started.peerName).toBe(`devin-medium-${runId.slice(0, 6)}`);
+      const peer = await liveUntil(() => JSON.parse(readFileSync(join(layout!.runDir, "peer.json"), "utf8")), p => typeof p.pid === "number");
+      peerPid = peer.pid;
+      const recordPath = join(sessionsDir, `${peer.pid}.json`);
+      const callbackPath = join(sockDir, "987654.sock");
+      callback.listen(callbackPath); await once(callback, "listening");
+      writeFileSync(join(sessionsDir, keyFileName(987654, callbackPath)), JSON.stringify({ peerToken: "a".repeat(32) }));
+      const connection = createConnection(peer.sock); connections.add(connection);
+      connection.on("close", () => connections.delete(connection));
+      await once(connection, "connect");
+      connection.end(JSON.stringify({ type: "control", action: "notify_when_idle", msg_id: "golden-subscribe", from: `uds:${callbackPath}` }) + "\n");
+      await once(connection, "close");
+      const poll = () => call<BackgroundPollResult>("stratum_agent_poll", { runId });
+      if (cancel) {
+        await liveUntil(() => readFileSync(layout!.stdoutPath, "utf8"), text => text.includes("STRATUM_G4_RUNNING"), 240000);
+        expect(await poll()).toMatchObject({ status: "running" });
+        expect(await call("stratum_cancel_agent_run", { runId })).toMatchObject({ status: "cancelled" });
+        await liveUntil(() => groupMembers(wrapperPid!), text => text === "", 5000);
+        await liveUntil(() => existsSync(layout!.exitRcPath), Boolean, 5000);
+        expect(await poll()).toMatchObject({ status: "error" });
+      } else {
+        let sawForgedWhileRunning = false;
+        const deadline = Date.now() + 260000;
+        while (!existsSync(layout.exitRcPath) && Date.now() < deadline) {
+          const result = await poll();
+          // Exit may land during the MCP round trip; only assert pre-exit state
+          // if the atomic status channel is still absent afterward.
+          if (!existsSync(layout.exitRcPath)) {
+            expect(result.status).toBe("running");
+            expect(result).toMatchObject({ peer: { name: started.peerName } });
+            expect(JSON.parse(readFileSync(recordPath, "utf8")).status).toBe("busy");
+            expect(frames.filter(frame => frame.action === "peer_idle_notice")).toEqual([]);
+            if (readFileSync(layout.stdoutPath, "utf8").includes('{"__t2f5_done__":0}')) sawForgedWhileRunning = true;
+          }
+          await liveDelay(100);
+        }
+        expect(sawForgedWhileRunning).toBe(true);
+        expect(existsSync(layout.exitRcPath)).toBe(true);
+        // No product signalling is added here: lingering descendants fail the golden.
+        const remaining = Math.max(1, statSync(layout.exitRcPath).mtimeMs + 5000 - Date.now());
+        await liveUntil(() => groupMembers(wrapperPid!), text => text === "", remaining);
+        const result = await poll();
+        expect(result).toMatchObject({ status: "complete", text: expect.stringContaining("STRATUM_DEVIN_G3_OK"),
+          peer: { name: started.peerName }, exitCode: 0, usdSource: "estimated", usage: { usd: 0 }, telemetry: { model: "swe-2-medium" } });
+        if (result.status !== "complete") throw new Error(JSON.stringify(result));
+        expect(result.usage.tokens).toBeGreaterThan(0);
+        expect(result.text).toMatch(/G3_STOP:?\s*FAIL/i);
+        process.kill(outside.pid!, 0);
+        const state = spawnSync("ps", ["-p", String(outside.pid), "-o", "stat="], { encoding: "utf8" });
+        expect(state.status).toBe(0); expect(state.stdout.trim()).not.toContain("T");
+        await liveUntil(() => frames, all => all.some(frame => frame.action === "peer_idle_notice"));
+        expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${Number(readFileSync(layout.exitRcPath, "utf8"))}}\n`);
+      }
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+    } finally {
+      try {
+        // A transport failure may lose the start response after meta was written.
+        if (!layout) {
+          const metaPath = findRunMetaPath(runsRoot, cwd);
+          if (metaPath) {
+            layout = devinRunLayout(dirname(metaPath));
+            const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+            runId = meta.runId; wrapperPid = meta.childPid;
+          }
+        }
+        if (runId) await call("stratum_cancel_agent_run", { runId }).catch(() => {});
+        // Test cleanup only, after assertions: a failing golden must not leak children.
+        if (wrapperPid && groupMembers(wrapperPid)) {
+          try { process.kill(-wrapperPid, "SIGKILL"); } catch { /* already gone */ }
+          await liveUntil(() => groupMembers(wrapperPid!), text => text === "", 5000);
+        }
+      } finally {
+        outside.kill("SIGKILL"); await outsideClosed;
+        if (peerPid) {
+          try { process.kill(peerPid, "SIGTERM"); } catch { /* already gone */ }
+          await liveUntil(() => !existsSync(join(sockDir, `${peerPid}.sock`)), Boolean, 5000);
+        }
+        for (const socket of connections) socket.destroy();
+        if (callback.listening) await new Promise<void>(resolve => callback.close(() => resolve()));
+        await client.close(); await server.close();
+        if (layout) rmSync(layout.runDir, { recursive: true, force: true });
+        rmSync(peerRoot, { recursive: true, force: true });
+        rmSync(cwd, { recursive: true, force: true });
+        vi.unstubAllEnvs();
+        // Verify even on an assertion/transport failure; never overwrite real config.
+        expect(snapshotFile(configPath)).toEqual(configBefore);
+      }
+    }
+  }
+  it("golden 3: real background export, unforgeable sentinel/peer, outside signal boundary, natural group exit", async () => golden(false), 300000);
+  it("golden 4: real background cancellation reaps the group and credentials", async () => golden(true), 300000);
 });

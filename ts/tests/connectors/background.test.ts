@@ -340,3 +340,21 @@ describe("P3 background run gate", () => {
     await cancelBackgroundRun(started.runId, { registryRoot });
   });
 });
+
+it("codex start and poll report the same explicitly codex peer name", async () => {
+  const registryRoot = await root();
+  const sessionsDir = join(registryRoot, "sessions"); await mkdir(sessionsDir);
+  const started = await startBackgroundRun({ agent: "codex", model: "gpt-6-astra", prompt: "x",
+    cwd: registryRoot, registryRoot, sessionsDir, sockDir: join(registryRoot, "s"), lingerMs: 0,
+    command: ["sh", "-c", "sleep 0.2"], env: { ...process.env, STRATUM_PEER_REGISTER: "1" } });
+  expect(started.peerName).toBe(`codex-astra-${started.runId.slice(0, 6)}`);
+  expect(await pollBackgroundRun(started.runId, { registryRoot })).toMatchObject({ peer: { name: started.peerName } });
+  await waitFor(started.runId, registryRoot, "complete");
+  // Sidecar teardown must precede removal of the temporary discovery directories.
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const files = await import("node:fs/promises").then(fs => fs.readdir(sessionsDir));
+    if (!files.some(file => /^\d+\.json$/.test(file))) break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+});

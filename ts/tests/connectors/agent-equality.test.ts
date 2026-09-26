@@ -22,11 +22,8 @@ import { runAgent, validateAgentSettings, type AgentRunOptions } from "../../src
  * an unhandled row.
  */
 
-// Foreground devin now reaches the real connector (S1b): with HOME on the temp
-// root its first gate is the credentials probe. The background path keeps its
-// S1a throw until S2.
-const S1B_BOUNDARY = /devin connector not implemented yet \(STRAT-AGENT-DEVIN-1 S1b\)/;
-const FOREGROUND_BOUNDARY = /devin is not logged in \(run `devin auth`\)/;
+// Valid dispatches reach the credentials gate after validation in both modes.
+const NOT_LOGGED_IN = /devin is not logged in \(run `devin auth`\)/;
 
 const roots: string[] = [];
 
@@ -70,14 +67,14 @@ describe("AGENT_TYPES is the one dispatchable list (D1)", () => {
 
   it.each(AGENT_TYPES)("runAgent reaches a real branch for agent=%s — no silent fallthrough", async (agent) => {
     const root = await temporaryRoot();
-    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root };
+    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, PATH: "/usr/bin:/bin" };
     const attempt = runAgent(
-      { agent, prompt: "p", cwd: root, env },
+      { agent, prompt: "p", cwd: root, registryRoot: root, env },
       { claudeQuery: stubClaudeQuery, codexSpawn: fakeCodexSpawn() },
     );
     if (agent === "devin") {
       // S1b validates devin and stops at the real connector's credentials gate.
-      await expect(attempt).rejects.toThrow(FOREGROUND_BOUNDARY);
+      await expect(attempt).rejects.toThrow(NOT_LOGGED_IN);
     } else {
       await expect(attempt).resolves.toMatchObject({ text: "stub ok" });
     }
@@ -150,9 +147,9 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
   it.each(table)("$name", async ({ options, expected }) => {
     const root = await temporaryRoot();
     const { env: optionEnv, ...rest } = options;
-    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, ...(optionEnv ?? {}) };
+    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, PATH: "/usr/bin:/bin", ...(optionEnv ?? {}) };
     if (expected !== "accepted") {
-      await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...rest })).rejects.toThrow(expected);
+      await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, registryRoot: root, env, ...rest })).rejects.toThrow(expected);
       return;
     }
     const delivered: Record<string, unknown>[] = [];
@@ -162,7 +159,7 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
       return { text: "delivered", usage: { tokens: 0, ms: 0, usd: 0 }, telemetry: { durationMs: 0, model: "swe-2-high" } };
     });
     try {
-      await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...rest })).resolves.toMatchObject({ text: "delivered" });
+      await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, registryRoot: root, env, ...rest })).resolves.toMatchObject({ text: "delivered" });
       expect(delivered).toHaveLength(1);
       const actual = delivered[0]!;
       expect(actual).toMatchObject({ cwd: root, prompt: "p" });
@@ -188,13 +185,13 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
     } else expect(check).toThrow(expected);
   });
 
-  it("background dispatches still reach the S1a boundary without writing a run dir", async () => {
+  it("background dispatches reach the credentials gate without writing a run dir", async () => {
     const root = await temporaryRoot();
     await expect(runAgent({
       agent: "devin", prompt: "p", cwd: root, background: true,
       registryRoot: root, peerLabel: "review",
-      env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
-    })).rejects.toThrow(S1B_BOUNDARY);
+      env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, PATH: "/usr/bin:/bin" },
+    })).rejects.toThrow(NOT_LOGGED_IN);
     expect(await readdir(root)).toEqual([]);
   });
 });

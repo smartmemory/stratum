@@ -63,6 +63,100 @@ const SPAWN_ERROR_CLOSE_MS = 250;
 const STDERR_REJECTION = "rejected a tool call that requires confirmation";
 const OBSERVATION_REJECTION = "Tool execution was rejected by the user";
 
+export interface PrepareDevinRunOptions {
+  root: string;
+  prompt: string;
+  cwd: string;
+  model: string;
+  sandboxMode: CodexSandboxMode;
+  writableRoots: readonly string[];
+  env?: NodeJS.ProcessEnv;
+  identity?: DevinConnectorOptions["identity"];
+}
+
+/** Shared pre-spawn preparation; only the wrapper ever copies credentials. */
+export async function prepareDevinRun(options: PrepareDevinRunOptions) {
+  const env = { ...(options.env ?? process.env) };
+  for (const key of DEVIN_SCRUB_VARS) delete env[key];
+  for (const key of Object.keys(env)) if (key.startsWith("T2F5_")) delete env[key];
+  if (options.env === undefined) applyHeadlessShellEnv(env);
+  const paths = devinHomePaths(env, homedir());
+  await sweepDevinCredentialCopies([...new Set([paths.agentRunsRoot, paths.devinFgRoot, options.root])],
+    options.identity === undefined ? {} : { identity: options.identity }).catch(() => ({ deleted: 0, kept: 0 }));
+  if (!existsSync(paths.credentialsSource)) throw new Error("devin is not logged in (run `devin auth`)");
+  const { runId, runDir } = await newRunDir(options.root);
+  const layout = devinRunLayout(runDir);
+  const sandboxed = options.sandboxMode !== "danger-full-access";
+  const prompt = options.prompt;
+  try {
+    await prepareDevinRunHome(layout, paths.mcpConfigSource);
+    const framed = withSandboxPreamble(prompt, options.sandboxMode);
+    // The grant check precedes the profile: workspace-write grants cwd plus
+    // each writableRoots entry; read-only grants nothing beyond A (D3).
+    const writable: readonly string[] = options.sandboxMode === "workspace-write"
+      ? [options.cwd, ...options.writableRoots]
+      : [];
+    assertDevinGrants(writable, paths.stratumRoot, layout.agentDir);
+    // A custom background registry must remain supervisor-only too. Otherwise
+    // granting a cwd that contains that registry would make exit.rc forgeable.
+    assertDevinGrants(writable, options.root, layout.agentDir);
+    await writeFile(layout.promptPath, framed, { encoding: "utf8", mode: 0o600 });
+    await writeFile(layout.streamPath, "", { encoding: "utf8", mode: 0o600 });
+    if (sandboxed) {
+      await writeFile(layout.profilePath, devinSeatbeltProfile(layout.agentDir, writable), { encoding: "utf8", mode: 0o600 });
+    }
+    await writeFile(layout.wrapperPath, DEVIN_WRAPPER_SCRIPT, { encoding: "utf8", mode: 0o700 });
+
+    const devinArgv = [
+      "devin",
+      "--model", options.model,
+      "--permission-mode", "dangerous",
+      "--config", layout.devinConfigPath,
+      "--respect-workspace-trust", "false",
+      "--export", layout.exportPath,
+      "--prompt-file", layout.promptPath,
+      "-p",
+    ];
+    const argv = sandboxed ? ["sandbox-exec", "-f", layout.profilePath, ...devinArgv] : devinArgv;
+    const runEnv: NodeJS.ProcessEnv = {
+      ...env,
+      ...devinHomeEnv(layout),
+      ...devinWrapperEnv(layout, paths.credentialsSource),
+    };
+
+    return { runId, layout, argv, env: runEnv, framedPromptChars: framed.length };
+  } catch (error) {
+    await rm(runDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/** One terminal contract for foreground, background poll, and cancel. */
+export async function devinTerminalVerdict({ rc, exportPath, stderrTail, model }: {
+  rc: number; exportPath: string; stderrTail: string; model: string;
+}) {
+  const trajectory = await readTrajectory(exportPath);
+  // D4: a rejected tool call is a failure, never a success — exit 0 is not
+  // trusted when either witness says a call was rejected (fact 2/3).
+  const rejection = rejectionReason(trajectory, stderrTail);
+  if (rejection !== undefined) throw new Error(`devin rejected a tool call: ${rejection}`);
+  const transient = coldCacheModelError(stderrTail);
+  if (transient !== undefined) throw new Error(transient);
+  if (trajectory?.finalText === undefined) {
+    throw new Error(`devin produced no trajectory: ${stderrTail.trim() || "(empty stderr)"}`);
+  }
+  if (rc !== 0) {
+    throw new Error(`devin exited with code ${rc}: ${stderrTail.trim() || "(empty stderr)"}`);
+  }
+  const metrics = trajectory.metrics ?? { prompt: 0, completion: 0, cached: 0 };
+  const usd = devinUsdFromTokens(model, {
+    inputTokens: metrics.prompt,
+    cachedInputTokens: metrics.cached,
+    outputTokens: metrics.completion,
+  });
+  return { text: trajectory.finalText, metrics, usd, usdSource: "estimated" as const };
+}
+
 /**
  * The foreground devin connector (STRAT-AGENT-DEVIN-1 S1b, D2/D3/D4). One
  * dispatch = one private run dir, one private devin home, one supervisor
@@ -124,62 +218,19 @@ export class DevinConnector {
   async run(prompt: string): Promise<ConnectorResult> {
     this.signal?.throwIfAborted();
     if (this.ownProcessGroup) requireProcessGroups();
-    // Dispatch-time sweep over BOTH devin run roots, on EVERY dispatch (D2):
-    // orphaned credentials copies are removed only on positive proof (exit.rc,
-    // dead identity, or a meta-less dir past the orphan window). Best-effort —
-    // the next dispatch retries whatever this pass could not settle.
-    await sweepDevinCredentialCopies([this.paths.agentRunsRoot, this.paths.devinFgRoot],
-      this.identity === undefined ? {} : { identity: this.identity }).catch(() => ({ deleted: 0, kept: 0 }));
-    // Fail before any run-dir side effect when there is nothing to copy (D2).
-    if (!existsSync(this.paths.credentialsSource)) {
-      throw new Error("devin is not logged in (run `devin auth`)");
-    }
-
-    const sandboxed = this.sandboxMode !== "danger-full-access";
-    const { runId, runDir } = await newRunDir(this.paths.devinFgRoot);
-    const layout = devinRunLayout(runDir);
+    const prepared = await prepareDevinRun({
+      root: this.paths.devinFgRoot, prompt, cwd: this.cwd, model: this.model,
+      sandboxMode: this.sandboxMode, writableRoots: this.writableRoots, env: this.env,
+      ...(this.identity === undefined ? {} : { identity: this.identity }),
+    });
     try {
-      return await this.runInLayout(prompt, runId, layout, sandboxed);
+      return await this.runInLayout(prepared);
     } finally {
-      // The foreground run dir is removed after the result is read (D2); a
-      // crash leaves it for the sweep, like an agent_runs dir.
-      await rm(runDir, { recursive: true, force: true }).catch(() => {});
+      await rm(prepared.layout.runDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 
-  private async runInLayout(prompt: string, runId: string, layout: DevinRunLayout, sandboxed: boolean): Promise<ConnectorResult> {
-    await prepareDevinRunHome(layout, this.paths.mcpConfigSource);
-    const framed = withSandboxPreamble(prompt, this.sandboxMode);
-    // The grant check precedes the profile: workspace-write grants cwd plus
-    // each writableRoots entry; read-only grants nothing beyond A (D3).
-    const writable: readonly string[] = this.sandboxMode === "workspace-write"
-      ? [this.cwd, ...this.writableRoots]
-      : [];
-    assertDevinGrants(writable, this.paths.stratumRoot, layout.agentDir);
-    await writeFile(layout.promptPath, framed, { encoding: "utf8", mode: 0o600 });
-    await writeFile(layout.streamPath, "", { encoding: "utf8", mode: 0o600 });
-    if (sandboxed) {
-      await writeFile(layout.profilePath, devinSeatbeltProfile(layout.agentDir, writable), { encoding: "utf8", mode: 0o600 });
-    }
-    await writeFile(layout.wrapperPath, DEVIN_WRAPPER_SCRIPT, { encoding: "utf8", mode: 0o700 });
-
-    const devinArgv = [
-      "devin",
-      "--model", this.model,
-      "--permission-mode", "dangerous",
-      "--config", layout.devinConfigPath,
-      "--respect-workspace-trust", "false",
-      "--export", layout.exportPath,
-      "--prompt-file", layout.promptPath,
-      "-p",
-    ];
-    const argv = sandboxed ? ["sandbox-exec", "-f", layout.profilePath, ...devinArgv] : devinArgv;
-    const env: NodeJS.ProcessEnv = {
-      ...this.env,
-      ...devinHomeEnv(layout),
-      ...devinWrapperEnv(layout, this.paths.credentialsSource),
-    };
-
+  private async runInLayout({ runId, layout, argv, env, framedPromptChars }: Awaited<ReturnType<typeof prepareDevinRun>>): Promise<ConnectorResult> {
     const startedAt = Date.now();
     const stdoutLog = createWriteStream(layout.stdoutPath, { mode: 0o600 });
     const stderrLog = createWriteStream(layout.stderrPath, { mode: 0o600 });
@@ -281,7 +332,7 @@ export class DevinConnector {
         model: this.model,
         cwd: this.cwd,
         sandboxMode: this.sandboxMode,
-        promptChars: framed.length,
+        promptChars: framedPromptChars,
         createdAt: new Date().toISOString(),
         childPid: child.pid,
         procStartTime: procStart,
@@ -291,7 +342,7 @@ export class DevinConnector {
       });
       await this.emit({
         kind: "agent_started",
-        metadata: { agent: "devin", model: this.model, prompt_chars: framed.length },
+        metadata: { agent: "devin", model: this.model, prompt_chars: framedPromptChars },
       });
 
       const closeCode = await closePromise;
@@ -343,26 +394,8 @@ export class DevinConnector {
   }
 
   private async buildResult(layout: DevinRunLayout, rc: number, stderrTail: string, durationMs: number): Promise<ConnectorResult> {
-    const trajectory = await readTrajectory(layout.exportPath);
-    // D4: a rejected tool call is a failure, never a success — exit 0 is not
-    // trusted when either witness says a call was rejected (fact 2/3).
-    const rejection = rejectionReason(trajectory, stderrTail);
-    if (rejection !== undefined) throw new Error(`devin rejected a tool call: ${rejection}`);
-    const transient = coldCacheModelError(stderrTail);
-    if (transient !== undefined) throw new Error(transient);
-    if (trajectory?.finalText === undefined) {
-      throw new Error(`devin produced no trajectory: ${stderrTail.trim() || "(empty stderr)"}`);
-    }
-    if (rc !== 0) {
-      throw new Error(`devin exited with code ${rc}: ${stderrTail.trim() || "(empty stderr)"}`);
-    }
-    const metrics = trajectory.metrics ?? { prompt: 0, completion: 0, cached: 0 };
-    const usd = devinUsdFromTokens(this.model, {
-      inputTokens: metrics.prompt,
-      cachedInputTokens: metrics.cached,
-      outputTokens: metrics.completion,
-    });
-    await this.emit({ kind: "agent_relay", metadata: { text: trajectory.finalText, role: "assistant" } });
+    const { text, metrics, usd } = await devinTerminalVerdict({ rc, exportPath: layout.exportPath, stderrTail, model: this.model });
+    await this.emit({ kind: "agent_relay", metadata: { text, role: "assistant" } });
     await this.emit({
       kind: "step_usage",
       metadata: {
@@ -376,7 +409,7 @@ export class DevinConnector {
       },
     });
     return {
-      text: trajectory.finalText,
+      text,
       usage: { tokens: metrics.prompt + metrics.completion, ms: durationMs, usd },
       split: { input: metrics.prompt, output: metrics.completion, ...(metrics.cached > 0 ? { cacheRead: metrics.cached } : {}) },
       usdSource: "estimated",
@@ -494,7 +527,7 @@ function signalNumber(signal: NodeJS.Signals): number {
   return SIGNAL_NUMBERS[signal] ?? 1;
 }
 
-function directDevinSandboxAudit(policy: SandboxPolicy, options: DevinConnectorOptions): SandboxPolicyAudit {
+export function directDevinSandboxAudit(policy: SandboxPolicy, options: DevinConnectorOptions): SandboxPolicyAudit {
   const provenance = Object.fromEntries(([
     "filesystemMode", "networkAccess", "writableRoots", "approvalPolicy",
   ] as const satisfies readonly SandboxPolicyKey[]).map((key) => {

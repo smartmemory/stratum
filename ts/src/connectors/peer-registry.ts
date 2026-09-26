@@ -24,8 +24,8 @@ export function normalizePeerLabel(value: unknown): string | undefined {
   return label;
 }
 
-export function peerName(model: string, runId: string, options: {agent?: AgentType; label?: string | undefined} = {}): string {
-  const agent = options.agent ?? "codex";
+export function peerName(model: string, runId: string, options: {agent: AgentType; label?: string | undefined}): string {
+  const agent = options.agent;
   const identity = modelIdentity(model).model.toLowerCase();
   let short: string;
   switch (agent) {

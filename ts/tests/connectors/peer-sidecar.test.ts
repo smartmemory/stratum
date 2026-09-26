@@ -430,7 +430,7 @@ async function backgroundFixture(setup = "", env: NodeJS.ProcessEnv = {}, prepar
 }
 it("background golden flow registers busy, authenticates one notice, retains idle, and cleans up", async () => {
   const {config,started,registryRoot,release} = await backgroundFixture();
-  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId)});
+  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId,{agent:"codex"})});
   expect(started).not.toHaveProperty("peer");
   await assertToolResponse("stratum_agent_run",started);
   const metaPath = join(config.runDir,"meta.json");

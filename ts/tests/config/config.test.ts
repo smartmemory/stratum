@@ -117,7 +117,7 @@ describe("loadStratumConfig", () => {
 // agent-keyed, and devin's networkAccess/approvalPolicy are enforced, not
 // resolved.
 describe("loadStratumConfig agent=devin (D11)", () => {
-  const isolated = (root: string) => ({ STRATUM_CONFIG_FILE: join(root, "missing-user.toml") });
+  const isolated = (root: string) => ({ HOME: root, PATH: "/usr/bin:/bin", STRATUM_CONFIG_FILE: join(root, "missing-user.toml") });
 
   it("ignores every STRATUM_CODEX_* sandbox variable — even a malformed one", async () => {
     const root = await temporaryRoot();
