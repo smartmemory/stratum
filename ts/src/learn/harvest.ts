@@ -100,6 +100,9 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
   let dropped = 0;
   // Reset at each aggregate result so earlier batches cannot hide a later failure.
   const fanoutFailures = new Set<string>();
+  // Subflow child failure reason, keyed by parent step id. failParentRunStep re-records the
+  // child's exact failure on the parent `run` step; that echo is not a second failure.
+  const childFailures = new Map<string, string>();
 
   for (const [index, event] of events.entries()) {
     const type = str(event.type);
@@ -133,6 +136,8 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
 
     if (type === "result") {
       const hasFanoutFailures = fanoutFailures.delete(str(event.stepId) ?? "");
+      const childFailure = childFailures.get(str(event.stepId) ?? "");
+      childFailures.delete(str(event.stepId) ?? "");
       if (!("failure" in detail)) continue;
       // `failure` is a string in some drifted runs: failure-shaped but unusable.
       const failure = isRecord(detail.failure) ? detail.failure : undefined;
@@ -142,7 +147,12 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
       // The require failure summarizes the item failures already collected. Keep
       // standalone aggregate failures (e.g. no items) and unrelated step failures.
       if (hasFanoutFailures && /^fanout require .+ not met \(\d+\/\d+ succeeded\)$/.test(reason)) continue;
+      // The parent echo of a child failure already collected. A parent failure with its own
+      // reason (the completed subflow's output breaking the parent contract) is kept.
+      if (childFailure === reason) continue;
       const stepId = str(event.stepId) ?? null;
+      const slash = stepId?.lastIndexOf("/") ?? -1;
+      if (stepId !== null && slash > 0) childFailures.set(stepId.slice(0, slash), reason);
       out.push({
         runId,
         flowName,

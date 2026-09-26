@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Learn harvest:** a failed subflow step is recorded once, at its dispatched child step. The engine's echo of that failure onto the parent `run` step (`failParentRunStep`) is no longer harvested as a second failure, which had double-counted recurrence and could mint a lesson for a step that is never dispatched. A parent failure with its own reason is still recorded.
+
 - **STRAT-LEARN-DELIVER-1 slice 4:** Deliver applied lessons into agent prompts behind `[learn] deliver` / `STRATUM_LEARN_DELIVER` (default OFF): `harvestStepId()` matching, step-scoped and step-agnostic scope, a contract-drift predicate on the compiled output contract (`contract-changed` suppression), a 3-lesson / 1,200-character budget, pin-at-issuance on step and fan-out item state and issuing events, `## Lessons from prior runs` rendered from the pin for ordinary, subflow, background, consumer and engine fan-out dispatches, and re-pinning on checkpoint restore.
 
 - **STRAT-LEARN-DELIVER-1 slice 3:** Select active lessons from ledger-committed apply snapshots with identity, guidance and lifecycle checks, structured read diagnostics, and deterministic revision deduplication.

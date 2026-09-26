@@ -131,13 +131,10 @@ async function learnFrom(surface: Surface, root: string, store: string): Promise
   await expect.poll(async () => (await s.engine.audit(runId)).status).toBe("failed");
   const { records } = await harvest(store);
   const failures = records.filter((record) => record.reason.includes("invalid_enum_value"));
-  // harvestStepId round trip: the dispatch's own failure is harvested under exactly the id
-  // the matcher computes. A subflow failure is ALSO echoed onto the parent `run` step by
-  // failParentRunStep (a harvester precision gap, recorded as a follow-up); that echo is
-  // never a dispatch, so it is the only other id allowed.
-  expect(failures.map((record) => record.stepId)).toContain(MATCH_ID[surface]);
-  const allowed: (string | null)[] = surface === "subflow" ? [MATCH_ID[surface], "wrap"] : [MATCH_ID[surface]];
-  for (const record of failures) expect(allowed).toContain(record.stepId);
+  // harvestStepId round trip: the dispatch's failure is harvested under exactly the id the
+  // matcher computes (a subflow's parent echo is absorbed by harvest, harvest-subflow.test.ts).
+  expect(failures.length).toBeGreaterThan(0);
+  for (const record of failures) expect(record.stepId).toBe(MATCH_ID[surface]);
   const cluster = classify(records, { minRuns: 1, minPairs: 1 })
     .find((c) => c.class === "durable" && c.applyEligible && c.contract.code === "invalid_enum_value"
       && c.scope.stepIds.includes(MATCH_ID[surface]))!;

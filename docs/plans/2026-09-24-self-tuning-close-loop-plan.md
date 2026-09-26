@@ -156,7 +156,8 @@ retire the 3 hand-fixed fixtures just before INLINE is enabled, not now. **Slice
 render, D3/D4) implemented by Claude** (owner 2026-09-26: Codex credits exhausted; Claude implements in
 worktree branch `strat-learn-deliver1-slice4`, Codex reviews after the credit window) — awaiting Codex
 review. Round trip found a harvester gap: subflow failures are echoed onto the parent `run` step
-(DELIVER-1 §D3 clarifications). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+(DELIVER-1 §D3 clarifications). **Owner 2026-09-26: do not push any of this to origin until the whole
+Step 2 loop is done** (DELIVER-1 slices 1–6 and INLINE-TS-1); commits stay local until then. Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 
