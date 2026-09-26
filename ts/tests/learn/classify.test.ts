@@ -83,6 +83,14 @@ describe("classify", () => {
   });
 
   describe("key composition — each of these independently breaks the real cluster", () => {
+    it("preserves the contract cluster when identical evidence stops retries", async () => {
+      const base = (await records()).find((r) => r.reason.includes("invalid_enum_value"))!;
+      const retry = { ...base, attempt: base.attempt + 1, reason: `${base.reason} (no retry: identical evidence)` };
+      expect(contractFingerprint(retry)).toBe(contractFingerprint(base));
+      expect([...groupRecords([retry], "step-agnostic").keys()])
+        .toEqual([...groupRecords([base], "step-agnostic").keys()]);
+    });
+
     it("does not key on the rejected value (would give 5 clusters, not 1)", async () => {
       const enumRecords = (await records()).filter((r) => r.reason.includes("invalid_enum_value"));
       const fingerprints = new Set(enumRecords.map((r) => contractFingerprint(r)));

@@ -1,3 +1,9 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { StratumEngine } from "../../src/engine/engine.js";
+import { createEvaluator } from "../../src/eval/expr.js";
+import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
 import { describe, expect, it } from "vitest";
 import { assertEvent, assertToolRequest, eventContract, mcpSurface, assertShape, type Shape } from "../../src/mcp/contracts.js";
 
@@ -119,8 +125,8 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
     })).resolves.toBeUndefined();
   });
 
-  it("freezes events 4 and validates every newly declared event shape strictly", async () => {
-    expect((await eventContract()).events).toBe(6);
+  it("freezes events 7 and validates every newly declared event shape strictly", async () => {
+    expect((await eventContract()).events).toBe(7);
     await expect(assertEvent({
       at: "2026-08-30T00:00:00.000Z",
       type: "usage_debit",
@@ -197,4 +203,38 @@ describe("agent-run failure envelope declaration", () => {
     expect(() => assertShape({ code: "agent_run_failed", undeclared: true }, declaration!.data, "errors.agent_run_failed.data"))
       .toThrow("errors.agent_run_failed.data.undeclared is undeclared");
   });
+});
+
+it("validates audited full-access authorization and rejects malformed provenance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "full-access-contract-"));
+  try {
+    const engine = tokenEchoingEngine(new StratumEngine({ stateRoot: root, evaluator: createEvaluator() }));
+    const planned = await engine.plan({
+      version: 1, contracts: { Result: { value: "string" } },
+      flows: { entry: "main", main: { input: {}, output: { from: "${work.output}", contract: "Result" },
+        steps: [{ id: "work", do: "work", out: "Result" }] } },
+    }, {});
+    const origin = { layer: "env" as const, source: "STRATUM_ALLOW_FULL_ACCESS" };
+    await engine.stepDone(planned.runId, "work", {
+      output: { value: "done" },
+      sandboxAudit: {
+        policy: { filesystemMode: "danger-full-access", networkAccess: true, writableRoots: [], approvalPolicy: "never" },
+        provenance: { filesystemMode: origin, networkAccess: origin, writableRoots: origin, approvalPolicy: origin },
+        fullAccessAuthorization: origin,
+      },
+    });
+    const audit = await engine.audit(planned.runId);
+    expect(audit.status).toBe("completed");
+    const sandbox = audit.events.find((event) => event.type === "sandbox_policy")!;
+    expect(sandbox).toMatchObject({ detail: { fullAccessAuthorization: origin } });
+    for (const event of audit.events) await expect(assertEvent(event)).resolves.toBeUndefined();
+    for (const fullAccessAuthorization of [{ layer: "env" }, { layer: "env", source: 1 },
+      { ...origin, extra: true }]) {
+      await expect(assertEvent({ ...sandbox, detail: {
+        ...(sandbox.detail as Record<string, unknown>), fullAccessAuthorization,
+      } })).rejects.toThrow(/fullAccessAuthorization/);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

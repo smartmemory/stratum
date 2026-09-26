@@ -207,6 +207,46 @@ describe("lessonReviews (D6)", () => {
     expect(await kinds(s)).toEqual([]);
   });
 
+  it.each(["not-holding", "retire-candidate"] as const)("a retry failure after a %s ack reopens or blocks the review", async (kind) => {
+    const s = await setup();
+    const p = await s.offered();
+    await s.engine.stepDone(p.runId, "plan", { output: { outcome: "done" } });
+    expect(await kinds(s)).toEqual(["not-holding"]);
+    await tick();
+    const ack = await appendLifecycle(s.ws, {
+      clusterId: s.lesson.clusterId, kind: "ack", reason: "looked", ackKinds: [kind],
+    });
+    const [firstFailure] = (await lessonOutcomes(s.store, s.ws)).filter((o) => o.runId === p.runId);
+    expect(firstFailure!.at <= ack.at).toBe(true);
+    if (kind === "not-holding") expect(await kinds(s)).toEqual([]);
+    await tick();
+    if (kind === "retire-candidate") {
+      for (let i = 0; i < 3; i += 1) await heldRun(s);
+      expect(await kinds(s)).toEqual(["not-holding", "retire-candidate"]);
+    }
+    // Cross the millisecond watermark before the retry stamps its failure event.
+    do { await tick(); } while (Date.now() <= Date.parse(ack.at));
+    await s.engine.stepDone(p.runId, "plan", { output: { outcome: "done" } });
+    const [outcome] = (await lessonOutcomes(s.store, s.ws)).filter((o) => o.runId === p.runId);
+    expect(outcome?.outcome).toBe("not-holding");
+    expect(outcome!.at > ack.at).toBe(true);
+    expect(await kinds(s)).toEqual(["not-holding"]);
+  });
+
+  it("skips non-object store JSON without losing valid outcomes or reviews", async () => {
+    const s = await setup();
+    const p = await s.offered();
+    await s.engine.stepDone(p.runId, "plan", { output: { outcome: "done" } });
+    const outcomes = await lessonOutcomes(s.store, s.ws);
+    const reviews = await lessonReviews(s.store, s.ws, { retireReviewAfter: 3 });
+    expect(reviews).toHaveLength(1);
+    for (const [i, value] of [null, false, 42, "text", []].entries()) {
+      await writeFile(join(s.store, `invalid-${i}.json`), JSON.stringify(value));
+    }
+    expect(await lessonOutcomes(s.store, s.ws)).toEqual(outcomes);
+    expect(await lessonReviews(s.store, s.ws, { retireReviewAfter: 3 })).toEqual(reviews);
+  });
+
   it("contract-changed is raised from a D3 suppression and closes on ack", async () => {
     const s = await setup();
     const drifted = await s.engine.plan(spec({ outcome: "complete|failed|skipped" }), {}, { workspaceRoot: s.ws });

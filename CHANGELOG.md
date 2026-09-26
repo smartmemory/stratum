@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **STRAT-LEARN Step 2 Codex review fixes.** A lesson learned on a field no longer "holds" when that field
+  becomes a list (or the reverse): candidates record the array depth of the failure (`leafArrayDepth`,
+  delivery metadata only; cluster and revision ids unchanged; legacy candidates keep any-depth matching).
+  Enum lessons survive a reordering of the same options. A lesson pin lives only as long as its
+  dispatch: every site that destroys a dispatch token clears it. Selection diagnostics are warned, not
+  dropped. The subflow echo window also closes on any event of the parent's children (routing). The
+  classifier strips the engine's `(no retry: identical evidence)` suffix before parsing, so a refused
+  retry stays in its lesson's cluster. Lesson outcomes are decided by the latest matching failure, so
+  evidence newer than an acknowledgement reopens a review. Deleted workspaces are cached (no git storm
+  per audit); a non-object run file is skipped instead of hiding every review; unreadable corpora and
+  invalid inline config are reported. `events.json` declares `sandbox_policy.detail.fullAccessAuthorization`
+  (events contract 6 → 7) — this also fixes an existing mismatch present on main.
+
 - **STRAT-LEARN Step 2 review fixes (Devin SWE-2 reviews).** Harvest drops a subflow's parent echo by
   position, not by matching reason text, so a genuine parent failure with identical text is kept.
   `canonicalWorkspace` git lookups time out after 5 s and are retried, not cached (the INLINE §A2 /

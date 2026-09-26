@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, realpath } from "node:fs/promises";
+import { mkdir, open, realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { resourceLock } from "../guard/lock.js";
@@ -22,6 +22,11 @@ export function canonicalWorkspace(path: string, timeoutMs: number = GIT_TIMEOUT
         Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
       );
       try {
+        try { await stat(input); } catch (error) {
+          const { code } = error as NodeJS.ErrnoException;
+          if (code === "ENOENT" || code === "ENOTDIR") return input;
+          throw error;
+        }
         const gitPath = async (flag: string): Promise<string> => {
           const { stdout } = await execFileAsync("git", [
             "-C", input, "rev-parse", "--path-format=absolute", flag,

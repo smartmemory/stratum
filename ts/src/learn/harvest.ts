@@ -61,9 +61,12 @@ export async function harvest(flowsDir: string): Promise<HarvestResult> {
   let names: string[];
   try {
     names = (await readdir(flowsDir)).filter((name) => name.endsWith(".json")).sort();
-  } catch {
-    // A missing corpus is an empty corpus, not an error.
-    return { records: [], skipped: 0, droppedEvents: 0 };
+  } catch (error) {
+    // Only a missing corpus is empty; callers must be able to report read failures.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { records: [], skipped: 0, droppedEvents: 0 };
+    }
+    throw error;
   }
 
   const records: FailureRecord[] = [];
@@ -115,14 +118,18 @@ function collect(run: Record<string, unknown>, out: FailureRecord[], indices?: n
   // Subflow child failure reason, keyed by parent step id. failParentRunStep re-records
   // the child's exact failure on the parent `run` step, and that echo is positional:
   // the very next `result` event for the parent step after the child's failing one.
-  // Any other event for the parent, or a sibling child settling, closes the echo
+  // Any non-result event for the parent or its descendants, or a sibling child settling, closes the echo
   // window — a later same-reason `result` for the parent is its own failure.
   const childFailures = new Map<string, string>();
 
   for (const [index, event] of events.entries()) {
     const type = str(event.type);
     const stepId = str(event.stepId);
-    if (type !== "result" && stepId !== undefined) childFailures.delete(stepId);
+    if (type !== "result" && stepId !== undefined) {
+      for (const parent of childFailures.keys()) {
+        if (stepId === parent || stepId.startsWith(`${parent}/`)) childFailures.delete(parent);
+      }
+    }
     const detail = isRecord(event.detail) ? event.detail : undefined;
     if (detail === undefined) continue;
 

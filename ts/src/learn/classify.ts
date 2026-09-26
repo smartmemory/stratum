@@ -77,6 +77,8 @@ export interface ContractSummary {
   path: string;
   /** Allowed enum options, rejected key names, or the expected type. */
   expected: string[];
+  /** Trailing array indices after the last field; absent on legacy candidates. */
+  leafArrayDepth?: number;
 }
 
 export function issueUnits(record: FailureRecord): IssueUnit[] {
@@ -95,9 +97,15 @@ export function issueUnits(record: FailureRecord): IssueUnit[] {
             ...(typeof issue.expected === "string" ? [issue.expected] : []),
           ].sort(),
         };
+        // Depth is delivery metadata, never identity material: preserve existing IDs.
+        const fingerprint = sha(JSON.stringify({ shape: record.shape, ...contract }));
+        const path = Array.isArray(issue.path) ? issue.path : [];
+        let leafArrayDepth = 0;
+        for (let i = path.length - 1; i >= 0 && typeof path[i] === "number"; i -= 1) leafArrayDepth += 1;
+        contract.leafArrayDepth = leafArrayDepth;
         return {
           record,
-          fingerprint: sha(JSON.stringify({ shape: record.shape, ...contract })),
+          fingerprint,
           contract,
           ...(typeof issue.received === "string" ? { received: issue.received } : {}),
         };
@@ -130,7 +138,9 @@ interface ZodIssue {
 
 function parseIssues(reason: string): ZodIssue[] {
   try {
-    const parsed: unknown = JSON.parse(reason);
+    // failAttempt appends this retry disposition to otherwise structured issues.
+    // It changes scheduling, not the violated contract or its cluster identity.
+    const parsed: unknown = JSON.parse(reason.replace(/ \(no retry: identical evidence\)$/, ""));
     if (Array.isArray(parsed)) return parsed as ZodIssue[];
     if (typeof parsed === "object" && parsed !== null) return [parsed as ZodIssue];
   } catch {

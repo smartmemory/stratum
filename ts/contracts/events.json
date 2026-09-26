@@ -1,5 +1,5 @@
 {
-  "events": 6,
+  "events": 7,
   "shapeLanguage": "Each kind maps to the full event payload shape minus the implicit {at: string, type: string}. Leaf types: number|string|boolean|object|array|null|any, unions with '|', optional keys end in '?', nested objects are declared inline. Undeclared keys are contract violations.",
   "kinds": {
     "planned": {},
@@ -127,7 +127,8 @@
         "itemIndex?": "number",
         "stage?": "number",
         "policy": "object",
-        "provenance": "object"
+        "provenance": "object",
+        "fullAccessAuthorization?": { "layer": "string", "source": "string" }
       }
     }
   }

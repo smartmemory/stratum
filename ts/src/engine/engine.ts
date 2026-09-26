@@ -811,6 +811,7 @@ export class StratumEngine {
       state.status = "failed";
       state.failure = failure;
       delete state.dispatchToken;
+      setPin(state, undefined);
       this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
       return this.terminalBudget(run, failure);
     }
@@ -829,6 +830,7 @@ export class StratumEngine {
       state.status = "failed";
       state.failure = failure;
       delete state.dispatchToken;
+      setPin(state, undefined);
       this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
       return this.terminalBudget(run, failure);
     }
@@ -854,6 +856,7 @@ export class StratumEngine {
         state.failure = failure;
         state.status = "pending";
         delete state.dispatchToken;
+        setPin(state, undefined);
         this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure, iterate: { iteration: completedIterations, max: step.iterate.max } });
         await this.persist(run);
         return this.advance(run, validated.value, validated.contracts, scope);
@@ -2267,6 +2270,7 @@ export class StratumEngine {
           item.epoch = state.epoch ?? 0;
           delete item.dispatchToken;
           delete item.acceptedDispatchToken;
+          setPin(item, undefined);
           if (stage.when !== undefined) {
             const enabled = this.evaluateFanout(stage.when, run, value, previous, cwd);
             if (enabled !== true) {
@@ -2376,6 +2380,7 @@ export class StratumEngine {
             item.status = "failed";
             item.failure = lastFailure ?? { attempt: item.attempts.length + 1, reason: "fanout stage failed" };
             delete item.dispatchToken;
+            setPin(item, undefined);
             return false;
           });
           void abandoned;
@@ -2391,6 +2396,7 @@ export class StratumEngine {
           // can count, and its partial worktree work is never merged.
           item.status = "skipped";
           delete item.dispatchToken;
+          setPin(item, undefined);
           return;
         }
         if (item.worktree) {
@@ -2412,7 +2418,10 @@ export class StratumEngine {
       });
     } finally {
       await lock(async () => {
-        if (run.cancelRequested === true) delete item.dispatchToken;
+        if (run.cancelRequested === true && item.dispatchToken !== undefined) {
+          delete item.dispatchToken;
+          setPin(item, undefined);
+        }
         // Worktree teardown still runs on the abandon path: a cancelled run must not leak
         // worktrees just because it may not write.
         if (item.worktree && run.workspaceRoot) {
@@ -2518,6 +2527,7 @@ export class StratumEngine {
   private recordFanoutAttempt(run: PersistedRun, step: Step, item: FanoutItemState, stage: number, attempt: number, success: boolean, failureKind: "connector" | "usage" | "contract" | "ensure" | "iterate" | "budget", failure: FailureContext, result?: StepResult, usage?: Budget): void {
     item.attempts.push({ attempt, at: now(), stage, failure, failureKind, ...(result?.output !== undefined ? { result: result.output } : {}), ...telemetryFields(result?.telemetry), ...(usage && hasBudget(usage) ? { usage } : {}) });
     delete item.dispatchToken;
+    setPin(item, undefined);
     this.event(run, "fanout_attempt_result", step.id, { itemIndex: item.index, stage, attempt, success, failure: { kind: failureKind, reason: failure.reason } });
   }
 
@@ -2559,6 +2569,7 @@ export class StratumEngine {
     state.failure = failure;
     delete state.dispatchToken;
     delete state.acceptedDispatchToken;
+    setPin(state, undefined);
     this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
     const maximum = step.attempts ?? 2;
     if (!forceExhausted && !identicalEvidence && attempt < maximum) {
@@ -2599,6 +2610,7 @@ export class StratumEngine {
     state.status = "failed";
     delete state.dispatchToken;
     delete state.acceptedDispatchToken;
+    setPin(state, undefined);
     this.event(run, "result", this.scopedId(scope, step.id), { attempt, failure });
     return this.failParentRunStep(run, spec, contracts, scope, failure);
   }
@@ -3448,6 +3460,7 @@ export class StratumEngine {
         if (state.status === "ready") {
           state.dispatchToken = randomUUID();
           delete state.acceptedDispatchToken;
+          setPin(state, undefined);
         } else if (state.status === "waiting_gate") {
           state.gateToken = randomUUID();
         }
@@ -3459,6 +3472,7 @@ export class StratumEngine {
             item.dispatchToken = randomUUID();
           }
           delete item.acceptedDispatchToken;
+          setPin(item, undefined);
         }
         if (state.sub) rotateSteps(state.sub.steps);
       }

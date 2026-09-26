@@ -68,8 +68,9 @@ async function scanStore(storeRoot: string, root: string): Promise<RunScan[]> {
   try { names = (await readdir(storeRoot)).filter((name) => name.endsWith(".json")).sort(); } catch { return []; }
   const scans: RunScan[] = [];
   for (const name of names) {
-    let run: Record<string, unknown>;
-    try { run = JSON.parse(await readFile(join(storeRoot, name), "utf8")) as Record<string, unknown>; } catch { continue; }
+    let run: Record<string, unknown> | undefined;
+    try { run = record(JSON.parse(await readFile(join(storeRoot, name), "utf8"))); } catch { continue; }
+    if (run === undefined) continue;
     const workspaceRoot = str(run.workspaceRoot);
     const runId = str(run.id);
     if (workspaceRoot === undefined || runId === undefined || await canonicalWorkspace(workspaceRoot) !== root) continue;
@@ -116,8 +117,12 @@ function outcomesOf(scan: RunScan, clusterOf: (revisionId: string) => string | u
     const clusterId = clusterOf(offer.revisionId);
     if (clusterId === undefined) continue; // an offer whose revision left the sidecar: nothing to attribute it to
     const base = { revisionId: offer.revisionId, clusterId, runId: scan.runId, stepId: offer.stepId };
-    // A matching failure after the offer decides at once, terminal or not.
-    const failure = scan.failures.find((f) => f.index > offer.index && f.record.stepId === offer.stepId && f.clusters.has(clusterId));
+    // The latest matching failure by event position decides, so retries can cross watermarks.
+    let failure: RunScan["failures"][number] | undefined;
+    for (const f of scan.failures) {
+      if (f.index > offer.index && f.record.stepId === offer.stepId && f.clusters.has(clusterId)
+        && (failure === undefined || f.index > failure.index)) failure = f;
+    }
     if (failure !== undefined) { out.push({ ...base, outcome: "not-holding", at: failure.record.at }); continue; }
     const success = scan.terminal ? succeededAt(scan, offer.stepId, offer.index) : undefined;
     out.push(success !== undefined ? { ...base, outcome: "held", at: success } : { ...base, outcome: "unknown", at: offer.at });

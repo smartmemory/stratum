@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { classify, issueUnits } from "../../src/learn/classify.js";
+import { authorCandidate } from "../../src/learn/candidate.js";
+import type { FailureRecord } from "../../src/learn/harvest.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +67,54 @@ describe("contractHolds (D3 predicate)", () => {
     expect(contractHolds(c.Result, { code, path, expected: [...expected] })).toBe(holds);
   });
 
+  it.each([
+    [["tags"], 0], [["tags", 0], 1], [["rows", 0, "tags", 2, 0], 2],
+  ] as const)("harvests leaf depth from %j without changing candidate identity", (path, depth) => {
+    const record: FailureRecord = {
+      runId: "r", flowName: "build", stepId: "plan", attempt: 1, shape: "schema",
+      workspaceRoot: "/w", at: "2026-09-26T00:00:00Z", recovered: false,
+      reason: JSON.stringify([{ code: "invalid_type", path, expected: "string" }]),
+    };
+    const summary = issueUnits(record)[0]!.contract;
+    expect(summary.leafArrayDepth).toBe(depth);
+    const { leafArrayDepth: _, ...legacy } = summary;
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    const fingerprint = sha(JSON.stringify({ shape: "schema", ...legacy }));
+    const cluster = classify([record], { minRuns: 1, minPairs: 1 })[0]!;
+    const candidate = authorCandidate(cluster);
+    const key = ["/w", "build", "schema", fingerprint].join("\u0000");
+    expect(candidate.clusterKey).toBe(key);
+    expect(candidate.clusterId).toBe(sha(key));
+    expect(candidate.revisionId).toBe(authorCandidate({ ...cluster, contract: legacy }).revisionId);
+  });
+
+  it("suppresses a field-level string lesson after string becomes string[]", () => {
+    const own = lesson({ code: "invalid_type", path: "tags", expected: ["string"] });
+    own.candidate.contract.leafArrayDepth = 0;
+    expect(contractHolds(contracts({ R: { tags: "string" } }).R, own.candidate.contract)).toBe(true);
+    expect(matchLessons([own], { flowName: "build", stepId: "plan", contract: contracts({ R: { tags: "string[]" } }).R }))
+      .toEqual({ lessons: [], lessonsSuppressed: [{ revisionId: own.candidate.revisionId, reason: "contract-changed" }] });
+  });
+
+  it("holds an element-level string lesson only at its exact depth", () => {
+    const summary = { code: "invalid_type", path: "tags", expected: ["string"], leafArrayDepth: 1 };
+    expect(contractHolds(contracts({ R: { tags: "string[]" } }).R, summary)).toBe(true);
+    expect(contractHolds(contracts({ R: { tags: "string" } }).R, summary)).toBe(false);
+    expect(contractHolds(contracts({ R: { tags: "string[][]" } }).R, summary)).toBe(false);
+  });
+
+  it("retains any-depth matching for legacy candidates", () => {
+    const summary = { code: "invalid_type", path: "tags", expected: ["string"] };
+    expect(contractHolds(contracts({ R: { tags: "string" } }).R, summary)).toBe(true);
+    expect(contractHolds(contracts({ R: { tags: "string[]" } }).R, summary)).toBe(true);
+  });
+
+  it("matches invalid_type enums independently of option order", () => {
+    const summary = { code: "invalid_type", path: "outcome", expected: ["'failed' | 'complete'"], leafArrayDepth: 0 };
+    expect(contractHolds(c.Result, summary)).toBe(true);
+    expect(contractHolds(contracts({ R: { outcome: "complete|failed|skipped" } }).R, summary)).toBe(false);
+  });
+
   it("does not hold without an output contract", () => {
     expect(contractHolds(undefined, { code: "invalid_type", path: "note", expected: ["string"] })).toBe(false);
   });
@@ -126,6 +178,24 @@ describe("matchLessons (D3)", () => {
 
 describe("pinFor fail-closed contract", () => {
   const envFor = (root: string) => ({ STRATUM_CONFIG_FILE: join(root, "none.toml"), STRATUM_LEARN_DELIVER: "1" });
+
+  it("warns selector diagnostics once, including a torn journal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "learn-deliver-diagnostic-"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const diagnostic = { reason: "journal-invalid" as const, detail: "torn journal regression" };
+      const options = {
+        workspaceRoot: root, flowName: "build", stepId: "plan", contract: c.Result, env: envFor(root),
+        select: async () => ({ lessons: [], diagnostics: [diagnostic] }),
+      };
+      await expect(pinFor(options)).resolves.toBeUndefined();
+      await pinFor(options);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(`learn deliver: ${JSON.stringify(diagnostic)}`);
+    } finally {
+      warn.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it("a throwing selector warns and delivers nothing — never throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "learn-deliver-pin-"));
