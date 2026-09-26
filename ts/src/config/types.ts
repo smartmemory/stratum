@@ -11,7 +11,13 @@ export interface SandboxPolicy {
 }
 
 export type SandboxPolicyKey = keyof SandboxPolicy;
-export type ConfigLayer = "default" | "user" | "project" | "dispatch" | "env";
+/**
+ * "enforced" (STRAT-AGENT-DEVIN-1 D11): the value is a fact of the agent's
+ * runtime that no config layer can change — e.g. devin's networkAccess is
+ * always true and its approvalPolicy always "never" under
+ * --permission-mode dangerous.
+ */
+export type ConfigLayer = "default" | "user" | "project" | "dispatch" | "env" | "enforced";
 
 export interface ConfigProvenance {
   readonly layer: ConfigLayer;

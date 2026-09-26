@@ -1,4 +1,5 @@
 import { resolveCodexModel } from "../connectors/codex.js";
+import { resolveDevinModel } from "../connectors/devin-model.js";
 import { distillTool } from "../distill/runner.js";
 import { normalizePeerLabel } from "../connectors/peer-registry.js";
 import { linkAbort, teardownDeadline } from "../connectors/cancellation.js";
@@ -10,7 +11,8 @@ import { stat } from "node:fs/promises";
 import { cancelBackgroundRun, pollBackgroundRun, runAgent } from "../connectors/index.js";
 import { createForegroundRun, killAndReapGroup, recordForegroundGroup, settleForegroundRun } from "../connectors/foreground_registry.js";
 import { procStartTime } from "../connectors/proc_identity.js";
-import type { CodexSandboxMode, ConnectorEventHandler } from "../connectors/base.js";
+import { AGENT_TYPES, describeAgentTypes } from "../connectors/base.js";
+import type { AgentType, CodexSandboxMode, ConnectorEventHandler } from "../connectors/base.js";
 import type { CodexApprovalPolicy } from "../config/types.js";
 import { CheckpointOperationError, InputValidationError, SpecValidationError, StratumEngine, type AuditTrail, type BgFlowPollResponse, type EngineResponse, type FlowPollResponse } from "../engine/engine.js";
 import { cancelFlow, EMPTY_AGENTS } from "../engine/flow_cancel.js";
@@ -185,13 +187,30 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
       let teardownFailure: Error | undefined;
       try {
         const agent = request.agent;
-        if (tool === "stratum_agent_run" && agent !== "codex" && agent !== "claude") {
-          throw await inputValidationError("agent", `Unknown agent ${JSON.stringify(agent)}; expected codex or claude`);
+        if (tool === "stratum_agent_run"
+          && (typeof agent !== "string" || !(AGENT_TYPES as readonly string[]).includes(agent))) {
+          throw await inputValidationError("agent", `Unknown agent ${JSON.stringify(agent)}; expected ${describeAgentTypes()}`);
         }
-        if (tool === "stratum_agent_run" && agent === "codex") {
-          try { resolveCodexModel(optionalString(request, "model"), optionalString(request, "effort")); }
-          catch (error) {
-            throw await inputValidationError("model", error instanceof Error ? error.message : String(error));
+        if (tool === "stratum_agent_run") {
+          // Model/effort are validated at the MCP boundary for every
+          // sandbox-capable agent (D6: same three layers codex has).
+          const validAgent = agent as AgentType;
+          switch (validAgent) {
+            case "codex":
+            case "devin": {
+              const resolveModel = validAgent === "codex" ? resolveCodexModel : resolveDevinModel;
+              try { resolveModel(optionalString(request, "model"), optionalString(request, "effort")); }
+              catch (error) {
+                throw await inputValidationError("model", error instanceof Error ? error.message : String(error));
+              }
+              break;
+            }
+            case "claude":
+              break;
+            default: {
+              const exhaustive: never = validAgent;
+              throw new Error(`Unknown agent ${JSON.stringify(exhaustive)}; expected ${describeAgentTypes()}`);
+            }
           }
         }
         if (tool === "stratum_agent_run" && request.peerLabel !== undefined) {
@@ -231,7 +250,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             registryId = await createForegroundRun({
               foreground: true,
               state: "starting",
-              agent: agent as "claude" | "codex",
+              agent: agent as AgentType,
               cancellationId,
               serverPid: process.pid,
               ...(serverStartTime !== undefined ? { serverProcStartTime: serverStartTime } : {}),
@@ -347,7 +366,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             ? optionalArray(request, "disallowedTools")
             : undefined;
           const executed = await agentRun({
-            agent: agent as "claude" | "codex",
+            agent: agent as AgentType,
             ...(cancellationId !== undefined ? { ownProcessGroup: true } : {}),
             ...(registryId !== undefined ? {
               onSpawn: (pid: number) => {

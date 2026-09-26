@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { AGENT_TYPES, type AgentType } from "./base.js";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { atomicWriteJson, newRunDir } from "./background.js";
@@ -84,7 +85,7 @@ export interface ForegroundRunMeta {
   runId: string;
   foreground: true;
   state: ForegroundRunState;
-  agent: "claude" | "codex";
+  agent: AgentType;
   cancellationId: string;
   /** The MCP server process that owns the in-memory AbortController. Lets a reader tell
    *  "the server is gone" from "the agent is gone". Never signalled (invariant 14). */
@@ -196,7 +197,7 @@ async function readMeta(root: string, registryId: string): Promise<ForegroundRun
   try { raw = JSON.parse(await readFile(join(root, registryId, "meta.json"), "utf8")); }
   catch { return undefined; }
   if (!isRecord(raw) || raw.runId !== registryId || raw.foreground !== true) return undefined;
-  if (raw.agent !== "claude" && raw.agent !== "codex") return undefined;
+  if (typeof raw.agent !== "string" || !(AGENT_TYPES as readonly string[]).includes(raw.agent)) return undefined;
   if (!isRecord(raw.flow) || typeof raw.flow.runId !== "string") return undefined;
   if (!Array.isArray(raw.groups)) return undefined;
   if (raw.state !== "starting" && raw.state !== "running" && raw.state !== "settled") return undefined;

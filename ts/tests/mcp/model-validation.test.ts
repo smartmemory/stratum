@@ -16,7 +16,7 @@ it.each([false, true])("rejects bad agent at MCP before dispatch or registry wri
     await expect(dispatcher.call("stratum_agent_run", {
       agent: "gemini", prompt: "p", cwd: root,
       ...(flow ? { cancellationId: randomUUID(), flow: { runId: "unused" } } : {}),
-    })).rejects.toThrow('Unknown agent "gemini"; expected codex or claude');
+    })).rejects.toThrow('Unknown agent "gemini"; expected "claude", "codex", "devin"');
     expect(runAgent).not.toHaveBeenCalled();
     expect(await readdir(root)).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }

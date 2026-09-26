@@ -15,7 +15,19 @@
  */
 export const SMARTMEMORY_SCRUB_VARS = ["SMARTMEMORY_API_KEY", "SMARTMEMORY_WORKSPACE_ID"] as const;
 
-export type AgentType = "claude" | "codex";
+/**
+ * The one dispatchable agent list (STRAT-AGENT-DEVIN-1 D1). Every validator
+ * derives its accepted set and error text from this — a fourth agent must never
+ * ride in through an `else` that meant claude, and every `switch` over
+ * AgentType carries a `never` default so the next addition is a compile error.
+ */
+export const AGENT_TYPES = ["claude", "codex", "devin"] as const;
+export type AgentType = (typeof AGENT_TYPES)[number];
+
+/** Quoted agent list for "Unknown agent" error text, generated from AGENT_TYPES. */
+export function describeAgentTypes(): string {
+  return AGENT_TYPES.map((agent) => `"${agent}"`).join(", ");
+}
 export type { CodexSandboxMode } from "../config/types.js";
 
 /** Post-dispatch usage. Dispatch counts are reserved exclusively by the engine. */

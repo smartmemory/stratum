@@ -48,6 +48,16 @@ export interface LoadStratumConfigOptions {
   readonly projectRoot?: string;
   readonly dispatch?: DispatchSandboxOptions;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Which agent the policy applies to (STRAT-AGENT-DEVIN-1 D11). "codex"
+   * (default) reads the STRATUM_CODEX_* env layer. "devin" reads NO sandbox
+   * env layer — STRATUM_CODEX_* must never escalate a devin run — and its
+   * networkAccess/approvalPolicy are enforced facts of the runtime, not
+   * resolved options (D3): an explicit dispatch `networkAccess:false` or
+   * `approvalPolicy` is rejected, while resolved values are overridden with
+   * "enforced" provenance so the audit records the real boundary.
+   */
+  readonly agent?: "codex" | "devin";
 }
 
 /** Typed, deeply frozen effective configuration plus per-key winning-layer evidence. */
@@ -91,6 +101,7 @@ export class ResolvedStratumConfig {
  */
 export function loadStratumConfig(options: LoadStratumConfigOptions = {}): ResolvedStratumConfig {
   const env = options.env ?? process.env;
+  const agent = options.agent ?? "codex";
   const projectRoot = options.projectRoot ?? process.cwd();
   const userPath = env.STRATUM_CONFIG_FILE || join(homedir(), ".stratum", "config.toml");
   const projectPath = join(projectRoot, "stratum.toml");
@@ -107,16 +118,40 @@ export function loadStratumConfig(options: LoadStratumConfigOptions = {}): Resol
 
   applyFile(values, provenance, userPath, "user");
   applyFile(values, provenance, projectPath, "project");
+  if (agent === "devin") {
+    // Explicit dispatch requests devin cannot honour are rejected here (D3's
+    // network rule, D11's approvalPolicy rule). File-set values are NOT
+    // rejected — they are overridden by the enforced block below, so a project
+    // that is fine for codex cannot fail every devin dispatch.
+    if (options.dispatch?.approvalPolicy !== undefined) {
+      throw new Error("stratum_agent_run: approvalPolicy is not supported by devin; approval is enforced by the OS sandbox");
+    }
+    if (options.dispatch?.networkAccess === false) {
+      throw new Error("devin cannot run without network; networkAccess:false is not enforceable for devin");
+    }
+  }
   applyLayer(values, provenance, parseDispatch(options.dispatch ?? {}), "dispatch", "stratum_agent_run");
-  applyEnv(values, provenance, env);
+  if (agent !== "devin") applyEnv(values, provenance, env);
+  if (agent === "devin") {
+    values.networkAccess = true;
+    provenance.networkAccess = Object.freeze({ layer: "enforced", source: "devin: model traffic runs inside the sandbox, so network cannot be denied" });
+    values.approvalPolicy = "never";
+    provenance.approvalPolicy = Object.freeze({ layer: "enforced", source: "devin: --permission-mode dangerous never asks for approval" });
+  }
   return new ResolvedStratumConfig(values, provenance,
-    values.filesystemMode === "danger-full-access" ? fullAccessAuthorization(env) : undefined);
+    values.filesystemMode === "danger-full-access" ? fullAccessAuthorization(env, agent) : undefined);
 }
 
-export function fullAccessAuthorization(env: NodeJS.ProcessEnv): ConfigProvenance | undefined {
-  const value = env.STRATUM_CODEX_ALLOW_FULL_ACCESS?.trim().toLowerCase();
+const FULL_ACCESS_ENV: Readonly<Record<"codex" | "devin", string>> = Object.freeze({
+  codex: "STRATUM_CODEX_ALLOW_FULL_ACCESS",
+  devin: "STRATUM_DEVIN_ALLOW_FULL_ACCESS",
+});
+
+export function fullAccessAuthorization(env: NodeJS.ProcessEnv, agent: "codex" | "devin" = "codex"): ConfigProvenance | undefined {
+  const variable = FULL_ACCESS_ENV[agent];
+  const value = env[variable]?.trim().toLowerCase();
   return value !== undefined && ["1", "true", "yes", "on"].includes(value)
-    ? Object.freeze({ layer: "env", source: "STRATUM_CODEX_ALLOW_FULL_ACCESS" })
+    ? Object.freeze({ layer: "env", source: variable })
     : undefined;
 }
 

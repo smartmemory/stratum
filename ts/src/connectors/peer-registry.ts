@@ -11,6 +11,7 @@ const baseUrl = new URL("./base.ts", import.meta.url);
 const { modelIdentity }: typeof import("./base.js") = await import(
   (existsSync(baseUrl) ? baseUrl : new URL("./base.js", import.meta.url)).href
 );
+import type { AgentType } from "./base.js";
 const execFileAsync = promisify(execFile);
 export function normalizePeerLabel(value: unknown): string | undefined {
   if (value === undefined) return undefined;
@@ -23,13 +24,28 @@ export function normalizePeerLabel(value: unknown): string | undefined {
   return label;
 }
 
-export function peerName(model: string, runId: string, options: {agent?: "codex" | "claude"; label?: string | undefined} = {}): string {
+export function peerName(model: string, runId: string, options: {agent?: AgentType; label?: string | undefined} = {}): string {
   const agent = options.agent ?? "codex";
   const identity = modelIdentity(model).model.toLowerCase();
-  const short = agent === "claude"
-    ? identity.replace(/^claude-/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "model"
-    : identity.replace(/^gpt-[\d.]+-/, "").replace(/codex-|-codex/g, "").replace(/[^a-z0-9]/g, "") || "codex";
-  if (agent === "codex" && options.label === undefined) return `codex-${short}-${runId.slice(0, 6)}`;
+  let short: string;
+  switch (agent) {
+    case "claude":
+      short = identity.replace(/^claude-/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "model";
+      break;
+    case "codex":
+      short = identity.replace(/^gpt-[\d.]+-/, "").replace(/codex-|-codex/g, "").replace(/[^a-z0-9]/g, "") || "codex";
+      break;
+    case "devin":
+      // devin-<short>-<runId6>; short is the model id minus its swe-2- prefix
+      // (devin-high-3f9a2c). Non-SWE ids keep their full sanitised id.
+      short = identity.replace(/^swe-2-/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "model";
+      break;
+    default: {
+      const exhaustive: never = agent;
+      throw new Error(`Unknown agent ${JSON.stringify(exhaustive)}`);
+    }
+  }
+  if ((agent === "codex" || agent === "devin") && options.label === undefined) return `${agent}-${short}-${runId.slice(0, 6)}`;
   return `${agent}-${short.slice(0, 40)}-${runId}${options.label ? `-${options.label}` : ""}`;
 }
 export function resolveSessionsDir(env: NodeJS.ProcessEnv): string {

@@ -8,7 +8,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { AgentType, CodexSandboxMode, ConnectorTelemetry, ConnectorSplit, ConnectorUsage } from "./base.js";
-import { finiteNonnegative, modelIdentity } from "./base.js";
+import { AGENT_TYPES, describeAgentTypes, finiteNonnegative, modelIdentity } from "./base.js";
+import { assertDevinSandboxAllowed, resolveDevinModel } from "./devin-model.js";
 import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
@@ -92,7 +93,16 @@ export interface ClaudeRunMeta extends BackgroundRunMetaBase {
   disallowedTools?: string[];
 }
 
-export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta;
+/** S2 writes these; S1a only accepts them at the parse boundary (D8). */
+export interface DevinRunMeta extends BackgroundRunMetaBase {
+  agent: "devin";
+  childPid: number;
+  procStartTime?: string;
+  outputContract?: "opaque";
+  sandboxAudit?: SandboxPolicyAudit;
+}
+
+export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta | DevinRunMeta;
 
 export interface StartBackgroundRunOptions {
   peerLabel?: string;
@@ -153,19 +163,29 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   const normalizedLabel = normalizePeerLabel(options.peerLabel);
   if (normalizedLabel !== undefined) options = { ...options, peerLabel: normalizedLabel };
   // D11: explicit runtime validation — TypeScript casts at the MCP boundary do not
-  // protect callers that bypass the MCP surface.
-  const VALID_AGENTS = new Set(["claude", "codex"]);
+  // protect callers that bypass the MCP surface. The agent set derives from
+  // AGENT_TYPES (D1), kept independent of runner.ts's identical set.
+  const VALID_AGENTS = new Set<string>(AGENT_TYPES);
   const VALID_SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
   if (!VALID_AGENTS.has(options.agent)) {
-    throw new Error(`Unknown agent ${JSON.stringify(options.agent)}; must be "claude" or "codex"`);
+    throw new Error(`Unknown agent ${JSON.stringify(options.agent)}; must be one of ${describeAgentTypes()}`);
   }
   if (options.sandboxMode !== undefined && !VALID_SANDBOX_MODES.has(options.sandboxMode)) {
     throw new Error(
       `Unknown sandboxMode ${JSON.stringify(options.sandboxMode)}; must be "read-only", "workspace-write", or "danger-full-access"`,
     );
   }
-  if (options.agent === "claude") {
-    return startClaudeBackgroundRun(options);
+  switch (options.agent) {
+    case "claude":
+      return startClaudeBackgroundRun(options);
+    case "devin":
+      return startDevinBackgroundRun(options);
+    case "codex":
+      break;
+    default: {
+      const exhaustive: never = options.agent;
+      throw new Error(`Unknown agent ${JSON.stringify(exhaustive)}; must be one of ${describeAgentTypes()}`);
+    }
   }
 
   const strategy = resolveCodexBackgroundStrategy(options);
@@ -299,6 +319,26 @@ export async function startBackgroundRun(options: StartBackgroundRunOptions): Pr
   } catch (error) { console.error("stratum peer registration failed:", error); }
   finally { if (timer !== undefined) clearTimeout(timer); }
   return { status: "bg_started", runId, pid, streamPath };
+}
+
+/**
+ * S1a: devin's background boundary validates through the same resolvers a real
+ * run will use — D6's third model-validation layer, D3's explicit-network
+ * rule, D11's approvalPolicy and full-access rules — then refuses, because the
+ * dispatch path (own branch, export-derived status) lands in S2.
+ */
+async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Promise<{
+  status: "bg_started"; runId: string; pid?: number; streamPath: string; peerName?: string;
+}> {
+  if (options.networkAccess === false) {
+    throw new Error("devin cannot run without network; networkAccess:false is not enforceable for devin");
+  }
+  if (options.approvalPolicy !== undefined) {
+    throw new Error("Codex approvalPolicy is not supported by devin");
+  }
+  assertDevinSandboxAllowed(options.sandboxMode ?? "read-only", options.env ?? process.env);
+  resolveDevinModel(options.model, options.effort);
+  throw new Error("devin connector not implemented yet (STRAT-AGENT-DEVIN-1 S1b)");
 }
 
 // WorkerInput is the data passed to claude-bg-worker via workerData.
@@ -649,8 +689,9 @@ async function loadMeta(runId: string, root: string): Promise<{ meta: Background
   try {
     const runDir = join(root, runId);
     const raw: unknown = JSON.parse(await readFile(join(runDir, "meta.json"), "utf8"));
-    if (!isRecord(raw) || raw.runId !== runId || (raw.agent !== "codex" && raw.agent !== "claude")) return undefined;
-    if (raw.agent === "codex" && typeof raw.childPid !== "number") return undefined;
+    if (!isRecord(raw) || raw.runId !== runId
+      || typeof raw.agent !== "string" || !(AGENT_TYPES as readonly string[]).includes(raw.agent)) return undefined;
+    if ((raw.agent === "codex" || raw.agent === "devin") && typeof raw.childPid !== "number") return undefined;
     if (typeof raw.model !== "string") return undefined;
     // Read paths are derived from the validated run directory, never from the
     // serialized record — a substituted meta.json cannot redirect poll reads.

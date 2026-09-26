@@ -41,6 +41,35 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.free
 /** Retired upstream 2026-09-16; retained in MODEL_PRICING for historical usage. */
 export const RETIRED_MODELS: ReadonlySet<string> = new Set(["gpt-5.3-codex-spark"]);
 
+/**
+ * Devin CLI models, seeded from `devin models list` (devin 3000.10.35,
+ * 2026-09-26). SWE-2 is the owner's free family ("Free" — a price-table fact,
+ * so a run reports usd: 0 as "estimated", never "reported"); the Claude
+ * Opus 5.5 and Sonnet 5 rows copy their listed per-MTok prices. Kept separate
+ * from MODEL_PRICING so codex's dispatchableModels() allowlist is unchanged
+ * (STRAT-AGENT-DEVIN-1 D6).
+ */
+export const DEVIN_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.freeze({
+  "swe-2-medium": { input: 0, output: 0, cacheRead: 0 },
+  "swe-2-high": { input: 0, output: 0, cacheRead: 0 },
+  "swe-2-max": { input: 0, output: 0, cacheRead: 0 },
+  "claude-opus-5-5-low": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-opus-5-5-medium": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-opus-5-5-high": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-opus-5-5-xhigh": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-opus-5-5-max": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-opus-5-5-low-fast": { input: 8, output: 40, cacheRead: 0.4 },
+  "claude-opus-5-5-medium-fast": { input: 8, output: 40, cacheRead: 0.4 },
+  "claude-opus-5-5-high-fast": { input: 8, output: 40, cacheRead: 0.4 },
+  "claude-opus-5-5-xhigh-fast": { input: 8, output: 40, cacheRead: 0.4 },
+  "claude-opus-5-5-max-fast": { input: 8, output: 40, cacheRead: 0.4 },
+  "claude-sonnet-5-low": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-medium": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-high": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-xhigh": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-max": { input: 2, output: 10, cacheRead: 0.2 },
+});
+
 export function dispatchableModels(): string[] {
   return Object.keys(MODEL_PRICING).filter((model) => !RETIRED_MODELS.has(model)).sort();
 }

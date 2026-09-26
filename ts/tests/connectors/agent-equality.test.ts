@@ -1,0 +1,161 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AGENT_TYPES, type AgentType } from "../../src/connectors/base.js";
+import { startBackgroundRun } from "../../src/connectors/background.js";
+import type { QueryFunction } from "../../src/connectors/claude.js";
+import type { SpawnProcess } from "../../src/connectors/codex.js";
+import { runAgent, validateAgentSettings, type AgentRunOptions } from "../../src/connectors/runner.js";
+
+/**
+ * STRAT-AGENT-DEVIN-1 D1 equality check: every parameter stratum_agent_run
+ * accepts for codex is accepted for devin or rejected with a named devin
+ * error — never silently dropped through an `else` that meant claude, and
+ * never blocked by a codex-only check that forgot the third agent. The table
+ * is driven from AGENT_TYPES so a fourth agent arrives as a test failure, not
+ * an unhandled row.
+ */
+
+const S1B_BOUNDARY = /devin connector not implemented yet \(STRAT-AGENT-DEVIN-1 S1b\)/;
+
+const roots: string[] = [];
+
+async function temporaryRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "stratum-agent-equality-"));
+  roots.push(root);
+  return root;
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+const stubClaudeQuery: QueryFunction = async function* () {
+  yield { type: "result", subtype: "success", result: "stub ok", duration_ms: 0, total_cost_usd: 0 };
+};
+
+function fakeCodexSpawn(): SpawnProcess {
+  return vi.fn<SpawnProcess>(() => {
+    const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn(() => true);
+    queueMicrotask(() => {
+      (child.stdout as PassThrough).write(
+        JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "stub ok" } }) + "\n",
+      );
+      (child.stdout as PassThrough).end();
+      (child.stderr as PassThrough).end();
+      child.emit("close", 0, null);
+    });
+    return child;
+  });
+}
+
+describe("AGENT_TYPES is the one dispatchable list (D1)", () => {
+  it("contains exactly claude, codex, devin", () => {
+    expect([...AGENT_TYPES]).toEqual(["claude", "codex", "devin"]);
+  });
+
+  it.each(AGENT_TYPES)("runAgent reaches a real branch for agent=%s — no silent fallthrough", async (agent) => {
+    const root = await temporaryRoot();
+    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") };
+    const attempt = runAgent(
+      { agent, prompt: "p", cwd: root, env },
+      { claudeQuery: stubClaudeQuery, codexSpawn: fakeCodexSpawn() },
+    );
+    if (agent === "devin") {
+      // S1a validates devin and stops at the named S1b boundary.
+      await expect(attempt).rejects.toThrow(S1B_BOUNDARY);
+    } else {
+      await expect(attempt).resolves.toMatchObject({ text: "stub ok" });
+    }
+  });
+
+  it.each(AGENT_TYPES)("validateAgentSettings has a named branch for agent=%s", (agent) => {
+    expect(() => validateAgentSettings({ agent })).not.toThrow();
+  });
+});
+
+describe("unknown agent errors name the whole set at every layer (D1)", () => {
+  const badAgent = "gemini" as AgentType;
+
+  it("runAgent", async () => {
+    await expect(runAgent({ agent: badAgent, prompt: "p", cwd: "/tmp" }))
+      .rejects.toThrow('Unknown agent "gemini"; must be one of "claude", "codex", "devin"');
+  });
+
+  it("startBackgroundRun", async () => {
+    const root = await temporaryRoot();
+    await expect(startBackgroundRun({ agent: badAgent, prompt: "p", cwd: root, registryRoot: root }))
+      .rejects.toThrow('Unknown agent "gemini"; must be one of "claude", "codex", "devin"');
+  });
+});
+
+describe("devin parameter equality — every codex knob is honoured or named-rejected (D1)", () => {
+  // "accepted" = validation passes and the dispatch reaches the S1b boundary.
+  // A RegExp = the named devin rejection the parameter must produce.
+  const table: Array<{ name: string; options: Partial<AgentRunOptions>; expected: "accepted" | RegExp }> = [
+    { name: "model (full id)", options: { model: "swe-2-medium" }, expected: "accepted" },
+    { name: "model (family + effort)", options: { model: "swe-2", effort: "max" }, expected: "accepted" },
+    { name: "model (slash form)", options: { model: "swe-2/max" }, expected: "accepted" },
+    { name: "effort", options: { effort: "medium" }, expected: "accepted" },
+    { name: "sandboxMode read-only", options: { sandboxMode: "read-only" }, expected: "accepted" },
+    { name: "sandboxMode workspace-write", options: { sandboxMode: "workspace-write" }, expected: "accepted" },
+    { name: "sandboxMode danger-full-access + opt-in", options: { sandboxMode: "danger-full-access", env: { STRATUM_DEVIN_ALLOW_FULL_ACCESS: "1" } }, expected: "accepted" },
+    { name: "networkAccess true", options: { networkAccess: true }, expected: "accepted" },
+    { name: "writableRoots", options: { writableRoots: ["/tmp"] }, expected: "accepted" },
+    { name: "ownProcessGroup", options: { ownProcessGroup: true }, expected: "accepted" },
+    { name: "env", options: { env: { STRATUM_CONFIG_FILE: "/nonexistent" } }, expected: "accepted" },
+    { name: "onSpawn", options: { onSpawn: () => undefined }, expected: "accepted" },
+    { name: "networkAccess:false is named-rejected (D3)", options: { networkAccess: false },
+      expected: /devin cannot run without network; networkAccess:false is not enforceable for devin/ },
+    { name: "approvalPolicy is named-rejected (D11)", options: { approvalPolicy: "on-request" },
+      expected: /Codex approvalPolicy is not supported by devin/ },
+    { name: "thinking is named-rejected", options: { thinking: { type: "adaptive" } },
+      expected: /Devin does not support Claude thinking\/tool filters/ },
+    { name: "allowedTools is named-rejected", options: { allowedTools: ["Read"] },
+      expected: /Devin does not support Claude thinking\/tool filters/ },
+    { name: "disallowedTools is named-rejected", options: { disallowedTools: ["Bash"] },
+      expected: /Devin does not support Claude thinking\/tool filters/ },
+    { name: "unknown model is named-rejected (D6)", options: { model: "typo" },
+      expected: /Unknown devin model "typo"; accepted models:/ },
+    { name: "unknown effort is named-rejected (D6)", options: { effort: "bogus" },
+      expected: /Unknown devin effort "bogus"/ },
+    { name: "danger-full-access without opt-in is named-rejected", options: { sandboxMode: "danger-full-access" },
+      expected: /STRATUM_DEVIN_ALLOW_FULL_ACCESS/ },
+  ];
+
+  it.each(table)("$name", async ({ options, expected }) => {
+    const root = await temporaryRoot();
+    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), ...(options.env ?? {}) };
+    await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...options }))
+      .rejects.toThrow(expected === "accepted" ? S1B_BOUNDARY : expected);
+  });
+
+  it.each(table)("$name — validateAgentSettings layer agrees", ({ options, expected }) => {
+    // Options that pass validation reach the connector; rejected ones fail
+    // with the same devin-named error before any spawn.
+    const check = () => validateAgentSettings({ agent: "devin", ...options });
+    if (expected === "accepted") expect(check).not.toThrow();
+    else if (/Unknown sandboxMode|ALLOW_FULL_ACCESS/.test(expected.source)) {
+      // sandboxMode discriminant and the full-access env grant are enforced
+      // outside validateAgentSettings (in runAgent / the connector guard).
+    } else expect(check).toThrow(expected);
+  });
+
+  it("background dispatches reach the S1b boundary without writing a run dir", async () => {
+    const root = await temporaryRoot();
+    await expect(runAgent({
+      agent: "devin", prompt: "p", cwd: root, background: true,
+      registryRoot: root, peerLabel: "review",
+      env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
+    })).rejects.toThrow(S1B_BOUNDARY);
+    expect(await readdir(root)).toEqual([]);
+  });
+});
