@@ -7,12 +7,12 @@
     "url": "https://github.com/smartmemory/stratum",
     "source": "github"
   },
-  "version": "0.6.3",
+  "version": "0.7.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@smartmemory/stratum",
-      "version": "0.6.3",
+      "version": "0.7.0",
       "transport": {
         "type": "stdio"
       }
