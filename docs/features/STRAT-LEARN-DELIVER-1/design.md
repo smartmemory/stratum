@@ -152,7 +152,10 @@ dispatch's **harvest step id** is in scope.
 - *Round-trip finding.* A failed subflow step is harvested twice: once under the scoped child id
   (`wrap/work`, the dispatch — matches `harvestStepId()`) and once echoed onto the parent `run` step
   (`wrap`) by `failParentRunStep()`. The echo double-counts recurrence and can mint a lesson scoped to a
-  step that is never dispatched. Harvester follow-up (like the fan-out `require` dedupe); not fixed here.
+  step that is never dispatched. **Fixed 2026-09-26** in `learn/harvest.ts` (like the fan-out `require`
+  dedupe): a parent `result` failure whose reason equals the child failure just collected under
+  `<parent>/…` is skipped; a parent failure with its own reason (completed subflow output breaking the
+  parent contract) is kept. `tests/learn/harvest-subflow.test.ts`.
 
 ### D4. Where lessons enter the prompt, and how delivery is recorded
 
