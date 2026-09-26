@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-09-27
+
+- **Release: STRAT-AGENT-DEVIN-1. Devin is a full stratum agent.** `stratum_agent_run agent=devin` runs foreground and background (`swe-2-medium|high|max`, `usd: 0` with `usdSource: "estimated"`, macOS seatbelt sandbox, per-run home with a credential copy that is removed on exit); flows accept `agent: devin` on steps and fan-out stages, and evaluator `route` accepts it. Compose 0.7.1 needs this release to dispatch Devin. Also: the `.mcp.json` compose server resolves from git worktrees. Details in the entries below.
+
 - **`.mcp.json`: the `compose` server now starts from git worktrees.** Its path was `../compose/…` relative to the session directory, which only works from the stratum checkout root; a session started in `.claude/worktrees/<name>` looked for `.claude/worktrees/compose` and failed with "Connection closed". It now resolves `compose` next to the repository's shared git directory (`git rev-parse --git-common-dir`), so it works from the checkout root, any worktree and any subdirectory, still with no machine-specific path.
 
 - **STRAT-AGENT-DEVIN-1 slice S3:** Flows accept `agent: devin` on steps and fan-out stages. Engine-dispatched worktree stages give Devin write access to their worktree, and evaluator `route` accepts `devin`. Consumer-dispatched fan-outs await Compose support (`COMP-AGENT-DEVIN-1`).
