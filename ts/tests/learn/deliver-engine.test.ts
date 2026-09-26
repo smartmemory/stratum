@@ -276,6 +276,44 @@ describe("DELIVER-1 D3/D4 engine delivery", () => {
     expect(issuingEvents(run, "ordinary")[0]!.detail).toEqual({ attempt: 1, lessonsSuppressed: suppressed });
   });
 
+  it("a gate revise clears the destroyed issuance's pin: the reset step persists with no lessons while pending", async () => {
+    const { root, store } = await workspace();
+    // Evidence scoped to step `b` only, so `a` is never pinned.
+    const ev = subject(store, () => ({ outcome: "done" }));
+    const evRun = await ev.engine.plan({
+      version: 1, contracts: { Result: { outcome: "complete|failed" } },
+      flows: { entry: "main", main: { input: {}, output: { from: "${b.output}", contract: "Result" },
+        steps: [{ id: "b", do: "b it", out: "Result", attempts: 1 }] } },
+    }, {}, { workspaceRoot: root });
+    await ev.engine.stepDone(evRun.runId, "b", { output: { outcome: "done" } });
+    const { records } = await harvest(store);
+    const lesson = authorCandidate(classify(records, { minRuns: 1, minPairs: 1 })
+      .find((c) => c.class === "durable" && c.applyEligible && c.scope.stepIds.includes("b"))!);
+    await appendCandidates(root, [lesson]);
+    await applyCandidate(lesson, { enabled: true });
+    deliverOn();
+    const s = subject(store, () => ({ outcome: "complete" }));
+    const planned = await s.engine.plan({
+      version: 1, contracts: { Result: { outcome: "complete|failed" } },
+      flows: { entry: "main", main: { input: {}, output: { from: "${b.output}", contract: "Result" }, max_rounds: 3,
+        steps: [
+          { id: "a", do: "a it", out: "Result", attempts: 1 },
+          { id: "b", after: ["a"], do: "b it", out: "Result", attempts: 1 },
+          { id: "g", after: ["a"], gate: { on_approve: null, on_revise: "a", on_kill: null } },
+        ] } },
+    }, {}, { workspaceRoot: root });
+    await s.engine.stepDone(planned.runId, "a", { output: { outcome: "complete" } });
+    // `b` really was issued with the pin before the gate waited on a decision.
+    const pinned = await persisted(s, planned.runId);
+    expect(pinned.steps.b!.status).toBe("ready");
+    expect(pinned.steps.b!.lessons).toHaveLength(1);
+    await s.engine.gateResolve(planned.runId, "g", "revise");
+    const run = await persisted(s, planned.runId);
+    expect(run.steps.b!.status).toBe("pending");
+    expect(run.steps.b!.lessons).toBeUndefined();
+    expect(run.steps.b!.lessonsSuppressed).toBeUndefined();
+  });
+
   it("a run without workspaceRoot is never delivered to", async () => {
     const { root, store } = await workspace();
     await learnFrom("ordinary", root, store);

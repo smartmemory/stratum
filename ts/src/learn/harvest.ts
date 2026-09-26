@@ -112,12 +112,17 @@ function collect(run: Record<string, unknown>, out: FailureRecord[], indices?: n
   let dropped = 0;
   // Reset at each aggregate result so earlier batches cannot hide a later failure.
   const fanoutFailures = new Set<string>();
-  // Subflow child failure reason, keyed by parent step id. failParentRunStep re-records the
-  // child's exact failure on the parent `run` step; that echo is not a second failure.
+  // Subflow child failure reason, keyed by parent step id. failParentRunStep re-records
+  // the child's exact failure on the parent `run` step, and that echo is positional:
+  // the very next `result` event for the parent step after the child's failing one.
+  // Any other event for the parent, or a sibling child settling, closes the echo
+  // window — a later same-reason `result` for the parent is its own failure.
   const childFailures = new Map<string, string>();
 
   for (const [index, event] of events.entries()) {
     const type = str(event.type);
+    const stepId = str(event.stepId);
+    if (type !== "result" && stepId !== undefined) childFailures.delete(stepId);
     const detail = isRecord(event.detail) ? event.detail : undefined;
     if (detail === undefined) continue;
 
@@ -148,10 +153,16 @@ function collect(run: Record<string, unknown>, out: FailureRecord[], indices?: n
     }
 
     if (type === "result") {
-      const hasFanoutFailures = fanoutFailures.delete(str(event.stepId) ?? "");
-      const childFailure = childFailures.get(str(event.stepId) ?? "");
-      childFailures.delete(str(event.stepId) ?? "");
-      if (!("failure" in detail)) continue;
+      const hasFanoutFailures = fanoutFailures.delete(stepId ?? "");
+      const childFailure = stepId === undefined ? undefined : childFailures.get(stepId);
+      if (stepId !== undefined) childFailures.delete(stepId);
+      if (!("failure" in detail)) {
+        // A child settling without failure also closes the echo window: whatever the
+        // parent result now carries, it is not that earlier failure re-recorded.
+        const slash = stepId?.lastIndexOf("/") ?? -1;
+        if (slash > 0) childFailures.delete(stepId!.slice(0, slash));
+        continue;
+      }
       // `failure` is a string in some drifted runs: failure-shaped but unusable.
       const failure = isRecord(detail.failure) ? detail.failure : undefined;
       if (failure === undefined) { dropped += 1; continue; }
@@ -163,21 +174,20 @@ function collect(run: Record<string, unknown>, out: FailureRecord[], indices?: n
       // The parent echo of a child failure already collected. A parent failure with its own
       // reason (the completed subflow's output breaking the parent contract) is kept.
       if (childFailure === reason) continue;
-      const stepId = str(event.stepId) ?? null;
       const slash = stepId?.lastIndexOf("/") ?? -1;
-      if (stepId !== null && slash > 0) childFailures.set(stepId.slice(0, slash), reason);
+      if (stepId !== undefined && slash > 0) childFailures.set(stepId.slice(0, slash), reason);
       indices?.push(index);
       out.push({
         runId,
         flowName,
-        stepId,
+        stepId: stepId ?? null,
         ...(specDigest !== undefined ? { specDigest } : {}),
         attempt: num(failure.attempt) ?? num(detail.attempt) ?? 0,
         reason,
         shape: shapeOf(reason),
         ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
         at: str(event.at) ?? "",
-        recovered: stepId !== null && succeededAfter(events, stepId, index),
+        recovered: stepId !== undefined && succeededAfter(events, stepId, index),
       });
       continue;
     }

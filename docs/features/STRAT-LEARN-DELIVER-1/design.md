@@ -201,7 +201,9 @@ repair path, adding it is a Compose-only follow-up.
   the issuing event's `detail` carries `lessons: revisionIds` and the same suppressions. All omitted
   when empty.
 - **Switch** `[learn] deliver` (env `STRATUM_LEARN_DELIVER`), resolved like INLINE-TS-1 §A7. Default
-  OFF. **OFF:** no reads beyond the config read, no pin. **ON:** selection reads journal, ledger,
+  OFF. **OFF:** no reads beyond the config read (and the canonical-workspace lookup that precedes
+  it, bounded by a 5 s git timeout — same owner-approved amendment as INLINE-TS-1 §A2, 2026-09-26),
+  no pin. **ON:** selection reads journal, ledger,
   sidecar and lifecycle (r1 #11); with no lesson selected, prompts, events and persisted runs are
   still byte-identical.
 - `do` is not part of `contractDigest` (`engine.ts:2978`, a digest of the contract closure) or of the
@@ -212,6 +214,12 @@ repair path, adding it is a Compose-only follow-up.
   event is `checkpoint_reverted`); the pin on state is the record there. The config switch is
   `config/learn.ts::resolveLearnConfig()`; the shared loader's allowlist gains `learn` and ignores it.
   Selection failures and invalid config warn once per process on stderr and deliver nothing.
+  A reset (gate revise) or a skipped/failed consumer item clears the pin with the dispatch token
+  (Step-2 review slice4 L1). **Known gap (slice4 L2, deferred, Low):** `repinRestoredIssuances`
+  changes the state pin, but the restored `ready`/`fanout_item_ready` event keeps the
+  checkpoint-time `detail.lessons`, and D6 outcomes count offers from events — so a revert that
+  drops `R` still counts `R` as offered once. A fix needs a repin event plus a supersession rule in
+  `outcomes.ts`.
 
 ### D5. Lifecycle (the interface INLINE-TS-1 reads)
 
@@ -267,7 +275,9 @@ and for each run and each harvest step id that had lesson `R` offered (issuing e
 - **Held:** the run is **terminal** and, after the first offer, that step id has a **successful result** (a `result` event without
   `detail.failure`, or a successful fan-out attempt for that step) and no failure record in `R`'s
   cluster (same issue fingerprint, `classify.ts:99-101`).
-- **Not holding:** at least one failure record in `R`'s cluster after the first offer.
+- **Not holding:** at least one failure record in `R`'s cluster **on that step id** after the first
+  offer. (Clarified 2026-09-26, Step-2 review slice5 M1: a failure on a step `R` was never offered to,
+  e.g. budget-suppressed, does not count against `R`.)
 - **Unknown:** an offer with no subsequent result for that step, such as a run cancelled before the
   step answered (r2 new-1; `cancelled` is terminal, `engine.ts:3486`), and any failure-free run that is
   not yet terminal (r3: fan-out success events are per item, `engine.ts:2451`, so other items may still
@@ -300,8 +310,11 @@ summary). **A review closes** when the owner writes any lifecycle row that ackno
   toward nothing.
 - *Where reviews appear.* `stratum_audit.learn_inline.reviews` when `deliver` or `inline` is on (reviews
   concern delivery, so delivery alone surfaces them); `stratum learn list --reviews`. The Compose build
-  summary is part of INLINE-TS-1's Compose slice, not built yet. The `ship` offered-not-delivered note
-  is not rendered: stratum cannot tell an intercepted step from a delivered one.
+  summary is part of INLINE-TS-1's Compose slice. The `ship` offered-not-delivered note is rendered
+  in `not-holding` and `retire-candidate` review text when a contributing offer's step id is in
+  `INTERCEPTED_STEPS` (`{"ship"}`, `learn/outcomes.ts`). *Corrected 2026-09-26 (Step-2 review slice5
+  L5): the first slice-5 note waived this without owner sign-off; stratum cannot observe the
+  interception, so the known intercepted step id is named explicitly.*
 - *Cost.* Reviews rescan the workspace's runs in the engine's store on each surface (audit, CLI). No
   cache, per "recomputed on every surface"; revisit if audit latency shows it.
 - *Threshold* `[learn] retireReviewAfter` / `STRATUM_LEARN_RETIRE_REVIEW_AFTER`; an invalid value keeps

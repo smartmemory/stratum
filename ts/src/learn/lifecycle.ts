@@ -100,7 +100,10 @@ function foldLifecycle(rows: LifecycleRow[], clusterId: string): LessonLifecycle
       if (row.fixRef !== undefined) result.fixRef = row.fixRef;
     }
     for (const kind of row.kind === "ack" ? row.ackKinds ?? REVIEW_KINDS : REVIEW_KINDS) {
-      result.watermarks[kind] = row.at;
+      const current = result.watermarks[kind];
+      // A watermark never regresses: out-of-order rows keep the latest `at`
+      // (ISO strings from toISOString() compare chronologically).
+      if (current === undefined || row.at > current) result.watermarks[kind] = row.at;
     }
   }
   return result;

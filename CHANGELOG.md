@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **STRAT-LEARN Step 2 review fixes (Devin SWE-2 reviews).** Harvest drops a subflow's parent echo by
+  position, not by matching reason text, so a genuine parent failure with identical text is kept.
+  `canonicalWorkspace` git lookups time out after 5 s and are retried, not cached (the INLINE §A2 /
+  DELIVER §D4 "off means off" wording is amended to name this lookup). Inline passes log a rejected
+  pass instead of leaving an unhandled rejection. Review text carries the `ship`
+  offered-not-delivered caveat (D6). Lifecycle review watermarks never move backwards. A reset or a
+  skipped/failed consumer item clears its lesson pin. Tests: identical-text subflow echo, git timeout,
+  real coalescing, `ship` caveat, watermark order, pin cleared on revise, `pinFor` fail-closed.
+
 - **Learn CLI:** `stratum learn harvest` and `learn list --reviews` read the same flow store as the engine and MCP server when `--flows` is omitted (`STRATUM_STATE_ROOT`, then the default), instead of always the default store.
 
 - **STRAT-LEARN-DELIVER-1 slice 6 (stratum golden):** `tests/learn/deliver-golden.test.ts` proves the loop end to end on the real engine in a git workspace, under one scripted connector policy: three recovered runs → lesson staged automatically and surfaced as unreviewed → applied through `stratum learn apply` → the next run's prompt carries the exact approved guidance and passes on its first attempt → retired → the first attempt fails again. Ten negative cases (non-matching flow and step, enum and type drift, staged-unapplied, reverted, retired, dismissed, an edited sidecar scope, a note-only lesson) inject nothing. The Compose golden and the live run are still to do.

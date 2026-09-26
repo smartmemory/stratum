@@ -150,6 +150,8 @@ export function matchLessons(lessons: readonly ActiveLesson[], target: DispatchT
 export interface PinOptions extends DispatchTarget {
   workspaceRoot: string | undefined;
   env?: NodeJS.ProcessEnv;
+  /** Test seam: replaces the committed-snapshot selector. Production never sets it. */
+  select?: typeof activeLessons;
 }
 
 const warned = new Set<string>();
@@ -170,7 +172,7 @@ export async function pinFor(options: PinOptions): Promise<DeliveryPin | undefin
     const config = resolveLearnConfig({ projectRoot: root, ...(options.env !== undefined ? { env: options.env } : {}) });
     for (const diagnostic of config.diagnostics) warnOnce(diagnostic);
     if (!config.deliver) return undefined;
-    const { lessons } = await activeLessons(root);
+    const { lessons } = await (options.select ?? activeLessons)(root);
     const inWorkspace: ActiveLesson[] = [];
     for (const lesson of lessons) {
       if (await canonicalWorkspace(lesson.candidate.scope.workspaceRoot) === root) inWorkspace.push(lesson);

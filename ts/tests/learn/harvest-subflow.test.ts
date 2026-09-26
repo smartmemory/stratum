@@ -55,4 +55,31 @@ describe("harvest engine-produced subflow failures", () => {
     const { records } = await harvest(root);
     expect(records.map((record) => record.stepId)).toEqual(["wrap"]);
   });
+
+  it("keeps a later parent failure byte-identical to the child's when it is not the settling echo", async () => {
+    const { root, engine: e } = await engine();
+    // `work` fails `Result` and routes to `fallback`, which returns `done` — legal under
+    // the subflow's own wider `Wide` output contract, but the parent flow output is
+    // `Result`, so `wrap` fails with text identical to `work`'s failure. That is a
+    // genuine parent failure (the completed subflow's output broke the parent
+    // contract), not the echo of `wrap/work`, and it must be recorded.
+    const planned = await e.plan({
+      version: 1,
+      contracts: { Result: { outcome: "complete|failed" }, Wide: { outcome: "complete|failed|done" } },
+      flows: {
+        entry: "main",
+        main: { input: {}, output: { from: "${wrap.output}", contract: "Result" }, steps: [{ id: "wrap", run: "child", with: {} }] },
+        child: { input: {}, output: { from: "${fallback.output}", contract: "Wide" }, steps: [
+          { id: "work", do: "work", out: "Result", attempts: 1, on_fail: "fallback" },
+          { id: "fallback", do: "fallback", out: "Wide", attempts: 1 },
+        ] },
+      },
+    }, {});
+    await e.stepDone(planned.runId, "wrap/work", { output: { outcome: "done" } });
+    await e.stepDone(planned.runId, "wrap/fallback", { output: { outcome: "done" } });
+    expect((await e.audit(planned.runId)).status).toBe("failed");
+    const { records } = await harvest(root);
+    expect(records.map((record) => record.stepId)).toEqual(["wrap/work", "wrap"]);
+    expect(records[0]!.reason).toBe(records[1]!.reason);
+  });
 });

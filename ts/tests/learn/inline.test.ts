@@ -7,7 +7,7 @@ import { StratumEngine } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
 import { readCandidates } from "../../src/learn/candidate.js";
-import { inlineLogPath, type InlinePassRow } from "../../src/learn/inline.js";
+import { inlineLogPath, LearnInline, type InlinePassRow } from "../../src/learn/inline.js";
 import { appendLifecycle } from "../../src/learn/lifecycle.js";
 import { canonicalWorkspace } from "../../src/learn/workspace.js";
 import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
@@ -206,14 +206,37 @@ describe("INLINE-TS-1 terminal trigger", () => {
   });
 
   it("coalesces concurrent triggers from two workspaces and stages both", async () => {
-    const h = await harness({ inline: true });
+    const h = await harness();
     const other = join(h.dir, "other");
     await mkdir(other);
+    await enable(h.ws);
     await enable(other);
-    await Promise.all([0, 1, 2].flatMap(() => [failRun(h), failRun(h, other)]));
-    const log = await rows(h);
-    expect(new Set(log.flatMap((row) => row.triggeredBy)).size).toBe(6);
-    expect(log.length).toBeLessThanOrEqual(6);
+    // Six runs' worth of real failure evidence in the store, three per workspace.
+    const reason = JSON.stringify([{ code: "invalid_enum_value", path: ["outcome"], options: ["complete", "failed"], message: "Invalid enum value" }]);
+    const runIds: string[] = [];
+    for (const [i, workspaceRoot] of [h.ws, h.ws, h.ws, other, other, other].entries()) {
+      const id = `run-${i}`;
+      runIds.push(id);
+      await writeFile(join(h.store, `${id}.json`), JSON.stringify({
+        id, flowName: "main", workspaceRoot, status: "failed",
+        events: [{ at: "2026-09-26T00:00:00.000Z", type: "result", stepId: "plan", detail: { attempt: 1, failure: { attempt: 1, reason } } }],
+      }));
+    }
+    // Hold the first pass open until all six triggers are queued: the pass then drains
+    // every one at once instead of running once per trigger.
+    let holding = true;
+    const inline = new LearnInline(h.store, { STRATUM_CONFIG_FILE: join(h.dir, "no-user-config.toml") }, async (queued) => {
+      if (!holding) return;
+      const deadline = Date.now() + 2_000;
+      while (queued.length < runIds.length && Date.now() < deadline) await new Promise((resolve) => setImmediate(resolve));
+      holding = false;
+    });
+    for (const [i, id] of runIds.entries()) inline.trigger({ id, workspaceRoot: i < 3 ? h.ws : other });
+    await inline.idle();
+    const log = (await readFile(inlineLogPath(h.store), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as InlinePassRow);
+    expect(log.length).toBeLessThan(6);
+    expect(Math.max(...log.map((row) => row.triggeredBy.length))).toBeGreaterThan(1);
+    expect(new Set(log.flatMap((row) => row.triggeredBy))).toEqual(new Set(runIds));
     expect((await sidecar(h.ws)).length).toBeGreaterThan(0);
     expect((await sidecar(other)).length).toBeGreaterThan(0);
   });

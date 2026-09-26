@@ -141,6 +141,35 @@ describe("lessonOutcomes (D6)", () => {
   });
 });
 
+// A step `ship` (the one Compose intercepts) under a wider `Wide` contract on a
+// different field (`verdict`, not `outcome`), so the ship lesson and the plan lesson
+// never hold on each other's steps and their notes carry different subjects —
+// subset-marginal-gain refuses a second note about `main/outcome`.
+const SHIP = {
+  version: 1, contracts: { Wide: { verdict: "complete|failed|done" } },
+  flows: { entry: "main", main: { input: {}, output: { from: "${ship.output}", contract: "Wide" },
+    steps: [{ id: "ship", do: "ship it", out: "Wide", attempts: 2 }] } },
+};
+
+async function shipLesson(s: Setup): Promise<PatchCandidate> {
+  const evidence = await s.engine.plan(SHIP, {}, { workspaceRoot: s.ws });
+  await s.engine.stepDone(evidence.runId, "ship", { output: { verdict: "bad" } });
+  const { records } = await harvest(s.store);
+  const cluster = classify(records, { minRuns: 1, minPairs: 1 })
+    .find((c) => c.class === "durable" && c.applyEligible && c.scope.stepIds.includes("ship"))!;
+  const lesson = authorCandidate(cluster);
+  await appendCandidates(s.ws, [lesson]);
+  await applyCandidate(lesson, { enabled: true });
+  return lesson;
+}
+
+const shipOffered = async (s: Setup, ship: PatchCandidate) => {
+  const planned = await s.engine.plan(SHIP, {}, { workspaceRoot: s.ws });
+  if (planned.status !== "ready") throw new Error(`expected ready, got ${planned.status}`);
+  expect(planned.ready[0]!.do).toContain(ship.rendered.guidance!);
+  return planned;
+};
+
 describe("lessonReviews (D6)", () => {
   const kinds = async (s: Setup, retireReviewAfter = 3) =>
     (await lessonReviews(s.store, s.ws, { retireReviewAfter })).map((r) => r.kind).sort();
@@ -214,5 +243,47 @@ describe("lessonReviews (D6)", () => {
     const s = await setup();
     await heldRun(s);
     expect(await kinds(s, 1)).toEqual(["retire-candidate"]);
+  });
+
+  it("caveats a not-holding review whose contributing offers went to the intercepted step", async () => {
+    const s = await setup();
+    const ship = await shipLesson(s);
+    const planned = await s.engine.plan({
+      version: 1,
+      contracts: { Result: { outcome: "complete|failed" }, Wide: { verdict: "complete|failed|done" } },
+      flows: { entry: "main", main: { input: {}, output: { from: "${plan.output}", contract: "Result" }, max_rounds: 1,
+        steps: [
+          { id: "plan", do: "plan it", out: "Result", attempts: 2 },
+          { id: "ship", do: "ship it", out: "Wide", attempts: 2 },
+        ] } },
+    }, {}, { workspaceRoot: s.ws });
+    if (planned.status !== "ready") throw new Error(`expected ready, got ${planned.status}`);
+    expect(planned.ready.find((r) => r.id === "ship")!.do).toContain(ship.rendered.guidance!);
+    await s.engine.stepDone(planned.runId, "plan", { output: { outcome: "done" } });
+    await s.engine.stepDone(planned.runId, "ship", { output: { verdict: "bad" } });
+    const reviews = await lessonReviews(s.store, s.ws, { retireReviewAfter: 3 });
+    const shipReview = reviews.find((r) => r.clusterId === ship.clusterId);
+    const planReview = reviews.find((r) => r.clusterId === s.lesson.clusterId);
+    expect(shipReview?.kind).toBe("not-holding");
+    expect(shipReview?.detail).toContain(`(offered to step "ship", which Compose runs in-process: offered, not delivered)`);
+    expect(planReview?.kind).toBe("not-holding");
+    expect(planReview?.detail).not.toContain("offered, not delivered");
+  });
+
+  it("caveats a retire-candidate review whose contributing offers went to the intercepted step", async () => {
+    const s = await setup();
+    const ship = await shipLesson(s);
+    for (let i = 0; i < 3; i += 1) {
+      const p = await shipOffered(s, ship);
+      await s.engine.stepDone(p.runId, "ship", { output: { verdict: "done" } });
+      await heldRun(s);
+    }
+    const reviews = await lessonReviews(s.store, s.ws, { retireReviewAfter: 3 });
+    const shipReview = reviews.find((r) => r.clusterId === ship.clusterId);
+    const planReview = reviews.find((r) => r.clusterId === s.lesson.clusterId);
+    expect(shipReview?.kind).toBe("retire-candidate");
+    expect(shipReview?.detail).toContain(`(offered to step "ship", which Compose runs in-process: offered, not delivered)`);
+    expect(planReview?.kind).toBe("retire-candidate");
+    expect(planReview?.detail).not.toContain("offered, not delivered");
   });
 });

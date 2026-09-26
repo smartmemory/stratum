@@ -118,14 +118,16 @@ async function writeRow(storeRoot: string, row: InlinePassRow): Promise<void> {
 export class LearnInline {
   readonly #storeRoot: string;
   readonly #env: NodeJS.ProcessEnv | undefined;
+  readonly #beforePass: ((queuedRunIds: readonly string[]) => Promise<void>) | undefined;
   readonly #checks = new Set<Promise<void>>();
   #running: Promise<void> | undefined;
   #dirty = false;
   #triggeredBy: string[] = [];
 
-  constructor(storeRoot: string, env?: NodeJS.ProcessEnv) {
+  constructor(storeRoot: string, env?: NodeJS.ProcessEnv, beforePass?: (queuedRunIds: readonly string[]) => Promise<void>) {
     this.#storeRoot = storeRoot;
     this.#env = env;
+    this.#beforePass = beforePass;
   }
 
   trigger(run: { id: string; workspaceRoot?: string }): void {
@@ -157,16 +159,21 @@ export class LearnInline {
 
   #schedule(): void {
     if (this.#running !== undefined) { this.#dirty = true; return; }
-    this.#running = this.#loop().finally(() => {
-      this.#running = undefined;
-      // A trigger that landed after the loop's last dirty check but before this settled.
-      if (this.#dirty) this.#schedule();
-    });
+    this.#running = this.#loop()
+      .catch((error: unknown) => { console.warn(`learn inline: pass failed: ${message(error)}`); })
+      .finally(() => {
+        this.#running = undefined;
+        // A trigger that landed after the loop's last dirty check but before this settled.
+        if (this.#dirty) this.#schedule();
+      });
   }
 
   async #loop(): Promise<void> {
     do {
       this.#dirty = false;
+      // Test seam: lets a test hold the pass open until every trigger is queued.
+      // The array is live — a trigger landing while it is held is still coalesced.
+      await this.#beforePass?.(this.#triggeredBy);
       await runInlinePass(this.#storeRoot, this.#triggeredBy.splice(0), this.#env);
     } while (this.#dirty);
   }
