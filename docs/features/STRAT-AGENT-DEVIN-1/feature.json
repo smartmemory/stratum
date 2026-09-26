@@ -1,0 +1,9 @@
+{
+  "code": "STRAT-AGENT-DEVIN-1",
+  "description": "Devin CLI as a third agent, a full peer of claude and codex: stratum_agent_run (foreground + background), step/stage agent in specs, evaluator route; read-only/workspace-write/full-access mapped onto devin permission modes and --sandbox, rejected tool calls surfaced as failures",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-26",
+  "updated": "2026-09-26",
+  "complexity": "M"
+}
