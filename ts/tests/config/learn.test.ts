@@ -26,8 +26,18 @@ const DEFAULT = { layer: "default", source: "built-in defaults" };
 describe("[learn] switches", () => {
   it("default OFF with default provenance", () => {
     expect(resolveLearnConfig({ projectRoot: project, env: env() })).toEqual({
-      deliver: false, inline: false, provenance: { deliver: DEFAULT, inline: DEFAULT }, diagnostics: [],
+      deliver: false, inline: false, retireReviewAfter: 3, provenance: { deliver: DEFAULT, inline: DEFAULT }, diagnostics: [],
     });
+  });
+
+  it("retireReviewAfter: project then env override; an invalid value keeps the default without disabling switches", async () => {
+    await writeFile(join(project, "stratum.toml"), "[learn]\ninline = true\nretireReviewAfter = 5\n");
+    expect(resolveLearnConfig({ projectRoot: project, env: env() })).toMatchObject({ inline: true, retireReviewAfter: 5 });
+    expect(resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_RETIRE_REVIEW_AFTER: "2" }) }).retireReviewAfter).toBe(2);
+    await writeFile(join(project, "stratum.toml"), "[learn]\ninline = true\nretireReviewAfter = 0\n");
+    const bad = resolveLearnConfig({ projectRoot: project, env: env({ STRATUM_LEARN_RETIRE_REVIEW_AFTER: "x" }) });
+    expect(bad).toMatchObject({ inline: true, retireReviewAfter: 3 });
+    expect(bad.diagnostics.join("\n")).toMatch(/retireReviewAfter[\s\S]*STRATUM_LEARN_RETIRE_REVIEW_AFTER/);
   });
 
   it("resolves user < project < env per switch and reports each winning layer", async () => {

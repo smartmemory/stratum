@@ -89,7 +89,19 @@ export async function harvest(flowsDir: string): Promise<HarvestResult> {
 }
 
 /** Returns the number of failure-shaped events that were malformed and dropped. */
-function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
+/**
+ * One run's failure records, each paired with the index of the event it came from
+ * (DELIVER-1 D6: "after an offer" means a higher event index, not a later timestamp).
+ * The records are exactly what `harvest()` yields for this run.
+ */
+export function failureRecordsOf(run: Record<string, unknown>): { records: FailureRecord[]; eventIndices: number[] } {
+  const records: FailureRecord[] = [];
+  const eventIndices: number[] = [];
+  collect(run, records, eventIndices);
+  return { records, eventIndices };
+}
+
+function collect(run: Record<string, unknown>, out: FailureRecord[], indices?: number[]): number {
   const runId = str(run.id);
   if (runId === undefined) throw new Error("run has no id");
   const flowName = str(run.flowName) ?? "";
@@ -123,6 +135,7 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
         continue;
       }
       fanoutFailures.add(stepId);
+      indices?.push(index);
       out.push({
         runId, flowName, stepId, itemIndex, stage, attempt, reason,
         ...(specDigest !== undefined ? { specDigest } : {}),
@@ -153,6 +166,7 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
       const stepId = str(event.stepId) ?? null;
       const slash = stepId?.lastIndexOf("/") ?? -1;
       if (stepId !== null && slash > 0) childFailures.set(stepId.slice(0, slash), reason);
+      indices?.push(index);
       out.push({
         runId,
         flowName,
@@ -171,6 +185,7 @@ function collect(run: Record<string, unknown>, out: FailureRecord[]): number {
     if (type === "budget_exhausted") {
       const reason = str(detail.reason);
       if (reason === undefined) { dropped += 1; continue; }
+      indices?.push(index);
       out.push({
         runId,
         flowName,

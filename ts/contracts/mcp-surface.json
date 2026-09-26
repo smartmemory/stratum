@@ -666,7 +666,7 @@
           "flowSpent": "object",
           "output?": "any",
           "carry?": "object",
-          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
+          "learn_inline?": { "unreviewed?": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } }, "reviews?": { "$array": { "kind": "string", "clusterId": "string", "revisionId?": "string", "runs": { "$array": "string" }, "detail": "string" } } }
         },
         "completed": {
           "runId": "string",
@@ -675,7 +675,7 @@
           "flowSpent": "object",
           "output?": "any",
           "carry?": "object",
-          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
+          "learn_inline?": { "unreviewed?": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } }, "reviews?": { "$array": { "kind": "string", "clusterId": "string", "revisionId?": "string", "runs": { "$array": "string" }, "detail": "string" } } }
         },
         "failed": {
           "runId": "string",
@@ -684,7 +684,7 @@
           "flowSpent": "object",
           "output?": "any",
           "carry?": "object",
-          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
+          "learn_inline?": { "unreviewed?": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } }, "reviews?": { "$array": { "kind": "string", "clusterId": "string", "revisionId?": "string", "runs": { "$array": "string" }, "detail": "string" } } }
         },
         "budget_exhausted": {
           "runId": "string",
@@ -693,7 +693,7 @@
           "flowSpent": "object",
           "output?": "any",
           "carry?": "object",
-          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
+          "learn_inline?": { "unreviewed?": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } }, "reviews?": { "$array": { "kind": "string", "clusterId": "string", "revisionId?": "string", "runs": { "$array": "string" }, "detail": "string" } } }
         },
         "cancelled": {
           "runId": "string",
@@ -702,7 +702,7 @@
           "flowSpent": "object",
           "output?": "any",
           "carry?": "object",
-          "learn_inline?": { "unreviewed": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } } }
+          "learn_inline?": { "unreviewed?": { "$array": { "clusterId": "string", "revisionId": "string", "claim": "string", "guidance?": "string" } }, "reviews?": { "$array": { "kind": "string", "clusterId": "string", "revisionId?": "string", "runs": { "$array": "string" }, "detail": "string" } } }
         }
       }
     },

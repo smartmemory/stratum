@@ -13,6 +13,10 @@ export const LEARN_ENV = Object.freeze({
 });
 export type LearnKey = keyof typeof LEARN_ENV;
 const LEARN_KEYS = Object.keys(LEARN_ENV) as LearnKey[];
+/** DELIVER-1 D6: held runs before a `retire-candidate` review is raised. */
+export const RETIRE_REVIEW_AFTER_ENV = "STRATUM_LEARN_RETIRE_REVIEW_AFTER";
+export const DEFAULT_RETIRE_REVIEW_AFTER = 3;
+const ALL_KEYS: readonly string[] = [...LEARN_KEYS, "retireReviewAfter"];
 
 export interface LearnConfigOptions {
   /** The project layer: the canonical workspace of the run being served. Omitted → no project layer. */
@@ -23,6 +27,8 @@ export interface LearnConfigOptions {
 export interface ResolvedLearnConfig {
   readonly deliver: boolean;
   readonly inline: boolean;
+  /** Positive integer; an invalid value keeps the default (a threshold, not a switch). */
+  readonly retireReviewAfter: number;
   /** The winning layer per switch (reported by `stratum learn list` and diagnostics). */
   readonly provenance: Readonly<Record<LearnKey, ConfigProvenance>>;
   /** Invalid values and unreadable files. Never thrown: an invalid switch resolves OFF. */
@@ -44,6 +50,11 @@ export function resolveLearnConfig(options: LearnConfigOptions = {}): ResolvedLe
   const values: Record<LearnKey, boolean> = { deliver: false, inline: false };
   const provenance: Record<LearnKey, ConfigProvenance> = { deliver: DEFAULT, inline: DEFAULT };
   const invalid = new Set<LearnKey>();
+  let retireReviewAfter = DEFAULT_RETIRE_REVIEW_AFTER;
+  const threshold = (value: unknown, source: string): void => {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) retireReviewAfter = value;
+    else diagnostics.push(`${source}: learn.retireReviewAfter must be a positive integer`);
+  };
 
   const layers: Array<{ path: string; layer: "user" | "project" }> = [
     { path: env.STRATUM_CONFIG_FILE || join(homedir(), ".stratum", "config.toml"), layer: "user" },
@@ -54,6 +65,7 @@ export function resolveLearnConfig(options: LearnConfigOptions = {}): ResolvedLe
   for (const { path, layer } of layers) {
     const table = fileTable(path, diagnostics);
     if (table === "invalid") { for (const key of LEARN_KEYS) invalid.add(key); continue; }
+    if (table?.retireReviewAfter !== undefined) threshold(table.retireReviewAfter, path);
     for (const key of LEARN_KEYS) {
       const value = table?.[key];
       if (value === undefined) continue;
@@ -81,9 +93,15 @@ export function resolveLearnConfig(options: LearnConfigOptions = {}): ResolvedLe
     provenance[key] = Object.freeze({ layer: "env", source: name });
   }
 
+  const rawThreshold = env[RETIRE_REVIEW_AFTER_ENV];
+  if (rawThreshold !== undefined && rawThreshold.trim() !== "") {
+    threshold(/^\d+$/.test(rawThreshold.trim()) ? Number(rawThreshold.trim()) : Number.NaN, RETIRE_REVIEW_AFTER_ENV);
+  }
+
   return Object.freeze({
     deliver: !invalid.has("deliver") && values.deliver,
     inline: !invalid.has("inline") && values.inline,
+    retireReviewAfter,
     provenance: Object.freeze(provenance),
     diagnostics: Object.freeze(diagnostics),
   });
@@ -106,7 +124,7 @@ function fileTable(path: string, diagnostics: string[]): Record<string, unknown>
     return "invalid";
   }
   const table = learn as Record<string, unknown>;
-  const unknown = Object.keys(table).filter((key) => !(LEARN_KEYS as string[]).includes(key));
+  const unknown = Object.keys(table).filter((key) => !ALL_KEYS.includes(key));
   if (unknown.length > 0) {
     diagnostics.push(`${path}: unknown config key(s) ${unknown.map((key) => JSON.stringify(`learn.${key}`)).join(", ")}`);
     return "invalid";

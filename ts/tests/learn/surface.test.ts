@@ -122,6 +122,31 @@ describe("stratum learn list --unreviewed", () => {
   });
 });
 
+describe("stratum learn list --reviews", () => {
+  it("--if-enabled is silent with both switches off; --json lists open reviews over --flows", async () => {
+    const s = await setup();
+    const lesson = await stagedLesson(s);
+    await applyCandidate(lesson, { enabled: true });
+    vi.stubEnv("STRATUM_LEARN_DELIVER", "1");
+    const planned = await s.call("stratum_plan", { spec: SPEC, input: {}, workspaceRoot: s.ws });
+    const token = (planned.ready as Array<{ dispatchToken: string }>)[0]!.dispatchToken;
+    await s.call("stratum_step_done", { runId: planned.runId, stepId: "plan", dispatchToken: token, result: { output: { outcome: "complete" } } });
+    const writes: string[] = [];
+    const capture = async (args: string[]) => {
+      writes.length = 0;
+      const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => { writes.push(String(chunk)); return true; });
+      try { expect(await learnCommand(args)).toBe(0); } finally { spy.mockRestore(); }
+      return writes.join("");
+    };
+    const args = ["list", "--reviews", "--json", "--flows", s.store, "--root", s.ws];
+    expect(JSON.parse(await capture(args))).toEqual([]);
+    vi.stubEnv("STRATUM_LEARN_RETIRE_REVIEW_AFTER", "1");
+    expect(JSON.parse(await capture(args))).toEqual([expect.objectContaining({ kind: "retire-candidate", clusterId: lesson.clusterId })]);
+    vi.stubEnv("STRATUM_LEARN_DELIVER", "");
+    expect(await capture([...args, "--if-enabled"])).toBe("");
+  });
+});
+
 describe("MCP surface carries the new fields through the strict contracts", () => {
   it("stratum_audit includes learn_inline when on and unreviewed lessons exist; absent when off", async () => {
     const s = await setup();
@@ -133,6 +158,23 @@ describe("MCP surface carries the new fields through the strict contracts", () =
     expect(audit.learn_inline).toEqual({ unreviewed: [
       { clusterId: lesson.clusterId, revisionId: lesson.revisionId, claim: lesson.claim, guidance: lesson.rendered.guidance },
     ] });
+  });
+
+  it("stratum_audit carries D6 reviews under learn_inline.reviews when delivery is on", async () => {
+    const s = await setup();
+    const lesson = await stagedLesson(s);
+    await applyCandidate(lesson, { enabled: true });
+    vi.stubEnv("STRATUM_LEARN_DELIVER", "1");
+    vi.stubEnv("STRATUM_LEARN_RETIRE_REVIEW_AFTER", "1");
+    const planned = await s.call("stratum_plan", { spec: SPEC, input: {}, workspaceRoot: s.ws });
+    const token = (planned.ready as Array<{ dispatchToken: string }>)[0]!.dispatchToken;
+    await s.call("stratum_step_done", { runId: planned.runId, stepId: "plan", dispatchToken: token, result: { output: { outcome: "complete" } } });
+    const audit = await s.call("stratum_audit", { runId: planned.runId });
+    expect(audit.learn_inline).toEqual({ reviews: [
+      expect.objectContaining({ kind: "retire-candidate", clusterId: lesson.clusterId, revisionId: lesson.revisionId, runs: [planned.runId] }),
+    ] });
+    vi.stubEnv("STRATUM_LEARN_DELIVER", "");
+    expect(await s.call("stratum_audit", { runId: planned.runId })).not.toHaveProperty("learn_inline");
   });
 
   it("with delivery ON, the lesson-bearing ready event passes audit and flow_poll event contracts", async () => {
