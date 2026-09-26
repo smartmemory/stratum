@@ -41,7 +41,7 @@ further design review round; implementation review is Codex's (§Owner decisions
 - `docs/features/STRAT-AGENT-RUN-MODEL-VALIDATE/design.md` — boundary model validation this extends
 - `docs/features/STRAT-AGENT-BG/design.md`, `STRAT-AGENT-BG-WRITE-1` — background runs + sandbox modes
 - `docs/features/STRAT-AGENT-PEER-1/design.md` — peer naming / registry
-- `plan.md` (to be written after the design gate)
+- `docs/features/STRAT-AGENT-DEVIN-1/plan.md` — implementation plan (S1 split into S1a + S1b)
 
 ## Why
 
