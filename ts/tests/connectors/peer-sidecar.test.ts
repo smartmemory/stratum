@@ -928,3 +928,48 @@ it("AC15 Claude worker retains advisory user refusal and callback mode/auth", as
   expect(req.frames).toEqual([{type:"auth",token:"a".repeat(32)},
     {type:"control",action:"peer_message_status",orig_msg_id:"worker-user",status:"expired",status_detail:"refused",from:`uds:${registered.sock}`,from_mode:"plan"}]);
 });
+
+
+it.each(["registering", "running"])("exits when socket and sessions directories vanish while %s with a dead child", async phase => {
+  const config = await fixture(); delete config.childProcStartTime;
+  config.childPid = 2147483647; config.lingerMs = 500;
+  // Interrupt registration after binding and recording ownership, before the
+  // first atomic registry write. Exercise the real sidecar and real filesystem.
+  const setup = phase === "registering" ? `
+    import fs from 'node:fs/promises';
+    import {syncBuiltinESMExports} from 'node:module';
+    const originalOpen = fs.open;
+    let removed = false;
+    fs.open = async (path,...args) => {
+      if (!removed && String(path).startsWith(${JSON.stringify(config.sessionsDir)} + '/')) {
+        removed = true;
+        await fs.rm(${JSON.stringify(config.sockDir)}, {recursive:true,force:true});
+        await fs.rm(${JSON.stringify(config.sessionsDir)}, {recursive:true,force:true});
+      }
+      return originalOpen(path,...args);
+    };
+    syncBuiltinESMExports();
+  ` : "";
+  await launch(config, `
+    import {Server} from 'node:net';
+    const originalClose = Server.prototype.close;
+    Server.prototype.close = function(...args) {
+      writeFileSync(${JSON.stringify(join(config.runDir,"listener-closed"))}, "closed");
+      return originalClose.apply(this,args);
+    };
+    ${setup}
+  `);
+  if (phase === "running") {
+    await peer(config);
+    await rm(config.sockDir, {recursive:true,force:true});
+    await rm(config.sessionsDir, {recursive:true,force:true});
+  }
+  await waitFor(() => readFile(join(config.runDir,"test-exit"), "utf8"),
+    value => value === (phase === "registering" ? "2" : "0"), 4000);
+  expect(await readFile(join(config.runDir,"listener-closed"), "utf8")).toBe("closed");
+  const pid = Number(await readFile(join(config.runDir,"test-pid"), "utf8"));
+  await waitFor(async () => {
+    try { process.kill(pid, 0); return false; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+  }, Boolean, 1000);
+});

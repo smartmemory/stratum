@@ -407,9 +407,12 @@ async function main(): Promise<void> {
   async function closeOwnedSocket(): Promise<void> {
     if (!owned.has(sockPath)) return;
     try {
-      const info = await lstat(sockPath);
-      if (!info.isSocket() || !boundSocket || info.dev !== boundSocket.dev || info.ino !== boundSocket.ino
-        || !server.listening || serverFailed) throw new Error("socket listener identity mismatch");
+      const info = await lstat(sockPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (info && (!info.isSocket() || !boundSocket || info.dev !== boundSocket.dev || info.ino !== boundSocket.ino
+        || !server.listening || serverFailed)) throw new Error("socket listener identity mismatch");
       // Node unlinks the Unix socket itself when closing. Never close a replaced path.
       await new Promise<void>(resolve => {
         server.close(error => {
@@ -574,5 +577,5 @@ async function main(): Promise<void> {
   catch (error) { await cleanup(); throw error; }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(error => { console.error(error); process.exitCode = 2; });
+  main().catch(error => { console.error(error); process.exit(2); });
 }

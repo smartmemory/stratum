@@ -1,14 +1,42 @@
+import * as fsPromises from "node:fs/promises";
+import * as childProcess from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cancelBackgroundRun, pollBackgroundRun, startBackgroundRun, type StartBackgroundRunOptions } from "../../src/connectors/background.js";
 import { devinRunLayout } from "../../src/connectors/devin-wrapper.js";
 import { DEVIN_SCRUB_VARS } from "../../src/connectors/devin-model.js";
 import * as identity from "../../src/connectors/proc_identity.js";
 
+vi.mock("node:child_process", async importOriginal => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+}));
+
+vi.mock("node:fs/promises", async importOriginal => ({
+  ...await importOriginal<typeof import("node:fs/promises")>(),
+}));
+
 const roots: string[] = [];
+const sidecars: childProcess.ChildProcess[] = [];
+beforeEach(() => {
+  const spawn = childProcess.spawn;
+  vi.spyOn(childProcess, "spawn").mockImplementation((...args: Parameters<typeof spawn>) => {
+    const child = spawn(...args);
+    if (Array.isArray(args[1]) && args[1].some(arg => /[/\\]peer-sidecar\.(ts|js)$/.test(arg))) sidecars.push(child);
+    return child;
+  });
+});
+async function stopSidecars() {
+  for (const child of sidecars.splice(0)) {
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) continue;
+    child.kill("SIGTERM");
+    const exited = () => child.exitCode !== null || child.signalCode !== null;
+    try { await until(exited, Boolean, 7000); }
+    catch { child.kill("SIGKILL"); await until(exited, Boolean); }
+  }
+}
 const runs: { runId: string; registryRoot: string; pid: number }[] = [];
 const delay = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, ms = 6000): Promise<T> {
@@ -31,13 +59,8 @@ afterEach(async () => {
   for (const run of runs.splice(0)) {
     await cancelBackgroundRun(run.runId, run);
     await until(() => groupGone(run.pid), Boolean);
-    const peerPath = join(run.registryRoot, run.runId, "peer.json");
-    if (existsSync(peerPath)) {
-      const peer = json(peerPath);
-      try { process.kill(peer.pid, "SIGTERM"); } catch { /* already gone */ }
-      await until(() => !existsSync(join(run.registryRoot, "..", peer.sock)), Boolean);
-    }
   }
+  await stopSidecars();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -81,6 +104,71 @@ ${body}`);
 }
 
 describe("devin background — real shell and isolated stub binaries", () => {
+  it("invalid dispatch grace fails before preparation or spawning", async () => {
+    const f = fixture(); f.env.STRATUM_CANCEL_GRACE_MS = "invalid";
+    await expect(f.start()).rejects.toThrow("STRATUM_CANCEL_GRACE_MS must be a nonnegative number");
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+    expect(existsSync(f.registryRoot)).toBe(false);
+    expect(existsSync(f.env.CAPTURE_ENV!)).toBe(false);
+  });
+
+  it("spawn error removes the prepared run directory", async () => {
+    const f = fixture();
+    await expect(f.start({ cwd: join(f.root, "missing") })).rejects.toThrow(/ENOENT/);
+    expect(readdirSync(f.registryRoot)).toEqual([]);
+    expect(existsSync(f.env.CAPTURE_ENV!)).toBe(false);
+  });
+
+  it.each(["stdout.log", ".err"])("log open failure (%s) removes the prepared directory without spawning", async name => {
+    const f = fixture(); const open = fsPromises.open;
+    vi.spyOn(fsPromises, "open").mockImplementation(async (path, ...args) => {
+      if (String(path).endsWith(`/${name}`)) throw new Error("test log open failure");
+      return open(path, ...args);
+    });
+    await expect(f.start()).rejects.toThrow("test log open failure");
+    expect(readdirSync(f.registryRoot)).toEqual([]);
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+
+  it("post-spawn fd close failure tears down the group before rejecting", async () => {
+    const f = fixture(); const open = fsPromises.open; let pid = 0;
+    vi.spyOn(fsPromises, "open").mockImplementation(async (path, ...args) => {
+      const handle = await open(path, ...args);
+      if (String(path).endsWith("/.err")) {
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          await close();
+          await until(() => existsSync(f.env.CAPTURE_ENV!), Boolean);
+          pid = vi.mocked(childProcess.spawn).mock.results[0]!.value.pid;
+          throw new Error("test fd close failure");
+        };
+      }
+      return handle;
+    });
+    await expect(f.start()).rejects.toThrow("test fd close failure");
+    expect(pid).toBeGreaterThan(0);
+    expect(groupGone(pid)).toBe(true);
+  });
+
+  it("reaps a sidecar before publication before deleting fixture directories", async () => {
+    const f = fixture(); f.env.STRATUM_PEER_REGISTER = "1";
+    const preload = join(f.root, "delayed-peer.mjs");
+    const ready = join(f.root, "sidecar-started");
+    writeFileSync(preload, `import {writeFileSync} from 'node:fs';
+      writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+      await new Promise(resolve => setTimeout(resolve, 10000));`);
+    vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`);
+    const run = await f.start({ sockDir: "s" });
+    await until(() => existsSync(ready), Boolean);
+    expect(existsSync(join(run.layout.runDir, "peer.json"))).toBe(false);
+    expect(sidecars).toHaveLength(1);
+    const child = sidecars[0]!;
+    expect(child.pid).toBe(Number(readFileSync(ready, "utf8")));
+    await stopSidecars();
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    expect(existsSync(f.root)).toBe(true);
+  });
+
   it("running narration, isolated env/argv, audit, export completion and terminal cancel", async () => {
     const f = fixture(); const run = await f.start();
     expect(await run.poll()).toMatchObject({ status: "running", eventsSeen: 0, textTail: expect.stringContaining("narration"),

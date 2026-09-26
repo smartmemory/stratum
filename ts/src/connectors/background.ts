@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { usdFromTokens } from "../judge/pricing.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants, createReadStream, existsSync } from "node:fs";
-import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,7 @@ import { createWorkerPeerLifecycle } from "./peer-worker-lifecycle.js";
 import { launchCodexAppServerDriver } from "./codex-appserver-launch.js";
 import { spawnPeerSidecar } from "./peer-sidecar.js";
 
-import { processTermination } from "./cancellation.js";
+import { cancellationGraceMs, processTermination } from "./cancellation.js";
 
 // ── Claude background worker registry ────────────────────────────────────────
 // Keyed by runId. Entry absent means "not running" (terminal). Deletion is the
@@ -354,51 +354,55 @@ async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Prom
     filesystemMode: sandboxMode, networkAccess: true,
     writableRoots: options.writableRoots ?? [], approvalPolicy: "never",
   }, options);
+  const graceMs = cancellationGraceMs(options.env ?? process.env);
   const { runId, layout, argv, env, framedPromptChars } = await prepareDevinRun({
     root: options.registryRoot ?? agentRunsRoot(), prompt: options.prompt, cwd: options.cwd,
     model, sandboxMode, writableRoots: options.writableRoots ?? [],
     ...(options.env === undefined ? {} : { env: options.env }),
   });
-  const stdout = await open(layout.stdoutPath, "w", 0o600);
-  let child: ChildProcess;
-  let termination: ReturnType<typeof processTermination>;
-  let spawned: Promise<void>;
+  let child: ChildProcess | undefined;
+  let termination: ReturnType<typeof processTermination> | undefined;
+  let pid: number;
+  let startTime: string;
   const createdAt = new Date().toISOString();
   try {
-    const stderr = await open(layout.stderrPath, "w", 0o600);
+    const stdout = await open(layout.stdoutPath, "w", 0o600);
+    let spawned: Promise<void>;
     try {
-      child = spawn(layout.wrapperPath, argv, { cwd: options.cwd, env, detached: true,
-        stdio: ["ignore", stdout.fd, stderr.fd] });
-      // All lifecycle listeners must be attached before even fd-close awaits.
-      termination = processTermination(child, true);
-      spawned = new Promise<void>((resolve, reject) => {
-        child.once("spawn", resolve);
-        child.once("error", reject);
-      });
-      void spawned.catch(() => {});
-    } finally { await stderr.close(); }
-  } finally { await stdout.close(); }
-  await spawned;
-  const pid = child.pid;
-  let startTime: string | undefined;
-  try { startTime = pid === undefined ? undefined : await (options.devinProcStartTime ?? procStartTime)(pid); }
-  catch (error) {
-    await termination.terminate();
-    throw error;
-  }
-  if (pid === undefined || startTime === undefined) {
-    await termination.terminate();
-    throw new Error(`devin wrapper identity could not be captured: ${(await tailText(layout.stderrPath)).trim() || "no process start time"}`);
-  }
-  const meta: DevinRunMeta = {
-    runId, agent: "devin", model, cwd: options.cwd, sandboxMode,
-    promptChars: framedPromptChars, createdAt, childPid: pid, procStartTime: startTime,
-    ...(options.peerLabel === undefined ? {} : { peerLabel: options.peerLabel }),
-    sandboxAudit, streamPath: layout.streamPath, stderrPath: layout.stderrPath,
-  };
-  try { await (options.devinWriteMeta ?? atomicWriteJson)(layout.metaPath, meta); }
-  catch (error) {
-    await killDetachedProcessGroup(child, pid);
+      const stderr = await open(layout.stderrPath, "w", 0o600);
+      try {
+        child = spawn(layout.wrapperPath, argv, { cwd: options.cwd, env, detached: true,
+          stdio: ["ignore", stdout.fd, stderr.fd] });
+        // Attach lifecycle listeners before even fd-close awaits.
+        termination = processTermination(child, true, graceMs);
+        spawned = new Promise<void>((resolve, reject) => {
+          child!.once("spawn", resolve);
+          child!.once("error", reject);
+        });
+        void spawned.catch(() => {});
+      } finally { await stderr.close(); }
+    } finally { await stdout.close(); }
+    await spawned;
+    const capturedPid = child.pid;
+    const capturedStart = capturedPid === undefined ? undefined
+      : await (options.devinProcStartTime ?? procStartTime)(capturedPid);
+    if (capturedPid === undefined || capturedStart === undefined) {
+      throw new Error(`devin wrapper identity could not be captured: ${(await tailText(layout.stderrPath)).trim() || "no process start time"}`);
+    }
+    pid = capturedPid;
+    startTime = capturedStart;
+    const meta: DevinRunMeta = {
+      runId, agent: "devin", model, cwd: options.cwd, sandboxMode,
+      promptChars: framedPromptChars, createdAt, childPid: pid, procStartTime: startTime,
+      ...(options.peerLabel === undefined ? {} : { peerLabel: options.peerLabel }),
+      sandboxAudit, streamPath: layout.streamPath, stderrPath: layout.stderrPath,
+    };
+    await (options.devinWriteMeta ?? atomicWriteJson)(layout.metaPath, meta);
+  } catch (error) {
+    // A live wrapper may have copied credentials; teardown and leave sweeping to
+    // the existing owner. Before spawn succeeds there is no copy to preserve.
+    if (termination) await termination.terminate();
+    if (child?.pid === undefined) await rm(layout.runDir, { recursive: true, force: true });
     throw error;
   }
   child.unref();

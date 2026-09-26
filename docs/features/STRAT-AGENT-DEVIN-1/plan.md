@@ -269,7 +269,13 @@ real devin, never the real `~/.local/share/devin`):**
       round 3 ⇒ stop and ask the owner)
 
 Out of S2: IR/engine (`agent: devin` in flows, `engine.ts` sandbox forwarding, evaluator route) — S3.
-Sidecar changes. A cap on the background `stdout.log` (a follow-up for both agents, D2).
+A cap on the background `stdout.log` (a follow-up for both agents, D2).
+
+*Scope change (2026-09-26, S2 review round 1, finding M3):* one sidecar fix is pulled **into** S2. A
+pre-existing bug in `peer-sidecar.ts` `closeOwnedSocket` skipped `server.close()` when the socket path
+had vanished, and a failed startup only set `process.exitCode`, so the sidecar never exited. A
+`devin-background.test.ts` run left one alive for 22 minutes. It affects codex background runs too. The fix
+keeps the replaced-path guard (dev/ino mismatch) and changes nothing else in the sidecar.
 
 ## Slice S3 — engine/IR (design §Slices 3)
 
