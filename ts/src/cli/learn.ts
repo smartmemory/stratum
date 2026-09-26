@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { canonicalizeRecordRoots, canonicalWorkspace } from "../learn/workspace.js";
 import { resolveLearnConfig } from "../config/learn.js";
@@ -41,6 +40,11 @@ function rootOf(args: string[]): Promise<string> {
   return canonicalWorkspace(option(args, "root") ?? process.cwd());
 }
 
+/** `--flows`, else the store the engine and MCP server use (STRATUM_STATE_ROOT, then the default). */
+function flowsDirOf(args: string[]): string {
+  return option(args, "flows") ?? (process.env.STRATUM_STATE_ROOT || new StateStore().root);
+}
+
 function sidecarDir(root: string): string {
   return join(root, ".stratum", "learn");
 }
@@ -73,7 +77,7 @@ export async function learnCommand(args: string[]): Promise<number> {
 
 async function harvestCommand(args: string[]): Promise<number> {
   const root = await rootOf(args);
-  const flowsDir = option(args, "flows") ?? join(homedir(), ".stratum", "ts", "flows");
+  const flowsDir = flowsDirOf(args);
   const { records, skipped, droppedEvents } = await harvest(flowsDir);
   await canonicalizeRecordRoots(records);
   const clusters = classify(records);
@@ -174,8 +178,7 @@ async function listUnreviewed(root: string, args: string[]): Promise<number> {
 async function listReviews(root: string, args: string[]): Promise<number> {
   const config = resolveLearnConfig({ projectRoot: root });
   if (flag(args, "if-enabled") && !config.deliver && !config.inline) return 0;
-  const flowsDir = option(args, "flows") ?? join(homedir(), ".stratum", "ts", "flows");
-  const reviews = await lessonReviews(flowsDir, root, { retireReviewAfter: config.retireReviewAfter });
+  const reviews = await lessonReviews(flowsDirOf(args), root, { retireReviewAfter: config.retireReviewAfter });
   if (flag(args, "json")) {
     process.stdout.write(JSON.stringify(reviews, null, 2) + "\n");
     return 0;
