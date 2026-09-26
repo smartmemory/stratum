@@ -295,7 +295,10 @@ Tests: `tests/learn/inline.test.ts`, `tests/learn/surface.test.ts`, `tests/confi
   `lessonsSuppressed` event detail fields were undeclared, so with delivery ON `stratum_audit` and
   `stratum_flow_poll` failed over MCP (events 5 → 6 fixes it; `tests/learn/surface.test.ts` fails
   without it).
-- **Not built yet:** the Compose build-summary slice (§A5, separate repo).
+- **Compose slice** built on compose branch `comp-learn-summary` (`lib/learn-summary.js`, called after
+  build.js's terminal status block for completed/failed/killed, skipped for aborted). It also prints
+  DELIVER-1 D6 reviews. Needs a stratum release with these flags first: an older CLI ignores
+  `--unreviewed/--if-enabled` and would list raw candidate rows.
 
 ## Acceptance criteria
 
