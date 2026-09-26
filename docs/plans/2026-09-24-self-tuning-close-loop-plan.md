@@ -137,6 +137,14 @@ it once, and the **next matching run's agent actually receives it** — and the 
 Dispatch: Codex `gpt-6-astra/medium`, workspace-write, one slice per brief. Each slice: brief →
 implement → independent astra review → controller verify (targeted tests) → commit.
 
+**Step 2 status (2026-09-26): DONE except the release.** Review loop: Devin interim reviews → fixes
+(`b324f51`), Codex astra/medium reviews (17 findings, all confirmed) → fixes (`361b89b`, `153f582`),
+fixes-only reviews clean except one owner-accepted residual; Compose `fd4ab41`, `4174c88`, `56175f7`
+(review CLEAN), `58c4d96`. §A6: three hand-fixed clusters retired, dry run stages 0 of 3 (`4a7e095`).
+Live run: NOT PROVEN by design constraint, closed on the golden by the owner (`e2f1b50`). **Remaining:
+release stratum (the new `learn list` flags), then Compose; then enable `[learn]` for stratum/compose.
+Nothing is pushed yet — owner go-ahead required.**
+
 **Step 2 progress (2026-09-25):** design docs first, per owner. Doc A = STRAT-LEARN-INLINE-TS-1
 §Amendment (trigger, staging, "show until acted on" surfacing) — astra r1 NOT CLEAN (12, all upheld;
 surfacing redesigned), r2 NOT CLEAN (2 unresolved + 2 new, all fixed), **r3 REVIEW CLEAN**. Doc B = new
@@ -234,7 +242,10 @@ grounding: "committed" is a guard-ledger receipt class, not a journal state; the
       rendered lesson must carry executable guidance for the agent, or this cannot pass.
 - [ ] Negative cases: non-matching scope, unapproved revision, reverted revision, retired lesson — none
       injected.
-- [ ] One live run on a real compose build = **delivery** evidence only, not proof of lasting prevention.
+- [x] One live run on a real compose build = **delivery** evidence only, not proof of lasting prevention.
+      **Closed on the golden (owner, 2026-09-26):** six real builds could not produce a contract failure —
+      Compose renders the contract as the prompt's closing instruction (see
+      `docs/features/STRAT-LEARN-DELIVER-1/live-run.md`); the loop is proven by the scripted golden.
 - [ ] CHANGELOG + STRAT-LEARN-INLINE-TS-1 status updated in the same commits; completion recorded via
       `record_completion`.
 
