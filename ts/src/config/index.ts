@@ -146,7 +146,9 @@ function applyFile(
     throw new Error(`${path}: TOML parse error: ${detail}`, { cause: error });
   }
   if (!isRecord(raw)) throw new Error(`${path}: config root must be a table`);
-  rejectUnknown(raw, new Set(["sandbox"]), path, "");
+  // `[learn]` belongs to resolveLearnConfig() (config/learn.ts); sandbox resolution
+  // ignores its contents entirely so an invalid learn value can never fail a dispatch.
+  rejectUnknown(raw, new Set(["sandbox", "learn"]), path, "");
   const sandbox = raw.sandbox;
   if (sandbox === undefined) return;
   if (!isRecord(sandbox)) throw new Error(`${path}: sandbox must be a table`);

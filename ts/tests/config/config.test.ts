@@ -84,11 +84,12 @@ describe("loadStratumConfig", () => {
   it("rejects unknown keys with their path and source file", async () => {
     const root = await temporaryRoot();
     const project = join(root, "stratum.toml");
-    await writeFile(project, "[learn.inline_patch]\nenabled = true\n");
+    // `[learn]` is a known table since STRAT-LEARN-DELIVER-1 (INLINE-TS-1 §A7).
+    await writeFile(project, "[mystery.inline_patch]\nenabled = true\n");
     expect(() => loadStratumConfig({
       projectRoot: root,
       env: { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") },
-    })).toThrow(`${project}: unknown config key \"learn\"`);
+    })).toThrow(`${project}: unknown config key \"mystery\"`);
   });
 
   it("rejects wrong-typed values with their key path and source file", async () => {
