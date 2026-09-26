@@ -44,8 +44,8 @@ describe.skipIf(!live)("live devin flow", () => {
       if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
       return result.stdout;
     };
-    async function call<T>(name: string, args: Record<string, unknown>): Promise<T> {
-      const response = await client!.callTool({ name, arguments: args }, undefined, { timeout: 290_000 });
+    async function call<T>(name: string, args: Record<string, unknown>, timeout = 290_000): Promise<T> {
+      const response = await client!.callTool({ name, arguments: args }, undefined, { timeout });
       expect(response.isError, JSON.stringify(response)).not.toBe(true);
       const content = response.content as Array<{ type: string; text?: string }>;
       return JSON.parse(content[0]?.text ?? "") as T;
@@ -157,7 +157,16 @@ describe.skipIf(!live)("live devin flow", () => {
           if (groupMembers(pid)) { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } }
         }
         await Promise.allSettled([...inflight]);
-        if (runId && client) await call("stratum_flow_cancel", { runId });
+        if (runId && client) {
+          await call("stratum_flow_cancel", { runId });
+          // Connector completion alone does not wait for the engine's fan-out teardown.
+          const settleDeadline = Date.now() + 30_000;
+          while (Date.now() < settleDeadline) {
+            const settled = await call<FlowPollResponse>("stratum_flow_poll", { runId, cursor: 0 }, Math.max(1, settleDeadline - Date.now()));
+            if (settled.status !== "running") break;
+            await delay(Math.min(100, Math.max(0, settleDeadline - Date.now())));
+          }
+        }
         const deadline = Date.now() + 5000;
         while ([...pids].some(pid => groupMembers(pid)) && Date.now() < deadline) await delay(50);
         for (const pid of pids) expect(groupMembers(pid)).toBe("");
@@ -165,6 +174,25 @@ describe.skipIf(!live)("live devin flow", () => {
         try { await client?.close(); } finally {
           try { await server?.close(); } finally {
             override?.mockRestore();
+            // Capture both registered worktrees and this run's orphan directories
+            // while the temporary repo still exists. Git metadata may already be gone.
+            const listed = spawnSync("git", ["-C", repo, "worktree", "list", "--porcelain", "-z"], { encoding: "utf8" });
+            const registered = new Set(listed.status === 0
+              ? listed.stdout.split("\0").filter(field => field.startsWith("worktree ")).map(field => field.slice("worktree ".length)).filter(path => path !== repo)
+              : []);
+            const worktrees = new Set(registered);
+            if (runId) {
+              const tempRoot = realpathSync(tmpdir());
+              const prefix = `stratum-${runId.slice(0, 8)}-`;
+              for (const entry of readdirSync(tempRoot, { withFileTypes: true })) {
+                if (entry.isDirectory() && entry.name.startsWith(prefix)) worktrees.add(join(tempRoot, entry.name));
+              }
+            }
+            for (const path of worktrees) {
+              if (registered.has(path)) spawnSync("git", ["-C", repo, "worktree", "remove", "--force", path], { encoding: "utf8" });
+              // Also remove unregistered paths and leftovers when git removal fails.
+              rmSync(path, { recursive: true, force: true });
+            }
             // The entire run home is ours, including devin_fg, credentials and
             // any peer state. Peer registration is disabled for this foreground golden.
             rmSync(root, { recursive: true, force: true });
