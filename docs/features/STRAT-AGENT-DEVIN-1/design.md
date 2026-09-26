@@ -134,7 +134,7 @@ have a verified mapping — silently ignoring them would be a false guarantee (t
 claude read-only, `runner.ts:69`).
 
 `workspace-write` under `--sandbox` rejects devin's own file-edit tool (fact 4). The run still edits
-files through the shell. **Open question Q1** decides whether that is acceptable.
+files through the shell. Owner accepted this (Q1).
 
 Seatbelt does not nest (memory `project_codex_seatbelt_nonnesting`): a `workspace-write` devin
 launched from inside a codex sandbox will fail at spawn. The connector surfaces devin's stderr
@@ -209,8 +209,8 @@ Still **verified by a test, not assumed** (§Tests), since the child could daemo
 ### D10 — Claude rules leak into Devin runs (fact 7)
 
 v1 documents it and does not fight it. For implementer dispatches the brief states explicitly that
-the agent is the implementer. **Open question Q2** covers whether to pass a `--config` that
-disables always-on rules.
+the agent is the implementer. Owner (Q2): no rules-disabling `--config` in v1; revisit only if a run is confused. (Was: whether to pass a `--config` that
+disables always-on rules.)
 
 ## Out of scope (follow-ups)
 
@@ -245,11 +245,12 @@ disables always-on rules.
 2. **S2 background** — D8. Goldens 3, 4.
 3. **S3 engine/IR** — D9 incl. evaluator route. Contract tests + golden 2.
 
-## Open questions (owner)
+## Owner decisions (2026-09-26)
 
-- **Q1** — `workspace-write` via `--sandbox` blocks devin's file-edit tool, so edits go through the
-  shell. Accept that (recommended; the OS sandbox is the only mode with a real boundary), or use
-  `accept-edits` (edit tool works, but no shell at all, so no tests can run)?
-- **Q2** — Devin loads `~/.claude/CLAUDE.md` and the global rules into every run. Leave it (v1
-  recommendation) or find/pass a config that disables always-on rules for stratum dispatches?
-- **Q3** — Default model `swe-2-high` (free). OK, or `swe-2-max`?
+- **Q1 → OS sandbox.** `workspace-write` = `--sandbox`; edits go through the shell. `accept-edits`
+  rejected (no shell ⇒ no tests).
+- **Q2 → leave it, state the role.** No rules-disabling config in v1; implementer briefs say
+  "you are the implementer" explicitly.
+- **Q3 → `swe-2-high`** is the default model.
+- **Design gate:** Devin SWE-2 reviews the design now; Codex reviews the implementation later
+  (after the STRAT-LEARN Step 2 reviews). Devin implements (owner, 2026-09-26).
