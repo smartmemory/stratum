@@ -162,8 +162,12 @@ Same branch, same window: harvester subflow-echo fix `ee77495`; **INLINE-TS-1 st
 (trigger, pass, surfacing, audit/MCP; design §A8) — it also fixed a slice-4 contract defect (lesson
 event fields undeclared → MCP audit/poll failed with delivery ON). Remaining for INLINE: Compose
 build-summary slice. **DELIVER-1 slice 5 (outcomes + reviews, D6) built** on the same branch. All of
-it awaits Codex review. Remaining after review: Compose build-summary slice (INLINE §A5 + D6 reviews),
-slice 6 goldens (D7) + live run, retiring the 3 fixtures and the §A6 dry run before enabling. Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+it awaits Codex review. Also built: slice 6 stratum golden + negatives `b99f7ea`; CLI store default
+`8581726`; **Compose build-summary slice** on compose branch `comp-learn-summary` `5ebedd5` (golden drives
+real builds to each exit; also proves guidance in Compose `## Intent` for an ordinary step). Remaining
+after review: Compose golden rows for consumer fan-out and ambient-free re-render (D7), the live run,
+retiring the 3 fixtures and the §A6 dry run before enabling, releasing stratum before compose (compose
+needs the new `learn list` flags). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 
