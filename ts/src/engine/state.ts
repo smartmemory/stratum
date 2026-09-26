@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { LessonPin, LessonSuppression } from "../learn/deliver.js";
 import type { PolicyRuleMap, RuleVerdict } from "../policy/types.js";
 import type { Budget } from "./ledger.js";
 
@@ -66,6 +67,9 @@ export interface FanoutItemState {
   worktree?: string;
   /** Harvested worktree diff, persisted so a restart can still merge this item. */
   patch?: string;
+  /** STRAT-LEARN-DELIVER-1 D4: lessons pinned at this issuance; rendering reads only these. */
+  lessons?: LessonPin[];
+  lessonsSuppressed?: LessonSuppression[];
 }
 
 export interface FanoutState {
@@ -191,6 +195,9 @@ export interface StepState {
   fanoutEpoch?: number;
   sub?: SubflowState;
   spent: Budget;
+  /** STRAT-LEARN-DELIVER-1 D4: lessons pinned at this issuance; rendering reads only these. */
+  lessons?: LessonPin[];
+  lessonsSuppressed?: LessonSuppression[];
 }
 
 export interface AuditEvent {

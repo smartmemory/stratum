@@ -138,6 +138,22 @@ dispatch's **harvest step id** is in scope.
 - **Budget.** At most 3 lessons and 1,200 characters of guidance per dispatch, ordered by
   `recurrence.records` descending, then `clusterId`. Overflow is recorded in the pin as suppressed.
 
+**Slice 4 clarifications (implementation, `learn/deliver.ts`).**
+- *Which lessons can raise `contract-changed`.* A lesson is **in scope** for a dispatch when its
+  `scope.stepIds` names the dispatch (any grouping), or — step-agnostic only — when the dispatch's
+  contract satisfies the predicate. Only an in-scope-by-name lesson whose predicate fails is suppressed
+  as `contract-changed`. A step-agnostic lesson on an unrelated step whose contract lacks the field is
+  simply out of scope; recording drift there would mark every other step of the flow on every dispatch.
+- *Predicate against zod.* Evaluated on the compiled zod contract the engine validates with, not the
+  parsed IR. Paths descend object fields and any array-element depth (zod drops indices from issue paths,
+  `classify.ts` keeps string segments only). `invalid_type` compares against the exact strings zod 3.25
+  reports (probed): an `integer` field reports `number` for non-numbers and `integer` for floats, so
+  both hold; an enum field reports `'a' | 'b'`.
+- *Round-trip finding.* A failed subflow step is harvested twice: once under the scoped child id
+  (`wrap/work`, the dispatch — matches `harvestStepId()`) and once echoed onto the parent `run` step
+  (`wrap`) by `failParentRunStep()`. The echo double-counts recurrence and can mint a lesson scoped to a
+  step that is never dispatched. Harvester follow-up (like the fan-out `require` dedupe); not fixed here.
+
 ### D4. Where lessons enter the prompt, and how delivery is recorded
 
 **Pin at issuance, render from the pin.** Selection runs at the persisted transition that issues a
@@ -187,6 +203,12 @@ repair path, adding it is a Compose-only follow-up.
   still byte-identical.
 - `do` is not part of `contractDigest` (`engine.ts:2978`, a digest of the contract closure) or of the
   spec `revisionDigest`, so appending to it does not disturb consumer verification.
+- **Slice 4 notes.** Selection runs *before* each surface's synchronous reserve→token→event→persist
+  stretch (the engine fan-out re-checks staleness across the await), so the admission transaction stays
+  contiguous. A checkpoint restore re-pins state but has no issuing event of its own (the restore's
+  event is `checkpoint_reverted`); the pin on state is the record there. The config switch is
+  `config/learn.ts::resolveLearnConfig()`; the shared loader's allowlist gains `learn` and ignores it.
+  Selection failures and invalid config warn once per process on stderr and deliver nothing.
 
 ### D5. Lifecycle (the interface INLINE-TS-1 reads)
 

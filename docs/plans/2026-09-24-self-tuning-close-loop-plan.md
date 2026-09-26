@@ -152,8 +152,11 @@ submodules, inherited GIT_DIR), r2 2 new (unbounded git fan-out over ~450 temp r
 all fixed; 263/1-skip. **Slice 3 (selection, `activeLessons()` in `learn/select.ts`) DONE** — review
 r1 2M: receipt throw aborted selection (fixed, per-entry catch); one-active-revision-per-cluster
 rejected as intentional, documented in DELIVER-1 §D2; r2 REVIEW CLEAN; 290/1-skip. Owner 2026-09-25:
-retire the 3 hand-fixed fixtures just before INLINE is enabled, not now. Next: slice 4 (matching + pin
-+ render, D3/D4). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+retire the 3 hand-fixed fixtures just before INLINE is enabled, not now. **Slice 4 (matching + pin +
+render, D3/D4) implemented by Claude** (owner 2026-09-26: Codex credits exhausted; Claude implements in
+worktree branch `strat-learn-deliver1-slice4`, Codex reviews after the credit window) — awaiting Codex
+review. Round trip found a harvester gap: subflow failures are echoed onto the parent `run` step
+(DELIVER-1 §D3 clarifications). Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 

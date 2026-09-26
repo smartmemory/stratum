@@ -12,6 +12,7 @@ import { procStartTime } from "../connectors/proc_identity.js";
 import { extractReferences, type ExtractedReference, type PathSegment, type Reference } from "../ir/refs.js";
 import { type Flow, type Specification, type Step } from "../ir/schema.js";
 import { type ValidationError, validateSpec } from "../ir/validate.js";
+import { harvestStepId, lessonBlock, pinEventDetail, pinFor, setPin, type DeliveryPin } from "../learn/deliver.js";
 import { LearnEgress, type LearnEgressDriver, type LearnEgressRuntimeOptions } from "../learn/smartmemory_egress.js";
 import { mergeBundleIntoSpec, policyRuleKey, predicateType, validateBundle } from "../policy/bundle.js";
 import { buildFlowTerminalEvent, buildGateResolutionEvent } from "../policy/events.js";
@@ -1008,6 +1009,7 @@ export class StratumEngine {
         detail,
       }));
       this.rotateRestoredIssuances(run);
+      await this.repinRestoredIssuances(run);
       await this.persist(run);
       return { ...await this.reAdvanceLocked(runId), reverted_to: normalized };
     });
@@ -1865,6 +1867,8 @@ export class StratumEngine {
           changed = true;
           break;
         }
+        // D4: select before the synchronous reserve→ready→persist stretch; pinned below.
+        const pin = await this.lessonPin(run, harvestStepId(step.id, scope.prefix), step.out, contracts);
         const debit = this.debit(run, step, state, { dispatches: 1 }, "reserve", scope);
         if (debit === "flow") { await this.terminalBudget(run, { attempt: state.attempts.length + 1, reason: "flow budget exhausted" }); break; }
         if (debit === "subflow") {
@@ -1880,8 +1884,9 @@ export class StratumEngine {
         }
         state.dispatchToken = randomUUID();
         delete state.acceptedDispatchToken;
+        setPin(state, pin);
         state.status = "ready";
-        this.event(run, "ready", this.scopedId(scope, step.id), { attempt });
+        this.event(run, "ready", this.scopedId(scope, step.id), { attempt, ...pinEventDetail(pin) });
         await this.persist(run);
         changed = true;
       }
@@ -1994,6 +1999,8 @@ export class StratumEngine {
         }
         continue;
       }
+      // D4: select before the synchronous reserve→ready→persist stretch; pinned below.
+      const pin = await this.lessonPin(run, harvestStepId(step.id), stage.out, contracts);
       const reserve = this.debit(run, step, state, { dispatches: 1 }, "reserve");
       if (reserve !== undefined) {
         const failure = { attempt, reason: `${reserve} budget exhausted` };
@@ -2015,8 +2022,9 @@ export class StratumEngine {
       item.status = "ready";
       item.dispatchToken = randomUUID();
       delete item.acceptedDispatchToken;
+      setPin(item, pin);
       this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: { dispatches: 1 } });
-      this.event(run, "fanout_item_ready", step.id, { itemIndex: item.index });
+      this.event(run, "fanout_item_ready", step.id, { itemIndex: item.index, ...pinEventDetail(pin) });
       await this.persist(run);
       return;
     }
@@ -2248,6 +2256,10 @@ export class StratumEngine {
               this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "connector", lastFailure);
               return { kind: "continue" };
             }
+            // D4: select after the template validates, before the synchronous reserve→mint→
+            // persist stretch; re-check staleness across the await.
+            const pin = await this.lessonPin(run, harvestStepId(step.id), stage.out, contracts);
+            if (stale()) return { kind: "abandon" };
             const reserve = this.debit(run, step, state, { dispatches: 1 }, "reserve");
             if (reserve) {
               lastFailure = { attempt, reason: `${reserve} budget exhausted` };
@@ -2258,8 +2270,10 @@ export class StratumEngine {
               return { kind: "break" };
             }
             item.dispatchToken = randomUUID();
+            setPin(item, pin);
+            prompt += lessonBlock(item);
             this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: { dispatches: 1 } });
-            this.event(run, "fanout_item_dispatched", step.id, { itemIndex: item.index, stage: stageIndex, attempt });
+            this.event(run, "fanout_item_dispatched", step.id, { itemIndex: item.index, stage: stageIndex, attempt, ...pinEventDetail(pin) });
             // Durable BEFORE the (possibly long) connector await: a restart or a
             // fresh poller must see the dispatched lifecycle event, not a
             // pending item — the event spine is restart-proof.
@@ -2942,7 +2956,7 @@ export class StratumEngine {
     if (state.dispatchToken === undefined) throw new Error("ready step is missing its persisted dispatch token");
     const attempt = state.attempts.length + 1;
     return {
-      id: this.scopedId(scope, step.id), do: this.render(step.do, scope), agent: step.agent ?? "claude", attempt,
+      id: this.scopedId(scope, step.id), do: this.render(step.do, scope) + lessonBlock(state), agent: step.agent ?? "claude", attempt,
       epoch: state.epoch ?? 0, dispatchToken: state.dispatchToken,
       ...(state.failure ? { previousFailure: state.failure } : state.routed ? { previousFailure: state.routed } : {}),
     };
@@ -2961,7 +2975,7 @@ export class StratumEngine {
     const closure = stage.out === undefined ? null : this.contractClosure(spec, stage.out);
     return {
       id: `${step.id}/${item.index}`,
-      do: this.renderFanout(stage.do, run, values[item.index], item.output),
+      do: this.renderFanout(stage.do, run, values[item.index], item.output) + lessonBlock(item),
       agent: stage.agent ?? "claude",
       attempt: item.attempts.length + 1,
       epoch: item.epoch ?? state.epoch ?? 0,
@@ -3398,6 +3412,47 @@ export class StratumEngine {
       }
     };
     rotateSteps(run.steps);
+  }
+
+  /** D4: a restore is a fresh issuance. Every restored ready step and consumer item is
+   *  re-selected and re-pinned, discarding the restored pin; engine fan-out items re-pin
+   *  at their next admission. */
+  private async repinRestoredIssuances(run: PersistedRun): Promise<void> {
+    const validated = this.validationFor(run);
+    const repin = async (scope: ExecutionScope): Promise<void> => {
+      for (const step of scope.flow.steps) {
+        const state = scope.steps[step.id];
+        if (state === undefined) continue;
+        if (step.do !== undefined && state.status === "ready") {
+          setPin(state, await this.lessonPin(run, harvestStepId(step.id, scope.prefix), step.out, validated.contracts));
+        }
+        if (step.fanout?.dispatch === "consumer") {
+          for (const item of state.fanout?.items ?? []) {
+            if (item.status !== "ready") continue;
+            const stage = item.stage === undefined ? undefined : step.fanout.steps[item.stage];
+            setPin(item, stage === undefined ? undefined
+              : await this.lessonPin(run, harvestStepId(step.id), stage.out, validated.contracts));
+          }
+        }
+        if (step.run !== undefined && state.sub !== undefined) await repin(this.childScope(validated.value, step, state));
+      }
+    };
+    await repin(this.rootScope(run, validated.value));
+  }
+
+  /** D3/D4 selection for one issuance; undefined when OFF, unattributed or nothing matched. */
+  private lessonPin(
+    run: PersistedRun,
+    stepId: string,
+    out: string | undefined,
+    contracts: Record<string, z.ZodObject<z.ZodRawShape, "strict">>,
+  ): Promise<DeliveryPin | undefined> {
+    return pinFor({
+      workspaceRoot: run.workspaceRoot,
+      flowName: run.flowName,
+      stepId,
+      contract: out === undefined ? undefined : contracts[out],
+    });
   }
 
   // A foreground fanout runs its connector work OUTSIDE the run lock, then settles under
