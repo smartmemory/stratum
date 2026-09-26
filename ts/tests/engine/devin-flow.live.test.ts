@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
@@ -50,6 +50,8 @@ describe.skipIf(!live)("live devin flow", () => {
       const content = response.content as Array<{ type: string; text?: string }>;
       return JSON.parse(content[0]?.text ?? "") as T;
     }
+    let bodyError: unknown;
+    let bodyThrew = false;
     try {
       for (const dir of [repo, extra, outside, target, stateRoot, join(home, ".config/devin"), join(home, ".local/share/devin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
       if (configBefore) writeFileSync(join(root, "config.json.backup"), configBefore.bytes, { mode: 0o600 });
@@ -149,14 +151,24 @@ describe.skipIf(!live)("live devin flow", () => {
       expect(readdirSync(fgRoot)).toEqual([]); // Includes every per-run credentials copy.
       expect(pids.size).toBeGreaterThan(0);
       for (const pid of pids) expect(groupMembers(pid)).toBe("");
+    } catch (error) {
+      bodyError = error;
+      bodyThrew = true;
+      throw error;
     } finally {
-      try {
-        abort.abort();
-        // Reap only this golden's groups, including descendants on a failed run.
-        for (const pid of pids) {
+      const cleanupErrors: unknown[] = [];
+      const attempt = async (operation: () => unknown | Promise<unknown>) => {
+        try { await operation(); } catch (error) { cleanupErrors.push(error); }
+      };
+      await attempt(() => abort.abort());
+      // Reap only this golden's groups, including descendants on a failed run.
+      for (const pid of pids) {
+        await attempt(() => {
           if (groupMembers(pid)) { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } }
-        }
-        await Promise.allSettled([...inflight]);
+        });
+      }
+      await attempt(() => Promise.allSettled([...inflight]));
+      await attempt(async () => {
         if (runId && client) {
           await call("stratum_flow_cancel", { runId });
           // Connector completion alone does not wait for the engine's fan-out teardown.
@@ -167,38 +179,63 @@ describe.skipIf(!live)("live devin flow", () => {
             await delay(Math.min(100, Math.max(0, settleDeadline - Date.now())));
           }
         }
+      });
+      await attempt(async () => {
         const deadline = Date.now() + 5000;
         while ([...pids].some(pid => groupMembers(pid)) && Date.now() < deadline) await delay(50);
         for (const pid of pids) expect(groupMembers(pid)).toBe("");
-      } finally {
-        try { await client?.close(); } finally {
-          try { await server?.close(); } finally {
-            override?.mockRestore();
-            // Capture both registered worktrees and this run's orphan directories
-            // while the temporary repo still exists. Git metadata may already be gone.
-            const listed = spawnSync("git", ["-C", repo, "worktree", "list", "--porcelain", "-z"], { encoding: "utf8" });
-            const registered = new Set(listed.status === 0
-              ? listed.stdout.split("\0").filter(field => field.startsWith("worktree ")).map(field => field.slice("worktree ".length)).filter(path => path !== repo)
-              : []);
-            const worktrees = new Set(registered);
-            if (runId) {
-              const tempRoot = realpathSync(tmpdir());
-              const prefix = `stratum-${runId.slice(0, 8)}-`;
-              for (const entry of readdirSync(tempRoot, { withFileTypes: true })) {
-                if (entry.isDirectory() && entry.name.startsWith(prefix)) worktrees.add(join(tempRoot, entry.name));
-              }
-            }
-            for (const path of worktrees) {
-              if (registered.has(path)) spawnSync("git", ["-C", repo, "worktree", "remove", "--force", path], { encoding: "utf8" });
-              // Also remove unregistered paths and leftovers when git removal fails.
-              rmSync(path, { recursive: true, force: true });
-            }
-            // The entire run home is ours, including devin_fg, credentials and
-            // any peer state. Peer registration is disabled for this foreground golden.
-            rmSync(root, { recursive: true, force: true });
-            expect(snapshot(ownerConfig)).toEqual(configBefore);
+      });
+      await attempt(() => client?.close());
+      await attempt(() => server?.close());
+      await attempt(() => override?.mockRestore());
+      // Capture registered worktrees and proven orphans before deleting the repo.
+      const registered = new Set<string>();
+      const worktrees = new Set<string>();
+      await attempt(() => {
+        const listed = spawnSync("git", ["-C", repo, "worktree", "list", "--porcelain", "-z"], { encoding: "utf8" });
+        if (listed.status === 0) {
+          for (const field of listed.stdout.split("\0")) {
+            if (!field.startsWith("worktree ")) continue;
+            const path = field.slice("worktree ".length);
+            if (path !== repo) { registered.add(path); worktrees.add(path); }
           }
         }
+      });
+      await attempt(async () => {
+        if (!runId) return;
+        const metadataRoot = join(realpathSync(repo), ".git", "worktrees") + sep;
+        const ownsOrphan = (path: string): boolean => {
+          try {
+            const marker = join(path, ".git");
+            if (!lstatSync(marker).isFile()) return false;
+            const gitdir = /^gitdir: (.+)$/m.exec(readFileSync(marker, "utf8"))?.[1]?.trim();
+            // Metadata may already be gone: normalize the target without stat'ing it.
+            return !!gitdir && resolve(path, gitdir).startsWith(metadataRoot);
+          } catch { return false; }
+        };
+        const tempRoot = realpathSync(tmpdir());
+        const prefix = `stratum-${runId.slice(0, 8)}-`;
+        for (const entry of readdirSync(tempRoot, { withFileTypes: true })) {
+          if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+          const path = join(tempRoot, entry.name);
+          if (registered.has(path) || ownsOrphan(path)) worktrees.add(path);
+          else console.warn(`golden 2: leaving unowned worktree candidate alone: ${path}`);
+        }
+      });
+      for (const path of worktrees) {
+        await attempt(() => {
+          if (registered.has(path)) spawnSync("git", ["-C", repo, "worktree", "remove", "--force", path], { encoding: "utf8" });
+        });
+        // Also remove unregistered paths and leftovers when git removal fails.
+        await attempt(() => rmSync(path, { recursive: true, force: true }));
+      }
+      // The entire run home is ours, including devin_fg, credentials and
+      // any peer state. Peer registration is disabled for this foreground golden.
+      await attempt(() => rmSync(root, { recursive: true, force: true }));
+      await attempt(() => expect(snapshot(ownerConfig)).toEqual(configBefore));
+      if (cleanupErrors.length) {
+        if (bodyThrew) throw new AggregateError([bodyError, ...cleanupErrors], "golden 2 failed; cleanup also failed");
+        throw new AggregateError(cleanupErrors, "golden 2 cleanup failed");
       }
     }
   }, 300_000);
