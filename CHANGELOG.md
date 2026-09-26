@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Learn CLI:** `stratum learn harvest` and `learn list --reviews` read the same flow store as the engine and MCP server when `--flows` is omitted (`STRATUM_STATE_ROOT`, then the default), instead of always the default store.
+
 - **STRAT-LEARN-DELIVER-1 slice 6 (stratum golden):** `tests/learn/deliver-golden.test.ts` proves the loop end to end on the real engine in a git workspace, under one scripted connector policy: three recovered runs → lesson staged automatically and surfaced as unreviewed → applied through `stratum learn apply` → the next run's prompt carries the exact approved guidance and passes on its first attempt → retired → the first attempt fails again. Ten negative cases (non-matching flow and step, enum and type drift, staged-unapplied, reverted, retired, dismissed, an edited sidecar scope, a note-only lesson) inject nothing. The Compose golden and the live run are still to do.
 
 - **STRAT-LEARN-DELIVER-1 slice 5:** Lesson outcomes and retirement reviews. `lessonOutcomes()` classifies every run and offered step as held / not-holding / unknown by event position (not timestamp), using the classifier's own cluster keys to decide whether a later failure is the lesson failing. `lessonReviews()` raises `retire-candidate` (after `[learn] retireReviewAfter`, default 3, held runs with none failing), `not-holding`, `contract-changed` and `recurred-after-retirement`, each counting only evidence after that cluster's lifecycle watermark, so an acknowledgement closes a review until newer evidence. Surfaced as `stratum_audit.learn_inline.reviews` (MCP surface 25) and `stratum learn list --reviews [--json] [--if-enabled] [--flows <dir>]`. The harvester exposes `failureRecordsOf()` with each record's event index.
