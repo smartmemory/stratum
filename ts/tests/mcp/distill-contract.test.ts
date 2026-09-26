@@ -145,7 +145,7 @@ afterEach(() => vi.unstubAllEnvs());
 it("pins surface 24, the sourceMode declaration and the staging-only distill contract", async () => {
   const contract = JSON.parse(await readFile(new URL("../../contracts/mcp-surface.json", import.meta.url), "utf8"));
   const tool = contract.tools.stratum_distill;
-  expect(contract.surface).toBe(24);
+  expect(contract.surface).toBe(25);
   expect(tool.description).toBe(DESCRIPTION);
   expect(tool.request).toEqual(REQUEST);
   expect(tool.responses).toEqual(RESPONSES);

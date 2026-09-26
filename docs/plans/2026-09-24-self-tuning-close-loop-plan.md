@@ -157,7 +157,11 @@ render, D3/D4) implemented by Claude** (owner 2026-09-26: Codex credits exhauste
 worktree branch `strat-learn-deliver1-slice4`, Codex reviews after the credit window) — awaiting Codex
 review. Round trip found a harvester gap: subflow failures are echoed onto the parent `run` step
 (DELIVER-1 §D3 clarifications). **Owner 2026-09-26: do not push any of this to origin until the whole
-Step 2 loop is done** (DELIVER-1 slices 1–6 and INLINE-TS-1); commits stay local until then. Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
+Step 2 loop is done** (DELIVER-1 slices 1–6 and INLINE-TS-1); commits stay local until then.
+Same branch, same window: harvester subflow-echo fix `ee77495`; **INLINE-TS-1 stratum side built**
+(trigger, pass, surfacing, audit/MCP; design §A8) — it also fixed a slice-4 contract defect (lesson
+event fields undeclared → MCP audit/poll failed with delivery ON). Remaining for INLINE: Compose
+build-summary slice. All of it awaits Codex review. Grounding: astra read-only pass (session scratchpad `docB-ground.md`). Corrections to §2c found by
 grounding: "committed" is a guard-ledger receipt class, not a journal state; the recovery fixer is not a
 `buildStepPrompt()` call; no dispatched prompt is persisted today (DELIVER-1 D4 adds the pin).
 

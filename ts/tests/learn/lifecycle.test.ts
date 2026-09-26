@@ -75,7 +75,9 @@ it("preserves newlines in the main checkout path when resolving a linked worktre
   expect(await canonicalWorkspace(linked)).toBe(main);
 });
 
-it("CLI harvest resolves 50 distinct non-git roots once each with at most 8 concurrent calls", async () => {
+// The bound lives in canonicalizeRecordRoots(), shared by CLI harvest and the INLINE-TS-1 pass;
+// it is spied through its resolver parameter (an internal call cannot be spied via the export).
+it("harvest root canonicalization resolves 50 distinct non-git roots once each with at most 8 concurrent calls", async () => {
   const flows = join(root, "flows");
   await mkdir(flows);
   const fixture = JSON.parse(await readFile(
@@ -92,16 +94,19 @@ it("CLI harvest resolves 50 distinct non-git roots once each with at most 8 conc
       }));
     }
   }
-  const resolve = workspace.canonicalWorkspace;
   let active = 0;
   let peak = 0;
   const calls = new Map<string, number>();
-  vi.spyOn(workspace, "canonicalWorkspace").mockImplementation(async (path) => {
+  const spy = async (path: string) => {
     calls.set(path, (calls.get(path) ?? 0) + 1);
     peak = Math.max(peak, ++active);
-    try { return await resolve(path); }
+    try { return await workspace.canonicalWorkspace(path); }
     finally { active--; }
-  });
+  };
+  const { records } = await harvest(flows);
+  expect(records).toHaveLength(100);
+  await workspace.canonicalizeRecordRoots(records, spy);
+  // The CLI path still harvests every record through the same helper.
   const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
   expect(await learnCommand(["harvest", "--flows", flows, "--root", root, "--json"])).toBe(0);
   expect(JSON.parse(output.mock.calls.map(([chunk]) => String(chunk)).join("")).records).toBe(100);

@@ -1,9 +1,9 @@
 {
-  "events": 5,
+  "events": 6,
   "shapeLanguage": "Each kind maps to the full event payload shape minus the implicit {at: string, type: string}. Leaf types: number|string|boolean|object|array|null|any, unions with '|', optional keys end in '?', nested objects are declared inline. Undeclared keys are contract violations.",
   "kinds": {
     "planned": {},
-    "ready": { "stepId": "string", "detail": { "attempt": "number" } },
+    "ready": { "stepId": "string", "detail": { "attempt": "number", "lessons?": { "$array": "string" }, "lessonsSuppressed?": { "$array": { "revisionId": "string", "reason": "string" } } } },
     "result": {
       "stepId": "string",
       "detail": {
@@ -37,10 +37,10 @@
     "budget_exhausted": { "detail": { "attempt": "number", "reason": "string" } },
     "gate_waiting": { "stepId": "string" },
     "gate_resolved": { "stepId": "string", "detail": { "decision": "string", "target": "string|null" } },
-    "fanout_item_ready": { "stepId": "string", "detail": { "itemIndex": "number" } },
+    "fanout_item_ready": { "stepId": "string", "detail": { "itemIndex": "number", "lessons?": { "$array": "string" }, "lessonsSuppressed?": { "$array": { "revisionId": "string", "reason": "string" } } } },
     "fanout_item_dispatched": {
       "stepId": "string",
-      "detail": { "itemIndex": "number", "stage": "number", "attempt": "number" }
+      "detail": { "itemIndex": "number", "stage": "number", "attempt": "number", "lessons?": { "$array": "string" }, "lessonsSuppressed?": { "$array": { "revisionId": "string", "reason": "string" } } }
     },
     "fanout_attempt_result": {
       "stepId": "string",

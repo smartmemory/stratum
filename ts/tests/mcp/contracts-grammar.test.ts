@@ -78,9 +78,9 @@ describe("tagged frozen-contract shape grammar", () => {
 });
 
 describe("STRAT-LEARN-COST frozen contract declarations", () => {
-  it("freezes surface 24 and rejects undeclared nested usage-report keys", async () => {
+  it("freezes surface 25 and rejects undeclared nested usage-report keys", async () => {
     const surface = await mcpSurface();
-    expect(surface.surface).toBe(24);
+    expect(surface.surface).toBe(25);
     expect(surface.tools.stratum_usage_report).toBeDefined();
     await expect(assertToolRequest("stratum_usage_report", {
       runId: "run-1",
@@ -120,7 +120,7 @@ describe("STRAT-LEARN-COST frozen contract declarations", () => {
   });
 
   it("freezes events 4 and validates every newly declared event shape strictly", async () => {
-    expect((await eventContract()).events).toBe(5);
+    expect((await eventContract()).events).toBe(6);
     await expect(assertEvent({
       at: "2026-08-30T00:00:00.000Z",
       type: "usage_debit",
