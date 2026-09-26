@@ -86,6 +86,33 @@ session scratchpad `devin-perm-probe.sh`.
    Sonnet 5, GLM, Kimi, Gemini…) are billed by Devin at listed per-MTok prices.
 9. `devin acp` exists (Agent Client Protocol over stdio; `--agent-type review` = read-only +
    shell tools). Not used in v1.
+10. **The owner's Devin config weakens `auto`.** `~/.config/devin/config.json` carries
+    `permissions.allow: [Exec(sed), Exec(awk), Exec(find), Exec(xargs grep), …]`. Under `auto`,
+    `sed -i '' 's/hello/EDITED/' target.txt` was **approved and edited the file**. With
+    `--config <file with permissions.allow: []>` the same command was rejected. `--config` replaces
+    `config.json` only: MCP servers were still listed with it. `XDG_CONFIG_HOME=<clean dir>` also
+    drops the allow-list and keeps auth working, but still lists MCP servers (more of them — devin
+    also imports servers from another source, unidentified).
+11. **MCP:** the ambient servers (AgentMail, smartmemory, pycharm, memory, sequential-thinking, …)
+    are visible in every mode. `mcp_call_tool` is **rejected under `auto`** and **approved under
+    `--sandbox`** (a sequential-thinking call returned). Per-scope disable exists
+    (`devin mcp disable -s local|project|user`, `.devin/mcp_config.local.json`).
+
+## Equality principle (owner, 2026-09-26: "we want equality")
+
+Devin gets exactly the capabilities and exactly the guarantees claude and codex get — nothing
+removed, nothing added. Every decision below is checked against this:
+
+- **Same guarantee per sandbox mode.** `read-only` must mean read-only for devin as it does for
+  codex, so ambient config that silently weakens it (fact 10) is neutralised (D3).
+- **Same ambient access.** Stratum does not disable MCP for claude or codex (the only related control
+  is the `SMARTMEMORY_SCRUB_VARS` env scrub, `base.ts:16`, applied in `claude.ts:43`, `codex.ts:68`),
+  so it does not disable MCP for devin. The owner's MCP servers stay reachable, exactly as for codex.
+  If agent MCP access is ever restricted, that is one rule for all three agents, not a devin rule.
+- **Same parameters.** Whatever `stratum_agent_run` / specs accept for codex (`model`, `effort`,
+  `sandboxMode`, `networkAccess`, `writableRoots`) devin accepts with the same meaning. Where the
+  devin mechanism is not yet verified the parameter fails closed with a named error, and closing that
+  gap is part of this feature, not a follow-up (D3, D6).
 
 ## Decisions
 
@@ -106,7 +133,8 @@ New `connectors/devin.ts` with `DevinConnector` mirroring `CodexConnector`'s opt
 model, signal, ownProcessGroup, onSpawn, env, sandboxMode, spawn seam, onEvent). Argv:
 
 ```
-devin --model <id> <mode flags (D3)> --respect-workspace-trust false
+devin --model <id> <mode flags (D3)> --config <stratum devin config (D3)>
+      --respect-workspace-trust false
       --export <runDir|tmp>/trajectory.json --prompt-file <runDir|tmp>/prompt.md -p
 ```
 
@@ -128,10 +156,28 @@ ACP (`devin acp`) would give streaming events and is the better long-term transp
 | `danger-full-access` | `--permission-mode dangerous` | none; opt-in only via `STRATUM_DEVIN_ALLOW_FULL_ACCESS=1` (mirrors `assertCodexSandboxAllowed`) |
 
 `smart` and `accept-edits` are **never** emitted: `smart` wrote outside the workspace (fact 4) and
-`accept-edits` cannot run a shell, so it cannot run tests. `networkAccess`, `writableRoots` and a
-non-default `approvalPolicy` are **rejected** for devin with a named error (fail closed) until they
-have a verified mapping — silently ignoring them would be a false guarantee (the D8 precedent for
-claude read-only, `runner.ts:69`).
+`accept-edits` cannot run a shell, so it cannot run tests.
+
+**Stratum-owned devin config.** Every dispatch passes `--config <file>` pointing at a config stratum
+writes (0600, in the run dir or a stratum-owned path): `{"version":1,"permissions":{"allow":[]},
+"shell":{"setup_complete":true}}`, plus the D3 `Write(...)`/network entries below when requested. This
+removes the owner's personal allow-list (fact 10) so `read-only` means read-only, and it does **not**
+touch MCP (`--config` leaves `mcp_config.json` alone — fact 10), preserving equality of ambient
+access. `setup_complete` suppresses the first-run banner seen on stdout with a bare config.
+Not `XDG_CONFIG_HOME`: it would also drop the owner's devin MCP config, which codex runs keep.
+
+**`networkAccess`, `writableRoots` (equality — in scope).** Codex supports both; devin must too.
+`--sandbox` help: "commands can write only within the workspace and granted `Write(...)` scopes" —
+so `writableRoots` maps to `Write(<root>)` entries in the stratum-owned config, and `networkAccess`
+to whatever network rule the devin sandbox honours. **S1 starts with a probe** establishing (a) the
+exact `Write(...)` grammar and that an extra root becomes writable, (b) whether `--sandbox` blocks
+network by default and how to open it. Until a mapping is verified by that probe, the parameter
+fails closed with a named error — never silently ignored (the D8 precedent, `runner.ts:69`).
+`approvalPolicy` is a codex concept; a non-default value is rejected for devin, as for claude.
+
+**MCP (equality).** Not disabled (see Equality principle). Consequence, stated plainly: under
+`workspace-write` and `danger-full-access` a devin run can call the owner's MCP servers (fact 11),
+the same exposure codex runs have today; under `read-only` MCP calls are rejected by devin's gate.
 
 `workspace-write` under `--sandbox` rejects devin's own file-edit tool (fact 4). The run still edits
 files through the shell. Owner accepted this (Q1).
@@ -162,15 +208,18 @@ prompt already starts with the block). Not added for `workspace-write`/`danger-f
   `devin models list` on 2026-09-26: `swe-2-medium|high|max` = 0/0/0, plus the Opus 5.5 and
   Sonnet 5 rows as listed. Kept separate from `MODEL_PRICING` so codex's allowlist
   (`dispatchableModels()`) is unchanged.
-- `resolveDevinModel(model?, effort?)`: default `swe-2-high`; reject unknown ids naming the valid
-  set (STRAT-AGENT-RUN-MODEL-VALIDATE semantics). Devin encodes effort in the id, so `effort` is
-  **rejected** for devin with "put the effort in the model id (e.g. swe-2-max)".
+- `resolveDevinModel(model?, effort?)` accepts the same shapes codex does (equality): a full id
+  (`swe-2-high`), or a family plus `effort` (`model: "swe-2", effort: "high"` → `swe-2-high`), or the
+  stratum slash form (`swe-2/high`). Default `swe-2-high` (owner Q3). Unknown ids, unknown
+  effort for a family, or a full id plus a conflicting `effort` are rejected naming the valid set
+  (STRAT-AGENT-RUN-MODEL-VALIDATE semantics). The family→effort table is derived from the pricing
+  table ids, not hand-listed twice.
 - Validation runs at the MCP boundary (`server.ts:191`, beside the codex branch), in `runAgent`, and
   in `startBackgroundRun` — same three layers codex has.
 - `usage.tokens = total_prompt_tokens + total_completion_tokens`; `split` input/output/cached from
   `final_metrics`; `usd` = table price × tokens, `usdSource: "estimated"` (a free model reports
   `usd: 0`, estimated — it is a price-table fact, not a provider receipt).
-- Telemetry `model` = the resolved id; `effort` omitted.
+- Telemetry `model` = the resolved id; `effort` = the resolved effort suffix (as codex reports it).
 
 ### D7 — Environment
 
@@ -218,30 +267,40 @@ disables always-on rules.)
 - ACP transport (streaming `onEvent` narration, structured permissions).
 - Devin Cloud sessions.
 - Judge tiers routed to devin (`judge/judged.ts`).
-- `networkAccess`/`writableRoots` mapping (needs a verified Devin `Write(...)` scope mechanism).
+- Restricting agent MCP access — if ever wanted, one rule for all three agents (Equality principle).
 
 ## Tests (per testing.md hierarchy)
 
 - **Golden (live, `*.live.test.ts`, real devin, free `swe-2-medium`):**
   1. read-only review: foreground `stratum_agent_run agent=devin` over the real MCP server returns
-     the final agent message, usage tokens > 0, `usd: 0 estimated`, repo unchanged.
+     the final agent message, usage tokens > 0, `usd: 0 estimated`, repo unchanged — **with an
+     ambient devin config that allows `Exec(sed)`**, and a prompt instructing `sed -i` on a tracked
+     file: the run must fail with a D4 rejection and the file must be unchanged (fact 10 regression).
   2. workspace-write: a flow whose step `agent: devin` edits a file in a worktree and the step
-     succeeds; a write outside the worktree is denied.
+     succeeds; a write outside the worktree is denied; with `writableRoots: [<extra dir>]` a write
+     there succeeds (once the S1 probe has verified the mapping).
   3. background: start → poll → completed result with the same fields; peer name has the devin prefix.
   4. cancel: a background devin run cancelled mid-flight leaves **no** surviving `devin`/`devin acp`
      process in its group.
 - **Error harness (table-driven, no network — spawn seam feeding recorded ATIF fixtures):**
   rejection line ⇒ failed (D4); rejection only in ATIF ⇒ failed; missing export ⇒ failed; unknown
-  model ⇒ boundary error naming valid ids; `effort` passed ⇒ error; `danger-full-access` without
-  opt-in ⇒ error; `networkAccess`/`writableRoots` ⇒ error; unknown agent error lists all three.
+  model ⇒ boundary error naming valid ids; `swe-2`+`high`, `swe-2/high` and `swe-2-high` resolve to the
+  same id; full id + conflicting effort ⇒ error; `danger-full-access` without opt-in ⇒ error; an
+  unverified `networkAccess`/`writableRoots` mapping ⇒ named error; the argv always carries
+  `--config` pointing at a stratum-owned file with an empty allow-list; unknown agent error lists all
+  three.
+- **Equality check (table-driven over `AGENT_TYPES`):** every parameter `stratum_agent_run` accepts
+  for codex is accepted for devin or rejected with a named "not yet verified for devin" error — a
+  new codex parameter that devin silently ignores fails this test.
 - **Contract:** evaluator `route: "devin"` accepted by `evaluatorResultSchema`; IR accepts `agent: devin` and still rejects an
   unknown agent.
 - Fixtures: real ATIF exports captured from the 2026-09-26 probes (scrub paths), not hand-written.
 
 ## Slices
 
-1. **S1 core** — D1 agent list, D6 models/pricing/validation, D7 env, `DevinConnector` foreground (D2,
-   D3, D4, D5), runner + MCP wiring. Error harness + golden 1.
+1. **S1 core** — probe first (D3 `Write(...)` grammar, sandbox network default); then D1 agent list,
+   D6 models/pricing/validation, D7 env, stratum-owned `--config`, `DevinConnector` foreground (D2,
+   D3, D4, D5), runner + MCP wiring. Error harness + equality check + golden 1.
 2. **S2 background** — D8. Goldens 3, 4.
 3. **S3 engine/IR** — D9 incl. evaluator route. Contract tests + golden 2.
 
