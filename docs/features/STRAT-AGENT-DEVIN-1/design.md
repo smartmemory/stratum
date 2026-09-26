@@ -21,6 +21,13 @@ wrapper on both paths deletes the credential copy the moment devin exits (M3); t
 signals to processes outside the sandbox (L5); the audit's types are settled (L4); the stdout "cap" is
 replaced by codex-background parity (L6); full-access wording no longer overclaims (L7).
 
+**Revision 5 (2026-09-26):** after the r4 fixes-only review (5 of 7 closed; H1 partly open; 2 M + 3 L
+new — §Review r4): the grant check protects all of `~/.stratum` in both directions with identical
+canonicalization on both sides (N1); the signal golden targets an outside process (N2); foreground
+stdout uses codex's real kill-on-overrun rule (N3); devin's stdout is `narrationPath` and bypasses
+every shared sentinel call (N4); cancel and a pid+start-time sweep over both run roots close the
+credential leak paths (N5).
+
 ## Related Documents
 
 - `docs/features/STRAT-AGENT-RUN-MODEL-VALIDATE/design.md` — boundary model validation this extends
@@ -206,8 +213,8 @@ devin --model <id> --permission-mode dangerous --config <A>/home/config/devin/co
       --export <A>/trajectory.json --prompt-file <runDir>/prompt.md -p
 ```
 
-**Run-dir layout (review r2 H2).** `runDir` is 0700 (the background run dir, or a foreground temp dir
-removed after the result is read). Supervisor-owned files — `meta.json`, `stream.jsonl`, `.err`,
+**Run-dir layout (review r2 H2).** `runDir` is 0700 (the background run dir, or a foreground run dir
+under `~/.stratum/ts/devin_fg/`, removed after the result is read — inside the protected root `S`, D3). Supervisor-owned files — `meta.json`, `stream.jsonl`, `.err`,
 `peer.json`, `exit.rc`, `devin.sb`, `prompt.md` — live directly in `runDir`, which the profile
 **never** grants. The agent-writable area is `A = <runDir>/agent/` only: the per-run devin home
 (`home/{data,cache,config,state}`), `tmp/`, and the export. So an agent cannot delete or corrupt
@@ -229,10 +236,16 @@ would leave one live `credentials.toml` per run forever. Instead the supervisor 
 paragraph) — used on **both** the foreground and background paths — deletes
 `A/home/data/devin/credentials.toml` as soon as devin exits, before it writes `exit.rc`. Because the
 wrapper is a separate process outside the sandbox, the copy is removed even if the stratum server dies
-mid-run. The remaining leak window is the wrapper itself being killed with SIGKILL from outside
-(the agent cannot signal it — D3 profile, r3 L5); stratum additionally sweeps, on every devin dispatch,
-any `agent_runs/*/agent/home/data/devin/credentials.toml` whose run has an `exit.rc` or a dead wrapper
-pid. The rest of `A` (trajectory, cache) follows codex's run-dir retention, i.e. none today.
+mid-run. **Where the wrapper cannot run its `rm`** (r4 fixes-review N5): (a) stratum's own cancel
+signals the whole group, wrapper included — so the devin cancel path, which runs in stratum outside
+the sandbox, deletes the copy itself once the group is confirmed dead; (b) the wrapper killed from
+outside by anything else — covered by a sweep on every devin dispatch that removes
+`credentials.toml` under **both** devin run roots (`~/.stratum/ts/agent_runs/*/agent/…` and the devin
+foreground root `~/.stratum/ts/devin_fg/*/agent/…`, where foreground run dirs are created, 0700)
+for any run that has an `exit.rc`, or whose wrapper is dead by **process identity** — pid **and**
+`procStartTime`, the same identity check the peer sidecar and foreground registry use, so a reused
+pid does not read as alive. The agent cannot signal the wrapper (D3 profile, r3 L5). The rest of `A`
+(trajectory, cache) follows codex's run-dir retention, i.e. none today.
 
 stdin `/dev/null` (a CLI that reads stdin stalls otherwise — same landmine as codex exec). Prompt
 goes through a 0600 file, never argv (prompts are private, and argv is visible in `ps`). The result
@@ -250,8 +263,11 @@ plain agent text and is **never** parsed for the codex T2F5 sentinel — a print
 export-derived result (D8).
 
 **Narration stream (review r2 L6, L10; r3 L6).** stdout → `stream.jsonl`'s devin counterpart
-(`stdout.log`, plain text). Bounds are codex parity, not more: the **foreground** connector keeps the
-last `resolveStdoutLimit()` bytes in memory exactly as `codex.ts:272,352` does; the **background**
+(`stdout.log`, plain text). Bounds are codex parity, not more: the **foreground** connector applies
+codex's overrun rule (`codex.ts:399-426`) — a single line, or an unterminated pending buffer, longer
+than `resolveStdoutLimit()` kills the group and fails the run with the same overrun error; stderr keeps
+its last `resolveStdoutLimit()` bytes, as codex's does (r4 fixes-review N3: r4 wrongly called this a
+keep-the-tail buffer). The **background**
 file is a plain `>` redirect with **no cap**, as codex's background `stream.jsonl` has none (a real
 bound needs a supervisor reader on a pipe — a follow-up for both agents, not a devin feature). The
 r3 design's "head dropped, tail retained" file cap is withdrawn: it cannot be done under a live fd.
@@ -287,13 +303,20 @@ Paths are realpath-resolved before emission (macOS `/tmp`→`/private/tmp` firml
 seatbelt string escaping; a path containing a character the escaper cannot represent is rejected,
 never emitted raw.
 
-**Every grant is checked against the run directories (review r3 H1).** The check applies to **each**
-path the profile would grant beyond `A` — `cwd` under `workspace-write` as well as every
-`writableRoots` entry — after realpath resolution. A grant `p` is rejected with
-`devin cannot grant <p>: it contains stratum's run directory` when `p` equals or is an ancestor of
-`runDir` or of the background runs root (`~/.stratum/ts/agent_runs`, `background.ts:135` — sibling
-runs' supervisor files must not be writable either), or when `p` lies inside `runDir` but outside
-`A`. So `workspace-write` with `cwd` = `$HOME`, `~/.stratum`, `/` or a foreground temp root fails
+**Every grant is checked against stratum's state root (review r3 H1, r4 fixes-review N1).** The check
+applies to **each** path the profile would grant beyond `A` — `cwd` under `workspace-write` as well as
+every `writableRoots` entry. Protected root `S` = `~/.stratum` (it holds `ts/agent_runs`,
+`background.ts:135`, the foreground registry `ts/agent_fg`, `foreground_registry.ts:13`, and devin's
+foreground run dirs, D2). A grant `p` is rejected with `devin cannot grant <p>: it overlaps stratum's
+state directory` when `p` **overlaps `S` in either direction** — `p` equals `S`, is an ancestor of `S`,
+or is anywhere inside `S` — unless `p` is inside this run's own `A`. Inside-`S` grants are refused
+because every run dir and registry record there is a supervisor input: a writable sibling
+`stream.jsonl` forges codex completion (`background.ts:680-683`), a writable `meta.json` redirects
+cancel, and a forged `agent_fg` record turns stratum's unsandboxed cancel sweep
+(`foreground_registry.ts:323-355`) into a kill-anything deputy. **Both sides are canonicalized the
+same way** before comparison: realpath (firmlinks, symlinks, `..`), then case-folded (APFS is
+case-insensitive by default; folding over-rejects only on a case-sensitive volume, which is the safe
+direction). So `workspace-write` with `cwd` = `$HOME`, `~/.stratum`, anything under it, or `/` fails
 before spawn. (Codex has the same exposure today — `workspace-write` with `cwd=$HOME` lets codex
 rewrite its own `meta.json`; the same check for codex is a named follow-up, not silently skipped.)
 
@@ -392,7 +415,11 @@ model, D7's scrub, and `STRATUM_DEVIN_ALLOW_FULL_ACCESS`.
   to idle on any `{"__t2f5_done__":N}` line in the stream it is handed (`peer-sidecar.ts:343-351`).
   For codex that line is unforgeable (agent text is wrapped in codex's JSON envelope); devin's
   `stdout.log` is raw agent text. So for `agent: "devin"`: `loadMeta` derives
-  `<runDir>/stdout.log` (still from the validated run dir, never from the record), and the sidecar is
+  `<runDir>/stdout.log` (still from the validated run dir, never from the record) and returns it as
+  **`narrationPath`, never `streamPath`** (r4 fixes-review N4), so no shared sentinel consumer can be
+  handed it by accident. The devin branch sits **before**, and **instead of**, every shared
+  sentinel call — `scanStream` at poll (`background.ts:480`) and cancel (`:606`), and
+  `writeSentinelIfAbsent` (`:720-725`); none of them runs for a devin run. The sidecar is
   started in an **exit.rc mode** — it never scans any stream, and its terminal signal is the
   appearance of `<runDir>/exit.rc` (or the wrapper pid's death, recorded as an error). The
   `__t2f5_done__` scan stays codex-only.
@@ -488,7 +515,10 @@ isolation the run did not have.
      same `devin-…` peer name; a run whose agent prints `{"__t2f5_done__":0}` mid-run still polls as
      `running` until it really exits (r2 M3), **and** its peer record stays non-idle with no
      `peer_idle_notice` until `exit.rc` appears (r3 M2); after exit the run dir holds no
-     `credentials.toml` (r3 M3); the agent's `kill -STOP $PPID` fails and the run completes (r3 L5).
+     `credentials.toml` (r3 M3); the test starts an **outside** process (`sleep 300`, not in the sandbox),
+puts its pid in the prompt, asks the agent to `kill -STOP` it — the kill fails, the process's state
+is not `T`, and the run completes (r3 L5; r4 fixes-review N2: `$PPID` is a same-sandbox process,
+which the rule deliberately lets the agent signal).
   4. cancel: a background devin run cancelled mid-flight leaves **no** surviving `sandbox-exec`/
      `devin`/`devin acp` process in its group.
 - **Error harness (table-driven, no network — spawn seam feeding recorded ATIF fixtures):**
@@ -506,10 +536,15 @@ isolation the run did not have.
   the generated profile contains `cwd` only for workspace-write, each `writableRoots` entry, and
   rejects an unescapable path; the profile never grants `runDir`, `~/.cache`, `~/.config/devin`,
   `~/.local/share/devin`, `$TMPDIR` or `/private/var/folders`; a `writableRoots` entry **or a
-  workspace-write `cwd`** equal to or containing `runDir` or the runs root, or inside `runDir` but
-  outside `A`, ⇒ named error before spawn (table rows: `cwd=$HOME`, `cwd=~/.stratum`, `cwd=/`,
-  `writableRoots=[<runDir>/..]`, `writableRoots=[<runDir>]`; `writableRoots=[<A>/x]` is accepted —
-  r3 H1); the profile contains the signal rule; the spawn env sets all four `XDG_*_HOME` and `TMPDIR`
+  workspace-write `cwd`** overlapping `~/.stratum` ⇒ named error before spawn (table rows:
+  `cwd=$HOME`, `cwd=~/.stratum`, `cwd=/`, `writableRoots=[<runDir>/..]`, `[<runDir>]`,
+  `[~/.stratum/ts/agent_runs/<sibling>]`, `[~/.stratum/ts/agent_fg]`, a symlink to `~/.stratum`, and a
+  case variant `~/.STRATUM`; `writableRoots=[<A>/x]` is accepted — r3 H1, r4 N1); the profile
+  contains the signal rule; a devin poll/cancel never calls `scanStream`/`writeSentinelIfAbsent`
+  (spy), and a `{"__t2f5_done__":0}` line in `stdout.log` does not change cancel's verdict (r4 N4);
+  foreground stdout overrun ⇒ group killed + overrun error (r4 N3); cancel removes the credential
+  copy; the sweep removes a copy under `devin_fg` and treats a live pid with a different
+  `procStartTime` as dead (r4 N5); the spawn env sets all four `XDG_*_HOME` and `TMPDIR`
   under `A`; the per-run home holds exactly `credentials.toml` (0600), `mcp_config.json` and the
   stratum `config.json`; the wrapper removes `credentials.toml` before writing `exit.rc` on exit 0,
   non-zero and signal death; the dispatch-time sweep removes a stale copy from a run with `exit.rc`;
@@ -593,3 +628,16 @@ for `read-only`; H2 only partly (finding H1 below); M3 closed for poll but not f
 **Gate decision (Claude, r4):** r3 was planned as the final full round (review-loop budget ~3). r4's
 changes are local to the seven findings; r4 goes to a **fixes-only** review (does each resolution close
 its finding without opening a new hole), not a fourth full review.
+
+## Review r4 — fixes-only (Devin SWE-2 High, read-only seatbelt, 2026-09-26) — NOT CLEAN
+
+Closed: M2, M3, L4, L5, L6, L7. H1 partly open (N1). All new findings confirmed by Claude against
+source (`foreground_registry.ts:13`, `background.ts:480,606,720-725`, `codex.ts:399-426`):
+
+| # | Sev | Finding | Resolution (r5) |
+|---|---|---|---|
+| N1 | M | grant rule missed descendants of the runs root and the `agent_fg` registry root; runDir side not canonicalized ⇒ sibling-stream forgery, cancel redirection, forged `agent_fg` record makes stratum's cancel kill an arbitrary process | D3: protect all of `~/.stratum`, both directions, identical realpath + case-fold on both sides |
+| N2 | M | golden `kill -STOP $PPID` targets a same-sandbox process, which the rule allows ⇒ run hangs | golden targets an outside `sleep` |
+| N3 | L | codex foreground is kill-on-overrun, not keep-tail | D2 narration: codex's overrun rule |
+| N4 | L | `stdout.log` returned as `streamPath`; shared `scanStream`/`writeSentinelIfAbsent` run before any agent branch | D8: `narrationPath`; devin branch replaces those calls |
+| N5 | L | cancel kills the wrapper before `rm`; pid reuse defeats "dead wrapper"; sweep missed foreground dirs | D2: cancel deletes the copy; pid+`procStartTime`; sweep both roots (`devin_fg` new) |
