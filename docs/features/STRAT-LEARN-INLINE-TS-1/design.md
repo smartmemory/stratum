@@ -258,6 +258,22 @@ DELIVER-1 lifecycle slice is live and those three clusters have `retired` transi
 them. The suppression rule and its reader are DELIVER-1's (§A3 above); this feature adds no second
 lifecycle.
 
+**Done 2026-09-26 (retirement + dry run; enabling still waits for the stratum release).** The three
+clusters, identified by a read-only `learn harvest` of the live store (516 runs):
+
+| Workspace | clusterId | Failure | fix-ref |
+|---|---|---|---|
+| stratum | `73a33b0d401e…` | `outcome` enum | compose `ed8e333` |
+| compose | `9be9489674f8…` | `outcome` enum | compose `ed8e333` |
+| compose | `cbde3f231a97…` | `commit_hash` null | stratum `2968930` |
+
+Each got a `retire` row (`<root>/.stratum/learn/lifecycle.jsonl`). The dry run replays the inline pass's
+own steps (harvest → canonicalize → classify → `authorCandidate` → `isSuppressed(lessonLifecycle)`, this
+file's pass at `learn/inline.ts:62-96`) without `stageCandidates` or the log row: **3 durable clusters
+in scope, all suppressed, would stage 0.** (The manual `learn harvest` command lists them regardless:
+it does not apply lifecycle suppression; the inline pass does.) Compose's `.gitignore` gains
+`.stratum/` on `comp-learn-summary`.
+
 ### A7. The switch
 
 - `[learn] inline = true|false` in `stratum.toml`, env `STRATUM_LEARN_INLINE`, project layer = the
@@ -338,8 +354,8 @@ Tests: `tests/learn/inline.test.ts`, `tests/learn/surface.test.ts`, `tests/confi
       automatically when the switch is OFF for that root.
 - [ ] Retired/dismissed clusters with only older evidence are not staged; an unreadable lifecycle
       stages nothing and logs.
-- [ ] Not enabled for stratum/compose until the three hand-fixed clusters are retired and a dry run
-      stages none of them (§A6).
+- [x] The three hand-fixed clusters are retired and a dry run stages none of them (§A6, 2026-09-26).
+      Still not enabled: enabling follows the stratum release.
 - [ ] A durable lesson reaches a human without anyone running a command.
 
 ## Explicitly NOT in scope

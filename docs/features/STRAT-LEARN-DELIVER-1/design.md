@@ -220,6 +220,11 @@ repair path, adding it is a Compose-only follow-up.
   checkpoint-time `detail.lessons`, and D6 outcomes count offers from events — so a revert that
   drops `R` still counts `R` as offered once. A fix needs a repin event plus a supersession rule in
   `outcomes.ts`.
+  **Accepted residual (owner, 2026-09-26):** a candidate staged with the singular `leafArrayDepth` of
+  `361b89b` keeps it when re-harvested with more depths, because restaging an existing revision writes
+  nothing (`learn/candidate.ts:259`). That format existed only in an unpushed intermediate commit and
+  was never run by any server, so no candidate in the wild carries it; candidates without depth keep
+  any-depth matching and new ones carry `leafArrayDepths`.
 
 ### D5. Lifecycle (the interface INLINE-TS-1 reads)
 
