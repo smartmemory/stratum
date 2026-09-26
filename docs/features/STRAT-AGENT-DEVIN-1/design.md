@@ -14,6 +14,13 @@ and two more probes (facts 14–15): each run gets a private devin home and the 
 shared (H1, L8); supervisor files sit outside the only agent-writable area (H2); the exit status
 travels in `exit.rc`, never stdout (M3); the audit records the enforced network boundary (M4).
 
+**Revision 4 (2026-09-26):** after review r3 (NOT CLEAN, 1 H + 2 M + 4 L, all confirmed — §Review r3):
+every granted path (`cwd` too, not only `writableRoots`) is checked against the run directories (H1);
+the peer sidecar and `loadMeta` get a devin branch that never scans stdout (M2); one supervisor
+wrapper on both paths deletes the credential copy the moment devin exits (M3); the profile denies
+signals to processes outside the sandbox (L5); the audit's types are settled (L4); the stdout "cap" is
+replaced by codex-background parity (L6); full-access wording no longer overclaims (L7).
+
 ## Related Documents
 
 - `docs/features/STRAT-AGENT-RUN-MODEL-VALIDATE/design.md` — boundary model validation this extends
@@ -214,8 +221,18 @@ granted. Consequences: no shared devin state is writable from inside a run (no p
 owner's later sessions); each run starts with a cold devin cache (model/team settings re-fetched,
 stdio MCP servers resolve their own deps into `A/home/cache`) — a latency cost, measured in S1; a
 token refresh inside a run updates only the copy. Missing credentials ⇒ named failure
-`devin is not logged in (run \`devin auth\`)`, before spawn. `A` is removed with the run dir
-(background: on the same retention as codex runs; foreground: after the result is read).
+`devin is not logged in (run \`devin auth\`)`, before spawn.
+
+**The credential copy lives only while devin runs (review r3 M3).** Background run dirs have no
+retention path at all (nothing in `ts/src` removes `agent_runs` dirs), so "removed with the run dir"
+would leave one live `credentials.toml` per run forever. Instead the supervisor wrapper (next
+paragraph) — used on **both** the foreground and background paths — deletes
+`A/home/data/devin/credentials.toml` as soon as devin exits, before it writes `exit.rc`. Because the
+wrapper is a separate process outside the sandbox, the copy is removed even if the stratum server dies
+mid-run. The remaining leak window is the wrapper itself being killed with SIGKILL from outside
+(the agent cannot signal it — D3 profile, r3 L5); stratum additionally sweeps, on every devin dispatch,
+any `agent_runs/*/agent/home/data/devin/credentials.toml` whose run has an `exit.rc` or a dead wrapper
+pid. The rest of `A` (trajectory, cache) follows codex's run-dir retention, i.e. none today.
 
 stdin `/dev/null` (a CLI that reads stdin stalls otherwise — same landmine as codex exec). Prompt
 goes through a 0600 file, never argv (prompts are private, and argv is visible in `ps`). The result
@@ -223,15 +240,22 @@ text and usage are read from the export (fact 6). Missing/unparseable export, or
 failure `devin produced no trajectory: <stderr tail>` (never an empty success) — this also covers the
 connection-error exit 1 (fact 2).
 
-**Exit status channel (review r2 M3).** The background wrapper is a supervisor shell **outside** the
-sandbox: `sandbox-exec … devin …; echo $? > <runDir>/exit.rc` (atomic rename). Devin's stdout is
+**Exit status channel (review r2 M3).** Both paths spawn a supervisor shell **outside** the
+sandbox: `sandbox-exec … devin …; rc=$?; rm -f <A>/home/data/devin/credentials.toml; echo $rc >
+<runDir>/exit.rc.tmp && mv <runDir>/exit.rc.tmp <runDir>/exit.rc`. The foreground connector waits
+on the wrapper and reads `exit.rc`, so foreground and background share one status and cleanup
+mechanism. Devin's stdout is
 plain agent text and is **never** parsed for the codex T2F5 sentinel — a printed
 `{"__t2f5_done__":N}` line means nothing for a devin run. Terminal status = `exit.rc` present +
 export-derived result (D8).
 
-**Narration stream (review r2 L6, L10).** stdout → `stream.jsonl`'s devin counterpart
-(`stdout.log`, plain text) capped like codex (`resolveStdoutLimit` bound; beyond it the head is
-dropped and a truncation marker kept, the tail retained). Poll reports `textTail` = the last bytes of
+**Narration stream (review r2 L6, L10; r3 L6).** stdout → `stream.jsonl`'s devin counterpart
+(`stdout.log`, plain text). Bounds are codex parity, not more: the **foreground** connector keeps the
+last `resolveStdoutLimit()` bytes in memory exactly as `codex.ts:272,352` does; the **background**
+file is a plain `>` redirect with **no cap**, as codex's background `stream.jsonl` has none (a real
+bound needs a supervisor reader on a pipe — a follow-up for both agents, not a devin feature). The
+r3 design's "head dropped, tail retained" file cap is withdrawn: it cannot be done under a live fd.
+Poll reports `textTail` = the last bytes of
 that log and `eventsSeen` = the export's step count once it exists (0 before — the export is written
 at run end, fact 6). Codex stream-error detection (`codexErrorMessage`, `scan.error`) is never
 consulted for devin.
@@ -251,17 +275,37 @@ the way codex's own seatbelt bounds codex's tools (fact 13).
 |---|---|---|
 | `read-only` (default) | `sandbox-exec -f devin.sb` | `A` only (per-run devin home, tmp, export) |
 | `workspace-write` | `sandbox-exec -f devin.sb` | `A` + `cwd` + each `writableRoots` entry |
-| `danger-full-access` | none | everything; opt-in only via `STRATUM_DEVIN_ALLOW_FULL_ACCESS=1` (mirrors `assertCodexSandboxAllowed`; D11). Still uses the per-run home (D2) so runs never share state. |
+| `danger-full-access` | none | everything; opt-in only via `STRATUM_DEVIN_ALLOW_FULL_ACCESS=1` (mirrors `assertCodexSandboxAllowed`; D11). Still uses the per-run home (D2), which only redirects devin's **own** XDG writes — with no sandbox the agent can still write the owner's real devin state. No isolation guarantee in this mode, as for codex's. |
 
 **Profile** (generated per run, 0600, in `runDir`): `(version 1) (allow default) (deny file-write*)
 (allow file-write* (subpath A) [(subpath cwd)] [(subpath root)…] (literal "/dev/null")
-(literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$") (regex #"^/dev/fd/"))` — facts 13 and 15. **No**
+(literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$") (regex #"^/dev/fd/")) (deny signal)
+(allow signal (target same-sandbox))` — facts 13 and 15; the signal rule is r4, below. **No**
 `~/.cache`, `~/.config/devin`, `~/.local/share/devin`, `$TMPDIR` or `/private/var/folders` grant
 (r2 H1, L8): devin's state is redirected into `A` by D2's env, and `TMPDIR` points at `A/tmp`.
 Paths are realpath-resolved before emission (macOS `/tmp`→`/private/tmp` firmlinks) and quoted with
 seatbelt string escaping; a path containing a character the escaper cannot represent is rejected,
-never emitted raw. A `writableRoots` entry equal to or containing `runDir` is rejected (it would
-re-grant the supervisor files). Symlinks: seatbelt checks the resolved target, so a workspace
+never emitted raw.
+
+**Every grant is checked against the run directories (review r3 H1).** The check applies to **each**
+path the profile would grant beyond `A` — `cwd` under `workspace-write` as well as every
+`writableRoots` entry — after realpath resolution. A grant `p` is rejected with
+`devin cannot grant <p>: it contains stratum's run directory` when `p` equals or is an ancestor of
+`runDir` or of the background runs root (`~/.stratum/ts/agent_runs`, `background.ts:135` — sibling
+runs' supervisor files must not be writable either), or when `p` lies inside `runDir` but outside
+`A`. So `workspace-write` with `cwd` = `$HOME`, `~/.stratum`, `/` or a foreground temp root fails
+before spawn. (Codex has the same exposure today — `workspace-write` with `cwd=$HOME` lets codex
+rewrite its own `meta.json`; the same check for codex is a named follow-up, not silently skipped.)
+
+**Signals (review r3 L5).** `(allow default)` would let the agent `kill -STOP`/`-KILL` the
+supervisor wrapper (stalling or orphaning the run) or the stratum server. The profile adds
+`(deny signal) (allow signal (target same-sandbox))` so devin and its children can signal each other
+but nothing outside the sandbox. **Probed 2026-09-26** (macOS 26.6, `sandbox-exec` with exactly
+`(allow default) (deny signal) (allow signal (target same-sandbox))`): `kill` of a child inside the
+sandbox → rc 0; `kill -STOP` of a process outside → `Operation not permitted`, target state unchanged
+(`SN`).
+
+Symlinks: seatbelt checks the resolved target, so a workspace
 symlink pointing outside the granted set is still denied — asserted in golden 2.
 
 - **Writes fail as EPERM, the run continues** (fact 13), so read-only no longer needs a command
@@ -343,6 +387,15 @@ model, D7's scrub, and `STRATUM_DEVIN_ALLOW_FULL_ACCESS`.
 
 - **Result/poll/reattach** read the export in the run dir once the process has exited; stdout is the
   narration stream. The cost estimate at `background.ts:698` extends to devin via D6.
+- **`loadMeta` and the peer sidecar get a devin branch (review r3 M2).** `loadMeta` hardcodes
+  `stream.jsonl` (`background.ts:657`) and the detached peer sidecar's `scan()` flips the peer record
+  to idle on any `{"__t2f5_done__":N}` line in the stream it is handed (`peer-sidecar.ts:343-351`).
+  For codex that line is unforgeable (agent text is wrapped in codex's JSON envelope); devin's
+  `stdout.log` is raw agent text. So for `agent: "devin"`: `loadMeta` derives
+  `<runDir>/stdout.log` (still from the validated run dir, never from the record), and the sidecar is
+  started in an **exit.rc mode** — it never scans any stream, and its terminal signal is the
+  appearance of `<runDir>/exit.rc` (or the wrapper pid's death, recorded as an error). The
+  `__t2f5_done__` scan stays codex-only.
 - **Terminal status** is derived from `exit.rc` (D2 — never from stdout) plus the export: `exit.rc`
   = 0 + a valid export with a final agent message = `completed`; anything else (no export, D4
   rejection, non-zero rc) = error. No `exit.rc` + live process identity = running.
@@ -397,8 +450,14 @@ for codex), while an explicit dispatch-level `approvalPolicy` for devin is rejec
 
 **Audit records the enforced boundary, not the requested one (r2 M4).** `sandboxAudit` for devin
 records `filesystemMode` and `writableRoots` as resolved (they are enforced), **`networkAccess: true`**
-(what the run actually has, with provenance `enforced: devin requires network`), and omits
-`approvalPolicy`. A devin audit must never assert isolation the run did not have.
+(what the run actually has), and **`approvalPolicy: "never"`** — also the truth: under
+`--permission-mode dangerous` devin never asks. Both carry provenance
+`{ layer: "enforced", source: "devin: <reason>" }`; `ConfigLayer` (`config/types.ts:14`) grows an
+`"enforced"` member (review r3 L4 — the r3 text "omits approvalPolicy" would have violated the
+required `SandboxPolicy.approvalPolicy` and `provenance: Record<SandboxPolicyKey, …>` keys). No MCP
+contract change: `sandboxAudit` is an opaque `"object"` in `contracts/mcp-surface.json`; the only
+other `layer` reader, `cli/learn.ts:162`, prints it generically. A devin audit must never assert
+isolation the run did not have.
 `runner.ts:87`'s `agent === "codex"` becomes the D1 switch.
 
 ## Out of scope (follow-ups)
@@ -427,7 +486,9 @@ records `filesystemMode` and `writableRoots` as resolved (they are enforced), **
      points outside fails; `mcp_list_servers` returns the owner's servers (equality).
   3. background: start → poll → completed result with the same fields; start and poll report the
      same `devin-…` peer name; a run whose agent prints `{"__t2f5_done__":0}` mid-run still polls as
-     `running` until it really exits (r2 M3).
+     `running` until it really exits (r2 M3), **and** its peer record stays non-idle with no
+     `peer_idle_notice` until `exit.rc` appears (r3 M2); after exit the run dir holds no
+     `credentials.toml` (r3 M3); the agent's `kill -STOP $PPID` fails and the run completes (r3 L5).
   4. cancel: a background devin run cancelled mid-flight leaves **no** surviving `sandbox-exec`/
      `devin`/`devin acp` process in its group.
 - **Error harness (table-driven, no network — spawn seam feeding recorded ATIF fixtures):**
@@ -444,11 +505,18 @@ records `filesystemMode` and `writableRoots` as resolved (they are enforced), **
   pointing at the stratum-owned file, and (except full access) is prefixed by `sandbox-exec -f`;
   the generated profile contains `cwd` only for workspace-write, each `writableRoots` entry, and
   rejects an unescapable path; the profile never grants `runDir`, `~/.cache`, `~/.config/devin`,
-  `~/.local/share/devin`, `$TMPDIR` or `/private/var/folders`; a `writableRoots` entry containing
-  `runDir` ⇒ error; the spawn env sets all four `XDG_*_HOME` and `TMPDIR` under `A`; the per-run
-  home holds exactly `credentials.toml` (0600), `mcp_config.json` and the stratum `config.json`;
+  `~/.local/share/devin`, `$TMPDIR` or `/private/var/folders`; a `writableRoots` entry **or a
+  workspace-write `cwd`** equal to or containing `runDir` or the runs root, or inside `runDir` but
+  outside `A`, ⇒ named error before spawn (table rows: `cwd=$HOME`, `cwd=~/.stratum`, `cwd=/`,
+  `writableRoots=[<runDir>/..]`, `writableRoots=[<runDir>]`; `writableRoots=[<A>/x]` is accepted —
+  r3 H1); the profile contains the signal rule; the spawn env sets all four `XDG_*_HOME` and `TMPDIR`
+  under `A`; the per-run home holds exactly `credentials.toml` (0600), `mcp_config.json` and the
+  stratum `config.json`; the wrapper removes `credentials.toml` before writing `exit.rc` on exit 0,
+  non-zero and signal death; the dispatch-time sweep removes a stale copy from a run with `exit.rc`;
+  `loadMeta` for a devin run reads `stdout.log`; the sidecar in exit.rc mode ignores a sentinel line;
   missing credentials ⇒ named "not logged in" error before spawn; a devin `sandboxAudit` records
-  `networkAccess: true` and no `approvalPolicy` even when `stratum.toml` sets `networkAccess=false`;
+  `networkAccess: true` and `approvalPolicy: "never"`, both with layer `enforced`, even when
+  `stratum.toml` sets `networkAccess=false`;
   unknown agent error lists all three.
 - **Equality check (table-driven over `AGENT_TYPES`):** every parameter `stratum_agent_run` accepts
   for codex is accepted for devin or rejected with a named devin error — a new codex parameter that
@@ -505,4 +573,23 @@ findings, all confirmed by Claude (H1 by the fact-14 write census):
 | L7 | L | GUI preamble is agent-neutral, dropped for devin | D3: shared helper, applied to devin |
 | L8 | L | `/private/var/folders`, `~/.cache` grants far too wide | gone with H1 fix |
 | L9 | L | golden 1 ambient-allow clause inert under `dangerous` | dropped; OS-boundary + state-write asserts instead |
-| L10 | L | no stdout bound | D2 narration cap |
+| L10 | L | no stdout bound | D2 narration cap (withdrawn in r4, r3 L6) |
+
+## Review r3 (Devin SWE-2 High, read-only seatbelt, 2026-09-26) — NOT CLEAN. r2 closure: H1 closed
+for `read-only`; H2 only partly (finding H1 below); M3 closed for poll but not for the peer channel
+(M2). All findings confirmed by Claude against source (`background.ts:135,657`, `peer-sidecar.ts:349`,
+`codex.ts:272,352`, `config/types.ts:10-25`):
+
+| # | Sev | Finding | Resolution (r4) |
+|---|---|---|---|
+| H1 | H | only `writableRoots` is checked against `runDir`; a `workspace-write` `cwd` of `$HOME`/`~/.stratum`/`/` re-grants `meta.json`/`exit.rc` (r2 H2 again) | D3: every grant checked against `runDir` and the runs root |
+| M2 | M | peer sidecar trusts a `__t2f5_done__` line in whatever stream it scans; `loadMeta` hardcodes `stream.jsonl` ⇒ forged `peer_idle_notice` | D8: devin branch in `loadMeta`; sidecar exit.rc mode |
+| M3 | M | "removed with the run dir" is vacuous — no run-dir retention exists; one live credential copy per run forever | D2: wrapper deletes the copy on devin exit; dispatch-time sweep |
+| L4 | L | enforced-value audit unbuildable: no `enforced` layer; omitting `approvalPolicy` breaks required keys | D11: `ConfigLayer` += `enforced`; `approvalPolicy: "never"` |
+| L5 | L | `(allow default)` lets the agent signal the wrapper (stall/orphan the run) | D3: `(deny signal) (allow signal (target same-sandbox))`, probed in S1 |
+| L6 | L | file cap impossible under a live `>` fd | D2: codex parity (foreground bound, background uncapped) |
+| L7 | L | full-access "runs never share state" overclaims | D3 table wording |
+
+**Gate decision (Claude, r4):** r3 was planned as the final full round (review-loop budget ~3). r4's
+changes are local to the seven findings; r4 goes to a **fixes-only** review (does each resolution close
+its finding without opening a new hole), not a fourth full review.
