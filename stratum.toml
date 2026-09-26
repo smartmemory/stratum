@@ -1,0 +1,7 @@
+# Stratum project config (STRAT-CONFIG-PREFS-1 project layer).
+# STRAT-LEARN Step 2, enabled by the owner 2026-09-26 (stratum/compose 0.7.0):
+#   inline  — stage lesson candidates automatically after every terminal run
+#   deliver — render owner-applied lessons into matching agent prompts
+[learn]
+inline = true
+deliver = true
