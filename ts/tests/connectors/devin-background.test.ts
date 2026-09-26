@@ -9,6 +9,11 @@ import { cancelBackgroundRun, pollBackgroundRun, startBackgroundRun, type StartB
 import { devinRunLayout } from "../../src/connectors/devin-wrapper.js";
 import { DEVIN_SCRUB_VARS } from "../../src/connectors/devin-model.js";
 import * as identity from "../../src/connectors/proc_identity.js";
+import * as cancellation from "../../src/connectors/cancellation.js";
+
+vi.mock("../../src/connectors/cancellation.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../../src/connectors/cancellation.js")>(),
+}));
 
 vi.mock("node:child_process", async importOriginal => ({
   ...await importOriginal<typeof import("node:child_process")>(),
@@ -56,13 +61,17 @@ function json(path: string) { return JSON.parse(readFileSync(path, "utf8")); }
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  await cleanupFixtures();
+});
+
+async function cleanupFixtures(removeRoot: typeof rmSync = rmSync) {
   for (const run of runs.splice(0)) {
     await cancelBackgroundRun(run.runId, run);
     await until(() => groupGone(run.pid), Boolean);
   }
   await stopSidecars();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of roots.splice(0)) removeRoot(root, { recursive: true, force: true });
+}
 
 function fixture(body = 'cp "$FIXTURE" "$export_path"; exit 0') {
   const root = mkdtempSync(join(tmpdir(), "db-")); roots.push(root);
@@ -130,6 +139,24 @@ describe("devin background — real shell and isolated stub binaries", () => {
     expect(childProcess.spawn).not.toHaveBeenCalled();
   });
 
+  it("pre-spawn failure and directory removal failure preserve both errors", async () => {
+    const f = fixture(); const open = fsPromises.open;
+    const original = new Error("test log open failure");
+    const cleanupError = new Error("test directory removal failure");
+    vi.spyOn(fsPromises, "open").mockImplementation(async (path, ...args) => {
+      if (String(path).endsWith("/stdout.log")) throw original;
+      return open(path, ...args);
+    });
+    const rm = vi.spyOn(fsPromises, "rm").mockRejectedValue(cleanupError);
+    const error = await f.start().catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.message).toContain(original.message);
+    expect(error.errors).toEqual([original, cleanupError]);
+    expect(rm).toHaveBeenCalledWith(join(f.registryRoot, readdirSync(f.registryRoot)[0]!),
+      { recursive: true, force: true });
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+
   it("post-spawn fd close failure tears down the group before rejecting", async () => {
     const f = fixture(); const open = fsPromises.open; let pid = 0;
     vi.spyOn(fsPromises, "open").mockImplementation(async (path, ...args) => {
@@ -164,9 +191,15 @@ describe("devin background — real shell and isolated stub binaries", () => {
     expect(sidecars).toHaveLength(1);
     const child = sidecars[0]!;
     expect(child.pid).toBe(Number(readFileSync(ready, "utf8")));
-    await stopSidecars();
-    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
-    expect(existsSync(f.root)).toBe(true);
+    const removeRoot = vi.fn<typeof rmSync>((path, options) => {
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      expect(() => process.kill(child.pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      expect(existsSync(f.root)).toBe(true);
+      rmSync(path, options);
+    });
+    await cleanupFixtures(removeRoot);
+    expect(removeRoot).toHaveBeenCalledWith(f.root, { recursive: true, force: true });
+    expect(existsSync(f.root)).toBe(false);
   });
 
   it("running narration, isolated env/argv, audit, export completion and terminal cancel", async () => {
@@ -253,12 +286,40 @@ describe("devin background — real shell and isolated stub binaries", () => {
 
   it("meta-write failure kills the group before rejecting", async () => {
     const f = fixture(); let pid = 0;
+    const original = new Error("test metadata write failure");
     await expect(f.start({ devinWriteMeta: async (_path, meta) => {
       pid = (meta as { childPid: number }).childPid;
       await until(() => existsSync(f.env.CAPTURE_ENV!), Boolean);
-      throw new Error("test metadata write failure");
-    } })).rejects.toThrow("test metadata write failure");
+      throw original;
+    } })).rejects.toBe(original);
     await until(() => groupGone(pid), Boolean);
+  });
+
+  it("meta-write failure and teardown failure preserve both errors and the run directory", async () => {
+    const f = fixture(); let pid = 0;
+    const original = new Error("test metadata write ENOSPC");
+    const cleanupError = Object.assign(new Error("test teardown timeout"), { code: "CANCELLATION_TEARDOWN_TIMEOUT" });
+    const processTermination = cancellation.processTermination;
+    vi.spyOn(cancellation, "processTermination").mockImplementation((...args) => {
+      const termination = processTermination(...args);
+      return { ...termination, terminate: async () => {
+        // Reap the real fixture group before simulating the teardown rejection.
+        await termination.terminate();
+        throw cleanupError;
+      } };
+    });
+    const rm = vi.spyOn(fsPromises, "rm");
+    const error = await f.start({ devinWriteMeta: async (_path, meta) => {
+      pid = (meta as { childPid: number }).childPid;
+      await until(() => existsSync(f.env.CAPTURE_ENV!), Boolean);
+      throw original;
+    } }).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.message).toContain(original.message);
+    expect(error.errors).toEqual([original, cleanupError]);
+    expect(groupGone(pid)).toBe(true);
+    expect(readdirSync(f.registryRoot)).toHaveLength(1);
+    expect(rm).not.toHaveBeenCalled();
   });
 
   it("derives all read paths from the run dir, ignoring hostile metadata paths", async () => {

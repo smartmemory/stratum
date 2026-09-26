@@ -1,6 +1,6 @@
 # STRAT-AGENT-DEVIN-1 — Implementation plan
 
-**Status:** IN_PROGRESS (S1 COMPLETE, S2 next) · **Created:** 2026-09-26 · Design: `design.md` r6 (`c5d1142`), gate closed by the owner.
+**Status:** IN_PROGRESS (S1, S2 COMPLETE; S3 next) · **Created:** 2026-09-26 · Design: `design.md` r6 (`c5d1142`), gate closed by the owner.
 
 ## Related Documents
 
@@ -112,6 +112,10 @@ real shell + stub devin), `ts/tests/connectors/devin.live.test.ts` (new, golden 
 
 ## Slice S2 — background (design §Slices 2)
 
+**COMPLETE** — `c843f90` S2 · `5c21568` review r1 fixes (3M+1L) · review-r2 Low fix (this commit). Codex
+astra/medium impl review: r1 NOT CLEAN 3M+1L (all upheld, fixed); r2 fixes-only: all closed, one new L (fixed).
+Live goldens 1, 3, 4 green against real devin `swe-2-medium`.
+
 Design: D8, D2 (background half: run-dir layout, `exit.rc`, narration log), D3/D6/D7/D11 as already
 built in S1. Goldens 3 and 4.
 
@@ -147,52 +151,52 @@ Files: `ts/src/connectors/devin.ts` (existing: extract shared prep + verdict),
 and 4), `CHANGELOG.md` (existing), `README.md` (existing).
 
 **Shared code (one definition, two callers):**
-- [ ] `prepareDevinRun(...)` extracted from `DevinConnector.run`/`runInLayout` into `devin.ts`: sweep
+- [x] `prepareDevinRun(...)` extracted from `DevinConnector.run`/`runInLayout` into `devin.ts`: sweep
       over both devin roots **plus the dispatch's `registryRoot` when it differs**; missing
       credentials ⇒ `devin is not logged in (run \`devin auth\`)` before any run-dir side effect;
       `newRunDir(root)`; `prepareDevinRunHome`; grant check (workspace-write ⇒ `cwd` + `writableRoots`,
       read-only ⇒ none); `prompt.md` (GUI preamble applied), empty `stream.jsonl`, `devin.sb` (sandboxed
       modes only), `wrapper.sh`; returns `{ runId, layout, argv, env, framedPromptChars }`. The
       foreground connector calls it with `devin_fg`, the background with `registryRoot ?? agentRunsRoot()`
-- [ ] `devinTerminalVerdict({ rc, exportPath, stderrTail, model })` extracted from `buildResult`: D4
+- [x] `devinTerminalVerdict({ rc, exportPath, stderrTail, model })` extracted from `buildResult`: D4
       rejection ⇒ error; cold-cache model error ⇒ error; no final agent step ⇒
       `devin produced no trajectory: <stderr tail>`; rc ≠ 0 ⇒ `devin exited with code <rc>: …`; else
       `{ text, metrics, usd }` (SWE-2 `usd: 0`, `usdSource: "estimated"`). Foreground `buildResult`,
       background poll and background cancel all call it — no second copy of the rules
-- [ ] foreground behaviour unchanged: `tests/connectors/devin*.test.ts` pass without edits to their
+- [x] foreground behaviour unchanged: `tests/connectors/devin*.test.ts` pass without edits to their
       assertions (a test may change only where it reaches into a moved private helper)
 
 **Start (`startDevinBackgroundRun`, replaces the S1a stub):**
-- [ ] keeps the S1a validation order (network, approvalPolicy, full-access authorisation, model) and
+- [x] keeps the S1a validation order (network, approvalPolicy, full-access authorisation, model) and
       the Linux refusal (`assertDevinPlatform`); `options.command` (the codex argv seam) ⇒ named error
       `command is not supported for devin`, so the equality table sees a named rejection, not a silent
       ignore; `thinking`/tool filters already rejected upstream (S1a)
-- [ ] env = dispatch env minus `DEVIN_SCRUB_VARS` (D7), headless-shell default only on the ambient
+- [x] env = dispatch env minus `DEVIN_SCRUB_VARS` (D7), headless-shell default only on the ambient
       fallback, plus `devinHomeEnv` + `devinWrapperEnv`; **no** `T2F5_*` vars and **no**
       `STRATUM_CODEX_BG_STRATEGY` read (D8)
-- [ ] spawn `wrapper.sh <argv>` detached (own process group), stdin ignored, stdout → an fd on
+- [x] spawn `wrapper.sh <argv>` detached (own process group), stdin ignored, stdout → an fd on
       `stdout.log` (0600), stderr → an fd on `.err` (0600), plain `>`-style file fds with no cap
       (D2 codex parity); both fds closed in the parent after spawn
-- [ ] identity: `procStartTime(pid)` missing ⇒ **fail closed** exactly as the foreground (S1
+- [x] identity: `procStartTime(pid)` missing ⇒ **fail closed** exactly as the foreground (S1
       decision): SIGTERM the group so the wrapper's trap deletes the credentials copy, wait for exit,
       throw `devin wrapper identity could not be captured: …`; never write an identity-less `meta.json`
-- [ ] `meta.json` = `DevinRunMeta` (`agent:"devin"`, `childPid` = wrapper pid, `procStartTime`,
+- [x] `meta.json` = `DevinRunMeta` (`agent:"devin"`, `childPid` = wrapper pid, `procStartTime`,
       resolved `model`, `sandboxMode`, `promptChars`, `createdAt` stamped before spawn, `peerLabel`,
       `sandboxAudit` = devin's enforced-value audit (D11: `networkAccess:true`,
       `approvalPolicy:"never"`, layer `enforced`), `streamPath` = `<runDir>/stream.jsonl`,
       `stderrPath` = `<runDir>/.err`); meta-write failure ⇒ `killDetachedProcessGroup` then rethrow
       (codex parity; the sweep's meta-less orphan rule covers the copy)
-- [ ] peer registration: the codex exec path's best-effort block (2 s race, `shouldRegister`,
+- [x] peer registration: the codex exec path's best-effort block (2 s race, `shouldRegister`,
       `sweepDeadStratumPeers`, `spawnPeerSidecar`) with `streamPath` = the supervisor-only
       `stream.jsonl` and name `peerName(model, runId, { agent: "devin", label })`. Factor the block
       into one helper used by codex-exec and devin rather than duplicating it
-- [ ] returns `{ status:"bg_started", runId, pid, streamPath: <runDir>/stream.jsonl, peerName? }`
+- [x] returns `{ status:"bg_started", runId, pid, streamPath: <runDir>/stream.jsonl, peerName? }`
 
 **`loadMeta`, poll, cancel:**
-- [ ] `loadMeta` devin branch: every path from `devinRunLayout(runDir)` (validated run dir, never the
+- [x] `loadMeta` devin branch: every path from `devinRunLayout(runDir)` (validated run dir, never the
       record) — `streamPath` = `stream.jsonl`, `stderrPath` = `.err`, new optional `narrationPath` =
       `stdout.log`, plus `exitRcPath` and `exportPath`; codex/claude results unchanged
-- [ ] poll devin branch (after the shared peer lookup; the shared `scanStream(stream.jsonl)` may still
+- [x] poll devin branch (after the shared peer lookup; the shared `scanStream(stream.jsonl)` may still
       run, it only ever sees the wrapper's line):
       no `exit.rc` + `processIdentityMatches(childPid, procStartTime)` ⇒ `running`, `textTail` =
       bounded tail of `stdout.log`, `eventsSeen: 0`, `streamPath` = `stream.jsonl`, `sandboxAudit`;
@@ -202,47 +206,47 @@ and 4), `CHANGELOG.md` (existing), `README.md` (existing).
       `usdSource:"estimated"`, `exitCode:0`, `telemetry` with `durationMs` = `exit.rc` mtime −
       `createdAt` and `devinModelIdentity`) or `error` (`exitCode` = rc, `reason`, narration
       `textTail`, `stderrTail`). Codex's `codexErrorMessage`/`scan.error` never consulted for devin (D2)
-- [ ] poll surfaces `sandboxAudit` for devin as for codex
-- [ ] cancel devin branch: `exit.rc` present ⇒ `devinTerminalVerdict` ⇒ `already_complete` /
+- [x] poll surfaces `sandboxAudit` for devin as for codex
+- [x] cancel devin branch: `exit.rc` present ⇒ `devinTerminalVerdict` ⇒ `already_complete` /
       `already_error` (**exit 0 + no export ⇒ `already_error`**, review r1 M5); else the codex
       identity sequence (identity match, `processGroupId(pid) === pid`, re-verify identity, then
       `process.kill(-pid, "SIGTERM")`) ⇒ `cancelled`, any failed check ⇒ `already_error`. SIGTERM only,
       codex parity; golden 4 is the proof it is enough. No `writeSentinelIfAbsent` for devin — the
       wrapper's trap path writes `exit.rc` and the sentinel itself
-- [ ] no poll or cancel path ever signals a group whose leader identity no longer matches (pid reuse)
+- [x] no poll or cancel path ever signals a group whose leader identity no longer matches (pid reuse)
 
 **Peer names (D8):**
-- [ ] `peerName`'s `agent` option becomes **required** (type-level), so a missing agent is a compile
+- [x] `peerName`'s `agent` option becomes **required** (type-level), so a missing agent is a compile
       error; the codex calls at `background.ts:240,293` pass `agent:"codex"`; every other call site
       updated; codex names are byte-identical to today's (the default was codex)
-- [ ] test: for codex and for devin, the name returned by start equals the name poll reports
+- [x] test: for codex and for devin, the name returned by start equals the name poll reports
 
 **Tests (`devin-background.test.ts`, real shell + stub `devin`/`sandbox-exec` first on `PATH`, temp
 `HOME` and `registryRoot` — the `devin-wrapper.test.ts` pattern; never the real `~/.stratum`, never the
 real devin, never the real `~/.local/share/devin`):**
-- [ ] start ⇒ poll `running` with `textTail` from `stdout.log` ⇒ stub writes an ATIF export and exits 0
+- [x] start ⇒ poll `running` with `textTail` from `stdout.log` ⇒ stub writes an ATIF export and exits 0
       ⇒ poll `complete` with text, tokens and `usd: 0` estimated
-- [ ] stub prints `{"__t2f5_done__":0}` to stdout then keeps running ⇒ poll stays `running`, cancel does
+- [x] stub prints `{"__t2f5_done__":0}` to stdout then keeps running ⇒ poll stays `running`, cancel does
       not report `already_*`, the peer record stays non-idle, and after exit `stream.jsonl` holds
       exactly one line whose value equals `exit.rc` (r2 M3, r3 M2, r4 N4)
-- [ ] exit 0 + no export ⇒ poll `error` "devin produced no trajectory", cancel `already_error` (M5)
-- [ ] exit 0 + export whose last step is a rejected observation ⇒ poll `error` (D4)
-- [ ] non-zero exit + valid export ⇒ poll `error` with that `exitCode`
-- [ ] wrapper SIGKILLed externally (no `exit.rc`) ⇒ poll `error` `child_died_without_sentinel`
-- [ ] cancel mid-run ⇒ `cancelled`; afterwards no process in the group, no `credentials.toml` in the
+- [x] exit 0 + no export ⇒ poll `error` "devin produced no trajectory", cancel `already_error` (M5)
+- [x] exit 0 + export whose last step is a rejected observation ⇒ poll `error` (D4)
+- [x] non-zero exit + valid export ⇒ poll `error` with that `exitCode`
+- [x] wrapper SIGKILLed externally (no `exit.rc`) ⇒ poll `error` `child_died_without_sentinel`
+- [x] cancel mid-run ⇒ `cancelled`; afterwards no process in the group, no `credentials.toml` in the
       run dir, `exit.rc` present, poll `error`
-- [ ] after every terminal outcome above, `agent/home/data/devin/credentials.toml` is absent
-- [ ] identity-capture failure (seam) ⇒ start throws, no `meta.json`, no credentials copy, group gone
-- [ ] meta-write failure (seam) ⇒ start throws, group killed
-- [ ] `loadMeta` devin paths: `narrationPath = stdout.log`, `streamPath = stream.jsonl`,
+- [x] after every terminal outcome above, `agent/home/data/devin/credentials.toml` is absent
+- [x] identity-capture failure (seam) ⇒ start throws, no `meta.json`, no credentials copy, group gone
+- [x] meta-write failure (seam) ⇒ start throws, group killed
+- [x] `loadMeta` devin paths: `narrationPath = stdout.log`, `streamPath = stream.jsonl`,
       `stderrPath = .err`; a `meta.json` whose `streamPath` points elsewhere does not redirect reads
-- [ ] spawn env has the four `XDG_*_HOME` + `TMPDIR` under `A`, no `T2F5_*`, no scrubbed var; argv
+- [x] spawn env has the four `XDG_*_HOME` + `TMPDIR` under `A`, no `T2F5_*`, no scrubbed var; argv
       starts `sandbox-exec -f <runDir>/devin.sb` except under authorised full access
-- [ ] `command` seam for devin ⇒ named error; equality table (`agent-equality.test.ts`) still passes
+- [x] `command` seam for devin ⇒ named error; equality table (`agent-equality.test.ts`) still passes
 
 **Goldens (live, controller-run, real devin, `swe-2-medium`, macOS, over the real MCP server —
 `stratum_agent_run background:true`, `stratum_agent_poll`, `stratum_cancel_agent_run`):**
-- [ ] **golden 3:** start ⇒ poll to `complete` with the same fields as golden 1 (final message, tokens
+- [x] **golden 3:** start ⇒ poll to `complete` with the same fields as golden 1 (final message, tokens
       > 0, `usd: 0` estimated); start and poll report the same `devin-medium-<runId6>` peer name; the
       prompt makes the agent print `{"__t2f5_done__":0}` early and then keep working — poll stays
       `running` and the peer record stays non-idle with no `peer_idle_notice` until `exit.rc` appears;
@@ -251,21 +255,21 @@ real devin, never the real `~/.local/share/devin`):**
       the kill fails, the process state is not `T`, the run completes; within 5 s of `exit.rc` no
       process remains in the wrapper's process group (if devin descendants linger here, **stop and
       bring it to the owner** — do not add signalling to poll)
-- [ ] **golden 4:** a background devin run cancelled mid-flight ⇒ `cancelled`; within the grace
+- [x] **golden 4:** a background devin run cancelled mid-flight ⇒ `cancelled`; within the grace
       period no `sandbox-exec`/`devin`/`devin acp` process survives in its group (`ps -g`); no
       `credentials.toml`; poll afterwards reports `error`
-- [ ] both goldens back up and verify the real `~/.config/devin/config.json` unchanged; the test's
+- [x] both goldens back up and verify the real `~/.config/devin/config.json` unchanged; the test's
       `sleep` is killed in `finally`; every run dir the goldens create under `agent_runs` is removed
       in `finally` (testing.md cleanup)
 
 **Docs + gate:**
-- [ ] CHANGELOG (same commit): devin background runs; codex `peerName` now passes its agent explicitly
-- [ ] README agent section: background devin supported; v1 limitations — `stratum watch` shows no
+- [x] CHANGELOG (same commit): devin background runs; codex `peerName` now passes its agent explicitly
+- [x] README agent section: background devin supported; v1 limitations — `stratum watch` shows no
       devin narration until the run ends, and a running devin peer's `updatedAt` is its registration
       time
-- [ ] `tsc --noEmit` clean; `tests/connectors tests/mcp` green (controller-run; rerun the known load
+- [x] `tsc --noEmit` clean; `tests/connectors tests/mcp` green (controller-run; rerun the known load
       flakes alone before calling red); goldens 1, 3, 4 live green
-- [ ] Codex astra/medium implementation review of S2, then fixes-only rounds (budget ~3; M+ after
+- [x] Codex astra/medium implementation review of S2, then fixes-only rounds (budget ~3; M+ after
       round 3 ⇒ stop and ask the owner)
 
 Out of S2: IR/engine (`agent: devin` in flows, `engine.ts` sandbox forwarding, evaluator route) — S3.

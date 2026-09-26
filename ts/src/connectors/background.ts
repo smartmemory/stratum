@@ -401,8 +401,15 @@ async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Prom
   } catch (error) {
     // A live wrapper may have copied credentials; teardown and leave sweeping to
     // the existing owner. Before spawn succeeds there is no copy to preserve.
-    if (termination) await termination.terminate();
-    if (child?.pid === undefined) await rm(layout.runDir, { recursive: true, force: true });
+    const cleanupErrors: unknown[] = [];
+    try { if (termination) await termination.terminate(); }
+    catch (cleanupError) { cleanupErrors.push(cleanupError); }
+    try { if (child?.pid === undefined) await rm(layout.runDir, { recursive: true, force: true }); }
+    catch (cleanupError) { cleanupErrors.push(cleanupError); }
+    if (cleanupErrors.length) {
+      throw new AggregateError([error, ...cleanupErrors],
+        `Devin startup failed: ${error instanceof Error ? error.message : String(error)}; cleanup also failed`);
+    }
     throw error;
   }
   child.unref();
