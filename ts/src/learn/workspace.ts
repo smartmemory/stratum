@@ -24,7 +24,11 @@ export function canonicalWorkspace(path: string, timeoutMs: number = GIT_TIMEOUT
       try {
         try { await stat(input); } catch (error) {
           const { code } = error as NodeJS.ErrnoException;
-          if (code === "ENOENT" || code === "ENOTDIR") return input;
+          if (code === "ENOENT" || code === "ENOTDIR") {
+            // A new worktree/subdirectory may appear later; retry stat, without git.
+            roots.delete(input);
+            return input;
+          }
           throw error;
         }
         const gitPath = async (flag: string): Promise<string> => {

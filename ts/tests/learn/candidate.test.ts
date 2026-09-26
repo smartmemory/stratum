@@ -174,7 +174,7 @@ describe("template v2 guidance", () => {
     const { records } = await harvest(FIXTURES);
     const cluster = classify(records, { minRuns: 1, minPairs: 1 })
       .find((c) => c.contract.code === "invalid_type" && c.class === "durable" && c.applyEligible)!;
-    expect(cluster.contract).toEqual({ code: "invalid_type", path: "commit_hash", expected: ["string"], leafArrayDepth: 0 });
+    expect(cluster.contract).toEqual({ code: "invalid_type", path: "commit_hash", expected: ["string"], leafArrayDepths: [0] });
     expect(authorCandidate(cluster).rendered.guidance)
       .toBe("When `commit_hash` has a non-null value, it must be a `string`.");
   });

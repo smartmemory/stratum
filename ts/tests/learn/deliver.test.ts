@@ -88,6 +88,39 @@ describe("contractHolds (D3 predicate)", () => {
     expect(candidate.revisionId).toBe(authorCandidate({ ...cluster, contract: legacy }).revisionId);
   });
 
+  it.each([
+    [[0, 1, 1], [0, 1], true],
+    [[1, 1, 0], [0, 1], true],
+    [[0, 0, 0], [0], false],
+    [[1, 1, 1], [1], true],
+  ])("delivers clustered depths %j independently of evidence order", (depths, expectedDepths, holds) => {
+    const records: FailureRecord[] = depths.map((depth, i) => ({
+      runId: `r${i}`, flowName: "build", stepId: "plan", attempt: 1, shape: "schema",
+      workspaceRoot: "/w", at: "2026-09-26T00:00:00Z", recovered: false,
+      reason: JSON.stringify([{ code: "invalid_type", path: depth === 0 ? ["tags"] : ["tags", 0], expected: "string" }]),
+    }));
+    const clusters = classify(records);
+    expect(clusters).toHaveLength(1);
+    const candidate = authorCandidate(clusters[0]!);
+    expect(candidate.contract).toEqual({
+      code: "invalid_type", path: "tags", expected: ["string"], leafArrayDepths: expectedDepths,
+    });
+    const reversed = authorCandidate(classify([...records].reverse())[0]!);
+    expect(reversed.contract).toEqual(candidate.contract);
+    expect(reversed.clusterKey).toBe(candidate.clusterKey);
+    expect(reversed.clusterId).toBe(candidate.clusterId);
+    expect(reversed.revisionId).toBe(candidate.revisionId);
+    for (const current of [candidate, reversed]) {
+      const pin = matchLessons([{ ...lesson(), candidate: current }], {
+        flowName: "build", stepId: "plan", contract: contracts({ R: { tags: "string[]" } }).R,
+      });
+      expect(pin?.lessons).toHaveLength(holds ? 1 : 0);
+      if (!holds) expect(pin?.lessonsSuppressed).toEqual([
+        { revisionId: current.revisionId, reason: "contract-changed" },
+      ]);
+    }
+  });
+
   it("suppresses a field-level string lesson after string becomes string[]", () => {
     const own = lesson({ code: "invalid_type", path: "tags", expected: ["string"] });
     own.candidate.contract.leafArrayDepth = 0;

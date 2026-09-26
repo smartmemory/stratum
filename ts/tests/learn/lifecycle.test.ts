@@ -184,7 +184,8 @@ it("a timed-out git lookup returns the input path and is retried, not cached", a
   expect(await canonicalWorkspace(sub)).toBe(root);
 });
 
-it.each(["ENOENT", "ENOTDIR"])("caches a missing workspace (%s) without spawning git", async (code) => {
+it.each(["ENOENT", "ENOTDIR"])("retries a missing workspace (%s) after creation without spawning git while absent", async (code) => {
+  await repo();
   const parent = join(root, "missing-parent");
   if (code === "ENOTDIR") await writeFile(parent, "file");
   const sub = join(parent, "checkout");
@@ -199,15 +200,15 @@ it.each(["ENOENT", "ENOTDIR"])("caches a missing workspace (%s) without spawning
     process.env.PATH = previous === undefined ? bin : `${bin}:${previous}`;
     expect(await canonicalWorkspace(sub)).toBe(sub);
     expect(await readFile(marker, "utf8")).toBe("");
-    // Make the path exist to prove the fallback was cached, not just re-statted.
-    if (code === "ENOTDIR") await rm(parent);
-    await mkdir(sub, { recursive: true });
     expect(await canonicalWorkspace(sub)).toBe(sub);
     expect(await readFile(marker, "utf8")).toBe("");
   } finally {
     if (previous === undefined) delete process.env.PATH;
     else process.env.PATH = previous;
   }
+  if (code === "ENOTDIR") await rm(parent);
+  await mkdir(sub, { recursive: true });
+  expect(await canonicalWorkspace(sub)).toBe(root);
 });
 
 it.each(["linked", "mixed"])("CLI harvest stages %s workspace evidence in the main checkout", async (layout) => {
