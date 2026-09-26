@@ -142,7 +142,11 @@ Rules:
   whole store, the next trigger reconciles it. Guard transitions never reach `emitFlowTerminal()`.
   A test pins each exclusion.
 - **Off means off.** With the switch off the hook returns after the config read and does no other
-  I/O; engine responses, persisted runs and audit output are byte-identical to today.
+  I/O; engine responses, persisted runs and audit output are byte-identical to today. *Amended
+  2026-09-26 (owner-approved, Step-2 review inline M2):* the config read needs the project root, so
+  it is preceded by the canonical-workspace lookup (`learn/workspace.ts` `canonicalWorkspace`: up to
+  three `git rev-parse`/`worktree list` calls, memoized per path, each bounded by a 5 s timeout; a
+  timed-out lookup falls back to the raw path and is not cached). That lookup is the only other I/O.
 - **Not on the response path.** The hook enqueues and returns; `emitFlowTerminal()` stays
   synchronous and `return this.response(run)` is unchanged. Precedent for fire-and-forget
   post-persist work: `triggerLearnEgress` (`:3541`, scheduled from `persist()` at `:3617`).
@@ -254,6 +258,22 @@ DELIVER-1 lifecycle slice is live and those three clusters have `retired` transi
 them. The suppression rule and its reader are DELIVER-1's (§A3 above); this feature adds no second
 lifecycle.
 
+**Done 2026-09-26 (retirement + dry run; enabling still waits for the stratum release).** The three
+clusters, identified by a read-only `learn harvest` of the live store (516 runs):
+
+| Workspace | clusterId | Failure | fix-ref |
+|---|---|---|---|
+| stratum | `73a33b0d401e…` | `outcome` enum | compose `ed8e333` |
+| compose | `9be9489674f8…` | `outcome` enum | compose `ed8e333` |
+| compose | `cbde3f231a97…` | `commit_hash` null | stratum `2968930` |
+
+Each got a `retire` row (`<root>/.stratum/learn/lifecycle.jsonl`). The dry run replays the inline pass's
+own steps (harvest → canonicalize → classify → `authorCandidate` → `isSuppressed(lessonLifecycle)`, this
+file's pass at `learn/inline.ts:62-96`) without `stageCandidates` or the log row: **3 durable clusters
+in scope, all suppressed, would stage 0.** (The manual `learn harvest` command lists them regardless:
+it does not apply lifecycle suppression; the inline pass does.) Compose's `.gitignore` gains
+`.stratum/` on `comp-learn-summary`.
+
 ### A7. The switch
 
 - `[learn] inline = true|false` in `stratum.toml`, env `STRATUM_LEARN_INLINE`, project layer = the
@@ -334,8 +354,8 @@ Tests: `tests/learn/inline.test.ts`, `tests/learn/surface.test.ts`, `tests/confi
       automatically when the switch is OFF for that root.
 - [ ] Retired/dismissed clusters with only older evidence are not staged; an unreadable lifecycle
       stages nothing and logs.
-- [ ] Not enabled for stratum/compose until the three hand-fixed clusters are retired and a dry run
-      stages none of them (§A6).
+- [x] The three hand-fixed clusters are retired and a dry run stages none of them (§A6, 2026-09-26).
+      Still not enabled: enabling follows the stratum release.
 - [ ] A durable lesson reaches a human without anyone running a command.
 
 ## Explicitly NOT in scope

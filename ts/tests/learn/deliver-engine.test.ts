@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StratumEngine } from "../../src/engine/engine.js";
-import { StateStore, type PersistedRun } from "../../src/engine/state.js";
+import { burnIssuances, StateStore, type PersistedRun } from "../../src/engine/state.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
 import { applyCandidate } from "../../src/learn/apply.js";
@@ -166,6 +166,59 @@ describe("DELIVER-1 D3/D4 engine delivery", () => {
     },
   );
 
+  it("a budget-exhausted consumer retry persists without its destroyed pin", async () => {
+    const { root, store } = await workspace();
+    await learnFrom("consumer", root, store);
+    deliverOn();
+    const s = subject(store, () => ({ outcome: "complete" }));
+    const body = spec("consumer", { attempts: 2 });
+    Object.assign(body.flows.main, { budget: { dispatches: 1 } });
+    const issued = await issue(s, "consumer", root, body);
+    expect(pinnedState(await persisted(s, issued.runId), "consumer").lessons).toHaveLength(1);
+    await s.engine.stepDone(issued.runId, "fan/0", { output: { outcome: "done" } }, issued.dispatchToken);
+    const run = await persisted(s, issued.runId);
+    expect(run.status).toBe("budget_exhausted");
+    expect(pinnedState(run, "consumer")).toMatchObject({ status: "failed" });
+    expect(pinnedState(run, "consumer").lessons).toBeUndefined();
+    expect(pinnedState(run, "consumer").lessonsSuppressed).toBeUndefined();
+  });
+
+  it.each(["skipped", "failed"] as const)("an engine fan-out item persists %s without lessons", async (status) => {
+    const { root, store } = await workspace();
+    await learnFrom("engine", root, store);
+    deliverOn();
+    const s = subject(store, () => ({ outcome: status === "failed" ? "done" : "complete" }));
+    const body = spec("engine");
+    if ("fanout" in body.flows.main.steps[0]!) {
+      const fanout = body.flows.main.steps[0]!.fanout;
+      if (status === "skipped") fanout.steps.push({ ...fanout.steps[0]!, ...{ when: "false" } });
+    }
+    const issued = await issue(s, "engine", root, body);
+    expect(issued.do).toContain(LESSONS_HEADING);
+    const item = pinnedState(await persisted(s, issued.runId), "engine");
+    expect(item.status).toBe(status);
+    expect(item.lessons).toBeUndefined();
+    expect(item.lessonsSuppressed).toBeUndefined();
+  });
+
+  it.each(["ordinary", "subflow", "consumer"] as const)("burning %s issuances clears pins and preserves other live issuances", async (surface) => {
+    const { root, store } = await workspace();
+    await learnFrom(surface, root, store);
+    deliverOn();
+    const s = subject(store, () => ({ outcome: "complete" }));
+    const issued = await issue(s, surface, root);
+    const run = await persisted(s, issued.runId);
+    const state = pinnedState(run, surface);
+    expect(state.lessons).toHaveLength(1);
+    state.lessonsSuppressed = [{ revisionId: "suppressed", reason: "budget" }];
+    burnIssuances(run);
+    expect(state.dispatchToken).toBeUndefined();
+    expect(state.lessons).toBeUndefined();
+    expect(state.lessonsSuppressed).toBeUndefined();
+    // The independent persisted issuance remains live until it too is burned.
+    expect(pinnedState(await persisted(s, issued.runId), surface).lessons).toHaveLength(1);
+  });
+
   it("background ready-step: the connector receives the pinned block in its prompt", async () => {
     const { root, store } = await workspace();
     const lesson = await learnFrom("ordinary", root, store);
@@ -274,6 +327,44 @@ describe("DELIVER-1 D3/D4 engine delivery", () => {
     expect(run.steps.plan).toMatchObject({ lessonsSuppressed: suppressed });
     expect(run.steps.plan!.lessons).toBeUndefined();
     expect(issuingEvents(run, "ordinary")[0]!.detail).toEqual({ attempt: 1, lessonsSuppressed: suppressed });
+  });
+
+  it("a gate revise clears the destroyed issuance's pin: the reset step persists with no lessons while pending", async () => {
+    const { root, store } = await workspace();
+    // Evidence scoped to step `b` only, so `a` is never pinned.
+    const ev = subject(store, () => ({ outcome: "done" }));
+    const evRun = await ev.engine.plan({
+      version: 1, contracts: { Result: { outcome: "complete|failed" } },
+      flows: { entry: "main", main: { input: {}, output: { from: "${b.output}", contract: "Result" },
+        steps: [{ id: "b", do: "b it", out: "Result", attempts: 1 }] } },
+    }, {}, { workspaceRoot: root });
+    await ev.engine.stepDone(evRun.runId, "b", { output: { outcome: "done" } });
+    const { records } = await harvest(store);
+    const lesson = authorCandidate(classify(records, { minRuns: 1, minPairs: 1 })
+      .find((c) => c.class === "durable" && c.applyEligible && c.scope.stepIds.includes("b"))!);
+    await appendCandidates(root, [lesson]);
+    await applyCandidate(lesson, { enabled: true });
+    deliverOn();
+    const s = subject(store, () => ({ outcome: "complete" }));
+    const planned = await s.engine.plan({
+      version: 1, contracts: { Result: { outcome: "complete|failed" } },
+      flows: { entry: "main", main: { input: {}, output: { from: "${b.output}", contract: "Result" }, max_rounds: 3,
+        steps: [
+          { id: "a", do: "a it", out: "Result", attempts: 1 },
+          { id: "b", after: ["a"], do: "b it", out: "Result", attempts: 1 },
+          { id: "g", after: ["a"], gate: { on_approve: null, on_revise: "a", on_kill: null } },
+        ] } },
+    }, {}, { workspaceRoot: root });
+    await s.engine.stepDone(planned.runId, "a", { output: { outcome: "complete" } });
+    // `b` really was issued with the pin before the gate waited on a decision.
+    const pinned = await persisted(s, planned.runId);
+    expect(pinned.steps.b!.status).toBe("ready");
+    expect(pinned.steps.b!.lessons).toHaveLength(1);
+    await s.engine.gateResolve(planned.runId, "g", "revise");
+    const run = await persisted(s, planned.runId);
+    expect(run.steps.b!.status).toBe("pending");
+    expect(run.steps.b!.lessons).toBeUndefined();
+    expect(run.steps.b!.lessonsSuppressed).toBeUndefined();
   });
 
   it("a run without workspaceRoot is never delivered to", async () => {

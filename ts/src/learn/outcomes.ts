@@ -38,6 +38,9 @@ export interface LessonReview {
 const ISSUING = new Set(["ready", "fanout_item_ready", "fanout_item_dispatched"]);
 const TERMINAL = new Set(["completed", "failed", "cancelled", "budget_exhausted"]);
 const GROUPINGS: readonly GroupingKey[] = ["step-agnostic", "step-scoped"];
+/** DELIVER-1 D6 (design.md:178, 278-279): Compose intercepts these steps and runs them
+ *  in-process — a lesson offered to one is offered but never delivered to an agent. */
+const INTERCEPTED_STEPS = new Set(["ship"]);
 
 interface RawEvent { type?: unknown; stepId?: unknown; at?: unknown; detail?: unknown }
 const str = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
@@ -65,8 +68,9 @@ async function scanStore(storeRoot: string, root: string): Promise<RunScan[]> {
   try { names = (await readdir(storeRoot)).filter((name) => name.endsWith(".json")).sort(); } catch { return []; }
   const scans: RunScan[] = [];
   for (const name of names) {
-    let run: Record<string, unknown>;
-    try { run = JSON.parse(await readFile(join(storeRoot, name), "utf8")) as Record<string, unknown>; } catch { continue; }
+    let run: Record<string, unknown> | undefined;
+    try { run = record(JSON.parse(await readFile(join(storeRoot, name), "utf8"))); } catch { continue; }
+    if (run === undefined) continue;
     const workspaceRoot = str(run.workspaceRoot);
     const runId = str(run.id);
     if (workspaceRoot === undefined || runId === undefined || await canonicalWorkspace(workspaceRoot) !== root) continue;
@@ -113,8 +117,12 @@ function outcomesOf(scan: RunScan, clusterOf: (revisionId: string) => string | u
     const clusterId = clusterOf(offer.revisionId);
     if (clusterId === undefined) continue; // an offer whose revision left the sidecar: nothing to attribute it to
     const base = { revisionId: offer.revisionId, clusterId, runId: scan.runId, stepId: offer.stepId };
-    // A matching failure after the offer decides at once, terminal or not.
-    const failure = scan.failures.find((f) => f.index > offer.index && f.record.stepId === offer.stepId && f.clusters.has(clusterId));
+    // The latest matching failure by event position decides, so retries can cross watermarks.
+    let failure: RunScan["failures"][number] | undefined;
+    for (const f of scan.failures) {
+      if (f.index > offer.index && f.record.stepId === offer.stepId && f.clusters.has(clusterId)
+        && (failure === undefined || f.index > failure.index)) failure = f;
+    }
     if (failure !== undefined) { out.push({ ...base, outcome: "not-holding", at: failure.record.at }); continue; }
     const success = scan.terminal ? succeededAt(scan, offer.stepId, offer.index) : undefined;
     out.push(success !== undefined ? { ...base, outcome: "held", at: success } : { ...base, outcome: "unknown", at: offer.at });
@@ -135,6 +143,12 @@ export async function lessonOutcomes(storeRoot: string, workspaceRoot: string): 
   const scans = await scanStore(storeRoot, root);
   return scans.flatMap((scan) => outcomesOf(scan, (revisionId) => byRevision.get(revisionId)?.clusterId));
 }
+
+/** The D6 caveat for evidence gathered on a step Compose never hands to an agent. */
+const offeredNotDelivered = (rows: LessonOutcome[]): string =>
+  rows.some((o) => INTERCEPTED_STEPS.has(o.stepId))
+    ? ` (offered to step "ship", which Compose runs in-process: offered, not delivered)`
+    : "";
 
 export interface ReviewOptions { retireReviewAfter: number }
 
@@ -185,14 +199,14 @@ export async function lessonReviews(storeRoot: string, workspaceRoot: string, op
     const failing = mine.filter((o) => o.outcome === "not-holding" && after("not-holding")(o.at));
     if (failing.length > 0) {
       reviews.push({ kind: "not-holding", clusterId, revisionId: latest(failing)!, runs: runs(failing),
-        detail: `offered and failed again in ${runs(failing).length} run(s)` });
+        detail: `offered and failed again in ${runs(failing).length} run(s)` + offeredNotDelivered(failing) });
     }
     const sinceRetire = after("retire-candidate");
     const held = mine.filter((o) => o.outcome === "held" && sinceRetire(o.at));
     const brokeSince = mine.some((o) => o.outcome === "not-holding" && sinceRetire(o.at));
     if (!brokeSince && runs(held).length >= options.retireReviewAfter) {
       reviews.push({ kind: "retire-candidate", clusterId, revisionId: latest(held)!, runs: runs(held),
-        detail: `held in ${runs(held).length} run(s); check whether the cause is fixed and retire it (a clean run with the lesson may be why it was clean)` });
+        detail: `held in ${runs(held).length} run(s); check whether the cause is fixed and retire it (a clean run with the lesson may be why it was clean)` + offeredNotDelivered(held) });
     }
     const drifted = drift.filter((d) => d.clusterId === clusterId && after("contract-changed")(d.at));
     if (drifted.length > 0) {

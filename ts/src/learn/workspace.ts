@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, realpath } from "node:fs/promises";
+import { mkdir, open, realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { resourceLock } from "../guard/lock.js";
@@ -8,8 +8,12 @@ import { resourceLock } from "../guard/lock.js";
 const execFileAsync = promisify(execFile);
 const roots = new Map<string, Promise<string>>();
 
+/** Bound every git lookup: this runs on the audit/OFF paths too, where a wedged
+ *  subprocess must fail fast and land on the retry-next-time branch, never hang. */
+const GIT_TIMEOUT_MS = 5_000;
+
 /** Linked worktrees and subdirectories share their main checkout's learn state. */
-export function canonicalWorkspace(path: string): Promise<string> {
+export function canonicalWorkspace(path: string, timeoutMs: number = GIT_TIMEOUT_MS): Promise<string> {
   const input = resolve(path);
   let root = roots.get(input);
   if (root === undefined) {
@@ -18,10 +22,19 @@ export function canonicalWorkspace(path: string): Promise<string> {
         Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
       );
       try {
+        try { await stat(input); } catch (error) {
+          const { code } = error as NodeJS.ErrnoException;
+          if (code === "ENOENT" || code === "ENOTDIR") {
+            // A new worktree/subdirectory may appear later; retry stat, without git.
+            roots.delete(input);
+            return input;
+          }
+          throw error;
+        }
         const gitPath = async (flag: string): Promise<string> => {
           const { stdout } = await execFileAsync("git", [
             "-C", input, "rev-parse", "--path-format=absolute", flag,
-          ], { env });
+          ], { env, timeout: timeoutMs });
           return stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
         };
         let toplevel: string;
@@ -36,7 +49,7 @@ export function canonicalWorkspace(path: string): Promise<string> {
           try {
             const { stdout } = await execFileAsync("git", [
               "-C", input, "rev-parse", "--is-bare-repository",
-            ], { env });
+            ], { env, timeout: timeoutMs });
             if (stdout.trim() === "true") return input;
           } catch { /* Preserve the original failure for the cache rules below. */ }
           throw error;
@@ -46,7 +59,7 @@ export function canonicalWorkspace(path: string): Promise<string> {
 
         const { stdout } = await execFileAsync("git", [
           "-C", input, "worktree", "list", "--porcelain", "-z",
-        ], { env });
+        ], { env, timeout: timeoutMs });
         const fields = stdout.split("\0");
         const first = fields.findIndex((field) => field.startsWith("worktree "));
         if (first >= 0 && fields[first]!.length > "worktree ".length) {

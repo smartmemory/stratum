@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { LessonPin, LessonSuppression } from "../learn/deliver.js";
+import { setPin, type LessonPin, type LessonSuppression } from "../learn/deliver.js";
 import type { PolicyRuleMap, RuleVerdict } from "../policy/types.js";
 import type { Budget } from "./ledger.js";
 
@@ -289,6 +289,7 @@ export function burnIssuances(run: PersistedRun): { steps: string[]; items: numb
     for (const [id, state] of Object.entries(states)) {
       if ((state.status === "ready" || state.status === "running") && state.dispatchToken !== undefined) {
         delete state.dispatchToken;
+        setPin(state, undefined);
         steps.push(id);
       }
       if (state.status === "waiting_gate" && state.gateToken !== undefined) {
@@ -298,6 +299,7 @@ export function burnIssuances(run: PersistedRun): { steps: string[]; items: numb
       for (const item of state.fanout?.items ?? []) {
         if ((item.status === "ready" || item.status === "running") && item.dispatchToken !== undefined) {
           delete item.dispatchToken;
+          setPin(item, undefined);
           items += 1;
         }
       }

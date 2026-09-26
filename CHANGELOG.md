@@ -10,6 +10,32 @@
 
 - **STRAT-AGENT-DEVIN-1 slice S1a: `devin` is a known agent (validation only, no connector yet).** `AGENT_TYPES = ["claude","codex","devin"]` drives every agent validator and error message; every agent branch is an exhaustive switch (a fourth agent is a compile error). Devin models resolve like codex's (`swe-2-high`, `swe-2` + `effort`, `swe-2/high`; default `swe-2-high`) from a separate `DEVIN_MODEL_PRICING` table. Devin reads no `STRATUM_CODEX_*` env, needs `STRATUM_DEVIN_ALLOW_FULL_ACCESS` for full access, rejects claude-only options, an explicit `approvalPolicy` and an explicit `networkAccess:false`, and its `sandboxAudit` records what it enforces (`networkAccess: true`, `approvalPolicy: "never"`, config layer `enforced`). A devin dispatch passes all validation and then fails with `devin connector not implemented yet (STRAT-AGENT-DEVIN-1 S1b)`. Codex and claude behaviour is unchanged. Implemented by Devin SWE-2 High.
 
+## [0.7.0] — 2026-09-26
+
+- **Release: STRAT-LEARN Step 2. Lessons are staged automatically and delivered into agent prompts (both default OFF).** `[learn] inline` / `STRATUM_LEARN_INLINE` stages lesson candidates at every terminal run. `[learn] deliver` / `STRATUM_LEARN_DELIVER` renders applied lessons into agent prompts, with outcome tracking and retirement reviews. New CLI flags `stratum learn list --unreviewed`, `--reviews` and `--if-enabled` (Compose 0.7.0 needs them). Events contract 6 → 7. Details in the entries below.
+
+- **STRAT-LEARN Step 2 Codex review fixes.** A lesson learned on a field no longer "holds" when that field
+  becomes a list (or the reverse): candidates record every array depth seen across the lesson's evidence (`leafArrayDepths`,
+  matched on any; delivery metadata only; cluster and revision ids unchanged; legacy candidates keep any-depth matching).
+  Enum lessons survive a reordering of the same options. A lesson pin lives only as long as its
+  dispatch: every site that destroys a dispatch token clears it. Selection diagnostics are warned, not
+  dropped. The subflow echo window also closes on any event of the parent's children (routing). The
+  classifier strips the engine's `(no retry: identical evidence)` suffix before parsing, so a refused
+  retry stays in its lesson's cluster. Lesson outcomes are decided by the latest matching failure, so
+  evidence newer than an acknowledgement reopens a review. A missing workspace path is checked before git and never cached (no git
+  storm per audit, and a path created later still canonicalizes); a non-object run file is skipped instead of hiding every review; unreadable corpora and
+  invalid inline config are reported. `events.json` declares `sandbox_policy.detail.fullAccessAuthorization`
+  (events contract 6 → 7) — this also fixes an existing mismatch present on main.
+
+- **STRAT-LEARN Step 2 review fixes (Devin SWE-2 reviews).** Harvest drops a subflow's parent echo by
+  position, not by matching reason text, so a genuine parent failure with identical text is kept.
+  `canonicalWorkspace` git lookups time out after 5 s and are retried, not cached (the INLINE §A2 /
+  DELIVER §D4 "off means off" wording is amended to name this lookup). Inline passes log a rejected
+  pass instead of leaving an unhandled rejection. Review text carries the `ship`
+  offered-not-delivered caveat (D6). Lifecycle review watermarks never move backwards. A reset or a
+  skipped/failed consumer item clears its lesson pin. Tests: identical-text subflow echo, git timeout,
+  real coalescing, `ship` caveat, watermark order, pin cleared on revise, `pinFor` fail-closed.
+
 - **Learn CLI:** `stratum learn harvest` and `learn list --reviews` read the same flow store as the engine and MCP server when `--flows` is omitted (`STRATUM_STATE_ROOT`, then the default), instead of always the default store.
 
 - **STRAT-LEARN-DELIVER-1 slice 6 (stratum golden):** `tests/learn/deliver-golden.test.ts` proves the loop end to end on the real engine in a git workspace, under one scripted connector policy: three recovered runs → lesson staged automatically and surfaced as unreviewed → applied through `stratum learn apply` → the next run's prompt carries the exact approved guidance and passes on its first attempt → retired → the first attempt fails again. Ten negative cases (non-matching flow and step, enum and type drift, staged-unapplied, reverted, retired, dismissed, an edited sidecar scope, a note-only lesson) inject nothing. The Compose golden and the live run are still to do.

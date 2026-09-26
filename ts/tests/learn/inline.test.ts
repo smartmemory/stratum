@@ -7,7 +7,7 @@ import { StratumEngine } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { GUARDS_DIR, setGuardsDir } from "../../src/guard/store.js";
 import { readCandidates } from "../../src/learn/candidate.js";
-import { inlineLogPath, type InlinePassRow } from "../../src/learn/inline.js";
+import { inlineLogPath, runInlinePass, LearnInline, type InlinePassRow } from "../../src/learn/inline.js";
 import { appendLifecycle } from "../../src/learn/lifecycle.js";
 import { canonicalWorkspace } from "../../src/learn/workspace.js";
 import { tokenEchoingEngine } from "../helpers/token_echoing_engine.js";
@@ -206,14 +206,37 @@ describe("INLINE-TS-1 terminal trigger", () => {
   });
 
   it("coalesces concurrent triggers from two workspaces and stages both", async () => {
-    const h = await harness({ inline: true });
+    const h = await harness();
     const other = join(h.dir, "other");
     await mkdir(other);
+    await enable(h.ws);
     await enable(other);
-    await Promise.all([0, 1, 2].flatMap(() => [failRun(h), failRun(h, other)]));
-    const log = await rows(h);
-    expect(new Set(log.flatMap((row) => row.triggeredBy)).size).toBe(6);
-    expect(log.length).toBeLessThanOrEqual(6);
+    // Six runs' worth of real failure evidence in the store, three per workspace.
+    const reason = JSON.stringify([{ code: "invalid_enum_value", path: ["outcome"], options: ["complete", "failed"], message: "Invalid enum value" }]);
+    const runIds: string[] = [];
+    for (const [i, workspaceRoot] of [h.ws, h.ws, h.ws, other, other, other].entries()) {
+      const id = `run-${i}`;
+      runIds.push(id);
+      await writeFile(join(h.store, `${id}.json`), JSON.stringify({
+        id, flowName: "main", workspaceRoot, status: "failed",
+        events: [{ at: "2026-09-26T00:00:00.000Z", type: "result", stepId: "plan", detail: { attempt: 1, failure: { attempt: 1, reason } } }],
+      }));
+    }
+    // Hold the first pass open until all six triggers are queued: the pass then drains
+    // every one at once instead of running once per trigger.
+    let holding = true;
+    const inline = new LearnInline(h.store, { STRATUM_CONFIG_FILE: join(h.dir, "no-user-config.toml") }, async (queued) => {
+      if (!holding) return;
+      const deadline = Date.now() + 2_000;
+      while (queued.length < runIds.length && Date.now() < deadline) await new Promise((resolve) => setImmediate(resolve));
+      holding = false;
+    });
+    for (const [i, id] of runIds.entries()) inline.trigger({ id, workspaceRoot: i < 3 ? h.ws : other });
+    await inline.idle();
+    const log = (await readFile(inlineLogPath(h.store), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as InlinePassRow);
+    expect(log.length).toBeLessThan(6);
+    expect(Math.max(...log.map((row) => row.triggeredBy.length))).toBeGreaterThan(1);
+    expect(new Set(log.flatMap((row) => row.triggeredBy))).toEqual(new Set(runIds));
     expect((await sidecar(h.ws)).length).toBeGreaterThan(0);
     expect((await sidecar(other)).length).toBeGreaterThan(0);
   });
@@ -298,5 +321,62 @@ describe("INLINE-TS-1 lifecycle suppression and fail-open", () => {
     expect(statuses).toEqual(["failed", "failed", "failed"]);
     const last = (await rows(h)).at(-1)!;
     expect(last.problems.join("\n")).toMatch(/EACCES|permission/i);
+  });
+});
+
+describe("inline read and configuration diagnostics", () => {
+  it.each(["file", "unreadable"] as const)("logs a %s corpus read failure", async (kind) => {
+    const h = await harness();
+    if (kind === "file") {
+      await rm(h.store, { recursive: true });
+      await writeFile(h.store, "not a directory");
+    } else {
+      await chmod(h.store, 0o000);
+    }
+    try {
+      const row = await runInlinePass(h.store, ["trigger"]);
+      expect(row.error).toMatch(kind === "file" ? /ENOTDIR/ : /EACCES|EPERM/);
+      expect(row).toMatchObject({ records: 0, skipped: 0, droppedEvents: 0 });
+      expect(await rows(h)).toEqual([row]);
+    } finally {
+      if (kind === "unreadable") await chmod(h.store, 0o755);
+    }
+  });
+
+  it("keeps a missing corpus empty without an error", async () => {
+    const h = await harness();
+    await rm(h.store, { recursive: true });
+    const row = await runInlinePass(h.store, ["trigger"]);
+    expect(row.error).toBeUndefined();
+    expect(row.records).toBe(0);
+  });
+
+  it("retains skipped files and malformed failure event counts", async () => {
+    const h = await harness();
+    await writeFile(join(h.store, "bad.json"), "{");
+    await writeFile(join(h.store, "events.json"), JSON.stringify({
+      id: "r", events: [{ type: "result", stepId: "work", detail: { failure: "malformed" } }],
+    }));
+    const row = await runInlinePass(h.store, ["trigger"]);
+    expect(row).toMatchObject({ skipped: 1, droppedEvents: 1, records: 0 });
+    expect(await rows(h)).toEqual([row]);
+  });
+
+  it("warns once per diagnostic across triggers and engine instances when config disables inline", async () => {
+    const h = await harness();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const env = { STRATUM_CONFIG_FILE: join(h.dir, "missing.toml"), STRATUM_LEARN_INLINE: "tru",
+      STRATUM_LEARN_DELIVER: "tru" };
+    for (let i = 0; i < 2; i += 1) {
+      const inline = new LearnInline(h.store, env);
+      inline.trigger({ id: "one" });
+      inline.trigger({ id: "two" });
+      await inline.idle();
+    }
+    expect(warn.mock.calls).toEqual([
+      ["learn inline: STRATUM_LEARN_DELIVER: must be one of 1/0, true/false, yes/no, on/off"],
+      ["learn inline: STRATUM_LEARN_INLINE: must be one of 1/0, true/false, yes/no, on/off"],
+    ]);
+    expect(await rows(h)).toEqual([]);
   });
 });

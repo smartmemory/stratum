@@ -77,6 +77,10 @@ export interface ContractSummary {
   path: string;
   /** Allowed enum options, rejected key names, or the expected type. */
   expected: string[];
+  /** Sorted, unique trailing array depths observed across the cluster's evidence. */
+  leafArrayDepths?: number[];
+  /** Legacy single-depth metadata, still read from already-written candidates. */
+  leafArrayDepth?: number;
 }
 
 export function issueUnits(record: FailureRecord): IssueUnit[] {
@@ -95,9 +99,15 @@ export function issueUnits(record: FailureRecord): IssueUnit[] {
             ...(typeof issue.expected === "string" ? [issue.expected] : []),
           ].sort(),
         };
+        // Depth is delivery metadata, never identity material: preserve existing IDs.
+        const fingerprint = sha(JSON.stringify({ shape: record.shape, ...contract }));
+        const path = Array.isArray(issue.path) ? issue.path : [];
+        let leafArrayDepth = 0;
+        for (let i = path.length - 1; i >= 0 && typeof path[i] === "number"; i -= 1) leafArrayDepth += 1;
+        contract.leafArrayDepth = leafArrayDepth;
         return {
           record,
-          fingerprint: sha(JSON.stringify({ shape: record.shape, ...contract })),
+          fingerprint,
           contract,
           ...(typeof issue.received === "string" ? { received: issue.received } : {}),
         };
@@ -130,7 +140,9 @@ interface ZodIssue {
 
 function parseIssues(reason: string): ZodIssue[] {
   try {
-    const parsed: unknown = JSON.parse(reason);
+    // failAttempt appends this retry disposition to otherwise structured issues.
+    // It changes scheduling, not the violated contract or its cluster identity.
+    const parsed: unknown = JSON.parse(reason.replace(/ \(no retry: identical evidence\)$/, ""));
     if (Array.isArray(parsed)) return parsed as ZodIssue[];
     if (typeof parsed === "object" && parsed !== null) return [parsed as ZodIssue];
   } catch {
@@ -263,13 +275,18 @@ function build(
     evidence.push(record);
   }
 
+  const { leafArrayDepth: _, ...contract } = bucket[0]?.contract ?? { code: shape, path: "", expected: [] };
+  const leafArrayDepths = [...new Set(bucket.flatMap((unit) =>
+    unit.contract.leafArrayDepth === undefined ? [] : [unit.contract.leafArrayDepth],
+  ))].sort((a, b) => a - b);
+
   return {
     key,
     groupingKey,
     shape,
     class: klass,
     fingerprint: bucket[0]?.fingerprint ?? "",
-    contract: bucket[0]?.contract ?? { code: shape, path: "", expected: [] },
+    contract: { ...contract, ...(leafArrayDepths.length > 0 ? { leafArrayDepths } : {}) },
     scope: { workspaceRoot, flowName: first.flowName, stepIds, specDigests },
     recurrence: { records: bucket.length, distinctRuns: runs.size, distinctPairs: pairs.size },
     observedValues: [
