@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { AGENT_TYPES, type AgentType } from "../connectors/base.js";
 import { runAgent } from "../connectors/runner.js";
 import type { SandboxPolicyAudit } from "../config/types.js";
 import { processIdentity } from "../connectors/proc_identity.js";
@@ -79,7 +80,7 @@ export const evaluatorResultSchema = z.object({
   children: z.array(z.unknown()),
   reason: z.string(),
   score: z.number().optional(),
-  route: z.enum(["claude", "codex"]).optional(),
+  route: z.enum(AGENT_TYPES).optional(),
 }).strict().superRefine((result, ctx) => {
   if (result.status === "closed" && result.children.length > 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["children"], message: "a closed verdict must carry no children" });
@@ -172,7 +173,7 @@ export interface StepResult {
 export interface ReadyStep {
   id: string;
   do: string;
-  agent: "claude" | "codex";
+  agent: AgentType;
   attempt: number;
   epoch: number;
   dispatchToken: string;
@@ -204,7 +205,7 @@ export type ReadyEntry = ReadyStep | ConsumerDispatchDescriptor;
 
 /** The only P4 process/SDK boundary. Tests fake this rather than mocking git or SDK internals. */
 export type EngineConnector = (request: {
-  agent: "claude" | "codex";
+  agent: AgentType;
   prompt: string;
   cwd?: string;
   attempt: number;
@@ -3850,12 +3851,22 @@ export const defaultConnector: EngineConnector = async ({ agent, prompt, cwd, pr
   if (previousFailure !== undefined) {
     fullPrompt += `\n\nYour previous attempt failed: ${previousFailure.reason}\nCorrect the problem and try again.`;
   }
+  let sandboxOptions: { sandboxMode?: "read-only" | "workspace-write" };
+  switch (agent) {
+    case "claude": sandboxOptions = {}; break;
+    case "codex":
+    case "devin": sandboxOptions = sandbox !== undefined ? { sandboxMode: sandbox } : {}; break;
+    default: {
+      const exhaustive: never = agent;
+      throw new Error(`unsupported agent: ${exhaustive}`);
+    }
+  }
   const result = await runAgent({
     agent,
     prompt: fullPrompt,
     ...(cwd !== undefined ? { cwd } : {}),
     // Worktree-isolated stages must be able to edit their worktree.
-    ...(agent === "codex" && sandbox !== undefined ? { sandboxMode: sandbox } : {}),
+    ...sandboxOptions,
   });
   if ("status" in result) return { failure: "background connector response is not valid for synchronous fanout" };
   const provenance = {

@@ -62,3 +62,16 @@ describe("engine default connector", () => {
       .resolves.toMatchObject({ sandboxAudit });
   });
 });
+
+
+describe("devin default connector sandbox forwarding", () => {
+  it.each(["workspace-write", "read-only", undefined] as const)("forwards sandbox %s", async (sandbox) => {
+    runAgent.mockResolvedValueOnce({ text: "done", usage: {}, telemetry: { durationMs: 1, model: "swe-2-medium" } });
+    await defaultConnector({ agent: "devin", prompt: "p", attempt: 1,
+      ...(sandbox === undefined ? {} : { sandbox }) });
+    const request = runAgent.mock.lastCall![0];
+    expect(request.agent).toBe("devin");
+    if (sandbox === undefined) expect(request).not.toHaveProperty("sandboxMode");
+    else expect(request.sandboxMode).toBe(sandbox);
+  });
+});

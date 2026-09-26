@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { StratumEngine, type Evaluator } from "../../src/engine/engine.js";
+import { StratumEngine, evaluatorResultSchema, type Evaluator } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import { validateSpec } from "../../src/ir/validate.js";
 
@@ -21,7 +21,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 async function createEngine(extra: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), "stratum-eval-"));
   roots.push(root);
-  return new StratumEngine({ stateRoot: root, evaluator, ...extra } as ConstructorParameters<typeof StratumEngine>[0]);
+  return new StratumEngine({ stateRoot: root, evaluator, connector: async () => { throw new Error("unexpected agent dispatch in evaluator test"); }, ...extra } as ConstructorParameters<typeof StratumEngine>[0]);
 }
 
 // Single evaluate step whose output IS the flow output, validated against the
@@ -189,5 +189,17 @@ describe("S1 evaluate typed references (R1-8)", () => {
     const result = validateSpec(spec);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errors[0]?.code).toBe("REF_OUTPUT_CONTRACT_REQUIRED");
+  });
+});
+
+
+describe("evaluator route agents", () => {
+  it.each([
+    { route: "devin", accepted: true },
+    { route: "gemini", accepted: false },
+    { route: undefined, accepted: true },
+  ])("route $route accepted=$accepted", ({ route, accepted }) => {
+    const verdict = { status: "closed", children: [], reason: "done", ...(route === undefined ? {} : { route }) };
+    expect(evaluatorResultSchema.safeParse(verdict).success).toBe(accepted);
   });
 });

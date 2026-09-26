@@ -278,3 +278,27 @@ function fanoutSpec(options: FanoutSpecOptions = {}) {
     } as Record<string, any>,
   };
 }
+
+
+describe("Devin flow IR", () => {
+  it.each(["step", "fanout"] as const)("accepts devin and rejects gemini on a %s", (kind) => {
+    const spec = (agent: string) => ({
+      version: 1, contracts: { Result: { value: "string" } },
+      flows: { entry: "main", main: {
+        input: { items: "string[]" }, output: { from: "${finish.output}", contract: "Result" },
+        steps: [kind === "step"
+          ? { id: "work", do: "work", agent }
+          : { id: "work", fanout: { over: "${input.items}", concurrency: 1, isolation: "none",
+              require: "all", merge: "sequential", dispatch: "engine", steps: [{ do: "work", agent }] } },
+          { id: "finish", after: ["work"], set: { value: '"done"' }, out: "Result" }],
+      } },
+    });
+    expect(validateSpec(spec("devin")).ok).toBe(true);
+    const rejected = validateSpec(spec("gemini"));
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error("gemini unexpectedly validated");
+    const errors = JSON.stringify(rejected.errors);
+    for (const agent of ["claude", "codex", "devin"]) expect(errors).toContain(agent);
+    expect(errors).toContain("agent");
+  });
+});

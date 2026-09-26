@@ -498,7 +498,7 @@ Cancellation is split by ownership: foreground cancel settles the flow and kills
 
 ### `stratum_agent_run` / `stratum_agent_poll` / `stratum_cancel_agent_run`
 
-Dispatch Claude, Codex, or Devin synchronously or in the background. Background runs return a durable `runId` for polling and cancellation. Devin supports direct MCP dispatch; Devin in flow IR/engine steps is not yet supported.
+Dispatch Claude, Codex, or Devin synchronously or in the background. Background runs return a durable `runId` for polling and cancellation. Devin is also usable in flows with `agent: devin` on steps and fan-out stages. Engine-dispatched worktree stages give Devin write access to their worktree; extra write roots come from the worktree’s committed `stratum.toml [sandbox]`. `dispatch: consumer` fan-outs still reject Devin in Compose until `COMP-AGENT-DEVIN-1` adds support.
 
 Devin background runs use the same per-run home and macOS sandbox as foreground runs. Poll returns live narration from `stdout.log`, then the final answer and token usage from the ATIF export (`usd: 0`, estimated for SWE-2). In v1, `stratum watch` shows no Devin narration until the run ends, and a running Devin peer's `updatedAt` remains its registration time.
 

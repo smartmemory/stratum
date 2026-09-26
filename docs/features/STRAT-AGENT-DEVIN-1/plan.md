@@ -283,6 +283,12 @@ keeps the replaced-path guard (dev/ino mismatch) and changes nothing else in the
 
 ## Slice S3 — engine/IR (design §Slices 3)
 
+**IMPLEMENTED, review pending** — golden 2 drives `stratum_plan` → `stratum_flow_poll` → `stratum_audit`
+(engine-dispatched worktree fan-out through `defaultConnector`); the merged edit is asserted in the
+original workspace. Live run: the outside write and the shell write through `link-out` failed with
+`Operation not permitted` (the seatbelt), the edit-tool write through `link-out` was refused by
+devin's own symlink policy (reported separately; the empty symlink target is the authoritative check).
+
 Design: D9, D1 (the agent list reaches the flow language), D11 (a flow stage's `writableRoots` come
 from the worktree's `stratum.toml`). Golden 2 and the D9 contract tests.
 
@@ -324,67 +330,67 @@ route rows — or the test file that already exercises `evaluatorResultSchema`, 
 (existing).
 
 **IR + engine types (one list, derived — D1):**
-- [ ] `FanoutStageSchema.agent` and `StepShape.agent` are `z.enum(AGENT_TYPES)` imported from
+- [x] `FanoutStageSchema.agent` and `StepShape.agent` are `z.enum(AGENT_TYPES)` imported from
       `connectors/base.ts` — not a third hand-written literal
-- [ ] `evaluatorResultSchema.route` is `z.enum(AGENT_TYPES)`
-- [ ] `ReadyStep.agent` and the `EngineConnector` request `agent` are `AgentType`
-- [ ] no other `"claude" | "codex"` literal remains under `ts/src/ir` or `ts/src/engine` (grep in the
+- [x] `evaluatorResultSchema.route` is `z.enum(AGENT_TYPES)`
+- [x] `ReadyStep.agent` and the `EngineConnector` request `agent` are `AgentType`
+- [x] no other `"claude" | "codex"` literal remains under `ts/src/ir` or `ts/src/engine` (grep in the
       report)
 
 **Sandbox forwarding (`defaultConnector`):**
-- [ ] the codex-only ternary becomes an exhaustive `switch (agent)` with a `never` default:
+- [x] the codex-only ternary becomes an exhaustive `switch (agent)` with a `never` default:
       `claude` ⇒ no `sandboxMode` (unchanged), `codex` ⇒ forward `sandbox` when defined (unchanged),
       `devin` ⇒ forward `sandbox` when defined
-- [ ] nothing else in `defaultConnector` changes (prompt framing, JSON parsing, provenance pass-through)
+- [x] nothing else in `defaultConnector` changes (prompt framing, JSON parsing, provenance pass-through)
 
 **Contract doc:**
-- [ ] `contracts/evaluator-result.json` `route` text lists `claude | codex | devin`; no version bump,
+- [x] `contracts/evaluator-result.json` `route` text lists `claude | codex | devin`; no version bump,
       no other field touched (the file is documentation, not a loaded schema)
 
 **Tests (non-live; every engine test injects a fake connector or mocks `runAgent`; none reaches a
 real agent):**
-- [ ] IR: a step with `agent: devin` and a fan-out stage with `agent: devin` validate; `agent: gemini`
+- [x] IR: a step with `agent: devin` and a fan-out stage with `agent: devin` validate; `agent: gemini`
       is still rejected on both, and the error names the valid agents
-- [ ] evaluator: `route: "devin"` accepted by `evaluatorResultSchema`; `route: "gemini"` rejected;
+- [x] evaluator: `route: "devin"` accepted by `evaluatorResultSchema`; `route: "gemini"` rejected;
       `route` omitted still accepted
-- [ ] `defaultConnector` (mocked `runAgent`): `agent: devin` + `sandbox: workspace-write` ⇒
+- [x] `defaultConnector` (mocked `runAgent`): `agent: devin` + `sandbox: workspace-write` ⇒
       `runAgent` receives `agent: "devin"`, `sandboxMode: "workspace-write"`; `sandbox: read-only` ⇒
       `sandboxMode: "read-only"`; no `sandbox` ⇒ no `sandboxMode`; the existing claude and codex rows
       pass unchanged
-- [ ] engine: a worktree fan-out with a devin stage and a **fake** connector — the connector sees
+- [x] engine: a worktree fan-out with a devin stage and a **fake** connector — the connector sees
       `agent: "devin"` and `sandbox: "workspace-write"`; the same stage under `isolation: none` sees
       `read-only`
-- [ ] the full non-live suite is run with the tripwire `devin` first on `PATH` under the real `HOME`
+- [x] the full non-live suite is run with the tripwire `devin` first on `PATH` under the real `HOME`
       and the report shows `CALLED` absent
 
 **Golden 2 (live, controller-run, real devin `swe-2-medium`, macOS; `devin-flow.live.test.ts`, gated on
 `STRATUM_DEVIN_LIVE=1` like `devin.live.test.ts`):**
-- [ ] harness: a temp git repo (one commit) holding a tracked file, a committed `stratum.toml` with
+- [x] harness: a temp git repo (one commit) holding a tracked file, a committed `stratum.toml` with
       `[sandbox] writableRoots = ["<extra dir>"]`, and a workspace symlink `link-out` → a temp dir
       outside the repo; a flow with one worktree fan-out (one item, `concurrency: 1`,
       `require: all`, `merge: sequential`, `dispatch: engine`) whose single stage is `agent: devin`;
       driven through the real MCP server (`createMcpServer` + in-memory transport, as goldens 1/3/4)
       with an isolated state root. The report names the MCP tool path used
-- [ ] the stage prompt asks devin to (1) edit the tracked file **with its edit tool**, (2) write a
+- [x] the stage prompt asks devin to (1) edit the tracked file **with its edit tool**, (2) write a
       file outside the worktree, (3) write a file in `<extra dir>`, (4) write through `link-out`,
       (5) call `mcp_list_servers` and include the result in its final message
-- [ ] (1) the edit is present after the fan-out merges (in the workspace, or in the worktree branch —
+- [x] (1) the edit is present after the fan-out merges (in the workspace, or in the worktree branch —
       the report says which); (2) the outside file is absent; (3) the `<extra dir>` file exists;
       (4) nothing appears in the symlink's target dir; (5) the final message names at least one
       server from the owner's `~/.config/devin/mcp_config.json` (if that file lists none, the test
       says so and skips only this assertion)
-- [ ] the run's audit trail holds a `sandbox_policy` event for the devin stage with
+- [x] the run's audit trail holds a `sandbox_policy` event for the devin stage with
       `networkAccess: true` under layer `enforced` and `filesystemMode: "workspace-write"`
-- [ ] cleanup in `finally`: temp repo, extra dir, symlink target, state root, and every run dir the
+- [x] cleanup in `finally`: temp repo, extra dir, symlink target, state root, and every run dir the
       golden creates under `devin_fg`; the real `~/.config/devin/config.json` backed up and verified
       unchanged; no `credentials.toml`, devin process or peer sidecar left behind
 
 **Docs + gate:**
-- [ ] CHANGELOG (same commit): flows accept `agent: devin` on steps and fan-out stages; worktree
+- [x] CHANGELOG (same commit): flows accept `agent: devin` on steps and fan-out stages; worktree
       stages give devin write access to its worktree; evaluator `route` accepts `devin`
-- [ ] README agent section: devin is usable in flows; `dispatch: consumer` fan-outs still reject
+- [x] README agent section: devin is usable in flows; `dispatch: consumer` fan-outs still reject
       devin until Compose supports it (`COMP-AGENT-DEVIN-1`)
-- [ ] `tsc --noEmit` clean; `tests/engine tests/ir tests/connectors tests/mcp tests/config` green with
+- [x] `tsc --noEmit` clean; `tests/engine tests/ir tests/connectors tests/mcp tests/config` green with
       the tripwire (controller-run; rerun the known load flakes alone before calling red); goldens 1, 2
       live green
 - [ ] Codex astra/medium implementation review of S3, then fixes-only rounds (budget ~3; M+ after

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_TYPES } from "../connectors/base.js";
 import { PATH_FIELD_PATTERN, STEP_ID_PATTERN } from "./refs.js";
 
 export const StepIdSchema = z.string().regex(STEP_ID_PATTERN, "invalid step id");
@@ -38,7 +39,7 @@ export const EvaluateSchema = z.object({
 
 export const FanoutStageSchema = z.object({
   do: z.string(),
-  agent: z.enum(["claude", "codex"]).optional(),
+  agent: z.enum(AGENT_TYPES).optional(),
   out: z.string().optional(),
   ensure: z.array(EnsurePredicateSchema).optional(),
   attempts: z.number().int().positive().optional(),
@@ -62,7 +63,7 @@ const StepShape = z.object({
   when: z.string().optional(),
   do: z.string().optional(),
   set: z.record(z.string()).optional(),
-  agent: z.enum(["claude", "codex"]).optional(),
+  agent: z.enum(AGENT_TYPES).optional(),
   out: z.string().optional(),
   ensure: z.array(EnsurePredicateSchema).optional(),
   attempts: z.number().int().positive().optional(),

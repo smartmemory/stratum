@@ -7,7 +7,7 @@
     "children": "array of newly-discovered sub-work items. MUST be empty when status is closed; MUST be non-empty when status is open. The fan-out source for S2.",
     "reason": "human-readable explanation of the verdict.",
     "score": "optional number; feeds S4 branch-abandonment.",
-    "route": "optional claude | codex; lets the evaluator pick the agent for follow-up work. Feeds S4."
+    "route": "optional claude | codex | devin; lets the evaluator pick the agent for follow-up work. Feeds S4."
   },
   "invariants": [
     "status closed implies children is empty",
