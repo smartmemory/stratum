@@ -4,6 +4,7 @@ import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResul
 import { startBackgroundRun } from "./background.js";
 import { ClaudeConnector, type QueryFunction } from "./claude.js";
 import { CodexConnector, type SpawnProcess } from "./codex.js";
+import { DevinConnector } from "./devin.js";
 import { assertDevinSandboxAllowed, resolveDevinModel } from "./devin-model.js";
 import { isSandboxEscalated, loadStratumConfig, type ResolvedStratumConfig } from "../config/index.js";
 import type { CodexApprovalPolicy } from "../config/types.js";
@@ -46,6 +47,7 @@ export interface AgentRunOptions {
 
 export interface AgentRunBoundaries {
   codexSpawn?: SpawnProcess;
+  devinSpawn?: SpawnProcess;
   claudeQuery?: QueryFunction;
   /** Final argv replacement at the durable process boundary. */
   backgroundCommand?: string[];
@@ -192,8 +194,22 @@ export async function runAgent(
         ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
       }).run(options.prompt);
     case "devin":
-      // S1a lands validation only; DevinConnector arrives in S1b.
-      throw new Error("devin connector not implemented yet (STRAT-AGENT-DEVIN-1 S1b)");
+      // Devin's networkAccess/approvalPolicy are enforced, not forwarded (D3/D11);
+      // the audit already carries the enforced provenance.
+      return new DevinConnector({
+        ...(options.ownProcessGroup !== undefined ? { ownProcessGroup: options.ownProcessGroup } : {}),
+        cwd,
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.effort !== undefined ? { effort: options.effort } : {}),
+        sandboxMode: sandbox!.filesystemMode,
+        writableRoots: sandbox!.writableRoots,
+        ...(sandboxAudit !== undefined ? { sandboxAudit } : {}),
+        ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.onSpawn !== undefined ? { onSpawn: options.onSpawn } : {}),
+        ...(boundaries.devinSpawn !== undefined ? { spawn: boundaries.devinSpawn } : {}),
+        ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      }).run(options.prompt);
     default: {
       const exhaustive: never = options.agent;
       throw new Error(`Unknown agent ${JSON.stringify(exhaustive)}; must be one of ${describeAgentTypes()}`);

@@ -23,10 +23,13 @@ import { createToolDispatcher } from "../../src/mcp/server.js";
 /**
  * STRAT-AGENT-DEVIN-1 slice S1a — the D6 (models), D7 (env) and D11 (config)
  * error-harness rows. Everything here is table-driven and needs no devin
- * binary: devin dispatch stops at the S1b boundary AFTER all S1a validation.
+ * binary: with HOME redirected to the temp root the foreground connector fails
+ * validation-last at the not-logged-in boundary; the background path still
+ * stops at its S1a throw until S2.
  */
 
 const NOT_IMPLEMENTED = "devin connector not implemented yet (STRAT-AGENT-DEVIN-1 S1b)";
+const NOT_LOGGED_IN = "devin is not logged in (run `devin auth`)";
 
 const roots: string[] = [];
 
@@ -36,9 +39,11 @@ async function temporaryRoot(): Promise<string> {
   return root;
 }
 
-/** Env that isolates config resolution from the developer's real files. */
+/** Env that isolates config resolution AND devin state from the developer's
+ *  real files: HOME redirects the credentials probe onto the temp root, so a
+ *  valid dispatch can never reach the real ~/.local/share/devin or ~/.stratum. */
 function isolatedEnv(root: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), ...extra };
+  return { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, ...extra };
 }
 
 afterEach(async () => {
@@ -194,11 +199,11 @@ describe("assertDevinSandboxAllowed / fullAccessAuthorization (D11)", () => {
   });
 });
 
-describe("runAgent devin — validation precedes the S1b boundary", () => {
-  it("rejects a valid dispatch only at the not-implemented connector", async () => {
+describe("runAgent devin — validation precedes the connector boundary", () => {
+  it("rejects a valid dispatch only at the real connector's not-logged-in gate", async () => {
     const root = await temporaryRoot();
     await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env: isolatedEnv(root) }))
-      .rejects.toThrow(NOT_IMPLEMENTED);
+      .rejects.toThrow(NOT_LOGGED_IN);
   });
 
   it.each<[Partial<import("../../src/connectors/runner.js").AgentRunOptions>, RegExp]>([
@@ -229,17 +234,17 @@ describe("runAgent devin — validation precedes the S1b boundary", () => {
     await expect(runAgent({
       agent: "devin", prompt: "p", cwd: root, sandboxMode: "danger-full-access",
       env: isolatedEnv(root, { STRATUM_DEVIN_ALLOW_FULL_ACCESS: "1" }),
-    })).rejects.toThrow(NOT_IMPLEMENTED);
+    })).rejects.toThrow(NOT_LOGGED_IN);
   });
 
   it("STRATUM_CODEX_SANDBOX_MODE does not change devin's mode", async () => {
     const root = await temporaryRoot();
     // If the codex env layer leaked in this would fail on the missing
-    // STRATUM_DEVIN_ALLOW_FULL_ACCESS opt-in; instead it reaches the boundary.
+    // STRATUM_DEVIN_ALLOW_FULL_ACCESS opt-in; instead it reaches the connector.
     await expect(runAgent({
       agent: "devin", prompt: "p", cwd: root,
       env: isolatedEnv(root, { STRATUM_CODEX_SANDBOX_MODE: "danger-full-access" }),
-    })).rejects.toThrow(NOT_IMPLEMENTED);
+    })).rejects.toThrow(NOT_LOGGED_IN);
   });
 
   it("a project stratum.toml approvalPolicy does not fail a devin dispatch", async () => {
@@ -251,10 +256,10 @@ describe("runAgent devin — validation precedes the S1b boundary", () => {
       'writableRoots = ["/cache"]',
     ].join("\n"));
     await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env: isolatedEnv(root) }))
-      .rejects.toThrow(NOT_IMPLEMENTED);
+      .rejects.toThrow(NOT_LOGGED_IN);
   });
 
-  it("background dispatch validates then stops at the S1b boundary, leaving no run dir", async () => {
+  it("background dispatch validates then stops at the S1a boundary, leaving no run dir", async () => {
     const root = await temporaryRoot();
     await expect(runAgent({
       agent: "devin", prompt: "p", cwd: root, background: true, registryRoot: root, env: isolatedEnv(root),
@@ -373,6 +378,9 @@ describe("stratum_agent_run MCP boundary for devin (D6)", () => {
   it("accepts agent:devin and reaches the real runAgent boundary", async () => {
     const root = await temporaryRoot();
     vi.stubEnv("STRATUM_CONFIG_FILE", join(root, "missing-user.toml"));
+    // The connector inherits process.env — redirect HOME so its credentials
+    // probe lands on the temp root, never the real devin state.
+    vi.stubEnv("HOME", root);
     try {
       const dispatcher = createToolDispatcher({ foregroundRegistryRoot: root });
       await expect(dispatcher.call("stratum_agent_run", {
@@ -380,7 +388,7 @@ describe("stratum_agent_run MCP boundary for devin (D6)", () => {
       })).rejects.toMatchObject({
         code: ErrorCode.InternalError,
         data: { code: "agent_run_failed" },
-        message: expect.stringContaining(NOT_IMPLEMENTED),
+        message: expect.stringContaining(NOT_LOGGED_IN),
       });
     } finally {
       vi.unstubAllEnvs();

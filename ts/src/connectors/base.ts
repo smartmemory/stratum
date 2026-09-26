@@ -29,6 +29,34 @@ export function describeAgentTypes(): string {
   return AGENT_TYPES.map((agent) => `"${agent}"`).join(", ");
 }
 export type { CodexSandboxMode } from "../config/types.js";
+import type { CodexSandboxMode as SandboxMode } from "../config/types.js";
+
+/** GUI apps cannot start inside the OS sandbox: full Chrome aborts
+ * (SIGABRT) during WindowServer registration even with --headless. Agents that
+ * discover this by crashing tend to retry into a crash loop, so every dispatch
+ * states the constraint up front.
+ *
+ * Shared by every sandboxed connector (STRAT-AGENT-DEVIN-1 D3): the text is
+ * agent-neutral — a seatbelt aborts a GUI launch no matter which agent runs
+ * inside it. */
+export const CODEX_SANDBOX_PREAMBLE = [
+  "[sandbox constraints]",
+  "You are running inside a restricted OS sandbox (macOS seatbelt / Linux landlock).",
+  "GUI applications cannot start here: full Chrome/Chromium, Electron, or anything",
+  "that opens a window aborts at launch (SIGABRT). That abort is the sandbox, not",
+  "a bug in the code under test. For browser work use chrome-headless-shell (set",
+  "via PUPPETEER_EXECUTABLE_PATH when available) or another headless-only tool.",
+  "If a GUI launch aborts, do not retry it.",
+  "[/sandbox constraints]",
+].join("\n");
+
+/** Sandboxed modes both run under seatbelt/landlock. Full access does not, so
+ * prepending this warning there would assert a false execution boundary. */
+export function withSandboxPreamble(prompt: string, sandboxMode: SandboxMode = "read-only"): string {
+  if (sandboxMode === "danger-full-access") return prompt;
+  if (prompt.startsWith("[sandbox constraints]")) return prompt;
+  return `${CODEX_SANDBOX_PREAMBLE}\n\n${prompt}`;
+}
 
 /** Post-dispatch usage. Dispatch counts are reserved exclusively by the engine. */
 export interface ConnectorUsage {

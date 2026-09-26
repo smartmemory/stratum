@@ -1,0 +1,76 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "fixture-session",
+  "agent": {
+    "name": "devin",
+    "version": "0.0.0",
+    "model_name": "SWE-2 Medium",
+    "tool_definitions": [
+      {
+        "type": "function",
+        "function": {
+          "name": "exec",
+          "description": "Executes a given shell command in a persistent shell session and waits for output with optional timeout."
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "system",
+      "message": "[scrubbed system prompt]",
+      "timestamp": "2026-09-26T09:00:00.000000+00:00",
+      "extra": { "telemetry": { "source": "sysprompt", "operation": "normal" } }
+    },
+    {
+      "step_id": 7,
+      "source": "user",
+      "message": "Run exactly one shell command: `echo fixture-marker`. Then reply: done.",
+      "timestamp": "2026-09-26T09:00:01.000000+00:00",
+      "extra": { "telemetry": { "source": "user", "operation": "unknown" } }
+    },
+    {
+      "step_id": 9,
+      "source": "agent",
+      "message": "",
+      "timestamp": "2026-09-26T09:00:02.000000+00:00",
+      "model_name": "swe-2-medium",
+      "reasoning_content": "Run the requested echo, then reply done.",
+      "tool_calls": [
+        {
+          "tool_call_id": "exec:0#90decbef41b94a0c8a3a742ffbf15214",
+          "function_name": "exec",
+          "arguments": { "command": "echo fixture-marker" }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "exec:0#90decbef41b94a0c8a3a742ffbf15214",
+            "content": "Output from command in shell 01d123:\nfixture-marker\n\n\nExit code: 0"
+          }
+        ]
+      },
+      "metrics": { "prompt_tokens": 20743, "completion_tokens": 55 },
+      "extra": { "generation_model": "swe-2-medium", "telemetry": { "source": "assistant", "operation": "inference" } }
+    },
+    {
+      "step_id": 10,
+      "source": "agent",
+      "message": "done",
+      "timestamp": "2026-09-26T09:00:03.000000+00:00",
+      "model_name": "swe-2-medium",
+      "reasoning_content": "The command ran; reply done.",
+      "tool_calls": [],
+      "metrics": { "prompt_tokens": 20849, "completion_tokens": 14 },
+      "extra": { "generation_model": "swe-2-medium", "telemetry": { "source": "assistant", "operation": "inference" } }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 41592,
+    "total_completion_tokens": 69,
+    "total_cached_tokens": 20736,
+    "total_steps": 10
+  }
+}

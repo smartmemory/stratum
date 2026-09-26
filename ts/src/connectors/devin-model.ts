@@ -56,6 +56,13 @@ export function devinModelFamilies(): ReadonlyMap<string, readonly string[]> {
   return byFamily;
 }
 
+/** Resolved devin execution identity for telemetry (D6): the dispatched id
+ *  plus its effort suffix within the family, as codex reports model/effort. */
+export function devinModelIdentity(modelId: string): { model: string; effort?: string } {
+  const effort = effortOf(modelId, devinModelFamilies());
+  return effort === undefined ? { model: modelId } : { model: modelId, effort };
+}
+
 /** The effort suffix a priced id carries within its family, if one is known. */
 function effortOf(modelId: string, families: ReadonlyMap<string, readonly string[]>): string | undefined {
   for (const [family, efforts] of families) {

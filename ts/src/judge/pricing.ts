@@ -94,7 +94,21 @@ export function baseModel(model: string): string {
  * when this returns 0, so the consumer records unknown cost rather than a false zero.
  */
 export function usdFromTokens(model: string, usage: PricedTokenUsage): number {
-  const pricing = MODEL_PRICING[baseModel(model)];
+  return usdFromTable(MODEL_PRICING[baseModel(model)], usage);
+}
+
+/**
+ * The devin counterpart of usdFromTokens, priced from DEVIN_MODEL_PRICING
+ * (STRAT-AGENT-DEVIN-1 D6). Every dispatched devin id is in the table by
+ * construction — a 0 here is a real "free", so the connector reports
+ * `usd: 0` labelled `estimated` (a price-table fact), unlike codex whose
+ * unpriced models must stay cost-unknown.
+ */
+export function devinUsdFromTokens(model: string, usage: PricedTokenUsage): number {
+  return usdFromTable(DEVIN_MODEL_PRICING[baseModel(model)] ?? { input: 0, output: 0, cacheRead: 0 }, usage);
+}
+
+function usdFromTable(pricing: ModelPricing | undefined, usage: PricedTokenUsage): number {
   if (!pricing) return 0;
   const input = validCount(usage.inputTokens);
   const output = validCount(usage.outputTokens);

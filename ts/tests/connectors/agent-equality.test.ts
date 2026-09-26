@@ -20,7 +20,11 @@ import { runAgent, validateAgentSettings, type AgentRunOptions } from "../../src
  * an unhandled row.
  */
 
+// Foreground devin now reaches the real connector (S1b): with HOME on the temp
+// root its first gate is the credentials probe. The background path keeps its
+// S1a throw until S2.
 const S1B_BOUNDARY = /devin connector not implemented yet \(STRAT-AGENT-DEVIN-1 S1b\)/;
+const FOREGROUND_BOUNDARY = /devin is not logged in \(run `devin auth`\)/;
 
 const roots: string[] = [];
 
@@ -64,14 +68,14 @@ describe("AGENT_TYPES is the one dispatchable list (D1)", () => {
 
   it.each(AGENT_TYPES)("runAgent reaches a real branch for agent=%s — no silent fallthrough", async (agent) => {
     const root = await temporaryRoot();
-    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml") };
+    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root };
     const attempt = runAgent(
       { agent, prompt: "p", cwd: root, env },
       { claudeQuery: stubClaudeQuery, codexSpawn: fakeCodexSpawn() },
     );
     if (agent === "devin") {
-      // S1a validates devin and stops at the named S1b boundary.
-      await expect(attempt).rejects.toThrow(S1B_BOUNDARY);
+      // S1b validates devin and stops at the real connector's credentials gate.
+      await expect(attempt).rejects.toThrow(FOREGROUND_BOUNDARY);
     } else {
       await expect(attempt).resolves.toMatchObject({ text: "stub ok" });
     }
@@ -98,7 +102,8 @@ describe("unknown agent errors name the whole set at every layer (D1)", () => {
 });
 
 describe("devin parameter equality — every codex knob is honoured or named-rejected (D1)", () => {
-  // "accepted" = validation passes and the dispatch reaches the S1b boundary.
+  // "accepted" = validation passes and the dispatch reaches the connector
+  // (its credentials gate is the named boundary under the temp HOME).
   // A RegExp = the named devin rejection the parameter must produce.
   const table: Array<{ name: string; options: Partial<AgentRunOptions>; expected: "accepted" | RegExp }> = [
     { name: "model (full id)", options: { model: "swe-2-medium" }, expected: "accepted" },
@@ -133,9 +138,10 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
 
   it.each(table)("$name", async ({ options, expected }) => {
     const root = await temporaryRoot();
-    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), ...(options.env ?? {}) };
-    await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...options }))
-      .rejects.toThrow(expected === "accepted" ? S1B_BOUNDARY : expected);
+    const { env: optionEnv, ...rest } = options;
+    const env = { STRATUM_CONFIG_FILE: join(root, "missing-user.toml"), HOME: root, ...(optionEnv ?? {}) };
+    await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, env, ...rest }))
+      .rejects.toThrow(expected === "accepted" ? FOREGROUND_BOUNDARY : expected);
   });
 
   it.each(table)("$name — validateAgentSettings layer agrees", ({ options, expected }) => {
@@ -149,7 +155,7 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
     } else expect(check).toThrow(expected);
   });
 
-  it("background dispatches reach the S1b boundary without writing a run dir", async () => {
+  it("background dispatches still reach the S1a boundary without writing a run dir", async () => {
     const root = await temporaryRoot();
     await expect(runAgent({
       agent: "devin", prompt: "p", cwd: root, background: true,
