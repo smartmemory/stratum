@@ -220,6 +220,45 @@ it("refuses user messages with an authenticated dial-back and ignores malformed 
   await waitFor(async () => recipient.frames, frames => frames.length === 2);
   expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},{type:"control",action:"peer_message_status",orig_msg_id:"user-1",status:"expired",status_detail:"refused",from_mode:"bypass",from:`uds:${registered.sock}`}]);
 });
+it("pairs a refused user frame with the same sender's idle subscription", async () => {
+  const config = await fixture(); config.lingerMs = 3000;
+  const recipient = await requester(config);
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,[
+    {type:"user",msg_id:"text",from:`uds:${recipient.sock}`,from_mode:"bypass"},
+    {...subscription(recipient.sock,"idle-sub"),from_mode:"plan"},
+  ]);
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(async () => recipient.frames,frames => frames.some(frame => frame.action === "peer_idle_notice"));
+  await delay(1600);
+  expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},
+    expect.objectContaining({type:"control",action:"peer_idle_notice",orig_msg_id:"idle-sub",state:"idle",from_mode:"plan",from:`uds:${registered.sock}`})]);
+  expect(await readFile(`${config.streamPath}.peer.err`,"utf8")).toContain("peer text dropped: paired with idle subscription");
+});
+it("sends an unpaired user refusal after the pairing window", async () => {
+  const config = await fixture(); const recipient = await requester(config);
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,[{type:"user",msg_id:"unpaired",from:`uds:${recipient.sock}`,from_mode:"bypass"}]);
+  await delay(300);
+  expect(recipient.frames).toEqual([]);
+  await waitFor(async () => recipient.frames,frames => frames.length === 2);
+  expect(recipient.frames).toEqual([{type:"auth",token:"a".repeat(32)},
+    {type:"control",action:"peer_message_status",orig_msg_id:"unpaired",status:"expired",status_detail:"refused",from_mode:"bypass",from:`uds:${registered.sock}`}]);
+});
+it("does not pair a user refusal with another sender's subscription", async () => {
+  const config = await fixture(); config.lingerMs = 3000;
+  const sender = await requester(config); const subscriber = await requester(config,987655);
+  await launch(config); const registered = await peer(config);
+  await send(registered.sock,[
+    {type:"user",msg_id:"sender-text",from:`uds:${sender.sock}`,from_mode:"bypass"},
+    {...subscription(subscriber.sock,"subscriber-idle"),from_mode:"plan"},
+  ]);
+  await appendFile(config.streamPath,'{"__t2f5_done__":0}\n');
+  await waitFor(async () => sender.frames,frames => frames.length === 2);
+  await waitFor(async () => subscriber.frames,frames => frames.length === 2);
+  expect(sender.frames[1]).toMatchObject({action:"peer_message_status",orig_msg_id:"sender-text",status:"expired",status_detail:"refused"});
+  expect(subscriber.frames[1]).toMatchObject({action:"peer_idle_notice",orig_msg_id:"subscriber-idle",state:"idle",from_mode:"plan"});
+});
 it("golden flow delivers exactly one authenticated notice and accepts late subscriptions during linger", async () => {
   const config = await fixture(); const recipient = await requester(config);
   await launch(config); const registered = await peer(config);

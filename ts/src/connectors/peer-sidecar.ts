@@ -168,6 +168,7 @@ async function main(): Promise<void> {
     for (const reqId of reservations.keys()) settle(reqId, "dropped", "unknown");
   }
   const callbacks: Callback[] = [];
+  const deferredRefusals = new Set<{from: string; frame: Record<string, unknown>; to: string; timer: NodeJS.Timeout}>();
   const activeNotices = new Set<string>();
   const abortCallbacks = new Set<() => void>();
   let callbackBudget = 5000;
@@ -269,7 +270,17 @@ async function main(): Promise<void> {
         from:`uds:${sockPath}`, ...(frame.from_mode !== undefined ? {from_mode:frame.from_mode} : {})}};
       const reject = (status: string, detail?: string) => sendControl(to,
         {...reply.frame, status, ...(detail ? {status_detail:detail} : {})});
-      if (!appOwner) { reject("expired", "refused"); return; }
+      if (!appOwner) {
+        const refused = {...reply.frame, status:"expired", status_detail:"refused"};
+        if (deferredRefusals.size >= 32) { sendControl(to, refused); return; }
+        const pending = {from:frame.from as string, to, frame:refused, timer:setTimeout(() => {
+          deferredRefusals.delete(pending);
+          if (!stopping) sendControl(pending.to, pending.frame);
+        }, 1500)};
+        pending.timer.unref();
+        deferredRefusals.add(pending);
+        return;
+      }
       if (!authenticated) { reject("denied"); return; }
       const key = JSON.stringify([frame.from, frame.msg_id]);
       if ([...reservations.values()].some(entry => entry.key === key)) return;
@@ -290,6 +301,16 @@ async function main(): Promise<void> {
     } else if (frame.type === "control" && frame.action === "notify_when_idle") {
       // At capacity even replacements are rejected, matching the specified acceptance rule.
       if (subscriptions.size >= 32) { console.error("peer subscription rejected: full"); return; }
+      if (!appOwner) {
+        let paired = false;
+        for (const pending of deferredRefusals) {
+          if (pending.from !== frame.from) continue;
+          clearTimeout(pending.timer);
+          deferredRefusals.delete(pending);
+          paired = true;
+        }
+        if (paired) console.error("peer text dropped: paired with idle subscription; run cannot accept input");
+      }
       // Claude admits the notice to the subscriber model only with its original permission mode.
       subscriptions.set(frame.from as string, {id:frame.msg_id, to, from_mode:frame.from_mode, notified:false});
       if (terminalReady) notifyPending();
@@ -447,6 +468,11 @@ async function main(): Promise<void> {
       stopping = true;
       activeTurn = null;
       settlePending();
+      for (const pending of deferredRefusals) {
+        clearTimeout(pending.timer);
+        console.error("peer callback dropped: shutdown");
+      }
+      deferredRefusals.clear();
       // Startup can be between bind and publishing its files when a signal arrives.
       await startupDone;
       process.removeListener("message", ownerMessage);

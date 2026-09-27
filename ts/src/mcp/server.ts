@@ -440,7 +440,7 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
           if (response.status === "bg_started") {
             const poll = `stratum_agent_poll(${JSON.stringify({ runId: response.runId })})`;
             response.completionInstructions = typeof response.peerName === "string"
-              ? `Completion is not automatically reported. In Claude Code, immediately call SendMessage(${JSON.stringify({ to: response.peerName, notify_when_idle: true })}). After the idle notice, call ${poll} to retrieve the report. If subscription fails or SendMessage is unavailable, poll until complete or error. Registration may still be starting; a running poll can be followed by another subscription attempt. The peer remains available for only 15 seconds after completion by default.`
+              ? `Completion is not automatically reported. In Claude Code, immediately call SendMessage(${JSON.stringify({ to: response.peerName, notify_when_idle: true })}); omit the message field entirely (no empty string or placeholder text). If text is sent to an exec-strategy run, Claude Code may report it refused; the subscription still stands, so wait for the idle notice. Then call ${poll} to retrieve the report. If subscription fails or SendMessage is unavailable, poll until complete or error. Registration may still be starting; a running poll can be followed by another subscription attempt. The peer remains available for only 15 seconds after completion by default.`
               : `No completion notification is registered. Call ${poll} and keep polling while status is running; retrieve the report on complete or handle error/not_found. Do not wait for an automatic completion message.`;
           }
           break;

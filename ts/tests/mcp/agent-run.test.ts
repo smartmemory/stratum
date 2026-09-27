@@ -100,6 +100,8 @@ describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
     try {
       const tools = (await pair.client.listTools()).tools;
       expect(tools.find(tool => tool.name === "stratum_agent_run")?.description).toContain("notify_when_idle");
+      expect(tools.find(tool => tool.name === "stratum_agent_run")?.description).toContain("omit the message field entirely");
+      expect(tools.find(tool => tool.name === "stratum_agent_run")?.description).toContain("the subscription still stands");
       expect(tools.find(tool => tool.name === "stratum_agent_poll")?.description).toContain("idle notice");
       const result = await pair.client.callTool({ name: "stratum_agent_run", arguments: {
         agent: "codex", prompt: "test", cwd: process.cwd(), background: true,
@@ -110,6 +112,8 @@ describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
       expect(payload.completionInstructions).toContain('stratum_agent_poll({"runId":"abcdef123456"})');
       if (peerName) {
         expect(payload.completionInstructions).toContain(`SendMessage(${JSON.stringify({to:peerName,notify_when_idle:true})})`);
+        expect(payload.completionInstructions).toContain("omit the message field entirely");
+        expect(payload.completionInstructions).toContain("the subscription still stands");
         expect(payload.completionInstructions).toContain("If subscription fails");
       } else {
         expect(payload.completionInstructions).toContain("No completion notification is registered");

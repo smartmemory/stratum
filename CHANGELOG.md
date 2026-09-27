@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Background-run idle subscriptions no longer look refused (STRAT-AGENT-PEER-1 follow-up).** A caller that subscribed with `SendMessage(to=peerName, message="<text>", notify_when_idle=true)` got its subscription accepted, but the text was refused by exec-strategy runs (they cannot take input), and Claude Code rendered that as "not accepting cross-session messages … do not wait". A SmartMemory controller read it as a refused subscription and fell back to polling. The peer sidecar now holds a text refusal for 1.5 s and drops it when an idle subscription from the same sender follows; unpaired text is still refused as before, and app-server steering is unchanged. `completionInstructions` and the `stratum_agent_run` description now say to omit `message` entirely (models asked for an empty string emit invalid JSON). Verified live: pure subscription on run `16d125048345` delivered the idle notice with no polling. Targeted tests: 4 files, 132 passed.
+
 ## [0.7.1] — 2026-09-27
 
 - **Release: STRAT-AGENT-DEVIN-1. Devin is a full stratum agent.** `stratum_agent_run agent=devin` runs foreground and background (`swe-2-medium|high|max`, `usd: 0` with `usdSource: "estimated"`, macOS seatbelt sandbox, per-run home with a credential copy that is removed on exit); flows accept `agent: devin` on steps and fan-out stages, and evaluator `route` accepts it. Compose 0.7.1 needs this release to dispatch Devin. Also: the `.mcp.json` compose server resolves from git worktrees. Details in the entries below.
