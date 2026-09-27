@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-09-27
+
+- **Release: background-run idle subscriptions no longer look refused.** Patch release of the peer-sidecar fix below so running stratum MCP servers pick it up. Callers subscribe with `SendMessage(to=peerName, notify_when_idle=true)` and omit `message`.
+
 - **Background-run idle subscriptions no longer look refused (STRAT-AGENT-PEER-1 follow-up).** A caller that subscribed with `SendMessage(to=peerName, message="<text>", notify_when_idle=true)` got its subscription accepted, but the text was refused by exec-strategy runs (they cannot take input), and Claude Code rendered that as "not accepting cross-session messages … do not wait". A SmartMemory controller read it as a refused subscription and fell back to polling. The peer sidecar now holds a text refusal for 1.5 s and drops it when an idle subscription from the same sender follows; unpaired text is still refused as before, and app-server steering is unchanged. `completionInstructions` and the `stratum_agent_run` description now say to omit `message` entirely (models asked for an empty string emit invalid JSON). Verified live: pure subscription on run `16d125048345` delivered the idle notice with no polling. Targeted tests: 4 files, 132 passed.
 
 ## [0.7.1] — 2026-09-27
