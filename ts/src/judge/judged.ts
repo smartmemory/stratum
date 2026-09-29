@@ -18,7 +18,7 @@ export const STAKES_MODEL: Readonly<Record<Stakes, JudgeTier>> = Object.freeze({
   // directive, the cheap tier uses `gpt-6-luna` (priced at 0.10/0.50 in
   // pricing.ts).
   cheap: { model: "gpt-6-luna", effort: "low" },
-  default: { model: "gpt-6-sol", effort: "medium" },
+  default: { model: "gpt-6-sol", effort: "high" },
   paranoid: { model: "gpt-6-astra", effort: "high" },
 });
 

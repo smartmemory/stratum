@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Codex default gpt-6-sol now runs at high reasoning effort (was medium), per owner directive.
+
 ## [0.7.3] — 2026-09-29
 
 - **Release: default Claude model is Sonnet 5.5.** Patch release carrying the model sweep.
