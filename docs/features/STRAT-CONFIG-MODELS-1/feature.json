@@ -1,0 +1,9 @@
+{
+  "code": "STRAT-CONFIG-MODELS-1",
+  "description": "Model catalog, defaults, tiers (model+effort+thinking) and prices move into one shipped data file, so a model bump is a one-file edit with no test churn",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-09-30",
+  "updated": "2026-09-30",
+  "complexity": "M"
+}
