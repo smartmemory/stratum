@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,7 +50,7 @@ afterEach(async () => {
 });
 
 describe("DEVIN_MODEL_PRICING (D6)", () => {
-  it.each(["swe-2-medium", "swe-2-high", "swe-2-max"])("prices free SWE-2 model %s at zero", (id) => {
+  it.each([testModels.devinMedium, testModels.devinDefault, testModels.devinMax])("prices free SWE-2 model %s at zero", (id) => {
     expect(DEVIN_MODEL_PRICING[id]).toEqual({ input: 0, output: 0, cacheRead: 0 });
   });
 
@@ -58,79 +59,88 @@ describe("DEVIN_MODEL_PRICING (D6)", () => {
   });
 });
 
+describe("synthetic Devin allowlist", () => {
+  it("rejects retired and foreign provider ids", () => {
+    expect(devinModelIds()).not.toContain("test-retired-low");
+    expect(() => resolveDevinModel("test-retired-low")).toThrow("Unknown devin model");
+    expect(() => resolveDevinModel("test-codex-a")).toThrow("Unknown devin model");
+    expect(DEVIN_DEFAULT_MODEL).toBe("test-devin-high");
+  });
+});
+
 describe("devinModelFamilies", () => {
   it("derives family→effort tables from the pricing ids", () => {
     const families = devinModelFamilies();
-    expect(families.get("swe-2")).toEqual(["high", "max", "medium"]);
-    expect(families.get("claude-opus-5-5")).toEqual(["high", "low", "max", "medium", "xhigh"]);
-    expect(families.get("claude-sonnet-5")).toEqual(["high", "low", "max", "medium", "xhigh"]);
-    expect(families.get("claude-sonnet-5-5")).toEqual(["high", "low", "max", "medium", "xhigh"]);
+    expect(families.get(testModels.devinFamily)).toEqual(["high", "max", "medium"]);
+    expect(families.get(testModels.devinOpusFamily)).toEqual(["high", "low", "max", "medium", "xhigh"]);
+    expect(families.get(testModels.devinSonnetFamily)).toEqual(["high", "low", "max", "medium", "xhigh"]);
+    expect(families.get(testModels.claudeDefault)).toEqual(["high", "low", "max", "medium", "xhigh"]);
     // A priced id surfaced by a -fast variant is a full id, not a family.
-    expect(families.has("claude-opus-5-5-low")).toBe(false);
-    expect(families.has("claude-opus-5-5-low-fast")).toBe(false);
+    expect(families.has(testModels.devinOpusLow)).toBe(false);
+    expect(families.has(testModels.devinOpusLowFast)).toBe(false);
   });
 });
 
 describe("resolveDevinModel (D6)", () => {
   it.each([
     [undefined, undefined, DEVIN_DEFAULT_MODEL],
-    [undefined, "max", "swe-2-max"],
-    ["swe-2-high", undefined, "swe-2-high"],
-    ["claude-sonnet-5-xhigh", undefined, "claude-sonnet-5-xhigh"],
+    [undefined, "max", testModels.devinMax],
+    [testModels.devinDefault, undefined, testModels.devinDefault],
+    [testModels.devinSonnetXhigh, undefined, testModels.devinSonnetXhigh],
     // The -fast serving variants are dispatchable by full id only.
-    ["claude-opus-5-5-low-fast", undefined, "claude-opus-5-5-low-fast"],
-    ["swe-2", "high", "swe-2-high"],
-    ["swe-2", "medium", "swe-2-medium"],
-    ["claude-opus-5-5", "xhigh", "claude-opus-5-5-xhigh"],
-    ["swe-2/high", undefined, "swe-2-high"],
-    ["claude-sonnet-5/low", undefined, "claude-sonnet-5-low"],
+    [testModels.devinOpusLowFast, undefined, testModels.devinOpusLowFast],
+    [testModels.devinFamily, "high", testModels.devinDefault],
+    [testModels.devinFamily, "medium", testModels.devinMedium],
+    [testModels.devinOpusFamily, "xhigh", testModels.devinOpusXhigh],
+    [`${testModels.devinFamily}/high`, undefined, testModels.devinDefault],
+    [`${testModels.devinSonnetFamily}/low`, undefined, testModels.devinSonnetLow],
     // A full id plus its own effort is not a conflict.
-    ["swe-2-high", "high", "swe-2-high"],
-    ["swe-2/high", "high", "swe-2-high"],
+    [testModels.devinDefault, "high", testModels.devinDefault],
+    [`${testModels.devinFamily}/high`, "high", testModels.devinDefault],
   ])("resolves (%s, %s) → %s", (model, effort, expected) => {
     expect(resolveDevinModel(model, effort)).toBe(expected);
   });
 
   it("resolves all three accepted spellings to the same id", () => {
-    expect(resolveDevinModel("swe-2", "high")).toBe(resolveDevinModel("swe-2/high"));
-    expect(resolveDevinModel("swe-2/high")).toBe(resolveDevinModel("swe-2-high"));
+    expect(resolveDevinModel(testModels.devinFamily, "high")).toBe(resolveDevinModel(`${testModels.devinFamily}/high`));
+    expect(resolveDevinModel(`${testModels.devinFamily}/high`)).toBe(resolveDevinModel(testModels.devinDefault));
   });
 
   it.each([
     "typo",
-    "gpt-6-sol",
-    "swe-2-high/extra/deep",
+    testModels.codexDefault,
+    `${testModels.devinDefault}/extra/deep`,
   ])("rejects unknown model %s naming the valid ids", (model) => {
     expect(() => resolveDevinModel(model)).toThrow(
-      new RegExp(`Unknown devin model .*; accepted models: .*swe-2-high`),
+      new RegExp(`Unknown devin model .*; accepted models: .*${testModels.devinDefault}`),
     );
   });
 
   it.each([
-    ["swe-2", "high, max, medium"],
-    ["claude-sonnet-5", "high, low, max, medium, xhigh"],
-    ["claude-opus-5-5", "high, low, max, medium, xhigh"],
+    [testModels.devinFamily, "high, max, medium"],
+    [testModels.devinSonnetFamily, "high, low, max, medium, xhigh"],
+    [testModels.devinOpusFamily, "high, low, max, medium, xhigh"],
   ])("rejects a bare family %s with no effort, naming the family's efforts", (family, efforts) => {
     expect(() => resolveDevinModel(family)).toThrow(
       `devin model family ${JSON.stringify(family)} requires an effort; accepted efforts: ${efforts}`,
     );
   });
 
-  it.each(["xhigh", "ultra", "low-fast"])("rejects unknown swe-2 effort %s naming the valid set", (effort) => {
-    expect(() => resolveDevinModel("swe-2", effort)).toThrow(
-      `Unknown devin effort "${effort}" for family "swe-2"; accepted efforts: high, max, medium`,
+  it.each(["xhigh", "ultra", "low-fast"])(`rejects unknown ${testModels.devinFamily} effort %s naming the valid set`, (effort) => {
+    expect(() => resolveDevinModel(testModels.devinFamily, effort)).toThrow(
+      `Unknown devin effort "${effort}" for family "${testModels.devinFamily}"; accepted efforts: high, max, medium`,
     );
-    expect(() => resolveDevinModel(`swe-2/${effort}`)).toThrow(
-      `Unknown devin effort "${effort}" for family "swe-2"; accepted efforts: high, max, medium`,
+    expect(() => resolveDevinModel(`${testModels.devinFamily}/${effort}`)).toThrow(
+      `Unknown devin effort "${effort}" for family "${testModels.devinFamily}"; accepted efforts: high, max, medium`,
     );
   });
 
   it("rejects a full id plus a conflicting effort", () => {
-    expect(() => resolveDevinModel("swe-2-high", "max")).toThrow(
-      'devin effort "max" conflicts with model "swe-2-high"',
+    expect(() => resolveDevinModel(testModels.devinDefault, "max")).toThrow(
+      `devin effort "max" conflicts with model "${testModels.devinDefault}"`,
     );
-    expect(() => resolveDevinModel("swe-2/high", "max")).toThrow(
-      'devin effort "max" conflicts with the effort in model "swe-2/high"',
+    expect(() => resolveDevinModel(`${testModels.devinFamily}/high`, "max")).toThrow(
+      `devin effort "max" conflicts with the effort in model "${testModels.devinFamily}/high"`,
     );
   });
 });
@@ -171,8 +181,8 @@ describe("validateAgentSettings for devin (D1/D3/D11)", () => {
     {},
     { networkAccess: true },
     { writableRoots: ["/tmp"] },
-    { model: "swe-2", effort: "max" },
-    { model: "claude-opus-5-5-high" },
+    { model: testModels.devinFamily, effort: "max" },
+    { model: testModels.devinOpusHigh },
   ])("accepts %j", (options) => {
     expect(() => validateAgentSettings({ agent: "devin", ...options })).not.toThrow();
   });
@@ -208,7 +218,7 @@ describe("runAgent devin — validation precedes the connector boundary", () => 
   it.each<[Partial<import("../../src/connectors/runner.js").AgentRunOptions>, RegExp]>([
     [{ model: "typo" }, /Unknown devin model "typo"/],
     [{ effort: "ultra" }, /Unknown devin effort "ultra"/],
-    [{ model: "swe-2-max", effort: "high" }, /conflicts/],
+    [{ model: testModels.devinMax, effort: "high" }, /conflicts/],
     [{ thinking: { type: "adaptive" } }, /Devin does not support Claude thinking\/tool filters/],
     [{ allowedTools: ["Read"] }, /Devin does not support Claude thinking\/tool filters/],
     [{ approvalPolicy: "never" }, /Codex approvalPolicy is not supported by devin/],
@@ -332,7 +342,7 @@ describe("devin record parse (D1)", () => {
     await mkdir(join(root, runId));
     await writeFile(join(root, runId, "stream.jsonl"), "");
     await writeFile(join(root, runId, "meta.json"), JSON.stringify({
-      runId, agent: "devin", model: "swe-2-high", cwd: root, sandboxMode: "read-only",
+      runId, agent: "devin", model: testModels.devinDefault, cwd: root, sandboxMode: "read-only",
       promptChars: 1, createdAt: new Date().toISOString(),
       streamPath: join(root, runId, "stream.jsonl"), stderrPath: join(root, runId, "stderr.log"),
       childPid: process.pid,
@@ -348,7 +358,7 @@ describe("devin record parse (D1)", () => {
     const bad = "deadbeef0002";
     await mkdir(join(root, bad));
     await writeFile(join(root, bad, "meta.json"), JSON.stringify({
-      runId: bad, agent: "devin", model: "swe-2-high", cwd: root,
+      runId: bad, agent: "devin", model: testModels.devinDefault, cwd: root,
       promptChars: 1, createdAt: new Date().toISOString(),
       streamPath: join(root, bad, "stream.jsonl"), stderrPath: join(root, bad, "stderr.log"),
     }));
@@ -388,4 +398,18 @@ describe("stratum_agent_run MCP boundary for devin (D6)", () => {
       message: expect.stringContaining(NOT_LOGGED_IN),
     });
   });
+});
+
+// Inject synthetic bytes into the real singleton loader, preserving every adapter.
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { fileURLToPath } = await import("node:url");
+  const shipped = fileURLToPath(new URL("../../src/config/models.default.toml", import.meta.url));
+  const fixture = fileURLToPath(new URL("../fixtures/models.synthetic.toml", import.meta.url));
+  return { ...actual, readFileSync: new Proxy(actual.readFileSync, {
+    apply(target, receiver, args) {
+      if (args[0] === shipped) args[0] = fixture;
+      return Reflect.apply(target, receiver, args);
+    },
+  }) };
 });

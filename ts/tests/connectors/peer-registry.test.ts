@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { afterEach, expect, it } from "vitest";
 import { chmod, mkdtemp, symlink, lstat, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
@@ -11,7 +12,7 @@ async function root(): Promise<string> {
 }
 afterEach(async () => { await Promise.all(roots.splice(0).map(async dir => { await chmod(dir, 0o700); await rm(dir, { recursive: true, force: true }); })); });
 it("derives safe deterministic peer names", () => {
-  for (const [model, short] of [["gpt-6-astra/medium", "astra"], ["gpt-5.3-codex-spark", "spark"], ["gpt-5.6-terra/high", "terra"], ["!!!/high", "codex"]]) {
+  for (const [model, short] of [["gpt-0.0-alpha/medium", "alpha"], ["gpt-0.0-codex-beta", "beta"], ["gpt-0.0-gamma/high", "gamma"], ["!!!/high", "codex"]]) {
     expect(registry.peerName(model!, "4c165babcdef", {agent:"codex"})).toBe(`codex-${short}-4c165b`);
   }
 });
@@ -191,9 +192,9 @@ it("normalizes labels and derives agent names while retaining legacy names", () 
   expect(registry.normalizePeerLabel(" Schema Review! ")).toBe("schema-review");
   expect(registry.normalizePeerLabel("a".repeat(64))).toHaveLength(64);
   for (const value of [null, 1, "", " ", "!!!", "中文", "a\nb", "a\x7f", "a".repeat(65)]) expect(() => registry.normalizePeerLabel(value)).toThrow(/peerLabel/);
-  expect(registry.peerName("claude-sonnet-5-5", "abcdef123456", {agent:"claude", label:"schema-review"})).toBe("claude-sonnet-5-5-abcdef123456-schema-review");
-  expect(registry.peerName("claude-sonnet-5-5", "abcdef123456", {agent:"claude"})).toBe("claude-sonnet-5-5-abcdef123456");
-  expect(registry.peerName("gpt-6-astra", "abcdef123456", {agent:"codex", label:"review"})).toBe("codex-astra-abcdef123456-review");
+  expect(registry.peerName(testModels.claudeDefault, "abcdef123456", {agent:"claude", label:"schema-review"})).toBe(`${testModels.claudeDefault}-abcdef123456-schema-review`);
+  expect(registry.peerName(testModels.claudeDefault, "abcdef123456", {agent:"claude"})).toBe(`${testModels.claudeDefault}-abcdef123456`);
+  expect(registry.peerName(testModels.paranoid, "abcdef123456", {agent:"codex", label:"review"})).toBe("codex-astra-abcdef123456-review");
 });
 it("round trips worker config and rejects bad owner fields", async () => {
   const dir = await root();

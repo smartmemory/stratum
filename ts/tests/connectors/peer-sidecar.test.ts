@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { afterEach, expect, it } from "vitest";
 import { transpileModule, ModuleKind, ScriptTarget } from "typescript";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -457,7 +458,7 @@ async function backgroundFixture(setup = "", env: NodeJS.ProcessEnv = {}, prepar
   const release = join(base.runDir,"release");
   let started!: Awaited<ReturnType<typeof startBackgroundRun>>;
   await launch(base,setup,async () => {
-    started = await startBackgroundRun({agent:"codex",prompt:"x",model:"gpt-6-astra",cwd:base.runDir,
+    started = await startBackgroundRun({agent:"codex",prompt:"x",model:testModels.paranoid,cwd:base.runDir,
       registryRoot,sessionsDir:base.sessionsDir,sockDir:base.sockDir,lingerMs:500,
       command:["sh","-c",'until [ -e "$RELEASE" ]; do sleep 0.05; done'],
       env:{...process.env,RELEASE:release,STRATUM_PEER_REGISTER:"1",...env}});
@@ -469,7 +470,7 @@ async function backgroundFixture(setup = "", env: NodeJS.ProcessEnv = {}, prepar
 }
 it("background golden flow registers busy, authenticates one notice, retains idle, and cleans up", async () => {
   const {config,started,registryRoot,release} = await backgroundFixture();
-  expect(started).toMatchObject({peerName:peerName("gpt-6-astra",started.runId,{agent:"codex"})});
+  expect(started).toMatchObject({peerName:peerName(testModels.paranoid,started.runId,{agent:"codex"})});
   expect(started).not.toHaveProperty("peer");
   await assertToolResponse("stratum_agent_run",started);
   const metaPath = join(config.runDir,"meta.json");

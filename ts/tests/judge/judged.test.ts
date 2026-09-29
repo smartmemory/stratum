@@ -18,16 +18,16 @@ function generated(holds = true, reason = "context confirms it") {
 describe("judged predicates", () => {
   it("ships the canonical stakes to model and effort table", () => {
     expect(STAKES_MODEL).toEqual({
-      cheap: { model: "gpt-6-luna", effort: "low" },
-      default: { model: "gpt-6.1-sol", effort: "high" },
-      paranoid: { model: "gpt-6-astra", effort: "high" },
+      cheap: { model: "test-codex-b", effort: "low" },
+      default: { model: "test-codex-a", effort: "high" },
+      paranoid: { model: "test-codex-c", effort: "medium" },
     });
   });
 
   it.each([
-    ["cheap", "gpt-6-luna/low", "low"],
-    ["default", "gpt-6.1-sol/high", "high"],
-    ["paranoid", "gpt-6-astra/high", "high"],
+    ["cheap", "test-codex-b/low", "low"],
+    ["default", "test-codex-a/high", "high"],
+    ["paranoid", "test-codex-c/medium", "medium"],
   ] as const)("routes %s through its model tier", async (stakes, model, effort) => {
     generateObjectMock.mockResolvedValue(generated());
     const result = await evaluateJudged({ statement: "result.done is true", stakes }, { result: { done: true } });
@@ -46,9 +46,9 @@ describe("judged predicates", () => {
       holds: false,
       reason: "not enough evidence",
       stakes: "default",
-      model: "gpt-6.1-sol/high",
-      // 6.1-sol is priced at 2/10 per MTok: 1_000 input * 2 + 500 output * 10 = 0.007.
-      usage: { tokens: 1_500, usd: 0.007 },
+      model: "test-codex-a/high",
+      // Synthetic default: 1,000 input at 3 plus 500 output at 11 per MTok.
+      usage: { tokens: 1_500, usd: 0.0085 },
     });
   });
 
@@ -70,8 +70,8 @@ describe("judged predicates", () => {
       usage: { totalTokens: 1_500 },
     } as never);
     const result = await evaluateJudged({ statement: "x", stakes: "cheap" });
-    // luna output rate 0.5 USD/MTok: 1500 unattributed tokens must never price as $0.
-    expect(result.usage).toEqual({ tokens: 1_500, usd: 0.00075 });
+    // Synthetic cheap output rate: 7 USD/MTok for 1,500 unattributed tokens.
+    expect(result.usage).toEqual({ tokens: 1_500, usd: 0.0105 });
   });
 
   it("keeps untrusted context in the JSON prompt", async () => {
@@ -91,7 +91,7 @@ describe("judged predicates", () => {
       holds: false,
       reason: "judge_error: provider unavailable",
       stakes: "paranoid",
-      model: "gpt-6-astra/high",
+      model: "test-codex-c/medium",
       usage: { tokens: 0, usd: 0 },
     });
   });
@@ -109,4 +109,18 @@ describe("judged predicates", () => {
     expect(result).toMatchObject({ holds: false, reason: expect.stringMatching(/^judge_error:/u), usage: { tokens: 0, usd: 0 } });
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
+});
+
+// Inject synthetic bytes into the real singleton loader, preserving every adapter.
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { fileURLToPath } = await import("node:url");
+  const shipped = fileURLToPath(new URL("../../src/config/models.default.toml", import.meta.url));
+  const fixture = fileURLToPath(new URL("../fixtures/models.synthetic.toml", import.meta.url));
+  return { ...actual, readFileSync: new Proxy(actual.readFileSync, {
+    apply(target, receiver, args) {
+      if (args[0] === shipped) args[0] = fixture;
+      return Reflect.apply(target, receiver, args);
+    },
+  }) };
 });

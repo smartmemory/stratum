@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import * as fsPromises from "node:fs/promises";
 import * as childProcess from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -99,7 +100,7 @@ ${body}`);
     STRATUM_CODEX_BG_STRATEGY: "invalid-but-irrelevant", T2F5_OUT: "must-disappear", T2F5_EXTRA: "also-disappear",
     ...Object.fromEntries(DEVIN_SCRUB_VARS.map(key => [key, "must-disappear"])),
   };
-  const options: StartBackgroundRunOptions = { agent: "devin", model: "swe-2-medium", prompt: "answer", cwd: root,
+  const options: StartBackgroundRunOptions = { agent: "devin", model: testModels.devinMedium, prompt: "answer", cwd: root,
     registryRoot, env, sessionsDir: join(root, "sessions"), sockDir: join(root, "s"), lingerMs: 500 };
   async function start(extra: Partial<StartBackgroundRunOptions> = {}) {
     const started = await startBackgroundRun({ ...options, ...extra });
@@ -215,11 +216,11 @@ describe("devin background — real shell and isolated stub binaries", () => {
     expect(readFileSync(f.env.ARGS!, "utf8")).toMatch(new RegExp(`^-f\\n`));
     expect(readFileSync(f.env.ARGS!, "utf8")).toContain(`${run.layout.profilePath}\ndevin\n`);
     expect(json(run.layout.metaPath)).toMatchObject({ agent: "devin", childPid: run.pid, procStartTime: expect.any(String),
-      model: "swe-2-medium", streamPath: run.layout.streamPath, stderrPath: run.layout.stderrPath });
+      model: testModels.devinMedium, streamPath: run.layout.streamPath, stderrPath: run.layout.stderrPath });
     f.release();
     const result = await until(run.poll, value => value.status === "complete");
     expect(result).toMatchObject({ text: "hello", usage: { tokens: 20755, usd: 0 }, split: { input: 20737, output: 18, cacheRead: 7808 },
-      usdSource: "estimated", exitCode: 0, telemetry: { model: "swe-2-medium", durationMs: expect.any(Number) } });
+      usdSource: "estimated", exitCode: 0, telemetry: { model: testModels.devinMedium, durationMs: expect.any(Number) } });
     expect(await run.cancel()).toMatchObject({ status: "already_complete" });
     expect(existsSync(run.layout.credentialsCopyPath)).toBe(false);
   });

@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
@@ -12,7 +13,7 @@ const fake = resolve("tests/helpers/fake-app-server.mjs");
 const roots: string[] = [];
 afterEach(async () => { vi.useRealTimers(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const methods = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'execCommandApproval', 'applyPatchApproval', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', 'item/tool/requestUserInput', 'account/chatgptAuthTokens/refresh', 'attestation/generate', 'item/tool/call', 'unknown'];
-const options: DriverOptions = { runId: "abcdef012345", model: "gpt-6-luna/low", cwd: process.cwd(), prompt: "fixture", policy: { filesystemMode: "read-only", writableRoots: [], networkAccess: false, approvalPolicy: "never" } };
+const options: DriverOptions = { runId: "abcdef012345", model: `${testModels.cheap}/low`, cwd: process.cwd(), prompt: "fixture", policy: { filesystemMode: "read-only", writableRoots: [], networkAccess: false, approvalPolicy: "never" } };
 async function run(scenario: Record<string, unknown> = {}, extra: Partial<DriverBoundaries> = {}, policy = options.policy) {
   const records: any[] = [], order: string[] = [], logs: string[] = [];
   const result = await runAppServerDriver({ ...options, policy, command: [process.execPath, fake, JSON.stringify(scenario)] }, {
@@ -44,7 +45,7 @@ describe("thread sandbox policy", () => {
   });
   it("strict fake rejects turn sandbox overrides and temp-exclusion config", async () => {
     const { validateThreadStart, validateTurnStart } = await import(fake);
-    const thread = { model: "gpt-6-luna", cwd: "/work", approvalPolicy: "never", sandbox: "workspace-write",
+    const thread = { model: testModels.cheap, cwd: "/work", approvalPolicy: "never", sandbox: "workspace-write",
       config: { "sandbox_workspace_write.network_access": false, "sandbox_workspace_write.writable_roots": [] } };
     expect(() => validateThreadStart(thread)).not.toThrow();
     for (const key of ["sandbox_workspace_write.exclude_tmpdir_env_var", "sandbox_workspace_write.exclude_slash_tmp"]) {

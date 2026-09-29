@@ -1,0 +1,232 @@
+# Shipped installation catalog; no user/project layering.
+[codex]
+default = { model = "gpt-6.1-sol", effort = "high" }
+
+[devin]
+default = { model = "swe-2-high", effort = "high" }
+
+[claude]
+default = { model = "claude-sonnet-5-5" }
+
+[models]
+claude = ["claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-fable-5-1", "claude-sonnet-5-5"]
+
+[retired]
+# Retired upstream 2026-09-16; retained in pricing for historical usage.
+codex = ["gpt-5.3-codex-spark"]
+devin = []
+claude = []
+
+[judge]
+# The former cheap model retired upstream 2026-09-16; owner selected Luna.
+cheap = { model = "gpt-6-luna", effort = "low" }
+default = { model = "gpt-6.1-sol", effort = "high" }
+paranoid = { model = "gpt-6-astra", effort = "high" }
+
+# "unavailable" encodes null model/thinking entries and null mode/effort fields.
+[tiers.codex]
+critical = { model = "gpt-6-astra", effort = "high", mode = "unavailable" }
+standard = { model = "gpt-6.1-sol", effort = "high", mode = "unavailable" }
+# C12: cheap model choice does not floor reasoning; both fast and budget use medium.
+fast = { model = "gpt-6-luna", effort = "medium", mode = "unavailable" }
+budget = { model = "gpt-6-luna", effort = "medium", mode = "unavailable" }
+coordinator = "unavailable"
+
+[tiers.claude]
+critical = { model = "claude-opus-5-5", effort = "xhigh", mode = "adaptive" }
+standard = { model = "claude-opus-5-5", effort = "medium", mode = "adaptive" }
+# Haiku rejects the effort parameter; fast thinking stays off.
+fast = { model = "claude-haiku-4-5-20251001", effort = "unavailable", mode = "off" }
+budget = "unavailable"
+coordinator = { model = "claude-fable-5-1", effort = "high", mode = "adaptive" }
+
+[tiers.devin]
+critical = { model = "swe-2-max", effort = "max", mode = "unavailable" }
+standard = { model = "swe-2-high", effort = "high", mode = "unavailable" }
+fast = { model = "swe-2-medium", effort = "medium", mode = "unavailable" }
+budget = { model = "swe-2-medium", effort = "medium", mode = "unavailable" }
+coordinator = "unavailable"
+
+# Approximate USD per one million tokens.
+# 
+# VERIFIED 2026-09-12 against the LiteLLM community registry
+# (github.com/BerriAI/litellm, model_prices_and_context_window.json) and OpenAI's
+# published rate card. The previous figures were STALE by two price cuts: terra fell
+# to 2/12 on 2026-07-30 and sol to a promotional 4/20 on 2026-08-21, so this table
+# had been overstating both by 20-33%.
+# 
+# PROMOTIONAL RATE: sol's 4/20 is a promotion OpenAI has stated runs at least through
+# 2026-11-21. Re-check it against the registry on or after that date.
+# 
+# The earlier cacheRead rows are 0.1x input, confirmed against the registry's
+# cache_read_input_token_cost for astra, sol, terra and luna. The 2026-09-29
+# gpt-6.1-sol rate is 0.05x input per release coverage, unverified against the registry.
+# SPARK'S CACHE RATE IS INFERRED, not confirmed: the
+# registry carries spark only as a subscription-billed entry (`chatgpt/gpt-5.3-codex-spark`,
+# no cost fields), so both its 1.75/14 and its 0.175 cache rate are inherited/derived and
+# have no external source. The discount matters: a real astra run observed 13.25M cached of
+# 13.47M total input tokens, so ignoring it overstates that call by roughly 10x.
+[pricing.codex."gpt-5.3-codex-spark"]
+input = 1.75
+output = 14
+cache_read = 0.175
+
+[pricing.codex."gpt-5.6-luna"]
+input = 0.2
+output = 1.2
+cache_read = 0.02
+
+[pricing.codex."gpt-5.6-terra"]
+input = 2
+output = 12
+cache_read = 0.2
+
+[pricing.codex."gpt-5.6-sol"]
+input = 4
+output = 20
+cache_read = 0.4
+
+# Source: OpenAI 2026-09-22 announcement; not yet checked against LiteLLM.
+# cacheRead is INFERRED at 0.1x input for these two models.
+[pricing.codex."gpt-6-sol"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.codex."gpt-6-luna"]
+input = 0.1
+output = 0.5
+cache_read = 0.01
+
+[pricing.codex."gpt-6-astra"]
+input = 10
+output = 50
+cache_read = 1
+
+# Source: 2026-09-29 release coverage (DataCamp; eltmon/overdeck#4422); not yet checked against LiteLLM or OpenAI's rate card.
+[pricing.codex."gpt-6.1-sol"]
+input = 2
+output = 10
+cache_read = 0.1
+
+# Devin CLI models, seeded from `devin models list` (devin 3000.10.35,
+# 2026-09-29). SWE-2 is the owner's free family ("Free" — a price-table fact,
+# so a run reports usd: 0 as "estimated", never "reported"); the Claude
+# Opus 5.5, Sonnet 5 and Sonnet 5.5 rows copy their listed per-MTok prices. Kept separate
+# from MODEL_PRICING so codex's dispatchableModels() allowlist is unchanged
+# (STRAT-AGENT-DEVIN-1 D6).
+[pricing.devin."swe-2-medium"]
+input = 0
+output = 0
+cache_read = 0
+
+[pricing.devin."swe-2-high"]
+input = 0
+output = 0
+cache_read = 0
+
+[pricing.devin."swe-2-max"]
+input = 0
+output = 0
+cache_read = 0
+
+[pricing.devin."claude-opus-5-5-low"]
+input = 4
+output = 20
+cache_read = 0.2
+
+[pricing.devin."claude-opus-5-5-medium"]
+input = 4
+output = 20
+cache_read = 0.2
+
+[pricing.devin."claude-opus-5-5-high"]
+input = 4
+output = 20
+cache_read = 0.2
+
+[pricing.devin."claude-opus-5-5-xhigh"]
+input = 4
+output = 20
+cache_read = 0.2
+
+[pricing.devin."claude-opus-5-5-max"]
+input = 4
+output = 20
+cache_read = 0.2
+
+[pricing.devin."claude-opus-5-5-low-fast"]
+input = 8
+output = 40
+cache_read = 0.4
+
+[pricing.devin."claude-opus-5-5-medium-fast"]
+input = 8
+output = 40
+cache_read = 0.4
+
+[pricing.devin."claude-opus-5-5-high-fast"]
+input = 8
+output = 40
+cache_read = 0.4
+
+[pricing.devin."claude-opus-5-5-xhigh-fast"]
+input = 8
+output = 40
+cache_read = 0.4
+
+[pricing.devin."claude-opus-5-5-max-fast"]
+input = 8
+output = 40
+cache_read = 0.4
+
+[pricing.devin."claude-sonnet-5-low"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-medium"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-high"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-xhigh"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-max"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-5-low"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-5-medium"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-5-high"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-5-xhigh"]
+input = 2
+output = 10
+cache_read = 0.2
+
+[pricing.devin."claude-sonnet-5-5-max"]
+input = 2
+output = 10
+cache_read = 0.2
+

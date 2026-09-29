@@ -1098,6 +1098,7 @@ node ts/src/mcp/bin.mjs            # Start stdio MCP server (for Claude Code)
 
 node ts/src/cli/bin.mjs <command>  # aka `stratum` via a wrapper script:
 stratum validate <file>            # Validate a .stratum.yaml spec (version: 1)
+stratum models --json              # Shipped catalog, SHA-256 digest, absolute file path, package version
 stratum migrate --check <file>     # Report-only classification of a legacy v0.x spec
 stratum query flows                # List all persisted flows (JSON)
 stratum query flow <id>            # Full state for a single flow (JSON)

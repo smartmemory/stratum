@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -78,7 +79,7 @@ describe.skipIf(!live)("live devin flow", () => {
       const realRunAgent = runner.runAgent;
       override = vi.spyOn(runner, "runAgent").mockImplementation((options, boundaries) => {
         dispatches.push(options);
-        const pending = realRunAgent({ ...options, model: "swe-2-medium",
+        const pending = realRunAgent({ ...options, model: testModels.devinMedium,
           env: { ...process.env, HOME: home, STRATUM_PEER_REGISTER: "0" },
           ownProcessGroup: true, signal: abort.signal, onSpawn: pid => { pids.add(pid); },
         }, boundaries);
@@ -146,7 +147,7 @@ describe.skipIf(!live)("live devin flow", () => {
             writableRoots: expect.objectContaining({ layer: "project" }) }),
         }),
       })]));
-      expect(JSON.stringify(audit.steps.fan)).toContain("swe-2-medium");
+      expect(JSON.stringify(audit.steps.fan)).toContain(testModels.devinMedium);
       expect(git("worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
       expect(readdirSync(fgRoot)).toEqual([]); // Includes every per-run credentials copy.
       expect(pids.size).toBeGreaterThan(0);

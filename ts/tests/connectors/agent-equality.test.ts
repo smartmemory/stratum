@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -104,9 +105,9 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
   // Accepted rows must reach the connector with their values intact.
   // A RegExp = the named devin rejection the parameter must produce.
   const table: Array<{ name: string; options: Partial<AgentRunOptions>; expected: "accepted" | RegExp }> = [
-    { name: "model (full id)", options: { model: "swe-2-medium" }, expected: "accepted" },
-    { name: "model (family + effort)", options: { model: "swe-2", effort: "max" }, expected: "accepted" },
-    { name: "model (slash form)", options: { model: "swe-2/max" }, expected: "accepted" },
+    { name: "model (full id)", options: { model: testModels.devinMedium }, expected: "accepted" },
+    { name: "model (family + effort)", options: { model: testModels.devinFamily, effort: "max" }, expected: "accepted" },
+    { name: "model (slash form)", options: { model: `${testModels.devinFamily}/max` }, expected: "accepted" },
     { name: "effort", options: { effort: "medium" }, expected: "accepted" },
     { name: "sandboxMode read-only", options: { sandboxMode: "read-only" }, expected: "accepted" },
     { name: "sandboxMode workspace-write", options: { sandboxMode: "workspace-write" }, expected: "accepted" },
@@ -156,7 +157,7 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
     const run = vi.spyOn(DevinConnector.prototype, "run").mockImplementation(async function (this: DevinConnector, prompt) {
       // The real constructor has applied runAgent's forwarding and config.
       delivered.push({ ...(this as unknown as Record<string, unknown>), prompt });
-      return { text: "delivered", usage: { tokens: 0, ms: 0, usd: 0 }, telemetry: { durationMs: 0, model: "swe-2-high" } };
+      return { text: "delivered", usage: { tokens: 0, ms: 0, usd: 0 }, telemetry: { durationMs: 0, model: testModels.devinDefault } };
     });
     try {
       await expect(runAgent({ agent: "devin", prompt: "p", cwd: root, registryRoot: root, env, ...rest })).resolves.toMatchObject({ text: "delivered" });
@@ -168,8 +169,8 @@ describe("devin parameter equality — every codex knob is honoured or named-rej
         if (key === "networkAccess") expect(actual.sandboxAudit).toMatchObject({ policy: { networkAccess: value } });
         else expect(actual[key], key).toEqual(value);
       }
-      const models: Record<string, string> = { "swe-2-medium": "swe-2-medium", "swe-2": "swe-2-max", "swe-2/max": "swe-2-max" };
-      expect(actual.model).toBe(options.model ? models[options.model] : options.effort ? `swe-2-${options.effort}` : "swe-2-high");
+      const models: Record<string, string> = { [testModels.devinMedium]: testModels.devinMedium, [testModels.devinFamily]: testModels.devinMax, [`${testModels.devinFamily}/max`]: testModels.devinMax };
+      expect(actual.model).toBe(options.model ? models[options.model] : options.effort ? `${testModels.devinFamily}-${options.effort}` : testModels.devinDefault);
       expect(actual.env).toMatchObject(env);
     } finally { run.mockRestore(); }
   });

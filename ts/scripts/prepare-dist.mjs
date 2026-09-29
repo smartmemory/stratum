@@ -39,6 +39,13 @@ for (const relative of ["../dist/mcp/contracts.js", "../dist/guard/trust.js"]) {
 }
 
 const distContracts = new URL("../dist/contracts/", import.meta.url);
+const sourceModels = new URL("../src/config/models.default.toml", import.meta.url);
+const distModels = new URL("../dist/config/models.default.toml", import.meta.url);
+await copyFile(sourceModels, distModels);
+// Assert the artifact itself: a successful build must ship the exact catalog.
+if (!(await readFile(distModels)).equals(await readFile(sourceModels))) {
+  throw new Error(`Shipped model catalog differs from source: ${distModels.pathname}`);
+}
 await mkdir(distContracts, { recursive: true });
 for (const name of ["events.json", "mcp-surface.json"]) {
   await copyFile(new URL(`../contracts/${name}`, import.meta.url), new URL(name, distContracts));

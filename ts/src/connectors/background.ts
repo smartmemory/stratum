@@ -1,3 +1,4 @@
+import { catalog } from "../config/models.js";
 import { randomBytes } from "node:crypto";
 import { usdFromTokens } from "../judge/pricing.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -456,7 +457,7 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600 }),
     writeFile(inputPath, options.prompt, { encoding: "utf8", mode: 0o600 }),
   ]);
-  const model = options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-5-5";
+  const model = options.model ?? process.env.CLAUDE_MODEL ?? catalog.claude.default.model;
   // D4: default sandboxMode for claude bg = workspace-write (the primary use case)
   const sandboxMode = options.sandboxMode ?? "workspace-write";
   const workerInput: WorkerInput = {

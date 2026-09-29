@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -206,16 +207,16 @@ describe("P1 table-driven error harness", () => {
     if (planned.status !== "ready") throw new Error("expected ready");
     await engine.stepDone(planned.runId, "finish", {
       failure: "retry",
-      telemetry: { durationMs: 12, model: "gpt-5.3-codex-spark", effort: "low" },
+      telemetry: { durationMs: 12, model: testModels.codexRetired, effort: "low" },
     });
     await engine.stepDone(planned.runId, "finish", {
       output: { value: "ok" },
-      telemetry: { durationMs: 34, model: "claude-sonnet-4-6" },
+      telemetry: { durationMs: 34, model: testModels.claudeDefault },
     });
 
     const attempts = (await engine.audit(planned.runId)).steps.finish?.attempts;
-    expect(attempts?.[0]).toMatchObject({ durationMs: 12, model: "gpt-5.3-codex-spark", effort: "low" });
-    expect(attempts?.[1]).toMatchObject({ durationMs: 34, model: "claude-sonnet-4-6" });
+    expect(attempts?.[0]).toMatchObject({ durationMs: 12, model: testModels.codexRetired, effort: "low" });
+    expect(attempts?.[1]).toMatchObject({ durationMs: 34, model: testModels.claudeDefault });
     expect(attempts?.[1]).not.toHaveProperty("effort");
   });
 
@@ -225,7 +226,7 @@ describe("P1 table-driven error harness", () => {
     if (planned.status !== "ready") throw new Error("expected ready");
     const result = await engine.stepDone(planned.runId, "finish", {
       output: { value: "ok" },
-      telemetry: { durationMs: -1, model: "gpt-5" },
+      telemetry: { durationMs: -1, model: testModels.unpriced },
     });
     expect(result).toMatchObject({ status: "failed", failure: { reason: expect.stringContaining("invalid connector telemetry") } });
   });
@@ -378,7 +379,7 @@ describe("P1 table-driven error harness", () => {
     const { engine } = await createEngine({
       judge: async (predicate, context) => {
         calls.push({ predicate, context });
-        return { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.6-terra/low", usage: { tokens: 100, usd: 0.01 } };
+        return { holds: true, reason: "verified", stakes: "cheap", model: `${testModels.codexDefault}/low`, usage: { tokens: 100, usd: 0.01 } };
       },
     });
     const planned = await engine.plan(flow([
@@ -392,7 +393,7 @@ describe("P1 table-driven error harness", () => {
     expect(audit.flowSpent).toMatchObject({ tokens: 100, usd: 0.01 });
     expect(audit.events.find((event) => event.type === "judged")).toMatchObject({
       stepId: "finish",
-      detail: { holds: true, reason: "verified", stakes: "cheap", model: "gpt-5.6-terra/low", usage: { tokens: 100, usd: 0.01 } },
+      detail: { holds: true, reason: "verified", stakes: "cheap", model: `${testModels.codexDefault}/low`, usage: { tokens: 100, usd: 0.01 } },
     });
   });
 

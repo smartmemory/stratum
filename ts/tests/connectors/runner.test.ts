@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -117,11 +118,11 @@ describe("provider settings are enforced at dispatch", () => {
     await expect(runAgent({ agent: "codex", prompt: "p", thinking: { type: "adaptive" } })).rejects.toThrow("does not support");
     await expect(runAgent({ agent: "claude", prompt: "p", thinking: { type: "enabled", budgetTokens: -1 } })).rejects.toThrow("invalid Claude thinking");
     await expect(runAgent({ agent: "claude", prompt: "p", effort: "turbo" })).rejects.toThrow("unsupported Claude effort");
-    await expect(runAgent({ agent: "codex", prompt: "p", model: "gpt-5.6-terra/high", effort: "low" })).rejects.toThrow("conflicts");
+    await expect(runAgent({ agent: "codex", prompt: "p", model: `${testModels.codexDefault}/high`, effort: "low" })).rejects.toThrow("conflicts");
   });
   it("binds explicit Codex effort into the actual CLI arguments", async () => {
     const spawn = fakeCodexSpawn();
-    await runAgent({ agent: "codex", prompt: "p", model: "gpt-5.6-terra", effort: "low" }, { codexSpawn: spawn });
+    await runAgent({ agent: "codex", prompt: "p", model: testModels.codexDefault, effort: "low" }, { codexSpawn: spawn });
     expect(spawn).toHaveBeenCalledWith("codex", expect.arrayContaining(['model_reasoning_effort="low"']), expect.any(Object));
   });
 

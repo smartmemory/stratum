@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { isolatedStateRoot } from "../helpers/state-root.js";
 import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -617,7 +618,7 @@ describe("P5 stratum watch", () => {
       const streamPath = join(dir, "stream.jsonl"); const stderrPath = `${streamPath}.err`;
       await writeFile(streamPath, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""));
       await writeFile(stderrPath, stderr);
-      await writeFile(join(dir, "meta.json"), JSON.stringify({ runId, streamPath, stderrPath, childPid: 0, model: "gpt-5", promptChars: 1 }));
+      await writeFile(join(dir, "meta.json"), JSON.stringify({ runId, streamPath, stderrPath, childPid: 0, model: testModels.unpriced, promptChars: 1 }));
       return captureMain(home, ["watch", runId, ...args]);
     };
     const message = { type: "item.completed", item: { type: "agent_message", text: "first\nsecond" } };
@@ -667,7 +668,7 @@ describe("P5 stratum watch", () => {
     const streamPath = join(dir, "stream.jsonl");
     await writeFile(streamPath, `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "a".repeat(3_000) } })}\n${JSON.stringify({ [T2F5_DONE_SENTINEL]: 7 })}\n`);
     await writeFile(`${streamPath}.err`, "");
-    await writeFile(join(dir, "meta.json"), JSON.stringify({ runId: "ab12cd34ef64", streamPath, stderrPath: `${streamPath}.err`, childPid: 0, model: "gpt-5", promptChars: 1 }));
+    await writeFile(join(dir, "meta.json"), JSON.stringify({ runId: "ab12cd34ef64", streamPath, stderrPath: `${streamPath}.err`, childPid: 0, model: testModels.unpriced, promptChars: 1 }));
     const capped = await captureMain(home, ["watch", "ab12cd34ef64", "--events"]);
     expect(capped.code).toBe(7);
     const lines = capped.stdout.trim().split("\n").map((line) => JSON.parse(line));
@@ -689,7 +690,7 @@ describe("P5 stratum watch", () => {
     ];
     await writeFile(streamPath, `${lines.join("\n")}\n`);
     await writeFile(`${streamPath}.err`, "");
-    await writeFile(join(dir, "meta.json"), JSON.stringify({ runId: "ab12cd34ef65", streamPath, stderrPath: `${streamPath}.err`, childPid: 0, model: "gpt-5", promptChars: 1 }));
+    await writeFile(join(dir, "meta.json"), JSON.stringify({ runId: "ab12cd34ef65", streamPath, stderrPath: `${streamPath}.err`, childPid: 0, model: testModels.unpriced, promptChars: 1 }));
     const watched = await captureMain(home, ["watch", "ab12cd34ef65", "--events"]);
     expect(watched.code).toBe(0);
     expect(watched.stdout.trim().split("\n").map((line) => JSON.parse(line))).toEqual([

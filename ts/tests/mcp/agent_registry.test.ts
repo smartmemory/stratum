@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -217,7 +218,7 @@ describe("STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher", () =>
     const path = join(await mkdtemp(join(tmpdir(), "stratum-fg-writes-")), "writes");
     roots.push(join(path, ".."));
     const subject = await harness(spawningAgent({ path }));
-    const call = subject.dispatcher.call("stratum_agent_run", agentRequest(subject.runId, { model: "gpt-5.6-terra" }));
+    const call = subject.dispatcher.call("stratum_agent_run", agentRequest(subject.runId, { model: testModels.codexDefault }));
 
     await waitForDescendant(path);
     await delay(80);
@@ -226,7 +227,7 @@ describe("STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher", () =>
       foreground: true,
       state: "running",
       agent: "codex",
-      model: "gpt-5.6-terra",
+      model: testModels.codexDefault,
       serverPid: process.pid,
       flow: { runId: subject.runId },
     });

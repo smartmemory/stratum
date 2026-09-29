@@ -1,7 +1,8 @@
+import { testModels } from "../helpers/models.js";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   T2F5_DONE_SENTINEL,
   cancelBackgroundRun,
@@ -56,7 +57,7 @@ async function writeRegistryRun(registryRoot: string, runId: string, records: un
   await writeFile(streamPath, records.map((record) => `${JSON.stringify(record)}\n`).join(""), "utf8");
   await writeFile(stderrPath, stderr, "utf8");
   const meta: BackgroundRunMeta = {
-    runId, agent: "codex", model: "gpt-5", cwd: registryRoot, sandboxMode: "read-only",
+    runId, agent: "codex", model: testModels.unpriced, cwd: registryRoot, sandboxMode: "read-only",
     promptChars: 1, createdAt: "2026-07-10T00:00:00Z", childPid: 0,
     streamPath, stderrPath,
   };
@@ -117,8 +118,8 @@ describe("P3 background run gate", () => {
   });
 
   it.each([
-    { model: "gpt-6-astra/medium", reported: undefined, expectedUsd: 1.469586, source: "estimated" },
-    { model: "gpt-6-astra/medium", reported: 0.25, expectedUsd: 0.25, source: "reported" },
+    { model: `${testModels.paranoid}/medium`, reported: undefined, expectedUsd: 0.681945, source: "estimated" },
+    { model: `${testModels.paranoid}/medium`, reported: 0.25, expectedUsd: 0.25, source: "reported" },
     { model: "unpriced-model/medium", reported: undefined, expectedUsd: undefined, source: undefined },
   ])("polls Codex cached tokens and cost for $model with reported=$reported", async ({ model, reported, expectedUsd, source }) => {
     const registryRoot = await root();
@@ -160,7 +161,7 @@ describe("P3 background run gate", () => {
       { [T2F5_DONE_SENTINEL]: 0 },
     ]);
     const meta = await readMeta(registryRoot, runId);
-    await writeFile(join(registryRoot, runId, "meta.json"), JSON.stringify({ ...meta, model: "gpt-6-astra/medium" }));
+    await writeFile(join(registryRoot, runId, "meta.json"), JSON.stringify({ ...meta, model: `${testModels.paranoid}/medium` }));
 
     const result = await pollBackgroundRun(runId, { registryRoot });
     expect(result.status).toBe("complete");
@@ -309,11 +310,11 @@ describe("P3 background run gate", () => {
   it("reports durationMs and resolved model/effort telemetry on terminal polls", async () => {
     const registryRoot = await root();
     const started = await startBackgroundRun({
-      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot, model: "gpt-5.6-terra/high",
+      agent: "codex", prompt: "solve", cwd: registryRoot, registryRoot, model: `${testModels.codexDefault}/high`,
       command: fakeCodex([THREAD_STARTED, AGENT_MSG, TURN_DONE], { sleep: 0.5 }),
     });
     const complete = await waitFor(started.runId, registryRoot, "complete");
-    expect(complete).toMatchObject({ telemetry: { model: "gpt-5.6-terra", effort: "high" } });
+    expect(complete).toMatchObject({ telemetry: { model: testModels.codexDefault, effort: "high" } });
     if (complete.status !== "complete") return;
     // createdAt is stamped pre-spawn, so the 0.5s child sleep must show up.
     expect(complete.telemetry.durationMs).toBeGreaterThanOrEqual(300);
@@ -322,7 +323,7 @@ describe("P3 background run gate", () => {
     const failedId = "beef00000003";
     await writeRegistryRun(registryRoot, failedId, [{ [T2F5_DONE_SENTINEL]: 2 }]);
     const failed = await pollBackgroundRun(failedId, { registryRoot });
-    expect(failed).toMatchObject({ status: "error", exitCode: 2, telemetry: { model: "gpt-5", durationMs: expect.any(Number) } });
+    expect(failed).toMatchObject({ status: "error", exitCode: 2, telemetry: { model: testModels.unpriced, durationMs: expect.any(Number) } });
   });
 
   it("refuses to signal after a process start-time mismatch", async () => {
@@ -344,10 +345,10 @@ describe("P3 background run gate", () => {
 it("codex start and poll report the same explicitly codex peer name", async () => {
   const registryRoot = await root();
   const sessionsDir = join(registryRoot, "sessions"); await mkdir(sessionsDir);
-  const started = await startBackgroundRun({ agent: "codex", model: "gpt-6-astra", prompt: "x",
+  const started = await startBackgroundRun({ agent: "codex", model: testModels.paranoid, prompt: "x",
     cwd: registryRoot, registryRoot, sessionsDir, sockDir: join(registryRoot, "s"), lingerMs: 0,
     command: ["sh", "-c", "sleep 0.2"], env: { ...process.env, STRATUM_PEER_REGISTER: "1" } });
-  expect(started.peerName).toBe(`codex-astra-${started.runId.slice(0, 6)}`);
+  expect(started.peerName).toBe(`codex-testc-${started.runId.slice(0, 6)}`);
   expect(await pollBackgroundRun(started.runId, { registryRoot })).toMatchObject({ peer: { name: started.peerName } });
   await waitFor(started.runId, registryRoot, "complete");
   // Sidecar teardown must precede removal of the temporary discovery directories.
@@ -357,4 +358,18 @@ it("codex start and poll report the same explicitly codex peer name", async () =
     if (!files.some(file => /^\d+\.json$/.test(file))) break;
     await new Promise(resolve => setTimeout(resolve, 25));
   }
+});
+
+// Inject synthetic bytes into the real singleton loader, preserving every adapter.
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { fileURLToPath } = await import("node:url");
+  const shipped = fileURLToPath(new URL("../../src/config/models.default.toml", import.meta.url));
+  const fixture = fileURLToPath(new URL("../fixtures/models.synthetic.toml", import.meta.url));
+  return { ...actual, readFileSync: new Proxy(actual.readFileSync, {
+    apply(target, receiver, args) {
+      if (args[0] === shipped) args[0] = fixture;
+      return Reflect.apply(target, receiver, args);
+    },
+  }) };
 });

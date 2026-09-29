@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { describe, expect, it, vi } from "vitest";
 
 const runAgent = vi.fn();
@@ -66,7 +67,7 @@ describe("engine default connector", () => {
 
 describe("devin default connector sandbox forwarding", () => {
   it.each(["workspace-write", "read-only", undefined] as const)("forwards sandbox %s", async (sandbox) => {
-    runAgent.mockResolvedValueOnce({ text: "done", usage: {}, telemetry: { durationMs: 1, model: "swe-2-medium" } });
+    runAgent.mockResolvedValueOnce({ text: "done", usage: {}, telemetry: { durationMs: 1, model: testModels.devinMedium } });
     await defaultConnector({ agent: "devin", prompt: "p", attempt: 1,
       ...(sandbox === undefined ? {} : { sandbox }) });
     const request = runAgent.mock.lastCall![0];

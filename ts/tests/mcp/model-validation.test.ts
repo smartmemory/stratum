@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,15 +24,15 @@ it.each([false, true])("rejects bad agent at MCP before dispatch or registry wri
 });
 
 it.each([
-  { name: "unknown", model: "typo", env: "gpt-5.6-terra/high", effort: undefined, message: 'Unknown Codex model "typo"' },
-  { name: "retired", model: "gpt-5.3-codex-spark/low", env: "gpt-5.6-terra/high", effort: undefined, message: "retired upstream 2026-09-16" },
+  { name: "unknown", model: "typo", env: `${testModels.codexDefault}/high`, effort: undefined, message: 'Unknown Codex model "typo"' },
+  { name: "retired", model: `${testModels.codexRetired}/low`, env: `${testModels.codexDefault}/high`, effort: undefined, message: "retired upstream 2026-09-16" },
   { name: "invalid CODEX_MODEL default", model: undefined, env: "env-typo/high", effort: undefined, message: 'Unknown Codex model "env-typo"' },
-  { name: "effort conflict", model: "gpt-6-sol/low", env: "gpt-5.6-terra/high", effort: "high", message: "Codex effort conflicts" },
+  { name: "effort conflict", model: `${testModels.codexDefault}/low`, env: `${testModels.codexDefault}/high`, effort: "high", message: "Codex effort conflicts" },
 ])("rejects $name before creating a registry directory or consuming the cancellation id", async ({ model, env, message, effort }) => {
   const root = await mkdtemp(join(tmpdir(), "stratum-invalid-model-"));
   const registryRoot = join(root, "registry");
   vi.stubEnv("CODEX_MODEL", env);
-  const runAgent = vi.fn(async () => ({ text: "done", usage: { tokens: 0 }, telemetry: { durationMs: 0, model: "gpt-6-sol" } }));
+  const runAgent = vi.fn(async () => ({ text: "done", usage: { tokens: 0 }, telemetry: { durationMs: 0, model: testModels.codexDefault } }));
   const engine = new StratumEngine({ stateRoot: join(root, "state"), evaluator: createEvaluator() });
   const dispatcher = createToolDispatcher({ engine, runAgent, foregroundRegistryRoot: registryRoot });
   try {
@@ -56,10 +57,10 @@ it.each([
     });
     expect(runAgent).not.toHaveBeenCalled();
     await expect(stat(registryRoot)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(dispatcher.call("stratum_agent_run", { ...request, model: "gpt-6.1-sol/high" }))
+    await expect(dispatcher.call("stratum_agent_run", { ...request, model: `${testModels.codexDefault}/high` }))
       .resolves.toMatchObject({ status: "complete", text: "done" });
     expect(runAgent).toHaveBeenCalledTimes(1);
-    expect(runAgent).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-6.1-sol/high" }));
+    expect(runAgent).toHaveBeenCalledWith(expect.objectContaining({ model: `${testModels.codexDefault}/high` }));
   } finally {
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });

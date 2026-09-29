@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import {afterEach, expect, it, vi} from "vitest";
 import {existsSync} from "node:fs";
 import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from "node:fs/promises";
@@ -116,10 +117,11 @@ it.each([false,true])("emitted JS worker runs with no sibling sources or loader 
   await mkdir(join(emitted,"config")); await mkdir(join(emitted,"judge"));
   await writeFile(join(dir,"package.json"),await readFile(new URL("../../package.json",import.meta.url)));
   await symlink(new URL("../../node_modules",import.meta.url).pathname,join(dir,"node_modules"));
-  for (const name of ["connectors/codex-appserver-launch","connectors/background","connectors/claude-bg-worker","connectors/peer-worker-lifecycle","connectors/peer-sidecar","connectors/peer-registry","connectors/codex-appserver-ipc","connectors/base","connectors/proc_identity","connectors/claude","connectors/codex","connectors/codex-policy","connectors/cancellation","connectors/devin-model","config/index","config/types","judge/pricing"]) {
+  for (const name of ["connectors/codex-appserver-launch","connectors/background","connectors/claude-bg-worker","connectors/peer-worker-lifecycle","connectors/peer-sidecar","connectors/peer-registry","connectors/codex-appserver-ipc","connectors/base","connectors/proc_identity","connectors/claude","connectors/codex","connectors/codex-policy","connectors/cancellation","connectors/devin-model","config/index","config/types","config/models","config/devin-resolution","judge/pricing"]) {
     const source = await readFile(new URL(`../../src/${name}.ts`,import.meta.url),"utf8");
     await writeFile(join(emitted,`${name}.js`),transpileModule(source,{compilerOptions:{module:ModuleKind.ESNext,target:ScriptTarget.ES2022}}).outputText);
   }
+  await writeFile(join(emitted,"config/models.default.toml"),await readFile(new URL("../../src/config/models.default.toml",import.meta.url)));
   const module = await import(pathToFileURL(join(emitted,"connectors/background.js")).href) as typeof import("../../src/connectors/background.js");
   try {
     const run = await module.startBackgroundRun({...options,workerTestReleasePath:join(dir,"release")});
@@ -143,7 +145,7 @@ it("old or malformed optional peer metadata does not change durable results", as
     await writeFile(metaPath,JSON.stringify({...meta,peerLabel}));
     for (const value of ["bad",JSON.stringify({pid:-1,name:"wrong"}),"x".repeat(65537)]) {
       await writeFile(peerPath,value);
-      expect(await pollBackgroundRun(run.runId,{registryRoot:dir})).toMatchObject({status:"complete",peer:{registered:false,name:`claude-sonnet-5-5-${run.runId}`}});
+      expect(await pollBackgroundRun(run.runId,{registryRoot:dir})).toMatchObject({status:"complete",peer:{registered:false,name:`${testModels.claudeDefault}-${run.runId}`}});
     }
   }
   await rm(peerPath); await mkdir(peerPath);

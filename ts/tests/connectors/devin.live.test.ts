@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -90,14 +91,14 @@ function findRunMetaPath(fgRoot: string, cwd: string): string | undefined {
  * fails.
  */
 describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !devinAvailable())("live devin connector", () => {
-  it("golden 1 (smoke): swe-2-medium answers through the sandboxed foreground run", async () => {
+  it(`golden 1 (smoke): ${testModels.devinMedium} answers through the sandboxed foreground run`, async () => {
     const cwd = mkdtempSync(join(tmpdir(), "stratum-devin-live-"));
     try {
-      const result = await new DevinConnector({ model: "swe-2-medium", cwd }).run(
+      const result = await new DevinConnector({ model: testModels.devinMedium, cwd }).run(
         "Reply with exactly: STRATUM_DEVIN_G1_OK",
       );
       expect(result.text).toContain("STRATUM_DEVIN_G1_OK");
-      expect(result.telemetry).toMatchObject({ model: "swe-2-medium" });
+      expect(result.telemetry).toMatchObject({ model: testModels.devinMedium });
       expect(result.usdSource).toBe("estimated");
       expect(result.usage.usd).toBe(0);
       expect(result.usage.tokens).toBeGreaterThan(0);
@@ -215,7 +216,7 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !d
         await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
         const response = await client.callTool({
           name: "stratum_agent_run",
-          arguments: { agent: "devin", model: "swe-2-medium", cwd, prompt, background: false, sandboxMode: "read-only" },
+          arguments: { agent: "devin", model: testModels.devinMedium, cwd, prompt, background: false, sandboxMode: "read-only" },
         }, undefined, { timeout: 290_000 });
         expect(response.isError).not.toBe(true);
         const content = response.content as Array<{ type: string; text?: string }>;
@@ -232,7 +233,7 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || !!process.env.CI || !d
 
       // The result channel: final message + estimated free-model usage (D6).
       expect(result.text).toContain("STRATUM_DEVIN_G1_OK");
-      expect(result.telemetry).toMatchObject({ model: "swe-2-medium" });
+      expect(result.telemetry).toMatchObject({ model: testModels.devinMedium });
       expect(result.usdSource).toBe("estimated");
       expect(result.usage.usd).toBe(0);
       expect(result.usage.tokens).toBeGreaterThan(0);
@@ -373,7 +374,7 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || process.platform !== "
           "Wait for the command to finish. Then reply STRATUM_DEVIN_G3_OK plus the stop-command result.",
         ].join("\n");
       const started = await call<{ status: string; runId: string; pid: number; peerName: string }>("stratum_agent_run", {
-        agent: "devin", model: "swe-2-medium", prompt, cwd, background: true, sandboxMode: "read-only",
+        agent: "devin", model: testModels.devinMedium, prompt, cwd, background: true, sandboxMode: "read-only",
       });
       runId = started.runId; wrapperPid = started.pid;
       layout = devinRunLayout(join(runsRoot, runId));
@@ -421,7 +422,7 @@ describe.skipIf(process.env.STRATUM_DEVIN_LIVE !== "1" || process.platform !== "
         await liveUntil(() => groupMembers(wrapperPid!), text => text === "", remaining);
         const result = await poll();
         expect(result).toMatchObject({ status: "complete", text: expect.stringContaining("STRATUM_DEVIN_G3_OK"),
-          peer: { name: started.peerName }, exitCode: 0, usdSource: "estimated", usage: { usd: 0 }, telemetry: { model: "swe-2-medium" } });
+          peer: { name: started.peerName }, exitCode: 0, usdSource: "estimated", usage: { usd: 0 }, telemetry: { model: testModels.devinMedium } });
         if (result.status !== "complete") throw new Error(JSON.stringify(result));
         expect(result.usage.tokens).toBeGreaterThan(0);
         expect(result.text).toMatch(/G3_STOP:?\s*FAIL/i);

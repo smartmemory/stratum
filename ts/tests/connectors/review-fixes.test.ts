@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -268,7 +269,7 @@ it('rejects Claude tool filters for codex on both paths, and its argv carries no
   }
   // The durable background codex argv has no tool-filter surface at all, which is
   // why forwarding one would have been a guarantee the wrapper could not keep.
-  const argv = codexCommand('gpt-5.6-terra/high', process.cwd(), 'read-only').join(' ');
+  const argv = codexCommand(`${testModels.codexDefault}/high`, process.cwd(), 'read-only').join(' ');
   expect(argv).not.toMatch(/tool/i);
   // Claude keeps the filters: they are rejected for codex, not dropped globally.
   expect(() => validateAgentSettings({ agent: 'claude', allowedTools: ['Read'], disallowedTools: ['Bash'] })).not.toThrow();

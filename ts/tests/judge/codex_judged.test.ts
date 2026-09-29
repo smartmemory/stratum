@@ -1,3 +1,4 @@
+import { catalog, testModels } from "../helpers/models.js";
 import { describe, expect, it } from "vitest";
 import type { runAgent } from "../../src/connectors/runner.js";
 import { evaluateJudgedViaCodex } from "../../src/judge/codex_judged.js";
@@ -9,7 +10,7 @@ function fakeRun(text: string, usage: { tokens?: number; usd?: number } = { toke
   const calls: RunArgs[] = [];
   const run = (async (options: RunArgs) => {
     calls.push(options);
-    return { text, usage, telemetry: { durationMs: 5, model: "gpt-5.6-terra", effort: "high" } };
+    return { text, usage, telemetry: { durationMs: 5, model: testModels.codexDefault, effort: "high" } };
   }) as typeof runAgent;
   return { run, calls };
 }
@@ -18,10 +19,10 @@ describe("evaluateJudgedViaCodex", () => {
   it("dispatches a read-only codex judge with the stakes-mapped model/effort id", async () => {
     const { run, calls } = fakeRun('{"holds":true,"reason":"value matches"}');
     const result = await evaluateJudgedViaCodex({ statement: "result is real", stakes: "cheap" }, { result: { value: "x" } }, { run });
-    expect(result).toMatchObject({ holds: true, reason: "value matches", stakes: "cheap", model: "gpt-6-luna/low" });
+    expect(result).toMatchObject({ holds: true, reason: "value matches", stakes: "cheap", model: `${catalog.judge.cheap.model}/${catalog.judge.cheap.effort}` });
     expect(result.usage.tokens).toBe(100);
     expect(result.usage.usd).toBeGreaterThan(0);
-    expect(calls[0]).toMatchObject({ agent: "codex", model: "gpt-6-luna/low", sandboxMode: "read-only" });
+    expect(calls[0]).toMatchObject({ agent: "codex", model: `${catalog.judge.cheap.model}/${catalog.judge.cheap.effort}`, sandboxMode: "read-only" });
     expect(calls[0]!.prompt).toContain("result is real");
   });
 
@@ -60,7 +61,7 @@ describe("evaluateJudgedViaCodex", () => {
   it("strips code fences from the verdict", async () => {
     const { run } = fakeRun('```json\n{"holds":false,"reason":"missing evidence"}\n```');
     const result = await evaluateJudgedViaCodex({ statement: "s" }, {}, { run });
-    expect(result).toMatchObject({ holds: false, reason: "missing evidence", model: "gpt-6.1-sol/high" });
+    expect(result).toMatchObject({ holds: false, reason: "missing evidence", model: `${catalog.judge.default.model}/${catalog.judge.default.effort}` });
   });
 
   it("fails closed on an unparseable verdict but still charges the paid dispatch", async () => {

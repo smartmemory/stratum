@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 // background-claude.test.ts
 // Real-Worker tests for claude background runs. Uses STRATUM_TEST_WORKER env-gated
 // stub to avoid real SDK calls. Do NOT call vi.mock('node:worker_threads') in this
@@ -138,7 +139,7 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     await writeFile(streamPath, records.map((r) => JSON.stringify(r) + "\n").join(""), "utf8");
     await writeFile(stderrPath, "", "utf8");
     const meta: ClaudeRunMeta = {
-      runId, agent: "claude", model: "claude-sonnet-4-6", cwd: registryRoot,
+      runId, agent: "claude", model: testModels.claudeDefault, cwd: registryRoot,
       sandboxMode: "workspace-write", promptChars: 1, createdAt: "2026-07-18T00:00:00Z",
       streamPath, stderrPath,
     };
@@ -162,7 +163,7 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     await writeFile(streamPath, JSON.stringify({ [T2F5_DONE_SENTINEL]: 1 }) + "\n", "utf8");
     await writeFile(stderrPath, "some error", "utf8");
     const meta: ClaudeRunMeta = {
-      runId, agent: "claude", model: "claude-sonnet-4-6", cwd: registryRoot,
+      runId, agent: "claude", model: testModels.claudeDefault, cwd: registryRoot,
       sandboxMode: "workspace-write", promptChars: 1, createdAt: "2026-07-18T00:00:00Z",
       streamPath, stderrPath,
     };
@@ -182,7 +183,7 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     await writeFile(streamPath, "", "utf8");
     await writeFile(stderrPath, "", "utf8");
     const meta: ClaudeRunMeta = {
-      runId, agent: "claude", model: "claude-sonnet-4-6", cwd: registryRoot,
+      runId, agent: "claude", model: testModels.claudeDefault, cwd: registryRoot,
       sandboxMode: "workspace-write", promptChars: 1, createdAt: "2026-07-18T00:00:00Z",
       streamPath, stderrPath,
     };
@@ -204,7 +205,7 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     await writeFile(streamPath, JSON.stringify({ [T2F5_DONE_SENTINEL]: 0 }) + "\n", "utf8");
     await writeFile(stderrPath, "", "utf8");
     const meta: ClaudeRunMeta = {
-      runId, agent: "claude", model: "claude-sonnet-4-6", cwd: registryRoot,
+      runId, agent: "claude", model: testModels.claudeDefault, cwd: registryRoot,
       sandboxMode: "workspace-write", promptChars: 1, createdAt: "2026-07-18T00:00:00Z",
       streamPath, stderrPath,
     };
@@ -224,7 +225,7 @@ describe("claude background run — real Worker (STRATUM_TEST_WORKER=1)", () => 
     await writeFile(streamPath, "", "utf8");
     await writeFile(stderrPath, "", "utf8");
     const meta: ClaudeRunMeta = {
-      runId, agent: "claude", model: "claude-sonnet-4-6", cwd: registryRoot,
+      runId, agent: "claude", model: testModels.claudeDefault, cwd: registryRoot,
       sandboxMode: "workspace-write", promptChars: 1, createdAt: "2026-07-18T00:00:00Z",
       streamPath, stderrPath,
     };

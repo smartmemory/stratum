@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -200,7 +201,7 @@ function driverFixture() {
   const records:any[]=[],messages:DriverMessage[]=[];
   let receive!:(m:PeerMessage)=>void;
   const peer:DriverPeerAttachment={subscribe(fn){receive=fn;return ()=>{};},send(m){messages.push(m);},close(){}};
-  const run=(attachPeer?:()=>Promise<DriverPeerAttachment|undefined>)=>runAppServerDriver({runId,model:"gpt-6-luna/low",cwd:process.cwd(),prompt:"task",
+  const run=(attachPeer?:()=>Promise<DriverPeerAttachment|undefined>)=>runAppServerDriver({runId,model:`${testModels.cheap}/low`,cwd:process.cwd(),prompt:"task",
     policy:{filesystemMode:"read-only",writableRoots:[],networkAccess:false,approvalPolicy:"never"}},
     {spawn:()=>child,...(attachPeer ? {attachPeer} : {peer}),signals:new EventEmitter(),log:()=>{},timings:{steer:30},
       writer:{async write(line){records.push(JSON.parse(line));},async flush(){}}});

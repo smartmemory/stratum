@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeConnector, type QueryFunction } from "../../src/connectors/claude.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { spineSpent } from "../../src/engine/receipts.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 
 async function* messages() {
-  yield { type: "system", subtype: "init", model: "claude-sonnet-4-6-20260701" };
+  yield { type: "system", subtype: "init", model: `${testModels.claudeDefault}-20260701` };
   yield { type: "assistant", message: { content: [{ type: "text", text: "partial" }] } };
   yield {
     type: "result", subtype: "success", result: "echo ok", duration_ms: 42, total_cost_usd: 0.01,
@@ -134,7 +135,7 @@ describe("ClaudeConnector", () => {
   it("uses agent-sdk query() through a narrow boundary and reports resolved telemetry", async () => {
     const query = vi.fn<QueryFunction>(() => messages());
     const connector = new ClaudeConnector({
-      model: "claude-sonnet-4-6",
+      model: testModels.claudeDefault,
       cwd: "/work",
       allowedTools: ["Read"],
       query,
@@ -145,7 +146,7 @@ describe("ClaudeConnector", () => {
     expect(query).toHaveBeenCalledWith({
       prompt: "echo test",
       options: expect.objectContaining({
-        cwd: "/work", model: "claude-sonnet-4-6", permissionMode: "acceptEdits", tools: ["Read", "ToolSearch"],
+        cwd: "/work", model: testModels.claudeDefault, permissionMode: "acceptEdits", tools: ["Read", "ToolSearch"],
       }),
     });
     expect(result).toEqual({
@@ -153,7 +154,7 @@ describe("ClaudeConnector", () => {
       usage: { usd: 0.01, tokens: 7, ms: 42 },
       split: { input: 3, output: 4, cacheRead: 1, cacheCreation: 2 },
       usdSource: "reported",
-      telemetry: { durationMs: 42, model: "claude-sonnet-4-6-20260701" },
+      telemetry: { durationMs: 42, model: `${testModels.claudeDefault}-20260701` },
     });
     expect(result.usage).not.toHaveProperty("dispatches");
   });

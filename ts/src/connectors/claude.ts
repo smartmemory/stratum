@@ -1,3 +1,4 @@
+import { catalog } from "../config/models.js";
 import { spawn } from "node:child_process";
 import { query as sdkQuery, type SpawnOptions as ClaudeSpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
@@ -61,7 +62,7 @@ export class ClaudeConnector {
     if (ownProcessGroup) requireProcessGroups();
     const children: Array<ReturnType<typeof processTermination>> = [];
     let stderr = "";
-    const requestedModel = this.options.model ?? process.env.CLAUDE_MODEL ?? "claude-sonnet-5-5";
+    const requestedModel = this.options.model ?? process.env.CLAUDE_MODEL ?? catalog.claude.default.model;
     let resolvedModel = requestedModel;
     const effort = this.options.effort;
     let dispatchedEffort: { effort?: string } = {};

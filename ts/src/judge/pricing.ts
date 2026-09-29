@@ -1,3 +1,4 @@
+import { catalog, type ModelCatalog } from "../config/models.js";
 import { modelIdentity } from "../connectors/base.js";
 
 export interface ModelPricing {
@@ -7,77 +8,16 @@ export interface ModelPricing {
   cacheRead: number;
 }
 
-/**
- * Approximate USD per one million tokens.
- *
- * VERIFIED 2026-09-12 against the LiteLLM community registry
- * (github.com/BerriAI/litellm, model_prices_and_context_window.json) and OpenAI's
- * published rate card. The previous figures were STALE by two price cuts: terra fell
- * to 2/12 on 2026-07-30 and sol to a promotional 4/20 on 2026-08-21, so this table
- * had been overstating both by 20-33%.
- *
- * PROMOTIONAL RATE: sol's 4/20 is a promotion OpenAI has stated runs at least through
- * 2026-11-21. Re-check it against the registry on or after that date.
- *
- * The earlier cacheRead rows are 0.1x input, confirmed against the registry's
- * cache_read_input_token_cost for astra, sol, terra and luna. The 2026-09-29
- * gpt-6.1-sol rate is 0.05x input per release coverage, unverified against the registry.
- * SPARK'S CACHE RATE IS INFERRED, not confirmed: the
- * registry carries spark only as a subscription-billed entry (`chatgpt/gpt-5.3-codex-spark`,
- * no cost fields), so both its 1.75/14 and its 0.175 cache rate are inherited/derived and
- * have no external source. The discount matters: a real astra run observed 13.25M cached of
- * 13.47M total input tokens, so ignoring it overstates that call by roughly 10x.
- */
-export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.freeze({
-  "gpt-5.3-codex-spark": { input: 1.75, output: 14, cacheRead: 0.175 },
-  "gpt-5.6-luna": { input: 0.2, output: 1.2, cacheRead: 0.02 },
-  "gpt-5.6-terra": { input: 2, output: 12, cacheRead: 0.2 },
-  "gpt-5.6-sol": { input: 4, output: 20, cacheRead: 0.4 },
-  // Source: OpenAI 2026-09-22 announcement; not yet checked against LiteLLM.
-  // cacheRead is INFERRED at 0.1x input for these two models.
-  "gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2 },
-  "gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 },
-  "gpt-6-astra": { input: 10, output: 50, cacheRead: 1 },
-  // Source: 2026-09-29 release coverage (DataCamp; eltmon/overdeck#4422); not yet checked against LiteLLM or OpenAI's rate card.
-  "gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 },
-});
+/** Approximate USD/MTok; provenance lives beside the shipped price rows. */
+export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = pricingAdapter(catalog.pricing.codex);
+export const RETIRED_MODELS: ReadonlySet<string> = new Set(catalog.retired.codex);
+export const DEVIN_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = pricingAdapter(catalog.pricing.devin);
 
-/** Retired upstream 2026-09-16; retained in MODEL_PRICING for historical usage. */
-export const RETIRED_MODELS: ReadonlySet<string> = new Set(["gpt-5.3-codex-spark"]);
-
-/**
- * Devin CLI models, seeded from `devin models list` (devin 3000.10.35,
- * 2026-09-29). SWE-2 is the owner's free family ("Free" — a price-table fact,
- * so a run reports usd: 0 as "estimated", never "reported"); the Claude
- * Opus 5.5, Sonnet 5 and Sonnet 5.5 rows copy their listed per-MTok prices. Kept separate
- * from MODEL_PRICING so codex's dispatchableModels() allowlist is unchanged
- * (STRAT-AGENT-DEVIN-1 D6).
- */
-export const DEVIN_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.freeze({
-  "swe-2-medium": { input: 0, output: 0, cacheRead: 0 },
-  "swe-2-high": { input: 0, output: 0, cacheRead: 0 },
-  "swe-2-max": { input: 0, output: 0, cacheRead: 0 },
-  "claude-opus-5-5-low": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5-5-medium": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5-5-high": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5-5-xhigh": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5-5-max": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5-5-low-fast": { input: 8, output: 40, cacheRead: 0.4 },
-  "claude-opus-5-5-medium-fast": { input: 8, output: 40, cacheRead: 0.4 },
-  "claude-opus-5-5-high-fast": { input: 8, output: 40, cacheRead: 0.4 },
-  "claude-opus-5-5-xhigh-fast": { input: 8, output: 40, cacheRead: 0.4 },
-  "claude-opus-5-5-max-fast": { input: 8, output: 40, cacheRead: 0.4 },
-  "claude-sonnet-5-low": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-medium": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-high": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-xhigh": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-max": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-5-low": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-5-medium": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-5-high": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-5-xhigh": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-sonnet-5-5-max": { input: 2, output: 10, cacheRead: 0.2 },
-});
+function pricingAdapter(rows: ModelCatalog["pricing"]["codex"]): Readonly<Record<string, ModelPricing>> {
+  return Object.freeze(Object.fromEntries(Object.entries(rows).map(([id, row]) => [id,
+    Object.freeze({ input: row.input, output: row.output, cacheRead: row.cache_read }),
+  ])));
+}
 
 export function dispatchableModels(): string[] {
   return Object.keys(MODEL_PRICING).filter((model) => !RETIRED_MODELS.has(model)).sort();

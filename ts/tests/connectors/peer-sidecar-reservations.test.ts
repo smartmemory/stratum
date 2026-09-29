@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -95,7 +96,7 @@ function attachDriver(handle: AppServerPeerHandle, hold: boolean) {
       }
     }
   });
-  const done=runAppServerDriver({runId,model:"gpt-6-luna/low",cwd:process.cwd(),prompt:"task",
+  const done=runAppServerDriver({runId,model:`${testModels.cheap}/low`,cwd:process.cwd(),prompt:"task",
     policy:{filesystemMode:"read-only",writableRoots:[],networkAccess:false,approvalPolicy:"never"}},
     {spawn:()=>child,peer:{subscribe:fn=>handle.subscribe(fn),send(message){
       if(message.type === "steer-result") results.push(message);

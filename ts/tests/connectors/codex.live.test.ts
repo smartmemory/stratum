@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { CodexConnector } from "../../src/connectors/codex.js";
@@ -9,9 +10,9 @@ function codexAvailable(): boolean {
 
 // Paid live execution is opt-in even on authenticated developer machines.
 describe.skipIf(process.env.STRATUM_LIVE_CODEX !== "1" || !!process.env.CI || !codexAvailable())("live codex connector", () => {
-  it("echoes through gpt-5.6-terra/low", async () => {
-    const result = await new CodexConnector({ model: "gpt-5.6-terra/low" }).run("Reply with exactly: STRATUM_P3_ECHO_OK");
+  it(`echoes through ${testModels.codexDefault}/low`, async () => {
+    const result = await new CodexConnector({ model: `${testModels.codexDefault}/low` }).run("Reply with exactly: STRATUM_P3_ECHO_OK");
     expect(result.text).toContain("STRATUM_P3_ECHO_OK");
-    expect(result.telemetry).toMatchObject({ model: "gpt-5.6-terra", effort: "low" });
+    expect(result.telemetry).toMatchObject({ model: testModels.codexDefault, effort: "low" });
   }, 120_000);
 });

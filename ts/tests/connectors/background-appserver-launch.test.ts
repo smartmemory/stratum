@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -28,7 +29,7 @@ it.each(["source","dist"])("AC14 %s launch uses private config, no prompt argv, 
   const f=await appServerFixture(); roots.push(f.root);
   const runDir=join(f.root,"abcdef012345"); await mkdir(runDir,{mode:0o700});
   const streamPath=join(runDir,"stream.jsonl"); await writeFile(streamPath,"");
-  const config: AppServerLaunchConfig={runId:"abcdef012345",model:"gpt-6-luna/low",cwd:f.root,prompt:"private launch prompt",streamPath,
+  const config: AppServerLaunchConfig={runId:"abcdef012345",model:`${testModels.cheap}/low`,cwd:f.root,prompt:"private launch prompt",streamPath,
     policy:{filesystemMode:"read-only",networkAccess:false,writableRoots:[],approvalPolicy:"never"},
     peer:{name:"fixture",sessionsDir:f.options.sessionsDir,sockDir:f.options.sockDir,lingerMs:100,firstLineDeadlineMs:1000}};
   const launch=mode==="source" ? launchCodexAppServerDriver : (await import(pathToFileURL(join(await isolated(f.root),"dist/connectors/codex-appserver-launch.js")).href)).launchCodexAppServerDriver as typeof launchCodexAppServerDriver;
@@ -68,7 +69,7 @@ writeFileSync(${JSON.stringify(resultPath)},JSON.stringify(run));`);
 it("AC14 parent disconnect before release never starts app-server", async()=>{
   const f=await appServerFixture(); roots.push(f.root);
   const runDir=join(f.root,"abcdef012345");await mkdir(runDir);
-  const handle=await launchCodexAppServerDriver({runId:"abcdef012345",model:"gpt-6-luna",cwd:f.root,prompt:"private",streamPath:join(runDir,"stream.jsonl"),policy:{filesystemMode:"read-only",networkAccess:false,writableRoots:[],approvalPolicy:"never"},peer:{name:"test",sessionsDir:f.options.sessionsDir,sockDir:f.options.sockDir,lingerMs:0,firstLineDeadlineMs:100}},f.options.env);
+  const handle=await launchCodexAppServerDriver({runId:"abcdef012345",model:testModels.cheap,cwd:f.root,prompt:"private",streamPath:join(runDir,"stream.jsonl"),policy:{filesystemMode:"read-only",networkAccess:false,writableRoots:[],approvalPolicy:"never"},peer:{name:"test",sessionsDir:f.options.sessionsDir,sockDir:f.options.sockDir,lingerMs:0,firstLineDeadlineMs:100}},f.options.env);
   children.push(handle.child); const done=once(handle.child,"exit");handle.child.disconnect(); await done;
   expect(existsSync(f.marker)).toBe(false);
 });
@@ -121,7 +122,7 @@ it.each(["wrong PID", "wrong name"])("AC14 rejects registration evidence with %s
     return;
   `));
   const {launchCodexAppServerDriver: launch}=await import(pathToFileURL(join(pkg,"dist/connectors/codex-appserver-launch.js")).href) as typeof import("../../src/connectors/codex-appserver-launch.js");
-  const handle=await launch({runId:"abcdef012345",model:"gpt-6-luna",cwd:f.root,prompt:"private",streamPath,
+  const handle=await launch({runId:"abcdef012345",model:testModels.cheap,cwd:f.root,prompt:"private",streamPath,
     policy:{filesystemMode:"read-only",networkAccess:false,writableRoots:[],approvalPolicy:"never"},
     peer:{name:"expected-peer",sessionsDir:f.options.sessionsDir,sockDir:f.options.sockDir,lingerMs:0,firstLineDeadlineMs:1000}},
     {...f.options.env,STRATUM_PEER_REGISTER:"1"}); children.push(handle.child);

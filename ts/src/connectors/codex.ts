@@ -1,3 +1,4 @@
+import { catalog } from "../config/models.js";
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { accessSync, constants, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -125,7 +126,7 @@ export function applyHeadlessShellEnv(env: NodeJS.ProcessEnv, home?: string): vo
 }
 
 export function defaultCodexModel(): string {
-  return process.env.CODEX_MODEL ?? "gpt-6.1-sol/high";
+  return process.env.CODEX_MODEL ?? `${catalog.codex.default.model}/${catalog.codex.default.effort}`;
 }
 
 export function resolveCodexTransport(env: NodeJS.ProcessEnv = process.env): CodexTransport {

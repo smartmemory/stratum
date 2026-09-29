@@ -1,0 +1,190 @@
+# Synthetic rates and ids: independent of shipped model bumps.
+[codex.default]
+model = "test-codex-a"
+effort = "high"
+[devin.default]
+model = "test-devin-high"
+effort = "high"
+[claude.default]
+model = "test-claude-d"
+[models]
+claude = ["test-claude-b", "test-claude-c", "test-claude-d"]
+[retired]
+codex = ["test-codex-retired"]
+devin = ["test-retired-low"]
+claude = ["test-claude-c"]
+[judge.cheap]
+model = "test-codex-b"
+effort = "low"
+[judge.default]
+model = "test-codex-a"
+effort = "high"
+[judge.paranoid]
+model = "test-codex-c"
+effort = "medium"
+[tiers.codex]
+coordinator = "unavailable"
+[tiers.codex.critical]
+model = "test-codex-a"
+effort = "high"
+mode = "unavailable"
+[tiers.codex.standard]
+model = "test-codex-a"
+effort = "high"
+mode = "unavailable"
+[tiers.codex.fast]
+model = "test-codex-a"
+effort = "high"
+mode = "unavailable"
+[tiers.codex.budget]
+model = "test-codex-a"
+effort = "high"
+mode = "unavailable"
+[tiers.devin]
+coordinator = "unavailable"
+[tiers.devin.critical]
+model = "test-devin-high"
+effort = "high"
+mode = "unavailable"
+[tiers.devin.standard]
+model = "test-devin-high"
+effort = "high"
+mode = "unavailable"
+[tiers.devin.fast]
+model = "test-devin-high"
+effort = "high"
+mode = "unavailable"
+[tiers.devin.budget]
+model = "test-devin-high"
+effort = "high"
+mode = "unavailable"
+[tiers.claude]
+coordinator = "unavailable"
+[tiers.claude.critical]
+model = "test-claude-d"
+effort = "medium"
+mode = "adaptive"
+[tiers.claude.standard]
+model = "test-claude-d"
+effort = "medium"
+mode = "adaptive"
+[tiers.claude.fast]
+model = "test-claude-d"
+effort = "medium"
+mode = "adaptive"
+[tiers.claude.budget]
+model = "test-claude-d"
+effort = "medium"
+mode = "adaptive"
+[pricing.codex."test-codex-a"]
+input = 3
+output = 11
+cache_read = 0.25
+[pricing.codex."test-codex-b"]
+input = 2
+output = 7
+cache_read = 0.2
+[pricing.codex."test-codex-c"]
+input = 5
+output = 17
+cache_read = 0.5
+[pricing.codex."test-codex-retired"]
+input = 9
+output = 21
+cache_read = 0.1
+[pricing.devin."test-devin-medium"]
+input = 0
+output = 0
+cache_read = 0
+[pricing.devin."test-devin-high"]
+input = 0
+output = 0
+cache_read = 0
+[pricing.devin."test-devin-max"]
+input = 0
+output = 0
+cache_read = 0
+[pricing.devin."test-retired-low"]
+input = 1
+output = 2
+cache_read = 0.3
+[pricing.devin."test-claude-b-low"]
+input = 4
+output = 20
+cache_read = 0.4
+[pricing.devin."test-claude-b-low-fast"]
+input = 8
+output = 40
+cache_read = 0.8
+[pricing.devin."test-claude-b-medium"]
+input = 4
+output = 20
+cache_read = 0.4
+[pricing.devin."test-claude-b-medium-fast"]
+input = 8
+output = 40
+cache_read = 0.8
+[pricing.devin."test-claude-b-high"]
+input = 4
+output = 20
+cache_read = 0.4
+[pricing.devin."test-claude-b-high-fast"]
+input = 8
+output = 40
+cache_read = 0.8
+[pricing.devin."test-claude-b-xhigh"]
+input = 4
+output = 20
+cache_read = 0.4
+[pricing.devin."test-claude-b-xhigh-fast"]
+input = 8
+output = 40
+cache_read = 0.8
+[pricing.devin."test-claude-b-max"]
+input = 4
+output = 20
+cache_read = 0.4
+[pricing.devin."test-claude-b-max-fast"]
+input = 8
+output = 40
+cache_read = 0.8
+[pricing.devin."test-claude-c-low"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-c-medium"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-c-high"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-c-xhigh"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-c-max"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-d-low"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-d-medium"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-d-high"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-d-xhigh"]
+input = 2
+output = 10
+cache_read = 0.2
+[pricing.devin."test-claude-d-max"]
+input = 2
+output = 10
+cache_read = 0.2

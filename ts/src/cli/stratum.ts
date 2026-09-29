@@ -22,6 +22,7 @@ type Mode = "text" | "json" | "events";
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const [command, ...args] = argv;
+  if (command === "models") return (await import("./models.js")).modelsCommand(args);
   if (command === "validate") return validateCommand(args);
   if (command === "migrate") return migrateCommand(args);
   if (command === "query") return queryCommand(args);
@@ -34,7 +35,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "distill") return (await import("./distill.js")).distillCommand(args);
   if (command === "learn") return (await import("./learn.js")).learnCommand(args);
   if (command === "watch") return watchCommand(args);
-  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|flow|learn|distill|mcp|doctor|upgrade|watch> ...\n");
+  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|flow|learn|distill|mcp|doctor|upgrade|watch|models> ...\n");
   return 2;
 }
 

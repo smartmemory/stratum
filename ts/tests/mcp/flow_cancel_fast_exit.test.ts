@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -33,7 +34,7 @@ async function harness(agent: NonNullable<McpDependencies["runAgent"]>) {
   });
   return {
     call: () => dispatcher.call("stratum_agent_run", {
-      agent: "codex", prompt: "test", cwd: root, model: "gpt-5.6-terra",
+      agent: "codex", prompt: "test", cwd: root, model: testModels.codexDefault,
       cancellationId: randomUUID(), flow: { runId: planned.runId },
     }),
     meta: async () => {

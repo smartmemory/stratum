@@ -1,3 +1,4 @@
+import { catalog } from "../config/models.js";
 import { openai } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
@@ -13,14 +14,7 @@ export interface JudgeTier {
 }
 
 /** Canonical P2 stakes routing. Result identity appends the effort as `/effort`. */
-export const STAKES_MODEL: Readonly<Record<Stakes, JudgeTier>> = Object.freeze({
-  // `gpt-5.3-codex-spark` was retired upstream on 2026-09-16. Per the owner
-  // directive, the cheap tier uses `gpt-6-luna` (priced at 0.10/0.50 in
-  // pricing.ts).
-  cheap: { model: "gpt-6-luna", effort: "low" },
-  default: { model: "gpt-6.1-sol", effort: "high" },
-  paranoid: { model: "gpt-6-astra", effort: "high" },
-});
+export const STAKES_MODEL: Readonly<Record<Stakes, JudgeTier>> = catalog.judge;
 
 export interface JudgedContext {
   input?: unknown;

@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { isolatedStateRoot } from "../helpers/state-root.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -93,7 +94,7 @@ afterAll(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
-  it.each(["codex-sol-abcdef", "claude-sonnet-5-abcdef123456", undefined])("exposes completion instructions for background runs (peer=%s)", async (peerName) => {
+  it.each(["codex-sol-abcdef", `${testModels.devinSonnetFamily}-abcdef123456`, undefined])("exposes completion instructions for background runs (peer=%s)", async (peerName) => {
     const started = { status: "bg_started" as const, runId: "abcdef123456", streamPath: "/tmp/test-stream.jsonl",
       ...(peerName ? { peerName } : {}) };
     const pair = await connected({ runAgent: async () => started });
@@ -527,10 +528,10 @@ it("forwards a normalized Claude label through real contract admission", async (
   const seen: AgentRunOptions[] = [];
   const dispatcher = createToolDispatcher({runAgent:async options => {
     seen.push(options);
-    return {status:"bg_started",runId:"abcdef123456",streamPath:"/tmp/fixture",peerName:"claude-sonnet-5-abcdef123456-review"};
+    return {status:"bg_started",runId:"abcdef123456",streamPath:"/tmp/fixture",peerName:`${testModels.devinSonnetFamily}-abcdef123456-review`};
   }});
   const result = await dispatcher.call("stratum_agent_run",{agent:"claude",prompt:"x",cwd:process.cwd(),background:true,peerLabel:" Review "});
   expect(seen[0]!.peerLabel).toBe("review");
   expect(result).not.toHaveProperty("pid");
-  expect(result.completionInstructions).toContain("claude-sonnet-5-abcdef123456-review");
+  expect(result.completionInstructions).toContain(`${testModels.devinSonnetFamily}-abcdef123456-review`);
 });

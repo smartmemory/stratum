@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { spawn as nodeSpawn } from "node:child_process";
 import { getEventListeners } from "node:events";
 import { EventEmitter } from "node:events";
@@ -151,7 +152,7 @@ describe("DevinConnector — run layout and argv (D2)", () => {
         expect(command).toBe(layout.wrapperPath);
         expect(argv.slice(0, 3)).toEqual(["sandbox-exec", "-f", layout.profilePath]);
         expect(argv.slice(3)).toEqual([
-          "devin", "--model", "swe-2-high",
+          "devin", "--model", testModels.devinDefault,
           "--permission-mode", "dangerous",
           "--config", layout.devinConfigPath,
           "--respect-workspace-trust", "false",
@@ -276,7 +277,7 @@ describe("DevinConnector — ATIF result channel (D2/D6)", () => {
     expect(result.usage).toMatchObject({ tokens: 41592 + 69, usd: 0 });
     expect(result.usdSource).toBe("estimated");
     expect(result.split).toEqual({ input: 41592, output: 69, cacheRead: 20736 });
-    expect(result.telemetry).toMatchObject({ model: "swe-2-high" });
+    expect(result.telemetry).toMatchObject({ model: testModels.devinDefault });
   });
 
   it("emits agent_started, agent_relay and step_usage events", async () => {
@@ -288,7 +289,7 @@ describe("DevinConnector — ATIF result channel (D2/D6)", () => {
     expect(events[1]!.metadata).toMatchObject({ text: "hello", role: "assistant" });
     expect(events[2]!.metadata).toMatchObject({
       input_tokens: 20737, output_tokens: 18, cache_read_input_tokens: 7808,
-      cost_usd: 0, usd_source: "estimated", model: "swe-2-high",
+      cost_usd: 0, usd_source: "estimated", model: testModels.devinDefault,
     });
   });
 
@@ -468,7 +469,9 @@ describe("DevinConnector — stderr witnesses (D3 fact)", () => {
     const root = await temporaryRoot();
     const spawn = fakeDevinSpawn({
       exportText: readFileSync(fixture("answer.atif.json"), "utf8"),
-      stderr: "Unknown model: 'swe-2-high'\nAvailable:\n",
+      stderr: `Unknown model: '${testModels.devinDefault}'
+Available:
+`,
     });
     await expect(connector({ cwd: root, env: await homeEnv(root), spawn }).run("p"))
       .rejects.toThrow(/empty model list \(transient devin-service degradation\)/);
@@ -477,7 +480,8 @@ describe("DevinConnector — stderr witnesses (D3 fact)", () => {
   it("a nonempty Available: list falls through to the normal error", async () => {
     const root = await temporaryRoot();
     const spawn = fakeDevinSpawn({
-      stderr: "Unknown model: 'typo'\nAvailable: swe-2-medium, swe-2-high",
+      stderr: `Unknown model: 'typo'
+Available: ${testModels.devinMedium}, ${testModels.devinDefault}`,
       rc: 1,
     });
     await expect(connector({ cwd: root, env: await homeEnv(root), spawn }).run("p"))

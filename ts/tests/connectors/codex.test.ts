@@ -1,3 +1,4 @@
+import { testModels } from "../helpers/models.js";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,15 +41,15 @@ function fakeSpawn(records: unknown[], exitCode = 0, stderr = "") {
 
 describe("CodexConnector", () => {
   it("builds exec argv for all four sandbox axes", () => {
-    expect(codexExecArgs("gpt-5.6-luna/low", "/work", "read-only")).toEqual([
+    expect(codexExecArgs(`${testModels.cheap}/low`, "/work", "read-only")).toEqual([
       "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only",
       "-c", "sandbox_workspace_write.network_access=false",
       "-c", "sandbox_workspace_write.writable_roots=[]",
       "-c", 'approval_policy="never"',
-      "-m", "gpt-5.6-luna", "-C", "/work",
+      "-m", testModels.cheap, "-C", "/work",
       "-c", 'model_reasoning_effort="low"', "-",
     ]);
-    expect(codexExecArgs("gpt-5.6-terra", "/work", "workspace-write", {
+    expect(codexExecArgs(testModels.codexDefault, "/work", "workspace-write", {
       networkAccess: true,
       writableRoots: ["/cache", "/output"],
       approvalPolicy: "on-request",
@@ -57,14 +58,14 @@ describe("CodexConnector", () => {
       "-c", "sandbox_workspace_write.network_access=true",
       "-c", 'sandbox_workspace_write.writable_roots=["/cache","/output"]',
       "-c", 'approval_policy="on-request"',
-      "-m", "gpt-5.6-terra", "-C", "/work", "-",
+      "-m", testModels.codexDefault, "-C", "/work", "-",
     ]);
-    expect(codexExecArgs("gpt-5.6-terra", "/work", "danger-full-access" as never)).toEqual([
+    expect(codexExecArgs(testModels.codexDefault, "/work", "danger-full-access" as never)).toEqual([
       "exec", "--json", "--skip-git-repo-check", "--sandbox", "danger-full-access",
       "-c", "sandbox_workspace_write.network_access=false",
       "-c", "sandbox_workspace_write.writable_roots=[]",
       "-c", 'approval_policy="never"',
-      "-m", "gpt-5.6-terra", "-C", "/work", "-",
+      "-m", testModels.codexDefault, "-C", "/work", "-",
     ]);
   });
 
@@ -123,7 +124,7 @@ describe("CodexConnector", () => {
     const sdkFactory = vi.fn(() => ({ startThread }));
     const connectorEvents: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
     const connector = new CodexConnector({
-      model: "gpt-5.6-luna/low",
+      model: `${testModels.cheap}/low`,
       cwd: "/work",
       sandboxMode: "workspace-write",
       networkAccess: true,
@@ -143,13 +144,13 @@ describe("CodexConnector", () => {
     await expect(pending).resolves.toMatchObject({
       text: "echo ok",
       usage: { tokens: 7 },
-      telemetry: { model: "gpt-5.6-luna", effort: "low" },
+      telemetry: { model: testModels.cheap, effort: "low" },
     });
     expect(sdkFactory).toHaveBeenCalledWith({ env: { PATH: "/definitely-missing" } });
     expect(startThread).toHaveBeenCalledWith({
       approvalPolicy: "on-request",
       additionalDirectories: ["/cache"],
-      model: "gpt-5.6-luna",
+      model: testModels.cheap,
       modelReasoningEffort: "low",
       networkAccessEnabled: true,
       sandboxMode: "workspace-write",
@@ -176,7 +177,7 @@ describe("CodexConnector", () => {
       },
       {
         kind: "agent_started",
-        metadata: { agent: "codex", model: "gpt-5.6-luna/low", prompt_chars: withSandboxPreamble("echo test").length },
+        metadata: { agent: "codex", model: `${testModels.cheap}/low`, prompt_chars: withSandboxPreamble("echo test").length },
       },
       {
         kind: "tool_use_summary",
@@ -198,10 +199,10 @@ describe("CodexConnector", () => {
         kind: "step_usage",
         metadata: {
           input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 0,
-          cache_read_input_tokens: 0, model: "gpt-5.6-luna/low",
+          cache_read_input_tokens: 0, model: `${testModels.cheap}/low`,
           // Codex reports no cost, so the connector states its OWN estimate and says so.
           // 3 uncached input @ 0.2/MTok + 4 output @ 1.2/MTok.
-          cost_usd: 0.0000054, usd_source: "estimated",
+          cost_usd: 0.000034, usd_source: "estimated",
         },
       },
     ]);
@@ -225,7 +226,7 @@ describe("CodexConnector", () => {
       yield { type: "turn.completed" as const, usage: { input_tokens: 10, cached_input_tokens: 6, output_tokens: 5, reasoning_output_tokens: 0 } };
     }
     const connector = new CodexConnector({
-      model: "gpt-5.6-luna/low", cwd: "/work", sandboxMode: "workspace-write", env: { PATH: "/definitely-missing" },
+      model: `${testModels.cheap}/low`, cwd: "/work", sandboxMode: "workspace-write", env: { PATH: "/definitely-missing" },
       onEvent: async (event) => { connectorEvents.push(event); },
       sdkFactory: vi.fn(() => ({ startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })) })),
     });
@@ -240,7 +241,7 @@ describe("CodexConnector", () => {
       usd_source: "estimated",      // stated, never inferred from cost_usd's presence
     });
     // 4 uncached @ 0.2/MTok + 6 cached @ 0.02/MTok + 5 output @ 1.2/MTok.
-    expect(usage?.metadata.cost_usd).toBeCloseTo(0.00000692, 12);
+    expect(usage?.metadata.cost_usd).toBeCloseTo(0.0000442, 12);
     // The event's TOKEN counts are identical to the connector's own evidence -- that
     // identity is what compose's routing evidence guard checks.
     expect(result.usage.tokens).toBe(15);
@@ -261,7 +262,7 @@ describe("CodexConnector", () => {
       yield { type: "turn.completed" as const, usage: { input_tokens: 10, cached_input_tokens: 6, output_tokens: 5, reasoning_output_tokens: 0, total_cost_usd: 0.001 } as never };
     }
     const connector = new CodexConnector({
-      model: "gpt-6-astra/high", cwd: "/work", sandboxMode: "workspace-write", env: { PATH: "/definitely-missing" },
+      model: `${testModels.paranoid}/high`, cwd: "/work", sandboxMode: "workspace-write", env: { PATH: "/definitely-missing" },
       sdkFactory: vi.fn(() => ({ startThread: vi.fn(() => ({ runStreamed: vi.fn(async () => ({ events: events() })) })) })),
     });
     const result = await connector.run("price me");
@@ -355,15 +356,15 @@ describe("CodexConnector", () => {
       { type: "item.completed", item: { type: "agent_message", text: "echo ok" } },
       { type: "turn.completed", usage: { input_tokens: 3, output_tokens: 4, cached_input_tokens: 1, dispatches: 99 } },
     ]);
-    const connector = new CodexConnector({ model: "gpt-5.6-luna/low", cwd: "/work", transport: "exec", spawn });
+    const connector = new CodexConnector({ model: `${testModels.cheap}/low`, cwd: "/work", transport: "exec", spawn });
 
     const result = await connector.run("echo test");
 
-    expect(spawn).toHaveBeenCalledWith("codex", codexExecArgs("gpt-5.6-luna/low", "/work", "read-only"), expect.objectContaining({ cwd: "/work" }));
+    expect(spawn).toHaveBeenCalledWith("codex", codexExecArgs(`${testModels.cheap}/low`, "/work", "read-only"), expect.objectContaining({ cwd: "/work" }));
     expect(result).toMatchObject({
       text: "echo ok",
       usage: { tokens: 7 },
-      telemetry: { model: "gpt-5.6-luna", effort: "low" },
+      telemetry: { model: testModels.cheap, effort: "low" },
     });
     expect(result.telemetry.durationMs).toBeGreaterThanOrEqual(0);
     expect(result.usage).not.toHaveProperty("dispatches");
@@ -489,4 +490,18 @@ describe("CodexConnector", () => {
     applyHeadlessShellEnv(env, home);
     expect(env.PUPPETEER_EXECUTABLE_PATH).toBe(resolveHeadlessShellPath(home));
   });
+});
+
+// Inject synthetic bytes into the real singleton loader, preserving every adapter.
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { fileURLToPath } = await import("node:url");
+  const shipped = fileURLToPath(new URL("../../src/config/models.default.toml", import.meta.url));
+  const fixture = fileURLToPath(new URL("../fixtures/models.synthetic.toml", import.meta.url));
+  return { ...actual, readFileSync: new Proxy(actual.readFileSync, {
+    apply(target, receiver, args) {
+      if (args[0] === shipped) args[0] = fixture;
+      return Reflect.apply(target, receiver, args);
+    },
+  }) };
 });
