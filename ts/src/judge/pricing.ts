@@ -43,9 +43,9 @@ export const RETIRED_MODELS: ReadonlySet<string> = new Set(["gpt-5.3-codex-spark
 
 /**
  * Devin CLI models, seeded from `devin models list` (devin 3000.10.35,
- * 2026-09-26). SWE-2 is the owner's free family ("Free" — a price-table fact,
+ * 2026-09-29). SWE-2 is the owner's free family ("Free" — a price-table fact,
  * so a run reports usd: 0 as "estimated", never "reported"); the Claude
- * Opus 5.5 and Sonnet 5 rows copy their listed per-MTok prices. Kept separate
+ * Opus 5.5, Sonnet 5 and Sonnet 5.5 rows copy their listed per-MTok prices. Kept separate
  * from MODEL_PRICING so codex's dispatchableModels() allowlist is unchanged
  * (STRAT-AGENT-DEVIN-1 D6).
  */
@@ -68,6 +68,11 @@ export const DEVIN_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Objec
   "claude-sonnet-5-high": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-sonnet-5-xhigh": { input: 2, output: 10, cacheRead: 0.2 },
   "claude-sonnet-5-max": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-5-low": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-5-medium": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-5-high": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-5-xhigh": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-sonnet-5-5-max": { input: 2, output: 10, cacheRead: 0.2 },
 });
 
 export function dispatchableModels(): string[] {

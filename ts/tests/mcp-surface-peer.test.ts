@@ -42,13 +42,13 @@ it("accepts optional labels for Claude and Codex and rejects wrong types and unk
 });
 
 it("accepts Claude start and poll envelopes with completion guidance and historical registration", async () => {
-  const peer = { name: "claude-sonnet-5-abcdef123456-review", registered: true, pid: 456, sock: "/tmp/sp-example/456.sock" };
+  const peer = { name: "claude-sonnet-5-5-abcdef123456-review", registered: true, pid: 456, sock: "/tmp/sp-example/456.sock" };
   for (const extra of [{}, { peerName: peer.name, completionInstructions: "Subscribe, then poll for the report." }]) {
     await expect(assertToolResponse("stratum_agent_run", { ...started, ...extra })).resolves.toBeUndefined();
   }
   for (const response of [
     { status: "running", runId: started.runId, textTail: "", eventsSeen: 0, streamPath: started.streamPath },
-    { status: "complete", runId: started.runId, text: "done", usage: {}, exitCode: 0, telemetry: { durationMs: 1, model: "claude-sonnet-5" } },
+    { status: "complete", runId: started.runId, text: "done", usage: {}, exitCode: 0, telemetry: { durationMs: 1, model: "claude-sonnet-5-5" } },
     { status: "error", runId: started.runId, textTail: "", stderrTail: "failed" },
   ]) {
     for (const extra of [{}, { peer }, { peer: { name: peer.name, registered: false } }]) {

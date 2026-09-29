@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Default Claude model moved from `claude-sonnet-5` to `claude-sonnet-5-5` (Sonnet 5.5, shipped 2026-09-29); added five Sonnet 5.5 `DEVIN_MODEL_PRICING` rows.
+
 ## [0.7.2] — 2026-09-27
 
 - **Release: background-run idle subscriptions no longer look refused.** Patch release of the peer-sidecar fix below so running stratum MCP servers pick it up. Callers subscribe with `SendMessage(to=peerName, notify_when_idle=true)` and omit `message`.

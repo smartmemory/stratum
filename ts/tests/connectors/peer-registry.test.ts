@@ -191,8 +191,8 @@ it("normalizes labels and derives agent names while retaining legacy names", () 
   expect(registry.normalizePeerLabel(" Schema Review! ")).toBe("schema-review");
   expect(registry.normalizePeerLabel("a".repeat(64))).toHaveLength(64);
   for (const value of [null, 1, "", " ", "!!!", "中文", "a\nb", "a\x7f", "a".repeat(65)]) expect(() => registry.normalizePeerLabel(value)).toThrow(/peerLabel/);
-  expect(registry.peerName("claude-sonnet-5", "abcdef123456", {agent:"claude", label:"schema-review"})).toBe("claude-sonnet-5-abcdef123456-schema-review");
-  expect(registry.peerName("claude-sonnet-5", "abcdef123456", {agent:"claude"})).toBe("claude-sonnet-5-abcdef123456");
+  expect(registry.peerName("claude-sonnet-5-5", "abcdef123456", {agent:"claude", label:"schema-review"})).toBe("claude-sonnet-5-5-abcdef123456-schema-review");
+  expect(registry.peerName("claude-sonnet-5-5", "abcdef123456", {agent:"claude"})).toBe("claude-sonnet-5-5-abcdef123456");
   expect(registry.peerName("gpt-6-astra", "abcdef123456", {agent:"codex", label:"review"})).toBe("codex-astra-abcdef123456-review");
 });
 it("round trips worker config and rejects bad owner fields", async () => {

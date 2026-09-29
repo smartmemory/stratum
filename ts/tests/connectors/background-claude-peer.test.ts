@@ -143,7 +143,7 @@ it("old or malformed optional peer metadata does not change durable results", as
     await writeFile(metaPath,JSON.stringify({...meta,peerLabel}));
     for (const value of ["bad",JSON.stringify({pid:-1,name:"wrong"}),"x".repeat(65537)]) {
       await writeFile(peerPath,value);
-      expect(await pollBackgroundRun(run.runId,{registryRoot:dir})).toMatchObject({status:"complete",peer:{registered:false,name:`claude-sonnet-5-${run.runId}`}});
+      expect(await pollBackgroundRun(run.runId,{registryRoot:dir})).toMatchObject({status:"complete",peer:{registered:false,name:`claude-sonnet-5-5-${run.runId}`}});
     }
   }
   await rm(peerPath); await mkdir(peerPath);

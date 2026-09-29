@@ -64,6 +64,7 @@ describe("devinModelFamilies", () => {
     expect(families.get("swe-2")).toEqual(["high", "max", "medium"]);
     expect(families.get("claude-opus-5-5")).toEqual(["high", "low", "max", "medium", "xhigh"]);
     expect(families.get("claude-sonnet-5")).toEqual(["high", "low", "max", "medium", "xhigh"]);
+    expect(families.get("claude-sonnet-5-5")).toEqual(["high", "low", "max", "medium", "xhigh"]);
     // A priced id surfaced by a -fast variant is a full id, not a family.
     expect(families.has("claude-opus-5-5-low")).toBe(false);
     expect(families.has("claude-opus-5-5-low-fast")).toBe(false);
