@@ -3,13 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { modelIdentity } from "../../src/connectors/base.js";
-import { codexModelWithEffort, CodexConnector } from "../../src/connectors/codex.js";
+import { codexModelWithEffort, CodexConnector, defaultCodexModel } from "../../src/connectors/codex.js";
 import { startBackgroundRun } from "../../src/connectors/background.js";
 import { validateAgentSettings } from "../../src/connectors/runner.js";
 import { baseModel, MODEL_PRICING } from "../../src/judge/pricing.js";
 
-const accepted = ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol"];
+const accepted = ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"];
 describe("dispatch model validation", () => {
+  it("defaults to gpt-6.1-sol/high", () => {
+    vi.stubEnv("CODEX_MODEL", undefined);
+    try { expect(defaultCodexModel()).toBe("gpt-6.1-sol/high"); }
+    finally { vi.unstubAllEnvs(); }
+  });
   it("rejects unknown ids with the sorted accepted list", () => {
     expect(() => codexModelWithEffort("typo")).toThrow(`Unknown Codex model "typo"; accepted models: ${accepted.join(", ")}`);
   });
@@ -36,11 +41,15 @@ describe("dispatch model validation", () => {
     ["provider/model/high", { model: "provider/model", effort: "high" }],
     ["chatgpt/gpt-5.3-codex-spark", { model: "chatgpt/gpt-5.3-codex-spark" }],
     ["gpt-5.6-terra/minimal", { model: "gpt-5.6-terra", effort: "minimal" }],
+    ["gpt-6.1-sol/high", { model: "gpt-6.1-sol", effort: "high" }],
     ["gpt-5.6-terra/", { model: "gpt-5.6-terra/" }],
     ["gpt-5.6-terra/ultra", { model: "gpt-5.6-terra/ultra" }],
   ])("shares parsing for %s", (input, expected) => {
     expect(modelIdentity(input)).toEqual(expected);
     expect(baseModel(input)).toBe(expected.model);
+  });
+  it("dispatches the dotted model id with a high effort suffix", () => {
+    expect(codexModelWithEffort("gpt-6.1-sol/high")).toBe("gpt-6.1-sol/high");
   });
   it("validates CODEX_MODEL before SDK construction", () => {
     vi.stubEnv("CODEX_MODEL", "env-typo/high");

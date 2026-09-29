@@ -3,7 +3,7 @@ import { modelIdentity } from "../connectors/base.js";
 export interface ModelPricing {
   input: number;
   output: number;
-  /** USD per MTok for cached input. Every priced model here bills cache reads at 0.1x input. */
+  /** USD per MTok for cached input; the discount varies by model. */
   cacheRead: number;
 }
 
@@ -19,8 +19,10 @@ export interface ModelPricing {
  * PROMOTIONAL RATE: sol's 4/20 is a promotion OpenAI has stated runs at least through
  * 2026-11-21. Re-check it against the registry on or after that date.
  *
- * cacheRead is 0.1x input, confirmed against the registry's cache_read_input_token_cost
- * for astra, sol, terra and luna. SPARK'S CACHE RATE IS INFERRED, not confirmed: the
+ * The earlier cacheRead rows are 0.1x input, confirmed against the registry's
+ * cache_read_input_token_cost for astra, sol, terra and luna. The 2026-09-29
+ * gpt-6.1-sol rate is 0.05x input per release coverage, unverified against the registry.
+ * SPARK'S CACHE RATE IS INFERRED, not confirmed: the
  * registry carries spark only as a subscription-billed entry (`chatgpt/gpt-5.3-codex-spark`,
  * no cost fields), so both its 1.75/14 and its 0.175 cache rate are inherited/derived and
  * have no external source. The discount matters: a real astra run observed 13.25M cached of
@@ -36,6 +38,8 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.free
   "gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2 },
   "gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01 },
   "gpt-6-astra": { input: 10, output: 50, cacheRead: 1 },
+  // Source: 2026-09-29 release coverage (DataCamp; eltmon/overdeck#4422); not yet checked against LiteLLM or OpenAI's rate card.
+  "gpt-6.1-sol": { input: 2, output: 10, cacheRead: 0.1 },
 });
 
 /** Retired upstream 2026-09-16; retained in MODEL_PRICING for historical usage. */

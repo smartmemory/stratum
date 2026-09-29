@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Codex and the default judge tier now use `gpt-6.1-sol/high` (was `gpt-6-sol/high`); added its published 2/10 input/output and 0.10 cached-input rates per MTok. `gpt-6-sol` remains available.
+
 - Codex default gpt-6-sol now runs at high reasoning effort (was medium), per owner directive.
 
 ## [0.7.3] — 2026-09-29

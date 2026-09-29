@@ -19,14 +19,14 @@ describe("judged predicates", () => {
   it("ships the canonical stakes to model and effort table", () => {
     expect(STAKES_MODEL).toEqual({
       cheap: { model: "gpt-6-luna", effort: "low" },
-      default: { model: "gpt-6-sol", effort: "high" },
+      default: { model: "gpt-6.1-sol", effort: "high" },
       paranoid: { model: "gpt-6-astra", effort: "high" },
     });
   });
 
   it.each([
     ["cheap", "gpt-6-luna/low", "low"],
-    ["default", "gpt-6-sol/high", "high"],
+    ["default", "gpt-6.1-sol/high", "high"],
     ["paranoid", "gpt-6-astra/high", "high"],
   ] as const)("routes %s through its model tier", async (stakes, model, effort) => {
     generateObjectMock.mockResolvedValue(generated());
@@ -46,8 +46,8 @@ describe("judged predicates", () => {
       holds: false,
       reason: "not enough evidence",
       stakes: "default",
-      model: "gpt-6-sol/high",
-      // sol is priced at 2/10 per MTok: 1_000 input * 2 + 500 output * 10 = 0.007.
+      model: "gpt-6.1-sol/high",
+      // 6.1-sol is priced at 2/10 per MTok: 1_000 input * 2 + 500 output * 10 = 0.007.
       usage: { tokens: 1_500, usd: 0.007 },
     });
   });

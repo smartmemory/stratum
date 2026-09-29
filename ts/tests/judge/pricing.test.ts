@@ -8,6 +8,7 @@ describe("judge pricing", () => {
     ["gpt-5.6-sol/high", "gpt-5.6-sol"],
     ["gpt-5.6-sol", "gpt-5.6-sol"],
     ["gpt-6-astra/high", "gpt-6-astra"],
+    ["gpt-6.1-sol/high", "gpt-6.1-sol"],
   ])("normalizes %s", (model, expected) => expect(baseModel(model)).toBe(expected));
 
   // This table stopped being a judge-tier list on 2026-09-12: the codex connector now
@@ -17,7 +18,7 @@ describe("judge pricing", () => {
   // be priced, never what the judge may route to. Assert the judge tiers are all present
   // and priced rather than pinning the table closed.
   it("prices every judge tier", () => {
-    for (const model of ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-astra"]) {
+    for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {
       expect(usdFromTokens(model, { inputTokens: 1_000, outputTokens: 1_000 })).toBeGreaterThan(0);
     }
   });
@@ -28,7 +29,7 @@ describe("judge pricing", () => {
     }
   });
 
-  // Cached input bills at 0.1x, confirmed per-model against the LiteLLM registry. It is
+  // Astra cached input bills at 0.1x, confirmed against the LiteLLM registry. It is
   // not a rounding detail: a real astra run carried 13.25M cached of 13.47M input tokens,
   // so ignoring the discount overstates that call by roughly 10x.
   it("bills cached input at the discounted rate, and never below zero", () => {
@@ -38,6 +39,15 @@ describe("judge pricing", () => {
     expect(cached).toBeCloseTo(1, 10);
     // cached > input must clamp, never produce a negative charge
     expect(usdFromTokens("gpt-6-astra", { inputTokens: 10, cachedInputTokens: 999, outputTokens: 0 })).toBeGreaterThanOrEqual(0);
+  });
+
+  it("bills gpt-6.1-sol cached input at its published 0.05x rate", () => {
+    expect(usdFromTokens("gpt-6.1-sol/high", {
+      inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 0,
+    })).toBeCloseTo(0.1, 10);
+    expect(usdFromTokens("gpt-6.1-sol/high", {
+      inputTokens: 1_000_000, cachedInputTokens: 500_000, outputTokens: 100_000,
+    })).toBeCloseTo(2.05, 10);
   });
 
   it("prices input and output independently", () => {
@@ -55,8 +65,10 @@ describe("judge pricing", () => {
 
 it("prices new models and excludes only retired models from dispatch", () => {
   expect(MODEL_PRICING["gpt-6-sol"]).toEqual({ input: 2, output: 10, cacheRead: 0.2 });
+  expect(MODEL_PRICING["gpt-6.1-sol"]).toEqual({ input: 2, output: 10, cacheRead: 0.1 });
   expect(MODEL_PRICING["gpt-6-luna"]).toEqual({ input: 0.1, output: 0.5, cacheRead: 0.01 });
   expect(RETIRED_MODELS.has("gpt-5.3-codex-spark")).toBe(true);
   expect(dispatchableModels()).toEqual(Object.keys(MODEL_PRICING).filter(id => !RETIRED_MODELS.has(id)).sort());
   expect(dispatchableModels()).not.toContain("gpt-5.3-codex-spark");
+  expect(dispatchableModels()).toContain("gpt-6.1-sol");
 });

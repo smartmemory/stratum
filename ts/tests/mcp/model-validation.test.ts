@@ -56,9 +56,10 @@ it.each([
     });
     expect(runAgent).not.toHaveBeenCalled();
     await expect(stat(registryRoot)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(dispatcher.call("stratum_agent_run", { ...request, model: "gpt-6-sol" }))
+    await expect(dispatcher.call("stratum_agent_run", { ...request, model: "gpt-6.1-sol/high" }))
       .resolves.toMatchObject({ status: "complete", text: "done" });
     expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(runAgent).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-6.1-sol/high" }));
   } finally {
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
