@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-09-29
+
+- **Release: default Claude model is Sonnet 5.5.** Patch release carrying the model sweep.
 - Default Claude model moved from `claude-sonnet-5` to `claude-sonnet-5-5` (Sonnet 5.5, shipped 2026-09-29); added five Sonnet 5.5 `DEVIN_MODEL_PRICING` rows.
 
 ## [0.7.2] — 2026-09-27
