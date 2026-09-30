@@ -76,6 +76,7 @@ Bootstrap: establish the core structure and first working milestone.
 | 6 | STRAT-USAGE-SPLIT-1 | A dispatch that fails before any usage event arrives records split {input:0, output:0} instead of no split, so compose files an unmeasured call as zero tokens (dispatch a31aac4a, 2026-09-19). Claude connector error path should omit split/usage when nothing was reported; compose consumer keeps null for unmeasured. | PLANNED |
 | 7 | STRAT-DISTILL-APPLY | Graduate stratum_distill's reserved apply flag: write a staged skill-class AssetCandidate to the working tree through the memory-class apply machinery (admission critics, journal, guard-ledger commit, CAS revert, reconcile) generalized from ts/src/learn/apply.ts. Narrow v1: single asset, deterministic critics, default OFF. STRAT-ADMIT's LLM critics, batch admission and pool lock remain a follow-up. | COMPLETE |
 | — | STRAT-AGENT-DEVIN-1 | Devin CLI as a third agent, a full peer of claude and codex: stratum_agent_run (foreground + background), step/stage agent in specs, evaluator route; read-only/workspace-write/full-access mapped onto devin permission modes and --sandbox, rejected tool calls surfaced as failures | COMPLETE |
+| — | STRAT-CONFIG-MODELS-1 | Model catalog, defaults, tiers (model+effort+thinking) and prices move into one shipped data file, so a model bump is a one-file edit with no test churn | COMPLETE |
 
 ---
 

@@ -1,9 +1,42 @@
 {
   "code": "STRAT-CONFIG-MODELS-1",
   "description": "Model catalog, defaults, tiers (model+effort+thinking) and prices move into one shipped data file, so a model bump is a one-file edit with no test churn",
-  "status": "PLANNED",
+  "status": "COMPLETE",
   "phase": "Standalone Tickets",
   "created": "2026-09-30",
   "updated": "2026-09-30",
-  "complexity": "M"
+  "complexity": "M",
+  "completions": [
+    {
+      "completion_id": "STRAT-CONFIG-MODELS-1:e8c17dc7cc47456b71c53a0b3622c2035cb42508",
+      "feature_code": "STRAT-CONFIG-MODELS-1",
+      "commit_sha": "e8c17dc7cc47456b71c53a0b3622c2035cb42508",
+      "commit_sha_short": "e8c17dc7",
+      "tests_pass": true,
+      "files_changed": [
+        "ts/src/config/models.default.toml",
+        "ts/src/config/models.ts",
+        "ts/src/config/devin-resolution.ts",
+        "ts/src/cli/models.ts",
+        "ts/src/cli/stratum.ts",
+        "ts/scripts/prepare-dist.mjs",
+        "ts/src/connectors/background.ts",
+        "ts/src/connectors/claude.ts",
+        "ts/src/connectors/codex.ts",
+        "ts/src/connectors/devin-model.ts",
+        "ts/src/judge/judged.ts",
+        "ts/src/judge/pricing.ts",
+        "ts/tests/config/models.test.ts",
+        "ts/tests/config/pack-contents.test.ts",
+        "ts/tests/fixtures/models.synthetic.toml",
+        "ts/tests/helpers/models.ts",
+        "CHANGELOG.md",
+        "README.md"
+      ],
+      "recorded_at": "2026-09-30T00:59:34.531Z",
+      "recorded_by": "mcp:agent",
+      "notes": "Design 800fca5 (Codex gpt-6.1-sol/high design gate: R1 NOT CLEAN 5 upheld, R2 resolved + 1 MEDIUM fixed inline). Slice 1 stratum e8c17dc (Codex author, Sonnet review R1 NOT CLEAN -> R2 CLEAN; controller 655/655 touched incl. peer/socket unsandboxed). Slice 2 compose f545eb4 (Codex author, Sonnet review 3 rounds -> CLEAN; controller 563/563 + 3/3 runtime, 130/130 after final fixes, settings HTTP outside sandbox). Proof: fast-model and standard-effort bumps touching only models.default.toml passed stratum 139 model-area and compose 542 tests with zero test edits. No full suite run."
+    }
+  ],
+  "commit_sha": "e8c17dc7cc47456b71c53a0b3622c2035cb42508"
 }
