@@ -13,7 +13,7 @@ async function* messages() {
   yield { type: "system", subtype: "init", model: `${testModels.claudeDefault}-20260701` };
   yield { type: "assistant", message: { content: [{ type: "text", text: "partial" }] } };
   yield {
-    type: "result", subtype: "success", result: "echo ok", duration_ms: 42, total_cost_usd: 0.01,
+    type: "result", subtype: "success", is_error: false, result: "echo ok", duration_ms: 42, total_cost_usd: 0.01,
     usage: { input_tokens: 3, output_tokens: 4, cost_usd: 0.01, cache_creation_input_tokens: 2, cache_read_input_tokens: 1, dispatches: 50 },
   };
 }
@@ -173,6 +173,18 @@ describe("ClaudeConnector", () => {
       yield { type: "result", subtype: "error_during_execution", errors: ["auth failed"], duration_ms: 2 };
     };
     await expect(new ClaudeConnector({ query }).run("test")).rejects.toThrow("auth failed");
+  });
+
+  it("rejects the logged-out CLI result despite its success subtype", async () => {
+    const query: QueryFunction = async function* () {
+      yield {
+        type: "result", subtype: "success", is_error: true,
+        result: "Not logged in · Please run /login", terminal_reason: "api_error",
+        duration_ms: 76, total_cost_usd: 0,
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      };
+    };
+    await expect(new ClaudeConnector({ query }).run("test")).rejects.toThrow("Not logged in");
   });
 });
 

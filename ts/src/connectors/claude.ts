@@ -202,9 +202,11 @@ export class ClaudeConnector {
             },
           });
         }
-        if (raw.subtype !== "success") {
+        if (raw.subtype !== "success" || raw.is_error === true) {
           const errors = Array.isArray(raw.errors) ? raw.errors.filter((value): value is string => typeof value === "string") : [];
-          throw new Error(errors.join("; ") || `claude query failed: ${String(raw.subtype)}`);
+          const message = typeof raw.result === "string" && raw.result.length > 0
+            ? raw.result : errors.join("; ") || `claude query failed: ${String(raw.subtype)}`;
+          throw new Error(message);
         }
       }
       controller.signal.throwIfAborted();

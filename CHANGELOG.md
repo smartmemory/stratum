@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Claude connector rejects result messages with `is_error: true`, including logged-out CLI results with a success subtype, using the result text as the failure message.
+
 - **STRAT-CONFIG-MODELS-1 slice 1:** model defaults, judge routing, provider tiers and prices live in one shipped, validated, immutable TOML catalog. Existing adapters preserve their exports and values; `stratum models --json` exposes the installation's catalog, digest, file path and package version. Codex/Devin allowlists stay separate and Devin model/effort pairs use the dispatch resolver.
 
 - Codex and the default judge tier now use `gpt-6.1-sol/high` (was `gpt-6-sol/high`); added its published 2/10 input/output and 0.10 cached-input rates per MTok. `gpt-6-sol` remains available.
