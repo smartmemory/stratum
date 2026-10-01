@@ -77,6 +77,7 @@ Bootstrap: establish the core structure and first working milestone.
 | 7 | STRAT-DISTILL-APPLY | Graduate stratum_distill's reserved apply flag: write a staged skill-class AssetCandidate to the working tree through the memory-class apply machinery (admission critics, journal, guard-ledger commit, CAS revert, reconcile) generalized from ts/src/learn/apply.ts. Narrow v1: single asset, deterministic critics, default OFF. STRAT-ADMIT's LLM critics, batch admission and pool lock remain a follow-up. | COMPLETE |
 | — | STRAT-AGENT-DEVIN-1 | Devin CLI as a third agent, a full peer of claude and codex: stratum_agent_run (foreground + background), step/stage agent in specs, evaluator route; read-only/workspace-write/full-access mapped onto devin permission modes and --sandbox, rejected tool calls surfaced as failures | COMPLETE |
 | — | STRAT-CONFIG-MODELS-1 | Model catalog, defaults, tiers (model+effort+thinking) and prices move into one shipped data file, so a model bump is a one-file edit with no test churn | COMPLETE |
+| — | STRAT-CLAUDE-SANDBOX | Claude agent runs get an enforced sandbox: forward sandboxMode/networkAccess/writableRoots to the Claude Agent SDK sandbox option and record a sandboxAudit (today runner.ts:276 rejects networkAccess for claude and background.ts:462-475 drops sandboxMode; P0 probe 2026-10-01 reached the network) | PLANNED |
 
 ---
 

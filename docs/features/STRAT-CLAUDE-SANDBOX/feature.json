@@ -1,0 +1,9 @@
+{
+  "code": "STRAT-CLAUDE-SANDBOX",
+  "description": "Claude agent runs get an enforced sandbox: forward sandboxMode, networkAccess and writableRoots to the Claude Agent SDK sandbox option and record a sandboxAudit for Claude runs, as Codex runs do",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-10-01",
+  "updated": "2026-10-01",
+  "complexity": "M"
+}
