@@ -1,4 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
+
+> Part of the Forge workspace (`../`). Before non-trivial work, also read `../AGENTS.md`. Claude Code loads it automatically; Codex does not, because it starts AGENTS.md discovery at this repo's git root.
 
 ## What This Repo Is
 
