@@ -2,7 +2,7 @@ import { testModels } from "../helpers/models.js";
 import { spawn as nodeSpawn } from "node:child_process";
 import { getEventListeners } from "node:events";
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, utimesSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,8 +12,9 @@ import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from "n
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnectorEvent } from "../../src/connectors/base.js";
 import type { SpawnProcess } from "../../src/connectors/codex.js";
-import { DevinConnector, type DevinConnectorOptions } from "../../src/connectors/devin.js";
+import { DevinConnector, prepareDevinRun, type DevinConnectorOptions } from "../../src/connectors/devin.js";
 import { devinRunLayout } from "../../src/connectors/devin-wrapper.js";
+import { DEVIN_STALL_MS, DEVIN_MAX_RUN_MS, devinStallWatchdog, devinWireProgress, resolveDevinStallMs, resolveDevinMaxRunMs } from "../../src/connectors/devin-watchdog.js";
 import { runAgent } from "../../src/connectors/runner.js";
 
 /**
@@ -43,6 +44,8 @@ async function temporaryRoot(): Promise<string> {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -129,6 +132,244 @@ function connector(options: Partial<DevinConnectorOptions> = {}): DevinConnector
   return new DevinConnector(options);
 }
 
+describe("DevinConnector — inactivity watchdog", () => {
+  async function silentRun(extra: Partial<DevinConnectorOptions> = {}, { envStall = false } = {}) {
+    const root = await temporaryRoot();
+    const env = await homeEnv(root);
+    let child!: ChildProcessWithoutNullStreams;
+    let runDir = "";
+    let wireLogPath = "";
+    let alive = true;
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const spawn: SpawnProcess = (_command, _argv, options) => {
+      runDir = options.env!.STRATUM_DEVIN_RUN_DIR!;
+      wireLogPath = options.env!.CHISEL_ACP_WIRE_LOG!;
+      child = new EventEmitter() as ChildProcessWithoutNullStreams;
+      Object.defineProperty(child, "pid", { value: 424_242 });
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      return child;
+    };
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid !== -424_242) return realKill(pid, signal);
+      if (!alive) throw Object.assign(new Error("fixture group gone"), { code: "ESRCH" });
+      if (signal !== 0) { alive = false; queueMicrotask(() => child.emit("close", null, signal)); }
+      return true;
+    });
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    const result = connector({ env, spawn, signal: controller.signal, ...(envStall ? {} : { stallMs: 100 }),
+      cancellationGraceMs: 0, onEvent: event => { if (event.kind === "agent_started") ready(); }, ...extra }).run("p");
+    // Attach a rejection handler before driving the clock.
+    void result.catch(() => {});
+    await started;
+    async function complete() {
+      await writeFile(join(runDir, "agent", "trajectory.json"), readFileSync(fixture("answer.atif.json"), "utf8"));
+      await writeFile(join(runDir, "exit.rc"), "0\n");
+      alive = false; child.emit("close", 0, null);
+      return result;
+    }
+    return { result, child, kill, complete, controller, runDir, wireLogPath };
+  }
+
+  it("fails a silent process and kills the process group even without ownProcessGroup", async () => {
+    const run = await silentRun();
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(run.result).rejects.toThrow("devin stalled: no activity for 0.1s (last event: spawn)");
+    await expect(run.result).rejects.toThrow("silent signals: stdout, stderr, ACP wire updates");
+    expect(run.kill).toHaveBeenCalledWith(-424_242, "SIGTERM");
+    expect(existsSync(run.runDir)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["stdout", "stderr"] as const)("re-arms on every %s chunk, including partial lines", async stream => {
+    const run = await silentRun();
+    for (let index = 0; index < 5; index++) {
+      await vi.advanceTimersByTimeAsync(75);
+      run.child[stream].emit("data", "progress");
+    }
+    await expect(run.complete()).resolves.toMatchObject({ text: expect.any(String) });
+    expect(run.kill).not.toHaveBeenCalledWith(-424_242, "SIGTERM");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports the last progress type on expiry", async () => {
+    const run = await silentRun();
+    run.child.stderr.emit("data", "saved");
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(run.result).rejects.toThrow("last event: stderr (5 bytes)");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["agent_thought_chunk", "agent_message_chunk", "tool_call", "tool_call_update"])(
+    "silent streams with ACP %s progress stay alive and clean up", async kind => {
+    const run = await silentRun({ stallMs: 6000 });
+    for (let index = 0; index < 5; index++) {
+      await vi.advanceTimersByTimeAsync(4000);
+      appendFileSync(run.wireLogPath, JSON.stringify({ sessionId: "test", update: { sessionUpdate: kind, content: { text: "private" } } }) + "\n");
+    }
+    await expect(run.complete()).resolves.toMatchObject({ text: expect.any(String) });
+    expect(run.kill).not.toHaveBeenCalledWith(-424_242, "SIGTERM");
+    expect(existsSync(run.wireLogPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("wire progress at expiry re-arms, then stopped thinking stalls with named signals", async () => {
+    const run = await silentRun();
+    await vi.advanceTimersByTimeAsync(99);
+    appendFileSync(run.wireLogPath, JSON.stringify({ sessionId: "test", update: { sessionUpdate: "agent_thought_chunk", content: { text: "private" } } }) + "\n");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run.kill).not.toHaveBeenCalledWith(-424_242, "SIGTERM");
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(run.result).rejects.toThrow("last event: ACP agent_thought_chunk");
+    await expect(run.result).rejects.toThrow("silent signals: stdout, stderr, ACP wire updates");
+    await expect(run.result).rejects.not.toThrow("private");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["MCP", "mtime", "malformed", "usage"])("%s wire activity is silence and cannot replay an old thought", async kind => {
+    const run = await silentRun();
+    appendFileSync(run.wireLogPath, '{"sessionId":"test","update":{"sessionUpdate":"agent_thought_chunk"}}\n');
+    await vi.advanceTimersByTimeAsync(25);
+    for (let index = 0; index < 4; index++) {
+      if (kind === "mtime") utimesSync(run.wireLogPath, new Date(), new Date(Date.now() + 1000));
+      else appendFileSync(run.wireLogPath, kind === "MCP" ? '{"channel":"mcp","method":"ping"}\n'
+        : kind === "usage" ? '{"sessionId":"test","update":{"sessionUpdate":"usage_update"}}\n' : 'thought but not JSON\n');
+      await vi.advanceTimersByTimeAsync(25);
+    }
+    await expect(run.result).rejects.toThrow("devin stalled:");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a wire symlink loop warns once, keeps the foreground server alive and still stalls", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const run = await silentRun();
+    unlinkSync(run.wireLogPath);
+    symlinkSync("wire.log", run.wireLogPath);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(run.result).rejects.toThrow("devin stalled:");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("ELOOP"));
+    expect(run.kill).toHaveBeenCalledWith(-424_242, "SIGTERM");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a hard ceiling expires despite continuous stdout and thought progress", async () => {
+    const run = await silentRun({ stallMs: 100, maxRunMs: 250 });
+    for (let index = 0; index < 5; index++) {
+      run.child.stdout.emit("data", "active");
+      appendFileSync(run.wireLogPath, '{"sessionId":"test","update":{"sessionUpdate":"agent_thought_chunk"}}\n');
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(run.result).rejects.toThrow("devin exceeded maximum run time of 0.25s");
+    expect(run.kill).toHaveBeenCalledWith(-424_242, "SIGTERM");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("the hard ceiling remains active when the inactivity timer is off", async () => {
+    const run = await silentRun({ stallMs: 0, maxRunMs: 100 });
+    await vi.advanceTimersByTimeAsync(101);
+    await expect(run.result).rejects.toThrow("STRATUM_DEVIN_MAX_RUN_MS");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("both timers can be disabled independently", async () => {
+    const run = await silentRun({ stallMs: 0, maxRunMs: 0 });
+    await vi.advanceTimersByTimeAsync(DEVIN_MAX_RUN_MS * 2);
+    await expect(run.complete()).resolves.toMatchObject({ text: expect.any(String) });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a watchdog without a wire reader names only stdout and stderr", async () => {
+    vi.useFakeTimers();
+    const expire = vi.fn();
+    const watchdog = devinStallWatchdog(100, expire, undefined, 0);
+    try {
+      watchdog.activity("spawn");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(expire.mock.calls[0]![0].message).toContain("silent signals: stdout, stderr");
+      expect(expire.mock.calls[0]![0].message).not.toContain("ACP");
+    } finally { watchdog.clear(); }
+  });
+
+  it("tailing handles split lines and UTF-8, and never rereads consumed bytes", async () => {
+    const root = await temporaryRoot();
+    const path = join(root, "wire.log");
+    await writeFile(path, "");
+    const progress = devinWireProgress(path);
+    const line = Buffer.from('{"sessionId":"test","update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"秘密"}}}\n');
+    const split = line.indexOf(Buffer.from("秘")) + 1;
+    appendFileSync(path, line.subarray(0, split));
+    expect(progress()).toBeUndefined();
+    appendFileSync(path, line.subarray(split));
+    expect(progress()).toBe("ACP agent_thought_chunk");
+    expect(progress()).toBeUndefined();
+    appendFileSync(path, '{}\n{"method":"session/update","params":{"sessionId":"test","update":{"sessionUpdate":"tool_call"}}}\n');
+    expect(progress()).toBe("ACP tool_call");
+    expect(progress()).toBeUndefined();
+    await writeFile(path, '{"sessionId":"test","update":{"sessionUpdate":"tool_call_update"}}\n');
+    expect(progress()).toBe("ACP tool_call_update");
+  });
+
+  it("validates the max-run env using a four-hour default", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(resolveDevinMaxRunMs({})).toBe(14_400_000);
+    expect(resolveDevinMaxRunMs({ STRATUM_DEVIN_MAX_RUN_MS: "0" })).toBe(0);
+    expect(resolveDevinMaxRunMs({ STRATUM_DEVIN_MAX_RUN_MS: "250" })).toBe(250);
+    expect(resolveDevinMaxRunMs({ STRATUM_DEVIN_MAX_RUN_MS: "bad" })).toBe(DEVIN_MAX_RUN_MS);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Invalid STRATUM_DEVIN_MAX_RUN_MS"));
+  });
+
+  it("STRATUM_DEVIN_STALL_MS=0 disables the watchdog", async () => {
+    vi.stubEnv("STRATUM_DEVIN_STALL_MS", "0");
+    const root = await temporaryRoot();
+    const run = await silentRun({ env: await homeEnv(root, { STRATUM_DEVIN_STALL_MS: "0" }) }, { envStall: true });
+    await vi.advanceTimersByTimeAsync(DEVIN_STALL_MS * 2);
+    await expect(run.complete()).resolves.toMatchObject({ text: expect.any(String) });
+    expect(run.kill).not.toHaveBeenCalledWith(-424_242, "SIGTERM");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears the timer on cancellation", async () => {
+    const run = await silentRun();
+    run.controller.abort(new Error("fixture cancelled"));
+    await expect(run.result).rejects.toThrow("fixture cancelled");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears the watchdog and close deadline on process error", async () => {
+    const run = await silentRun();
+    run.child.emit("error", new Error("fixture process error"));
+    await vi.advanceTimersByTimeAsync(250);
+    await expect(run.result).rejects.toThrow("fixture process error");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a partial exported answer cannot turn a stall into success", async () => {
+    const run = await silentRun();
+    await writeFile(join(run.runDir, "agent", "trajectory.json"), readFileSync(fixture("answer.atif.json"), "utf8"));
+    await writeFile(join(run.runDir, "exit.rc"), "0\n");
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(run.result).rejects.toThrow("devin stalled:");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["bad", "-1", "1.5", "10ms", "", "9007199254740992"])("invalid env %j warns and uses the default", value => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(resolveDevinStallMs({ STRATUM_DEVIN_STALL_MS: value })).toBe(900_000);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Invalid STRATUM_DEVIN_STALL_MS"));
+  });
+
+  it("uses the authoritative env and lets the injectable option override it", () => {
+    vi.stubEnv("STRATUM_DEVIN_STALL_MS", "1");
+    expect(resolveDevinStallMs({})).toBe(900_000);
+    expect(resolveDevinStallMs({ STRATUM_DEVIN_STALL_MS: "1234" })).toBe(1234);
+    expect(resolveDevinStallMs({ STRATUM_DEVIN_STALL_MS: "2147483648" })).toBe(2147483648);
+    expect(resolveDevinStallMs({ STRATUM_DEVIN_STALL_MS: "1234" }, 0)).toBe(0);
+  });
+});
+
 describe("DevinConnector — run layout and argv (D2)", () => {
   it("dispatches the wrapper with the seatbelt argv, per-run env, and the run dir deleted after", async () => {
     const root = await temporaryRoot();
@@ -165,6 +406,9 @@ describe("DevinConnector — run layout and argv (D2)", () => {
           expect(childEnv[key], key).toContain(join(runDir, "agent", "home"));
         }
         expect(childEnv.TMPDIR).toBe(`${layout.tmpDir}/`);
+        expect(childEnv.CHISEL_ACP_WIRE_LOG).toBe(layout.wireLogPath);
+        expect((await stat(layout.wireLogPath)).mode & 0o777).toBe(0o600);
+        expect(await readFile(layout.profilePath, "utf8")).toContain(`(subpath "${realpathSync(layout.agentDir)}")`);
         expect(childEnv.STRATUM_DEVIN_CREDS_SOURCE).toBe(join(env.HOME!, ".local", "share", "devin", "credentials.toml"));
         expect(childEnv.STRATUM_DEVIN_CREDS_COPY).toBe(layout.credentialsCopyPath);
         expect((await stat(layout.promptPath)).mode & 0o777).toBe(0o600);
@@ -178,6 +422,46 @@ describe("DevinConnector — run layout and argv (D2)", () => {
     expect(seen).toBeDefined();
     // The foreground run dir is removed once the result is read (D2).
     expect(existsSync(seen!.runDir)).toBe(false);
+  });
+
+  it.each(["caller-wire.log", "", "protected"])("overrides inherited wire-log setting %j without extra read-only grants", async value => {
+    const root = await temporaryRoot();
+    const env = await homeEnv(root);
+    env.CHISEL_ACP_WIRE_LOG = value === "protected" ? join(env.HOME!, ".stratum", "forged-status") : value;
+    const spawn = fakeDevinSpawn({
+      exportText: readFileSync(fixture("answer.atif.json"), "utf8"),
+      inspect: async ({ env: childEnv }) => {
+        const layout = devinRunLayout(childEnv.STRATUM_DEVIN_RUN_DIR!);
+        expect(childEnv.CHISEL_ACP_WIRE_LOG).toBe(layout.wireLogPath);
+        expect(statSync(layout.wireLogPath).mode & 0o777).toBe(0o600);
+        const profile = await readFile(layout.profilePath, "utf8");
+        expect(profile).toContain(`(subpath "${realpathSync(layout.agentDir)}")`);
+        expect(profile).not.toContain("caller-wire.log");
+        expect(profile).not.toContain("forged-status");
+        expect(profile).not.toContain(`(subpath "${realpathSync(root)}")`);
+      },
+    });
+    await expect(connector({ cwd: root, env, spawn }).run("p")).resolves.toMatchObject({ text: "hello" });
+  });
+
+  it("two concurrent preparations override the ambient wire path with private files", async () => {
+    const root = await temporaryRoot();
+    const env = await homeEnv(root);
+    vi.stubEnv("HOME", env.HOME!);
+    vi.stubEnv("STRATUM_CONFIG_FILE", env.STRATUM_CONFIG_FILE!);
+    const ambient = join(root, "ambient-wire.log");
+    vi.stubEnv("CHISEL_ACP_WIRE_LOG", ambient);
+    const options = { root: join(root, "runs"), prompt: "p", cwd: root,
+      model: testModels.devinDefault, sandboxMode: "read-only" as const, writableRoots: [] };
+    const runs = await Promise.all([prepareDevinRun(options), prepareDevinRun(options)]);
+    expect(runs[0]!.env.CHISEL_ACP_WIRE_LOG).not.toBe(runs[1]!.env.CHISEL_ACP_WIRE_LOG);
+    for (const run of runs) {
+      expect(run.env.CHISEL_ACP_WIRE_LOG).toBe(run.layout.wireLogPath);
+      expect(statSync(run.layout.wireLogPath).mode & 0o777).toBe(0o600);
+      expect(statSync(run.layout.runDir).mode & 0o777).toBe(0o700);
+      expect(await readFile(run.layout.profilePath, "utf8")).not.toContain(ambient);
+    }
+    expect(existsSync(ambient)).toBe(false);
   });
 
   it("writes the sandbox preamble into prompt.md for read-only, not for full access", async () => {

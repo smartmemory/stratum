@@ -15,7 +15,7 @@ import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js"
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
 import type { ClaudeConnectorOptions } from "./claude.js";
 import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, resolveCodexModel, withSandboxPreamble } from "./codex.js";
-import { procStartTime, processGroupId, processIdentityMatches } from "./proc_identity.js";
+import { procStartTime, processGroupId, processIdentity, processIdentityMatches } from "./proc_identity.js";
 import { normalizePeerLabel, peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
 import { createWorkerPeerLifecycle } from "./peer-worker-lifecycle.js";
 import { launchCodexAppServerDriver } from "./codex-appserver-launch.js";
@@ -113,6 +113,8 @@ export interface StartBackgroundRunOptions {
   /** Devin identity/meta persistence seams for failure-path tests. */
   devinProcStartTime?: typeof procStartTime;
   devinWriteMeta?: typeof atomicWriteJson;
+  /** Devin inactivity threshold seam. 0 disables the watchdog. */
+  devinStallMs?: number;
   agent: AgentType;
   prompt: string;
   cwd: string;
@@ -356,6 +358,9 @@ async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Prom
     writableRoots: options.writableRoots ?? [], approvalPolicy: "never",
   }, options);
   const graceMs = cancellationGraceMs(options.env ?? process.env);
+  const { resolveDevinStallMs, resolveDevinMaxRunMs } = await import("./devin-watchdog.js");
+  const stallMs = resolveDevinStallMs(options.env ?? process.env, options.devinStallMs);
+  const maxRunMs = resolveDevinMaxRunMs(options.env ?? process.env);
   const { runId, layout, argv, env, framedPromptChars } = await prepareDevinRun({
     root: options.registryRoot ?? agentRunsRoot(), prompt: options.prompt, cwd: options.cwd,
     model, sandboxMode, writableRoots: options.writableRoots ?? [],
@@ -399,6 +404,17 @@ async function startDevinBackgroundRun(options: StartBackgroundRunOptions): Prom
       sandboxAudit, streamPath: layout.streamPath, stderrPath: layout.stderrPath,
     };
     await (options.devinWriteMeta ?? atomicWriteJson)(layout.metaPath, meta);
+    // A monitor is needed even with both timers off, to discard ACP on completion.
+    const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
+    const watchdogErr = await open(join(layout.runDir, "watchdog.err"), "w", 0o600);
+    try {
+      const watchdog = spawn(process.execPath, [fileURLToPath(new URL(`./devin-watchdog.${extension}`, import.meta.url)),
+        layout.runDir, runId, options.registryRoot ?? agentRunsRoot(), String(stallMs), String(maxRunMs)],
+      { cwd: options.cwd, env, detached: true, stdio: ["ignore", "ignore", watchdogErr.fd] });
+      await new Promise<void>((resolve, reject) => { watchdog.once("spawn", resolve); watchdog.once("error", reject); });
+      watchdog.unref();
+    } finally { await watchdogErr.close(); }
+
   } catch (error) {
     // A live wrapper may have copied credentials; teardown and leave sweeping to
     // the existing owner. Before spawn succeeds there is no copy to preserve.
@@ -609,8 +625,17 @@ export async function pollBackgroundRun(runId: string, options: RegistryOptions 
       rc = await readDevinExitRc(loaded.exitRcPath!);
     }
     const stderrTail = await tailText(stderrPath);
-    if (rc === undefined) return { status: "error", runId, ...peerFields, ...auditFields,
-      reason: "child_died_without_sentinel", textTail, stderrTail, eventsSeen: 0, streamPath };
+    // Only confirmed completion/death permits cleanup. An unavailable identity
+    // probe must leave a live monitor's progress signal in place.
+    if (rc !== undefined || await processIdentity(loaded.meta.childPid, loaded.meta.procStartTime ?? "") === "dead") {
+      await rm(join(dirname(loaded.exportPath!), "wire.log"), { force: true }).catch(() => {});
+    }
+    if (rc === undefined) {
+      let reason = "child_died_without_sentinel";
+      try { reason = await readFile(join(dirname(streamPath), "stall.txt"), "utf8"); } catch { /* no watchdog verdict */ }
+      return { status: "error", runId, ...peerFields, ...auditFields,
+        reason, textTail, stderrTail, eventsSeen: 0, streamPath };
+    }
     const durationMs = Math.max(0, (await stat(loaded.exitRcPath!)).mtimeMs - Date.parse(loaded.meta.createdAt));
     const telemetry = { durationMs, ...devinModelIdentity(loaded.meta.model) };
     try {

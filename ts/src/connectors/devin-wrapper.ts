@@ -30,6 +30,7 @@ import { processIdentity } from "./proc_identity.js";
  *                                          wrapper that will remove it lives)
  *       tmp/          TMPDIR
  *       trajectory.json  ATIF export (the result channel)
+ *       wire.log      ACP thinking signal (private, retained with run logs)
  */
 
 export interface DevinRunLayout {
@@ -39,6 +40,7 @@ export interface DevinRunLayout {
   homeDir: string;
   tmpDir: string;
   exportPath: string;
+  wireLogPath: string;
   promptPath: string;
   profilePath: string;
   wrapperPath: string;
@@ -61,6 +63,7 @@ export function devinRunLayout(runDir: string): DevinRunLayout {
     homeDir,
     tmpDir: join(agentDir, "tmp"),
     exportPath: join(agentDir, "trajectory.json"),
+    wireLogPath: join(agentDir, "wire.log"),
     promptPath: join(runDir, "prompt.md"),
     profilePath: join(runDir, "devin.sb"),
     wrapperPath: join(runDir, "wrapper.sh"),

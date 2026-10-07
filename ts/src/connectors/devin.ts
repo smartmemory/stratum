@@ -2,6 +2,7 @@ import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from "node:ch
 import { createWriteStream, existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { atomicWriteJson, newRunDir } from "./background.js";
 import type { CodexSandboxMode, ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, withSandboxPreamble } from "./base.js";
@@ -25,6 +26,7 @@ import {
 import { assertDevinGrants, assertDevinPlatform, devinSeatbeltProfile } from "./devin-sandbox.js";
 import { procStartTime } from "./proc_identity.js";
 import { devinUsdFromTokens } from "../judge/pricing.js";
+import { devinStallWatchdog, resolveDevinStallMs, resolveDevinMaxRunMs } from "./devin-watchdog.js";
 
 export interface DevinConnectorOptions {
   model?: string;
@@ -36,6 +38,10 @@ export interface DevinConnectorOptions {
    *  reported to the foreground registry via onSpawn (S02-1 parity). */
   ownProcessGroup?: boolean;
   cancellationGraceMs?: number;
+  /** Inactivity threshold in ms. 0 disables the watchdog. */
+  stallMs?: number;
+  /** Hard wall-clock ceiling in ms. 0 disables the ceiling. */
+  maxRunMs?: number;
   /** Group-leader pid of the cancellable wrapper, reported as it spawns.
    *  Invoked only when ownProcessGroup is true. Called synchronously. */
   onSpawn?: (pid: number) => void;
@@ -100,6 +106,8 @@ export async function prepareDevinRun(options: PrepareDevinRunOptions) {
     // A custom background registry must remain supervisor-only too. Otherwise
     // granting a cwd that contains that registry would make exit.rc forgeable.
     assertDevinGrants(writable, options.root, layout.agentDir);
+    // Always isolate ACP content, even when the MCP server inherits a wire path.
+    await writeFile(layout.wireLogPath, "", { encoding: "utf8", mode: 0o600 });
     await writeFile(layout.promptPath, framed, { encoding: "utf8", mode: 0o600 });
     await writeFile(layout.streamPath, "", { encoding: "utf8", mode: 0o600 });
     if (sandboxed) {
@@ -120,6 +128,7 @@ export async function prepareDevinRun(options: PrepareDevinRunOptions) {
     const argv = sandboxed ? ["sandbox-exec", "-f", layout.profilePath, ...devinArgv] : devinArgv;
     const runEnv: NodeJS.ProcessEnv = {
       ...env,
+      CHISEL_ACP_WIRE_LOG: layout.wireLogPath,
       ...devinHomeEnv(layout),
       ...devinWrapperEnv(layout, paths.credentialsSource),
     };
@@ -135,6 +144,12 @@ export async function prepareDevinRun(options: PrepareDevinRunOptions) {
 export async function devinTerminalVerdict({ rc, exportPath, stderrTail, model }: {
   rc: number; exportPath: string; stderrTail: string; model: string;
 }) {
+  try {
+    const stall = await readFile(join(dirname(dirname(exportPath)), "stall.txt"), "utf8");
+    throw new Error(stall);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const trajectory = await readTrajectory(exportPath);
   // D4: a rejected tool call is a failure, never a success — exit 0 is not
   // trusted when either witness says a call was rejected (fact 2/3).
@@ -173,6 +188,8 @@ export class DevinConnector {
   private readonly env: NodeJS.ProcessEnv;
   private readonly ownProcessGroup: boolean;
   private readonly graceMs: number;
+  private readonly stallMs: number;
+  private readonly maxRunMs: number;
   private readonly spawn: SpawnProcess;
   private readonly identity: DevinConnectorOptions["identity"];
   private readonly platform: string;
@@ -207,6 +224,8 @@ export class DevinConnector {
       : undefined);
     this.ownProcessGroup = options.ownProcessGroup === true;
     this.graceMs = options.cancellationGraceMs ?? cancellationGraceMs(this.env);
+    this.stallMs = resolveDevinStallMs(this.env, options.stallMs);
+    this.maxRunMs = resolveDevinMaxRunMs(this.env, options.maxRunMs);
     this.spawn = options.spawn ?? (nodeSpawn as SpawnProcess);
     this.identity = options.identity;
     this.captureStartTime = options.procStartTime ?? procStartTime;
@@ -256,6 +275,8 @@ export class DevinConnector {
     // instantly (and a synchronous test double) must never lose its terminal
     // event. The awaits below just consume closePromise.
     let spawnError: Error | undefined;
+    let stallError: Error | undefined;
+    let watchdog: ReturnType<typeof devinStallWatchdog> | undefined;
     let closeSignal: NodeJS.Signals | null = null;
     let settled = false;
     let closeDeadline: NodeJS.Timeout | undefined;
@@ -264,6 +285,7 @@ export class DevinConnector {
     const settleClose = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
+      watchdog?.clear();
       if (closeDeadline) clearTimeout(closeDeadline);
       closeSignal = signal;
       resolveClose(code);
@@ -271,14 +293,21 @@ export class DevinConnector {
     child.once("close", (code, signal) => settleClose(code, signal));
     child.once("error", (error) => {
       spawnError = error;
+      watchdog?.clear();
       if (!settled) closeDeadline = setTimeout(() => settleClose(1, null), SPAWN_ERROR_CLOSE_MS);
     });
     // Same early-listen rule for the teardown helper: its internal close watch
     // must observe even a wrapper that exits before the meta write returns.
     const termination = processTermination(child, true, this.graceMs);
-
-    const abort = (): void => { void termination.terminate(); };
+    const abort = (): void => { watchdog?.clear(); void termination.terminate(); };
     try {
+      watchdog = devinStallWatchdog(this.stallMs, error => {
+        stallError = error;
+        watchdog?.clear();
+        void termination.terminate();
+      }, layout.wireLogPath, this.maxRunMs, startedAt);
+      watchdog.activity("spawn");
+
       const stdoutLimit = resolveStdoutLimit();
       let pending = "";
       let pendingBytes = 0;
@@ -287,6 +316,7 @@ export class DevinConnector {
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
       const declareOverrun = (): void => {
+        watchdog?.clear();
         overrun = true;
         pending = "";
         pendingBytes = 0;
@@ -295,6 +325,7 @@ export class DevinConnector {
         void termination.terminate("SIGKILL");
       };
       child.stdout.on("data", (chunk: string) => {
+        if (!settled) watchdog?.activity(`stdout (${Buffer.byteLength(chunk)} bytes)`);
         if (overrun) return;
         pending += chunk;
         pendingBytes += Buffer.byteLength(chunk);
@@ -311,6 +342,7 @@ export class DevinConnector {
         if (pendingBytes > stdoutLimit) declareOverrun();
       });
       child.stderr.on("data", (chunk: string) => {
+        if (!settled) watchdog?.activity(`stderr (${Buffer.byteLength(chunk)} bytes)`);
         stderrTail = (stderrTail + chunk).slice(-stdoutLimit);
         stderrLog.write(chunk);
       });
@@ -356,27 +388,32 @@ export class DevinConnector {
       stderrLog.end();
       await stdoutFlushed;
       await stderrFlushed;
+      // A bounded error-close fallback is not a real close event. Enter the
+      // error teardown before finishGroup waits on the actual child close.
+      if (spawnError) throw spawnError;
       // A successful wrapper can leave ACP/Node descendants writing exit-time
       // caches. Reap its group before reading results or removing the run dir.
       await termination.finishGroup();
       this.signal?.throwIfAborted();
+      if (stallError) throw stallError;
       if (overrun) {
         throw new Error(
           `devin stdout exceeded STRATUM_CODEX_STREAM_LIMIT_BYTES (current limit ${stdoutLimit} bytes). Raise the env knob and retry.`,
         );
       }
-      if (spawnError) throw spawnError;
-
       // exit.rc is the status channel; the close event is only the fallback for
       // a wrapper that died before writing it (an externally SIGKILLed wrapper
       // — the agent cannot signal it, D3).
       const rc = await this.exitRc(layout, closeCode, closeSignal);
       return await this.buildResult(layout, rc, stderrTail, Date.now() - startedAt);
     } catch (error) {
+      watchdog?.clear();
       await termination.terminate();
       await termination.finish();
       throw error;
     } finally {
+      watchdog?.clear();
+      if (closeDeadline) clearTimeout(closeDeadline);
       this.signal?.removeEventListener("abort", abort);
       stdoutLog.destroy();
       stderrLog.destroy();

@@ -1,7 +1,7 @@
 import { testModels } from "../helpers/models.js";
 import * as fsPromises from "node:fs/promises";
 import * as childProcess from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,11 +26,13 @@ vi.mock("node:fs/promises", async importOriginal => ({
 
 const roots: string[] = [];
 const sidecars: childProcess.ChildProcess[] = [];
+const watchdogs: childProcess.ChildProcess[] = [];
 beforeEach(() => {
   const spawn = childProcess.spawn;
   vi.spyOn(childProcess, "spawn").mockImplementation((...args: Parameters<typeof spawn>) => {
     const child = spawn(...args);
     if (Array.isArray(args[1]) && args[1].some(arg => /[/\\]peer-sidecar\.(ts|js)$/.test(arg))) sidecars.push(child);
+    if (Array.isArray(args[1]) && args[1].some(arg => /[/\\]devin-watchdog\.(ts|js)$/.test(arg))) watchdogs.push(child);
     return child;
   });
 });
@@ -68,9 +70,19 @@ afterEach(async () => {
 async function cleanupFixtures(removeRoot: typeof rmSync = rmSync) {
   for (const run of runs.splice(0)) {
     await cancelBackgroundRun(run.runId, run);
-    await until(() => groupGone(run.pid), Boolean);
+    try { await until(() => groupGone(run.pid), Boolean); }
+    catch (error) {
+      if (await identity.processIdentity(run.pid, json(join(run.registryRoot, run.runId, "meta.json")).procStartTime) === "alive") {
+        process.kill(-run.pid, "SIGKILL");
+        await until(() => groupGone(run.pid), Boolean);
+      } else throw error;
+    }
   }
   await stopSidecars();
+  for (const child of watchdogs.splice(0)) {
+    try { await until(() => child.exitCode !== null || child.signalCode !== null, Boolean, 7000); }
+    finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+  }
   for (const root of roots.splice(0)) removeRoot(root, { recursive: true, force: true });
 }
 
@@ -114,6 +126,249 @@ ${body}`);
 }
 
 describe("devin background — real shell and isolated stub binaries", () => {
+  it("a silent background run fails with a stall error and reaps its group", async () => {
+    const f = fixture(); f.env.STRATUM_DEVIN_STALL_MS = "500";
+    const run = await f.start();
+    // Even an existing valid answer must not conceal a stalled process.
+    writeFileSync(run.layout.exportPath, readFileSync(f.env.FIXTURE!));
+    const result = await until(run.poll, value => value.status !== "running");
+    expect(result).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled: no activity for 0.5s") });
+    expect(result.status === "error" && result.reason).toMatch(/last event: (stdout|stderr)/);
+    expect(result.status === "error" && result.reason).toContain("silent signals: stdout, stderr, ACP wire updates");
+    await until(() => groupGone(run.pid!), Boolean);
+    expect(existsSync(run.layout.credentialsCopyPath)).toBe(false);
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+  });
+
+  const quietPreamble = 'echo narration\necho \'{"__t2f5_done__":0}\'\necho diagnostic >&2\nuntil [ -e "$RELEASE" ]; do sleep 0.05; done';
+
+  it("silent stdout/stderr with thought chunks complete beyond the stall limit and delete wire content", async () => {
+    const f = fixture();
+    const script = join(f.root, "bin", "devin");
+    writeFileSync(script, readFileSync(script, "utf8").replace(quietPreamble,
+      `i=0; while [ "$i" -lt 10 ]; do printf '%s\\n' '{"sessionId":"test","update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"private"}}}' >> "$CHISEL_ACP_WIRE_LOG"; i=$((i + 1)); sleep 0.15; done`));
+    const run = await f.start({ devinStallMs: 500 });
+    expect(readFileSync(f.env.CAPTURE_ENV!, "utf8")).toContain(`CHISEL_ACP_WIRE_LOG=${run.layout.wireLogPath}\n`);
+    expect(statSync(run.layout.wireLogPath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(run.layout.profilePath, "utf8")).toContain(`(subpath "${realpathSync(run.layout.agentDir)}")`);
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "complete" });
+    expect(statSync(run.layout.stdoutPath).size).toBe(0);
+    expect(statSync(run.layout.stderrPath).size).toBe(0);
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+    expect(existsSync(run.layout.wireLogPath)).toBe(false);
+    expect(readFileSync(join(run.layout.runDir, "watchdog.err"), "utf8")).not.toContain("private");
+  });
+
+  it.each(["MCP", "mtime"])("background %s-only wire traffic still stalls", async kind => {
+    const f = fixture();
+    const script = join(f.root, "bin", "devin");
+    writeFileSync(script, readFileSync(script, "utf8").replace(quietPreamble,
+      `while :; do ${kind === "MCP" ? `printf '%s\\n' '{"channel":"mcp","method":"ping"}' >> "$CHISEL_ACP_WIRE_LOG"` : 'touch "$CHISEL_ACP_WIRE_LOG"'}; sleep 0.05; done`));
+    const run = await f.start({ devinStallMs: 500 });
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled:") });
+    await until(() => groupGone(run.pid!), Boolean);
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+    expect(existsSync(run.layout.wireLogPath)).toBe(false);
+  });
+
+  it("a wire symlink loop warns once to watchdog.err and still stalls", async () => {
+    const f = fixture();
+    const run = await f.start({ devinStallMs: 500 });
+    unlinkSync(run.layout.wireLogPath);
+    symlinkSync("wire.log", run.layout.wireLogPath);
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled:") });
+    await until(() => groupGone(run.pid!), Boolean);
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+    const diagnostic = readFileSync(join(run.layout.runDir, "watchdog.err"), "utf8");
+    expect(diagnostic.match(/ELOOP/g)).toHaveLength(1);
+    expect(statSync(join(run.layout.runDir, "watchdog.err")).mode & 0o777).toBe(0o600);
+    expect(existsSync(run.layout.wireLogPath)).toBe(false);
+  });
+
+  it("two background runs override an inherited wire path and cannot mask each other's stalls", async () => {
+    const f = fixture();
+    const ambient = join(f.root, "ambient-wire.log");
+    vi.stubEnv("CHISEL_ACP_WIRE_LOG", ambient);
+    f.env.CHISEL_ACP_WIRE_LOG = process.env.CHISEL_ACP_WIRE_LOG;
+    const [first, second] = await Promise.all([f.start({ devinStallMs: 500 }), f.start({ devinStallMs: 500 })]);
+    expect(first.layout.wireLogPath).not.toBe(second.layout.wireLogPath);
+    const launches = vi.mocked(childProcess.spawn).mock.calls.filter(call => String(call[0]).endsWith("wrapper.sh"));
+    expect(launches.map(call => call[2]!.env!.CHISEL_ACP_WIRE_LOG).sort()).toEqual([first.layout.wireLogPath, second.layout.wireLogPath].sort());
+    for (const run of [first, second]) {
+      expect(statSync(run.layout.wireLogPath).mode & 0o777).toBe(0o600);
+      expect(readFileSync(run.layout.profilePath, "utf8")).not.toContain(ambient);
+      expect(readFileSync(run.layout.profilePath, "utf8")).not.toContain(`(subpath "${realpathSync(f.root)}")`);
+    }
+    const timer = setInterval(() => {
+      if (existsSync(first.layout.wireLogPath)) writeFileSync(first.layout.wireLogPath,
+        '{"sessionId":"test","update":{"sessionUpdate":"agent_thought_chunk"}}\n', { flag: "a" });
+    }, 75);
+    try {
+      expect(await until(second.poll, value => value.status !== "running")).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled:") });
+      expect(await first.poll()).toMatchObject({ status: "running" });
+      f.release();
+      expect(await until(first.poll, value => value.status !== "running")).toMatchObject({ status: "complete" });
+    } finally { clearInterval(timer); }
+    expect(existsSync(ambient)).toBe(false);
+  });
+
+  it("a stalled stub that ignores TERM is killed after grace and poll retains the error without exit.rc", async () => {
+    const f = fixture('trap \'\' TERM; : > "$READY"; while :; do sleep 0.05; done');
+    f.env.READY = join(f.root, "ready");
+    f.env.STRATUM_CANCEL_GRACE_MS = "100";
+    f.release();
+    const run = await f.start({ devinStallMs: 500 });
+    await until(() => existsSync(f.env.READY!), Boolean);
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled:") });
+    await until(() => groupGone(run.pid!), Boolean);
+    expect(existsSync(run.layout.exitRcPath)).toBe(false);
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+    expect(readFileSync(join(run.layout.runDir, "watchdog.err"), "utf8")).toBe("");
+    expect(existsSync(run.layout.wireLogPath)).toBe(false);
+  });
+
+  it("kills a TERM-ignoring member after its group leader exits and the monitor finishes", async () => {
+    const f = fixture(`trap 'exit 0' TERM
+sh -c 'trap "" TERM; : > "$READY"; sleep 1000' &
+while :; do sleep 0.05; done`);
+    f.env.READY = join(f.root, "ready");
+    f.env.STRATUM_CANCEL_GRACE_MS = "1000";
+    f.release();
+    const run = await f.start({ devinStallMs: 500 });
+    try {
+      await until(() => existsSync(f.env.READY!), Boolean);
+      await until(() => existsSync(join(run.layout.runDir, "stall.txt")), Boolean);
+      await until(() => identity.processIdentity(run.pid!, json(run.layout.metaPath).procStartTime), value => value === "dead");
+      expect(groupGone(run.pid!)).toBe(false);
+      await until(() => groupGone(run.pid!), Boolean);
+      await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+      expect(readFileSync(join(run.layout.runDir, "watchdog.err"), "utf8")).toBe("");
+      expect(existsSync(run.layout.wireLogPath)).toBe(false);
+      expect(await run.poll()).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled:") });
+    } finally {
+      // The regression itself must clean up the orphan, including on old code.
+      if (!groupGone(run.pid!)) process.kill(-run.pid!, "SIGKILL");
+      await until(() => groupGone(run.pid!), Boolean);
+    }
+  }, 10000);
+
+  it("background hard ceiling fires despite continuous output with inactivity disabled", async () => {
+    const f = fixture();
+    f.env.STRATUM_DEVIN_MAX_RUN_MS = "700";
+    f.env.STRATUM_DEVIN_STALL_MS = "0";
+    const script = join(f.root, "bin", "devin");
+    writeFileSync(script, readFileSync(script, "utf8").replace(quietPreamble, 'while :; do printf progress; sleep 0.05; done'));
+    const run = await f.start();
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "error", reason: expect.stringContaining("devin exceeded maximum run time of 0.7s") });
+    await until(() => groupGone(run.pid!), Boolean);
+  });
+
+  it("bounds cancellation and logs to watchdog.err if the group survives escalation", async () => {
+    const f = fixture('trap \'\' TERM; : > "$READY"; while :; do sleep 0.05; done');
+    f.env.READY = join(f.root, "ready");
+    f.env.STRATUM_CANCEL_GRACE_MS = "100";
+    const preload = join(f.root, "hold-group.mjs");
+    writeFileSync(preload, `const kill = process.kill.bind(process);
+      process.kill = (pid, signal) => signal === 'SIGKILL' && pid < 0 ? true : kill(pid, signal);`);
+    f.env.NODE_OPTIONS = `--import=${pathToFileURL(preload).href}`;
+    f.release();
+    const run = await f.start({ devinStallMs: 500 });
+    try {
+      await until(() => existsSync(f.env.READY!), Boolean);
+      await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+      expect(watchdogs).toHaveLength(1);
+      expect(watchdogs[0]!.exitCode).toBe(1);
+      expect(groupGone(run.pid!)).toBe(false);
+      expect(readFileSync(join(run.layout.runDir, "watchdog.err"), "utf8")).toContain("giving up cancellation");
+      expect(existsSync(run.layout.wireLogPath)).toBe(false);
+    } finally {
+      // Only the detached monitor's signal is suppressed, so teardown stays real.
+      if (!groupGone(run.pid!)) process.kill(-run.pid!, "SIGKILL");
+      await until(() => groupGone(run.pid!), Boolean);
+    }
+  });
+
+  it("a terminal run deletes ACP without poll, even when both timers are off", async () => {
+    const f = fixture();
+    f.env.STRATUM_DEVIN_STALL_MS = "0";
+    f.env.STRATUM_DEVIN_MAX_RUN_MS = "0";
+    const run = await f.start();
+    writeFileSync(run.layout.wireLogPath, "private thoughts");
+    f.release();
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+    expect(existsSync(run.layout.exitRcPath)).toBe(true);
+    expect(existsSync(run.layout.wireLogPath)).toBe(false);
+    expect(await run.poll()).toMatchObject({ status: "complete" });
+  });
+
+  it("the watchdog survives the launching caller exiting", async () => {
+    const f = fixture(); f.env.STRATUM_DEVIN_STALL_MS = "500";
+    const launcher = join(f.root, "launcher.mjs");
+    const sourceRoot = new URL("../../src/", import.meta.url).href;
+    writeFileSync(launcher, `import { registerHooks } from 'node:module';
+      import { existsSync, writeFileSync } from 'node:fs';
+      registerHooks({resolve(specifier,context,next) {
+        if(context.parentURL?.startsWith(${JSON.stringify(sourceRoot)}) && specifier.startsWith('.') && specifier.endsWith('.js')) {
+          const candidate=new URL(specifier.slice(0,-3)+'.ts',context.parentURL);
+          if(existsSync(candidate)) return next(candidate.href,context);
+        }
+        return next(specifier,context);
+      }});
+      const {startBackgroundRun}=await import(${JSON.stringify(new URL("../../src/connectors/background.ts", import.meta.url).href)});
+      const run=await startBackgroundRun(${JSON.stringify(f.options)});
+      writeFileSync(${JSON.stringify(join(f.root, "started.json"))},JSON.stringify(run));
+      process.exit(0);`);
+    const child = childProcess.spawn(process.execPath, [launcher], { env: f.env, stdio: "ignore" });
+    try {
+      await until(() => existsSync(join(f.root, "started.json")), Boolean);
+      const started = json(join(f.root, "started.json"));
+      runs.push({ runId: started.runId, registryRoot: f.registryRoot, pid: started.pid });
+      await until(() => child.exitCode !== null, Boolean);
+      expect(child.exitCode).toBe(0);
+      const result = await until(() => pollBackgroundRun(started.runId, { registryRoot: f.registryRoot }), value => value.status !== "running");
+      expect(result).toMatchObject({ status: "error", reason: expect.stringContaining("devin stalled:") });
+      await until(() => groupGone(started.pid), Boolean);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }
+  });
+
+  it.each(["stdout", "stderr"])("background %s progress keeps re-arming the watchdog", async stream => {
+    const f = fixture('cp "$FIXTURE" "$export_path"; exit 0');
+    const script = join(f.root, "bin", "devin");
+    writeFileSync(script, readFileSync(script, "utf8").replace(
+      'until [ -e "$RELEASE" ]; do sleep 0.05; done',
+      `until [ -e "$RELEASE" ]; do printf progress ${stream === "stderr" ? ">&2" : ""}; sleep 0.05; done`));
+    const run = await f.start({ devinStallMs: 500 });
+    await delay(1200);
+    expect(await run.poll()).toMatchObject({ status: "running" });
+    f.release();
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "complete" });
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+  });
+
+  it("STRATUM_DEVIN_STALL_MS=0 disables background inactivity while retaining the monitor", async () => {
+    const f = fixture(); f.env.STRATUM_DEVIN_STALL_MS = "0";
+    const run = await f.start();
+    expect(watchdogs).toHaveLength(1);
+    await delay(600);
+    expect(await run.poll()).toMatchObject({ status: "running" });
+    f.release();
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "complete" });
+  });
+
+  it("bad background env warns and uses the 15-minute default", async () => {
+    const f = fixture(); f.env.STRATUM_DEVIN_STALL_MS = "invalid";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const run = await f.start();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("using default 900000ms"));
+    const args = vi.mocked(childProcess.spawn).mock.calls.find(call =>
+      Array.isArray(call[1]) && call[1].some(arg => /devin-watchdog\.(ts|js)$/.test(arg)))![1];
+    expect(args).toContain("900000");
+    f.release();
+    expect(await until(run.poll, value => value.status !== "running")).toMatchObject({ status: "complete" });
+  });
+
   it("invalid dispatch grace fails before preparation or spawning", async () => {
     const f = fixture(); f.env.STRATUM_CANCEL_GRACE_MS = "invalid";
     await expect(f.start()).rejects.toThrow("STRATUM_CANCEL_GRACE_MS must be a nonnegative number");
@@ -347,6 +602,24 @@ describe("devin background — real shell and isolated stub binaries", () => {
     check.mockImplementationOnce(async () => { f.release(); await until(() => existsSync(run.layout.exitRcPath), Boolean); return false; });
     expect(await run.poll()).toMatchObject({ status: "complete" });
     check.mockRestore();
+  });
+
+  it.each(["unknown", undefined] as const)("an unavailable identity probe (%s) leaves wire.log for the monitor", async probe => {
+    const f = fixture();
+    const run = await f.start({ devinStallMs: 0 });
+    writeFileSync(run.layout.wireLogPath, "private thoughts");
+    // processIdentityMatches collapses an undefined start-time probe to false.
+    vi.spyOn(identity, "processIdentityMatches").mockResolvedValue(false);
+    // Also fail closed if a probe unexpectedly cannot return a classification.
+    vi.spyOn(identity, "processIdentity").mockResolvedValue(probe!);
+    expect(existsSync(run.layout.exitRcPath)).toBe(false);
+    expect(await run.poll()).toMatchObject({ status: "error", reason: "child_died_without_sentinel" });
+    expect(readFileSync(run.layout.wireLogPath, "utf8")).toBe("private thoughts");
+    vi.restoreAllMocks();
+    f.release();
+    await until(() => watchdogs.every(child => child.exitCode !== null), Boolean);
+    expect(existsSync(run.layout.wireLogPath)).toBe(false);
+    expect(await run.poll()).toMatchObject({ status: "complete" });
   });
 
   it("a writable cwd cannot grant access to a custom supervisor registry", async () => {

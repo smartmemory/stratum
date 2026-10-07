@@ -209,6 +209,54 @@ that forgets it" — the same holds for every agent switch, and this is that thi
 
 ### D2 — Transport: `devin -p` subprocess inside the stratum sandbox, result from the ATIF export
 
+**Inactivity watchdog (2026-10-07 follow-up).** `STRATUM_DEVIN_STALL_MS` sets the foreground
+and background inactivity limit in integer milliseconds, default `900000` (15 minutes).
+`0` disables inactivity detection. `STRATUM_DEVIN_MAX_RUN_MS` independently sets a hard
+wall-clock ceiling, default `14400000` (four hours), with `0` disabling the ceiling.
+Invalid values warn and use their respective defaults. Foreground `stallMs`/`maxRunMs`
+and background `devinStallMs` override the dispatch env for tests. Foreground stdout
+and stderr chunks reset inactivity, including partial lines. Background output-file
+byte growth resets inactivity. Every launch overrides inherited `CHISEL_ACP_WIRE_LOG`
+with its own `agent/wire.log`, pre-created `0600` inside the private `0700` run directory.
+The existing writable agent-area grant covers this file. No caller-path option or
+additional sandbox grant exists.
+
+Wire monitoring reads only new bytes from a tracked offset, buffering incomplete JSON
+lines with bounded memory. Recorded evidence in `repro/r3-A-think/wire.log:62-71` and
+`repro/r1-A-small/wire.log:62-64` under the Devin-stall scratch investigation shows the
+actual session/update params shape: `{sessionId, update: {sessionUpdate, ...}}`.
+Only `agent_thought_chunk`, `agent_message_chunk`, `tool_call` and `tool_call_update`
+reset inactivity. JSON-RPC `session/update` envelopes with that same params shape are
+also accepted. MCP reconnects, other updates, malformed lines and mtime-only changes
+are silence. Polling is at most five seconds foreground and one second background,
+with a final progress check at inactivity expiry. All file-access failures count as
+no progress and warn once per file, without exposing thought content. The hard ceiling
+cannot be extended by any progress signal.
+
+A stall uses the existing process-group SIGTERM cancellation path and fails with
+`devin stalled: no activity for <N>s (last event: <type>); silent signals: stdout, stderr, ACP wire updates`.
+Diagnostics name only monitored signals and event kinds, never wire content. The
+supervisor-owned `stall.txt` error overrides any partial ATIF result. Background
+monitoring survives caller exit, rechecks terminal state immediately before writing
+that error, and remains alive through cancellation. After `STRATUM_CANCEL_GRACE_MS`
+(default 5000 ms), it sends SIGKILL while the authenticated group still exists, even
+if its leader has exited. A surviving group keeps its pgid from being reused. The
+monitor gives up after three further grace periods (at least three poll intervals
+when grace is zero), logs a teardown diagnostic and exits with an error. Poll returns
+the durable stall error even if SIGKILL prevented `exit.rc`.
+The detached monitor writes diagnostics to `runDir/watchdog.err` with mode `0600`.
+
+**Wire retention:** foreground teardown removes the entire run directory. Background
+monitoring deletes `agent/wire.log` at terminal state, including normal completion,
+stalls, ceilings and cancellation. Terminal poll also deletes it when `exit.rc` exists
+or process identity is confirmed dead, covering older runs or failed monitors. An
+unknown identity leaves cleanup to the monitor. Deletion unlinks the path without following an agent-replaced
+symlink. The monitor starts even when both limits are disabled so completion still
+clears sensitive ACP content without requiring a poll. Other background status files,
+ATIF exports and output logs retain their existing lifecycle. A run still in progress
+retains its wire file. The wire can grow at the observed 100-250 KB per minute until
+termination, bounded in duration by the default hard ceiling.
+
 New `connectors/devin.ts` with `DevinConnector` mirroring `CodexConnector`'s option shape (cwd,
 model, signal, ownProcessGroup, onSpawn, env, sandboxMode, writableRoots, spawn seam, onEvent). Argv:
 
