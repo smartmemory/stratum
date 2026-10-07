@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added `claude-haiku-5-5` to the Claude model catalog and made it the Claude `fast` tier (was `claude-haiku-4-5-20251001`, which stays selectable), at low effort with adaptive thinking. Compose's summarizer defaults to this tier.
+
 - Devin foreground and background watchdogs count stdout, stderr and only ACP thought, message and tool updates as progress. Runs fail after 15 minutes of inactivity (`STRATUM_DEVIN_STALL_MS`) or a four-hour hard ceiling (`STRATUM_DEVIN_MAX_RUN_MS`), with `0` disabling each limit independently. Every run overrides inherited wire-log paths with a private `0600` file, deletes ACP content on confirmed completion or death, preserves it when polling cannot determine process identity, and handles file errors as silence. Stalled background groups receive identity-checked SIGTERM, then SIGKILL after cancellation grace even if the leader has exited. Monitor teardown is bounded, with diagnostics in `watchdog.err`.
 
 - Claude connector rejects result messages with `is_error: true`, including logged-out CLI results with a success subtype, using the result text as the failure message.
