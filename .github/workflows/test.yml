@@ -5,6 +5,14 @@ on:
     branches: [main, develop]
   pull_request:
 
+# Read-only GITHUB_TOKEN, one run per ref (ACTIONS-LOCKDOWN-1).
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # TS engine suite (ts/). Replaces the retired Python pytest suite — stratum-py
   # and stratum-mcp were deleted in the 2026-07 TS cutover. Live model/Docker
@@ -13,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
