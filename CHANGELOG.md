@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- License: the BSL 1.1 Additional Use Grant revenue threshold is raised from USD 250,000 to USD 1,000,000 (owner, 2026-10-09). It applies to versions released from now on; already-published versions keep the license they shipped with.
+
 - Claude `fast` tier is now `claude-sonnet-5-5` at medium effort (was `claude-haiku-5-5` at low, owner rule: never Haiku), and the Claude `coordinator` tier is now `claude-opus-5-5` at high (was `claude-fable-5-1`, owner rule: never spawn on Fable). Both Haiku models and Fable stay selectable.
 
 - Added `claude-haiku-5-5` to the Claude model catalog and made it the Claude `fast` tier (was `claude-haiku-4-5-20251001`, which stays selectable), at low effort with adaptive thinking. Compose's summarizer defaults to this tier.

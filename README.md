@@ -1250,6 +1250,6 @@ pipeline yet — consumers run the engine from a checkout (see Installation).
 
 ## License
 
-[Business Source License 1.1](LICENSE). Free for non-production use by anyone, and for production use by organizations whose total annual revenue (with affiliates) was USD 250,000 or less in their last fiscal year. Larger organizations need a commercial license: help@smartmemory.ai. Each version converts to Apache 2.0 four years after its release.
+[Business Source License 1.1](LICENSE). Free for non-production use by anyone, and for production use by organizations whose total annual revenue (with affiliates) was USD 1,000,000 or less in their last fiscal year. Larger organizations need a commercial license: help@smartmemory.ai. Each version converts to Apache 2.0 four years after its release.
 
 Versions released before 2026-09-25 were distributed under Apache 2.0 and remain available under those terms.
