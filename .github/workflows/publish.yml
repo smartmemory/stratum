@@ -1,3 +1,4 @@
+# Manual only (workflow_dispatch). Prod deploys and releases use the scripts in the repo/runbook. Owner decision 2026-10-09.
 name: Publish Stable Release
 
 # Publishes @smartmemory/stratum (the TS engine in ts/) to npm on a vX.Y.Z tag.
@@ -5,9 +6,6 @@ name: Publish Stable Release
 # the 2026-07 TS cutover). Requires the NPM_TOKEN repo secret.
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       version:
