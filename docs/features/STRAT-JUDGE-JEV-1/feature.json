@@ -1,0 +1,9 @@
+{
+  "code": "STRAT-JUDGE-JEV-1",
+  "description": "Optional Jev backend for stakes: cheap judged predicates in stratum (off by default, WARNING fallback to the luna path); value spike first, pre-registered bar",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-10-10",
+  "updated": "2026-10-10",
+  "complexity": "M"
+}
