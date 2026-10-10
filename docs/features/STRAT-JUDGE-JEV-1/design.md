@@ -1,6 +1,6 @@
 # STRAT-JUDGE-JEV-1 — Jev backend for `stakes: cheap` judged predicates (design)
 
-**Status:** PLANNED (filed 2026-10-10; no work started). **Value spike:** PENDING
+**Status:** **PARKED (2026-10-10, owner pick "redirect"):** no `stakes: cheap` judged predicate exists anywhere (see "Corpus check"), so the spike has no corpus. The Jev spike moved to the compose gate approve/revise default: `/Users/ruze/reg/my/forge/compose/docs/features/COMP-GATE-JEV-1/design.md`. Unpark when a real cheap judged predicate ships. **Value spike:** NOT RUN (no corpus)
 **Origin:** forge survey `scratch/2026-10-10-jev-fit/report.md` (forge root), Jev context in SmartMemory
 `scratch/2026-10-10-maya-jev-intent/REPORT.md`.
 
@@ -59,6 +59,22 @@ the label and probability, which is the evidence a reviewer needs.
 - **Pre-registered bar:** Jev agreement with the reference >= luna agreement AND Jev p95 latency < 1 s.
 - **Outcome:** pass → build under this ticket. Fail → mark KILLED with the numbers.
 - Spike artifacts go in a dated scratch folder with a README. Keep `JEV_API_KEY` out of all logs and reports.
+
+### Corpus check at `/compose build` entry (2026-10-10): the corpus is EMPTY
+
+The spike method needs real cheap judged predicates. There are none:
+
+| Source | Judged predicates | `stakes: cheap` |
+|---|---|---|
+| `compose/pipelines/build.stratum.yaml:381`, `build-quick.stratum.yaml:337` | 0. The judged ship ensure was REMOVED (C5): unevaluable from `{result, input}`, failed closed | 0 |
+| Compose vocabulary guard | moved to deterministic `compose/lib/vocabulary-compliance.js` (E3/F5), same reason | 0 |
+| `~/.stratum/flows` (81 MB of flow state) | 0 files mention `judged` | 0 |
+| `~/.stratum/guards` (38 ledgers, last write 2026-09-28) | 53 judged evaluations | 0 (all `"stakes":"default"`) |
+| `~/.stratum/judge` | smoke/e2e fixtures only | 0 |
+
+Consequence: the cheap tier has no production callers, so this ticket would speed up a path nothing runs, and the
+pre-registered spike cannot be run as written. Build is held at the design gate pending an owner decision
+(park / synthetic corpus / redirect Jev to a live call site such as `compose/lib/gate-prompt.js:49`).
 
 ## Acceptance criteria
 
