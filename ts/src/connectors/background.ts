@@ -108,6 +108,8 @@ export interface DevinRunMeta extends BackgroundRunMetaBase {
 export type BackgroundRunMeta = CodexRunMeta | ClaudeRunMeta | DevinRunMeta;
 
 export interface StartBackgroundRunOptions {
+  sessionId?: string;
+  indexLabel?: string;
   peerLabel?: string;
   workerTestReleasePath?: string;
   /** Devin identity/meta persistence seams for failure-path tests. */
@@ -480,6 +482,9 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
     ...(options.workerTestReleasePath !== undefined ? {testReleasePath: options.workerTestReleasePath} : {}),
     prompt: options.prompt,
     connectorOptions: {
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      indexLabel: options.indexLabel ?? `stratum-${options.peerLabel !== undefined ? peerName(model, runId, { agent: "claude", label: options.peerLabel }) : runId}`,
+      runId,
       model,
       ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Stratum Claude runs now pass a generated or caller-supplied session UUID to the SDK and include it in `agent_started` metadata. Foreground and background runs write spend-attribution labels to `DETACH_CLAUDE_INDEX_DIR` or `~/.claude/session-state/detach-claude` before dispatch. An index write failure logs a warning and the run continues.
+
 - License: the BSL 1.1 Additional Use Grant revenue threshold is raised from USD 250,000 to USD 1,000,000 (owner, 2026-10-09). It applies to versions released from now on; already-published versions keep the license they shipped with.
 
 - Claude `fast` tier is now `claude-sonnet-5-5` at medium effort (was `claude-haiku-5-5` at low, owner rule: never Haiku), and the Claude `coordinator` tier is now `claude-opus-5-5` at high (was `claude-fable-5-1`, owner rule: never spawn on Fable). Both Haiku models and Fable stay selectable.

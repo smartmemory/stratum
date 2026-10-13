@@ -18,6 +18,8 @@ import { SMARTMEMORY_SCRUB_VARS } from "../../src/connectors/base.js";
  */
 
 const LEAKY_ENV = {
+  // A supplied connector env is exclusive, so carry the isolated test index.
+  DETACH_CLAUDE_INDEX_DIR: process.env.DETACH_CLAUDE_INDEX_DIR,
   PATH: "/usr/bin",
   ANTHROPIC_API_KEY: "sk-ant-leak",
   CLAUDE_API_KEY: "sk-claude-leak",

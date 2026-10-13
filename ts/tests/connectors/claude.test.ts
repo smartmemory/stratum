@@ -1,13 +1,122 @@
 import { testModels } from "../helpers/models.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeConnector, type QueryFunction } from "../../src/connectors/claude.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StratumEngine } from "../../src/engine/engine.js";
 import { StateStore } from "../../src/engine/state.js";
 import { spineSpent } from "../../src/engine/receipts.js";
 import { createEvaluator } from "../../src/eval/expr.js";
+
+let indexRoot: string;
+beforeEach(async () => {
+  indexRoot = await mkdtemp(join(tmpdir(), "test_detach_name_2-"));
+  vi.stubEnv("DETACH_CLAUDE_INDEX_DIR", indexRoot);
+});
+afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  await rm(indexRoot, { recursive: true, force: true });
+});
+
+const callerId = "01234567-89ab-4cde-8fab-0123456789ab";
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+describe("Claude session index", () => {
+  it("records the launch time in detach_claude's local format", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 0, 2, 3, 4, 5));
+    await new ClaudeConnector({ sessionId: callerId, query: () => messages() }).run("test");
+    const record = JSON.parse(await readFile(join(indexRoot, `${callerId}.json`), "utf8"));
+    expect(record.started).toBe("2026-01-02 03:04:05");
+  });
+
+  it.each([
+    { name: "generated", sessionId: undefined, indexLabel: undefined },
+    { name: "caller-supplied", sessionId: callerId, indexLabel: "stratum-author" },
+  ])("dispatches the $name id and indexes it before query", async ({ sessionId, indexLabel }) => {
+    const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
+    let dispatchedId: string | undefined;
+    const query: QueryFunction = async function* ({ options }) {
+      dispatchedId = options?.sessionId as string;
+      expect(dispatchedId).toMatch(uuid);
+      if (sessionId !== undefined) expect(dispatchedId).toBe(sessionId);
+      const index = JSON.parse(await readFile(join(indexRoot, `${dispatchedId}.json`), "utf8"));
+      expect(index).toEqual({
+        session_id: dispatchedId, label: indexLabel ?? `stratum-claude-${dispatchedId.slice(0, 8)}`,
+        started: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+        cwd: "/work", model: "claude-test", source: "stratum",
+      });
+      expect(options).not.toHaveProperty("resume");
+      expect(options).not.toHaveProperty("continue");
+      yield { type: "result", subtype: "success", result: "indexed" };
+    };
+    await expect(new ClaudeConnector({
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(indexLabel !== undefined ? { indexLabel } : {}),
+      cwd: "/work", model: "claude-test", query, onEvent: event => { events.push(event); },
+    }).run("test")).resolves.toMatchObject({ text: "indexed" });
+    expect(events.find(event => event.kind === "agent_started")?.metadata.session_id).toBe(dispatchedId);
+    expect(await readdir(indexRoot)).toEqual([`${dispatchedId}.json`]);
+  });
+
+  it.each([
+    { name: "malformed id", options: { sessionId: "not-a-uuid" } },
+    { name: "path traversal id", options: { sessionId: "../escape" } },
+    { name: "empty id", options: { sessionId: "" } },
+    { name: "empty label", options: { indexLabel: "" } },
+    { name: "blank label", options: { indexLabel: "  " } },
+  ])("refuses $name with a typed error before dispatch or indexing", async ({ options }) => {
+    const query = vi.fn<QueryFunction>(() => messages());
+    await expect(new ClaudeConnector({ ...options, query }).run("test")).rejects.toBeInstanceOf(TypeError);
+    expect(query).not.toHaveBeenCalled();
+    expect(await readdir(indexRoot)).toEqual([]);
+  });
+
+  it.each([
+    { name: "connector env override", override: "custom", expected: "custom" },
+    { name: "default under connector HOME", override: undefined, expected: ".claude/session-state/detach-claude" },
+    { name: "empty override falls back like costlib", override: "", expected: ".claude/session-state/detach-claude" },
+  ])("resolves $name without merging the ambient index override", async ({ override, expected }) => {
+    const env = { HOME: indexRoot, ...(override !== undefined ? { DETACH_CLAUDE_INDEX_DIR: override ? join(indexRoot, override) : "" } : {}) };
+    await new ClaudeConnector({ sessionId: callerId, env, query: () => messages() }).run("test");
+    const record = JSON.parse(await readFile(join(indexRoot, expected, `${callerId}.json`), "utf8"));
+    expect(record).toMatchObject({ session_id: callerId, label: "stratum-claude-01234567", source: "stratum" });
+    expect(await readdir(indexRoot)).not.toContain(`${callerId}.json`);
+  });
+
+  it.each(["mkdir", "write"])("warns once and completes after index %s failure", async (stage) => {
+    const path = stage === "mkdir" ? join(indexRoot, "blocked", "index") : indexRoot;
+    if (stage === "mkdir") await writeFile(join(indexRoot, "blocked"), "not a directory");
+    else await mkdir(join(indexRoot, `${callerId}.json`));
+    const warning = vi.spyOn(console, "error").mockImplementation(() => {});
+    const query = vi.fn<QueryFunction>(() => messages());
+    const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
+    await expect(new ClaudeConnector({
+      sessionId: callerId, env: { DETACH_CLAUDE_INDEX_DIR: path }, query,
+      onEvent: event => { events.push(event); },
+    }).run("test")).resolves.toMatchObject({ text: "echo ok" });
+    expect(query).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledOnce();
+    expect(warning.mock.calls[0]![0]).toContain("WARNING stratum: Claude session index write failed");
+    expect(warning.mock.calls[0]![0]).toContain(join(path, `${callerId}.json`));
+    expect(warning.mock.calls[0]![0]).toMatch(/ENOTDIR|EISDIR/);
+    expect(events.filter(event => event.kind === "agent_relay")).toEqual([
+      { kind: "agent_relay", metadata: { text: "partial", role: "assistant" } },
+    ]);
+  });
+
+  it("keeps distinct files when a label is reused", async () => {
+    const connector = new ClaudeConnector({ indexLabel: "stratum-reused", query: () => messages() });
+    await connector.run("one");
+    await connector.run("two");
+    const files = await readdir(indexRoot);
+    expect(files).toHaveLength(2);
+    for (const file of files) expect(JSON.parse(await readFile(join(indexRoot, file), "utf8")).label).toBe("stratum-reused");
+  });
+});
 
 async function* messages() {
   yield { type: "system", subtype: "init", model: `${testModels.claudeDefault}-20260701` };
@@ -111,7 +220,7 @@ describe("ClaudeConnector", () => {
 
     await expect(connector.run("ping")).resolves.toMatchObject({ text: "done", usage: { tokens: 7 } });
     expect(events).toEqual([
-      { kind: "agent_started", metadata: { agent: "claude", model: "claude-test", prompt_chars: 4 } },
+      { kind: "agent_started", metadata: { agent: "claude", model: "claude-test", prompt_chars: 4, session_id: expect.stringMatching(uuid) } },
       { kind: "agent_relay", metadata: { text: "working", role: "assistant" } },
       {
         kind: "tool_use_summary",

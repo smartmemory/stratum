@@ -1,5 +1,9 @@
 import { catalog } from "../config/models.js";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { query as sdkQuery, type SpawnOptions as ClaudeSpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { ConnectorEvent, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { finiteNonnegative, SMARTMEMORY_SCRUB_VARS } from "./base.js";
@@ -15,6 +19,12 @@ interface QueryParams {
 export type QueryFunction = (params: QueryParams) => AsyncIterable<unknown>;
 
 export interface ClaudeConnectorOptions {
+  /** Fresh conversation identity. Cannot be combined with SDK resume/continue. */
+  sessionId?: string;
+  /** Spend-attribution label. Blank labels are rejected before dispatch. */
+  indexLabel?: string;
+  /** Stratum background-run identity, distinct from the SDK session UUID. */
+  runId?: string;
   model?: string;
   cwd?: string;
   allowedTools?: string[];
@@ -56,6 +66,14 @@ export class ClaudeConnector {
 
   async run(prompt: string): Promise<ConnectorResult> {
     this.options.signal?.throwIfAborted();
+    const sessionId = this.options.sessionId ?? randomUUID();
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
+      throw new TypeError("Claude sessionId must be a UUID");
+    }
+    const indexLabel = this.options.indexLabel ?? `stratum-claude-${sessionId.slice(0, 8)}`;
+    if (typeof indexLabel !== "string" || !indexLabel.trim()) {
+      throw new TypeError("Claude indexLabel must be a non-empty label");
+    }
     const controller = new AbortController();
     const unlink = linkAbort(this.options.signal, controller);
     const ownProcessGroup = this.options.ownProcessGroup === true;
@@ -80,6 +98,7 @@ export class ClaudeConnector {
       const env = { ...(this.options.env ?? process.env) };
       for (const key of SENSITIVE_ENV_VARS) delete env[key];
       const sdkOptions: Record<string, unknown> = {
+        sessionId,
         cwd: this.options.cwd ?? process.cwd(),
         model: requestedModel,
         permissionMode: "acceptEdits",
@@ -135,8 +154,23 @@ export class ClaudeConnector {
       let assistantText = "";
       await this.emit({
         kind: "agent_started",
-        metadata: { agent: "claude", model: requestedModel, prompt_chars: prompt.length },
+        metadata: { agent: "claude", model: requestedModel, prompt_chars: prompt.length, session_id: sessionId },
       });
+      // Match costlib.detach_claude_index_dir(): an empty override uses the default.
+      // Read the supplied environment exclusively when present, as for SDK dispatch.
+      const indexDir = env.DETACH_CLAUDE_INDEX_DIR || join(env.HOME || homedir(), ".claude", "session-state", "detach-claude");
+      const indexPath = join(indexDir, `${sessionId}.json`);
+      try {
+        await mkdir(indexDir, { recursive: true });
+        await writeFile(indexPath, JSON.stringify({
+          session_id: sessionId, label: indexLabel, started: localTimestamp(new Date()),
+          cwd: sdkOptions.cwd, model: requestedModel, source: "stratum",
+          ...(this.options.runId !== undefined ? { run_id: this.options.runId } : {}),
+        }), { encoding: "utf8", mode: 0o600 });
+      } catch (error) {
+        // Non-fatal diagnostics use a stderr log, never an assistant relay message.
+        console.error(`WARNING stratum: Claude session index write failed at ${indexPath}: ${error instanceof Error ? error.message : String(error)}; spend-attribution label was lost`);
+      }
       // Report only the effort handed to the SDK, including when query throws.
       dispatchedEffort = effort !== undefined ? { effort } : {};
       for await (const raw of this.query({ prompt, options: sdkOptions })) {
@@ -253,6 +287,11 @@ export class ClaudeConnector {
   private async emit(event: ConnectorEvent): Promise<void> {
     await this.onEvent?.(event);
   }
+}
+
+function localTimestamp(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

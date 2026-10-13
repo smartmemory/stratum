@@ -1,4 +1,5 @@
 import { AGENT_TYPES, CODEX_REASONING_EFFORTS, describeAgentTypes } from "./base.js";
+import { randomUUID } from "node:crypto";
 import { normalizePeerLabel } from "./peer-registry.js";
 import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { startBackgroundRun } from "./background.js";
@@ -16,6 +17,8 @@ const VALID_AGENTS = new Set<string>(AGENT_TYPES);
 const VALID_SANDBOX_MODES = new Set<string>(["read-only", "workspace-write", "danger-full-access"]);
 
 export interface AgentRunOptions {
+  sessionId?: string;
+  indexLabel?: string;
   agent: AgentType;
   prompt: string;
   cwd?: string;
@@ -137,6 +140,8 @@ export async function runAgent(
     // validateAgentSettings has already rejected them for codex, so the spread is
     // claude-only rather than dead (D5 / BG-WRITE-A).
     return startBackgroundRun({
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.indexLabel !== undefined ? { indexLabel: options.indexLabel } : {}),
       ...(peerLabel !== undefined ? {peerLabel} : {}),
       agent: options.agent,
       prompt: options.prompt,
@@ -178,8 +183,11 @@ export async function runAgent(
         ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
         ...(options.signal !== undefined ? { signal: options.signal } : {}),
       }).run(options.prompt);
-    case "claude":
+    case "claude": {
+      const sessionId = options.sessionId ?? randomUUID();
       return new ClaudeConnector({
+        sessionId,
+        indexLabel: options.indexLabel ?? `stratum-claude-${sessionId.slice(0, 8)}`,
         cwd,
         ...(options.ownProcessGroup !== undefined ? { ownProcessGroup: options.ownProcessGroup } : {}),
         ...(options.model !== undefined ? { model: options.model } : {}),
@@ -193,6 +201,7 @@ export async function runAgent(
         ...(boundaries.claudeQuery !== undefined ? { query: boundaries.claudeQuery } : {}),
         ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {}),
       }).run(options.prompt);
+    }
     case "devin":
       // Devin's networkAccess/approvalPolicy are enforced, not forwarded (D3/D11);
       // the audit already carries the enforced provenance.
