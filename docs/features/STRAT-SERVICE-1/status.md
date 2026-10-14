@@ -10,11 +10,11 @@ slice, each with its install record and backups). Coordination ledger: `SmartMem
 | S0, S1 (queue fields), S2a/S2b (dry-run tick + pilot report) | DONE, installed. Shadow pilot running since 2026-10-12 (LaunchAgent `ai.smartmemory.dispatch`, `tick --dry-run` every 300 s) |
 | S3 (live writes: launch, adopt, resolve, budget stop) | Code INSTALLED 2026-10-13 (step 2); plist still dry-run. Live probe P1–P5 all PASS. Go-live (step 3, plist swap) waits for the pilot report and the O2 caps; owner 2026-10-14: "no rush to go live" |
 | S3R (pilot report reads live/probe-live ticks) | DONE, installed 2026-10-13 |
-| S3A (admit withdrawn at launch: producer + report reconcile) | IN PROGRESS 2026-10-14 (`S3A/`) |
+| S3A (admit withdrawn at launch: producer + report reconcile) | DONE, installed 2026-10-14 (Codex r1 CLEAN; record `S3A/install-record.json`) |
 | S4 (stamps + sm_status holds) | DONE, installed 2026-10-13 |
 | DETACH-NAME-2 | DONE, stratum b7c5bd0 |
 
-Next: S3A review and install; pilot report ~2026-10-15 10:00 with proposed caps (or "not enough data", trial extended,
+Next: pilot report ~2026-10-15 10:00 with proposed caps (or "not enough data", trial extended,
 never a lower bar); then the owner's O2 caps + go-live as one decision.
 
 The sections below are the design-phase history (2026-10-08 to 10-12).
