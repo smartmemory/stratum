@@ -321,9 +321,12 @@ compares them.
   (`detach_job.py:179`), and `USAGE_WATCH_ACCOUNTS` / `USAGE_WATCH_STATE_DIR` (`usage_watch.py:72`,
   `usage_watch.py:543`) are either all unset (production defaults) or all set to one test root. The tick refuses to start
   when only some are set, so a test tick can never read a test queue and launch into the production index.
-- **Gate switches:** `WORK_MODEL_QUOTA_GATE`, `WORK_MODEL_SPEND_GATE` and `WORK_MODEL_OPUS_GATE` are kill switches that
-  `judge()` honours (`work_model_gate.py:1594-1595`). The plist never sets them. If one is set to `0` in the tick's env,
-  the tick admits no Claude item and logs why: an owner override belongs in a session, not in a timer.
+- **Gate switches:** five kill switches that `judge()` honours: `WORK_MODEL_QUOTA_GATE`, its deprecated alias
+  `WORK_MODEL_SPEND_GATE`, `WORK_MODEL_CEILING_GATE`, `WORK_MODEL_RESERVE_GATE` and `WORK_MODEL_OPUS_GATE`
+  (`work_model_gate.py:1834-1860` as of 2026-10-14; the tick's list is `dispatch.py:71` `GATE_SWITCHES`). The plist never
+  sets them. If one is set to `0` in the tick's env, the tick admits no Claude item and logs `gate-switch-off` with the
+  switch names (`dispatch.py:1378-1380`): an owner override belongs in a session, not in a timer. (Amended 2026-10-14 at
+  S2 close: the 2026-10-12 text named three switches.)
 - **Launch env, per engine:** Claude gets `CLAUDE_CONFIG_DIR` (the packet's account home) and the
   `CONTEXT_CAP_WARN`/`CONTEXT_CAP_STOP` pair (§4); `CONTEXT_CAP_ENFORCE` is left to detach_job (`detach_job.py:790`).
   Codex gets `CODEX_HOME` (the packet's account home). Each launch removes the other engine's account variable and any
