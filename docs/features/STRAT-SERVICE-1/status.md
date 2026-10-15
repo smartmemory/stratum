@@ -14,8 +14,9 @@ slice, each with its install record and backups). Coordination ledger: `SmartMem
 | S4 (stamps + sm_status holds) | DONE, installed 2026-10-13 |
 | DETACH-NAME-2 | DONE, stratum b7c5bd0 |
 
-Next: pilot report ~2026-10-15 10:00 with proposed caps (or "not enough data", trial extended,
-never a lower bar); then the owner's O2 caps + go-live as one decision.
+2026-10-15: pilot report FAIL (2 of 616 ticks hit the deadline, bar not lowered); owner set O2 caps (global 20, Opus 8,
+Codex 8, Codex 90% hold live). Next: live dispatch tests green (S2B-TESTS-RED, s4-infra), TICK-DEADLINE-1, 2 clean pilot days, then
+the owner's single go-live yes. Unit state: `forge/status/units.json`.
 
 The sections below are the design-phase history (2026-10-08 to 10-12).
 
