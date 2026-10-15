@@ -1,10 +1,10 @@
 {
   "code": "STRAT-SERVICE-1",
   "description": "One queue over the shipped job scripts (shrunk 2026-10-12 from the 2026-10-08 always-on daemon design). A stateless dispatch tick (launchd timer if probe A1 passes, else typed) reads the existing jobs.py queue and starts ready items only through detach_job.py, with session-qualified identity, an ownership check before any adopt/stop, the work_model_gate quota/Opus judge on the exact launch packet, conservative caps counting all live and unknown detach_job work, budget sweeps and dependency readiness on DONE plus exit 0. Owner 2026-10-12: caps set after a 2-day shadow pilot; unattended launches of both engines allowed only for auto items in allowlisted roots. Slices S0 tags/cost join, S1 queue fields, S2 shadow pilot, S3 auto dispatch. Code home ~/.claude/scripts. Design reviewed by Codex sol/high in 2 rounds; leftovers coordinator-verified.",
-  "status": "PLANNED",
+  "status": "IN_PROGRESS",
   "phase": "Standalone Tickets",
   "created": "2026-10-12",
-  "updated": "2026-10-12",
+  "updated": "2026-10-15",
   "complexity": "L",
   "position": 8,
   "impact": "high"
