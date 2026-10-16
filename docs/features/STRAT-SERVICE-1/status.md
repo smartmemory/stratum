@@ -23,6 +23,12 @@ the owner's single go-live yes. Unit state: `forge/status/units.json`.
 (rule 4). Seven suites green in place. Record: `forge/scratch/2026-10-12-strat-service-build/TD1/README.md`. The 2 clean pilot
 days run from 2026-10-15 18:09 (dry-run launchd job, new code). Then the owner's go-live yes.
 
+2026-10-17 07:42: TICK-COST-1 DONE, installed (dispatch.py f46815645648, dispatch_report.py a4be88ef68d8; smart-memory-ops
+`afee80b`, rollback = git `ed66af0`). The pilot after TD1 still failed (9-10 deadline ticks, ~11 s CPU per tick re-scanning
+finished jobs' logs); a cross-tick dead-job status cache brings a warm tick to ~1.0-1.9 s CPU. Reviews r1/r2 NOT CLEAN (P2), closed
+by the final Opus fix, no r3 (rule 8). Record: `smart-memory-ops/units/TICK-COST-1/README.md`. **The 2 clean pilot days restart
+from 2026-10-17 07:42**, then the owner's go-live yes.
+
 The sections below are the design-phase history (2026-10-08 to 10-12).
 
 **2026-10-12: DESIGN rewritten as the shrunk shape, then revised after Codex review r1 (NOT CLEAN, 14 findings, all
