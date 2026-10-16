@@ -18,6 +18,11 @@ slice, each with its install record and backups). Coordination ledger: `SmartMem
 Codex 8, Codex 90% hold live). Next: live dispatch tests green (S2B-TESTS-RED, s4-infra), TICK-DEADLINE-1, 2 clean pilot days, then
 the owner's single go-live yes. Unit state: `forge/status/units.json`.
 
+2026-10-15 18:15: TICK-DEADLINE-1 DONE, installed (dispatch.py 6b671b529660, dispatch_report.py 5a6849a6ca26; backups
+`*.bak-20261015-td1`). 3 Codex reviews; r3's one finding was ruled the intended post-write breaker divergence and pinned by a test
+(rule 4). Seven suites green in place. Record: `forge/scratch/2026-10-12-strat-service-build/TD1/README.md`. The 2 clean pilot
+days run from 2026-10-15 18:09 (dry-run launchd job, new code). Then the owner's go-live yes.
+
 The sections below are the design-phase history (2026-10-08 to 10-12).
 
 **2026-10-12: DESIGN rewritten as the shrunk shape, then revised after Codex review r1 (NOT CLEAN, 14 findings, all
