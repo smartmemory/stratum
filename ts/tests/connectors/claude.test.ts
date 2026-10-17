@@ -9,6 +9,12 @@ import { StateStore } from "../../src/engine/state.js";
 import { spineSpent } from "../../src/engine/receipts.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 
+const osState = vi.hoisted(() => ({ homedirFails: false }));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: () => { if (osState.homedirFails) throw new Error("no home directory"); return actual.homedir(); } };
+});
+
 let indexRoot: string;
 beforeEach(async () => {
   indexRoot = await mkdtemp(join(tmpdir(), "test_detach_name_2-"));
@@ -87,22 +93,40 @@ describe("Claude session index", () => {
     expect(await readdir(indexRoot)).not.toContain(`${callerId}.json`);
   });
 
-  it.each(["mkdir", "write"])("warns once and completes after index %s failure", async (stage) => {
-    const path = stage === "mkdir" ? join(indexRoot, "blocked", "index") : indexRoot;
-    if (stage === "mkdir") await writeFile(join(indexRoot, "blocked"), "not a directory");
-    else await mkdir(join(indexRoot, `${callerId}.json`));
+  // One row per step of the index write that can throw: path resolve, mkdir, record build, write.
+  it.each([
+    { stage: "resolve", expectedPath: "unresolved", error: /no home directory/ },
+    { stage: "mkdir", expectedPath: join("blocked", "index", `${callerId}.json`), error: /ENOTDIR/ },
+    { stage: "build", expectedPath: `${callerId}.json`, error: /BigInt/ },
+    { stage: "write", expectedPath: `${callerId}.json`, error: /EISDIR/ },
+  ])("warns once and completes after index $stage failure", async ({ stage, expectedPath, error }) => {
+    let env: NodeJS.ProcessEnv = { DETACH_CLAUDE_INDEX_DIR: indexRoot };
+    let cwd: string | undefined;
+    if (stage === "resolve") { env = {}; osState.homedirFails = true; }
+    if (stage === "mkdir") {
+      await writeFile(join(indexRoot, "blocked"), "not a directory");
+      env = { DETACH_CLAUDE_INDEX_DIR: join(indexRoot, "blocked", "index") };
+    }
+    if (stage === "build") cwd = 1n as unknown as string;
+    if (stage === "write") await mkdir(join(indexRoot, `${callerId}.json`));
     const warning = vi.spyOn(console, "error").mockImplementation(() => {});
     const query = vi.fn<QueryFunction>(() => messages());
     const events: Array<{ kind: string; metadata: Record<string, unknown> }> = [];
-    await expect(new ClaudeConnector({
-      sessionId: callerId, env: { DETACH_CLAUDE_INDEX_DIR: path }, query,
-      onEvent: event => { events.push(event); },
-    }).run("test")).resolves.toMatchObject({ text: "echo ok" });
+    try {
+      await expect(new ClaudeConnector({
+        sessionId: callerId, indexLabel: "stratum-lost", env, query, ...(cwd !== undefined ? { cwd } : {}),
+        onEvent: event => { events.push(event); },
+      }).run("test")).resolves.toMatchObject({ text: "echo ok" });
+    } finally {
+      osState.homedirFails = false;
+    }
     expect(query).toHaveBeenCalledOnce();
     expect(warning).toHaveBeenCalledOnce();
-    expect(warning.mock.calls[0]![0]).toContain("WARNING stratum: Claude session index write failed");
-    expect(warning.mock.calls[0]![0]).toContain(join(path, `${callerId}.json`));
-    expect(warning.mock.calls[0]![0]).toMatch(/ENOTDIR|EISDIR/);
+    const text = warning.mock.calls[0]![0] as string;
+    expect(text).toContain("WARNING stratum: Claude session index write failed at ");
+    expect(text).toContain(expectedPath);
+    expect(text).toMatch(error);
+    expect(text).toContain("stratum-lost");
     expect(events.filter(event => event.kind === "agent_relay")).toEqual([
       { kind: "agent_relay", metadata: { text: "partial", role: "assistant" } },
     ]);

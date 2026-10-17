@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { normalizePeerLabel } from "./peer-registry.js";
 import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { startBackgroundRun } from "./background.js";
-import { ClaudeConnector, type QueryFunction } from "./claude.js";
+import { ClaudeConnector, validateClaudeSessionIdentity, type QueryFunction } from "./claude.js";
 import { CodexConnector, type SpawnProcess } from "./codex.js";
 import { DevinConnector } from "./devin.js";
 import { assertDevinSandboxAllowed, resolveDevinModel } from "./devin-model.js";
@@ -89,6 +89,7 @@ export async function runAgent(
     throw new Error('sandboxMode="danger-full-access" is Codex-only; Claude does not enforce Codex sandbox modes');
   }
   options.signal?.throwIfAborted();
+  if (options.agent === "claude") validateClaudeSessionIdentity(options.sessionId, options.indexLabel);
   validateAgentSettings(options);
   const cwd = options.cwd ?? process.cwd();
   // Sandbox-capable agents resolve stratum.toml/env policy here (D11); claude

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Claude session-index failures are never fatal at any step (path resolution, mkdir, record build, write): one WARNING names the path (or "unresolved"), the error and the lost label. A bad `sessionId` or blank `indexLabel` is now refused with the same typed error before a background run starts, via one shared validator (`validateClaudeSessionIdentity`).
+
 - Stratum Claude runs now pass a generated or caller-supplied session UUID to the SDK and include it in `agent_started` metadata. Foreground and background runs write spend-attribution labels to `DETACH_CLAUDE_INDEX_DIR` or `~/.claude/session-state/detach-claude` before dispatch. An index write failure logs a warning and the run continues.
 
 - License: the BSL 1.1 Additional Use Grant revenue threshold is raised from USD 250,000 to USD 1,000,000 (owner, 2026-10-09). It applies to versions released from now on; already-published versions keep the license they shipped with.

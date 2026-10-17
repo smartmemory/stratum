@@ -53,6 +53,19 @@ export interface ClaudeConnectorOptions {
 const defaultQuery: QueryFunction = (params) => sdkQuery(params as Parameters<typeof sdkQuery>[0]);
 const SENSITIVE_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE", ...SMARTMEMORY_SCRUB_VARS] as const;
 
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Single validator for caller-supplied session identity, shared by every entry point
+ *  (foreground run, runAgent, background start) so each refuses before any work starts. */
+export function validateClaudeSessionIdentity(sessionId: unknown, indexLabel: unknown): void {
+  if (sessionId != null && (typeof sessionId !== "string" || !SESSION_UUID.test(sessionId))) {
+    throw new TypeError("Claude sessionId must be a UUID");
+  }
+  if (indexLabel != null && (typeof indexLabel !== "string" || !indexLabel.trim())) {
+    throw new TypeError("Claude indexLabel must be a non-empty label");
+  }
+}
+
 export class ClaudeConnector {
   private readonly options: ClaudeConnectorOptions;
   private readonly query: QueryFunction;
@@ -66,14 +79,9 @@ export class ClaudeConnector {
 
   async run(prompt: string): Promise<ConnectorResult> {
     this.options.signal?.throwIfAborted();
+    validateClaudeSessionIdentity(this.options.sessionId, this.options.indexLabel);
     const sessionId = this.options.sessionId ?? randomUUID();
-    if (typeof sessionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
-      throw new TypeError("Claude sessionId must be a UUID");
-    }
     const indexLabel = this.options.indexLabel ?? `stratum-claude-${sessionId.slice(0, 8)}`;
-    if (typeof indexLabel !== "string" || !indexLabel.trim()) {
-      throw new TypeError("Claude indexLabel must be a non-empty label");
-    }
     const controller = new AbortController();
     const unlink = linkAbort(this.options.signal, controller);
     const ownProcessGroup = this.options.ownProcessGroup === true;
@@ -156,11 +164,13 @@ export class ClaudeConnector {
         kind: "agent_started",
         metadata: { agent: "claude", model: requestedModel, prompt_chars: prompt.length, session_id: sessionId },
       });
-      // Match costlib.detach_claude_index_dir(): an empty override uses the default.
-      // Read the supplied environment exclusively when present, as for SDK dispatch.
-      const indexDir = env.DETACH_CLAUDE_INDEX_DIR || join(env.HOME || homedir(), ".claude", "session-state", "detach-claude");
-      const indexPath = join(indexDir, `${sessionId}.json`);
+      // Index failure is never fatal: path resolution, mkdir, record build and write all sit
+      // under one guard. Match costlib.detach_claude_index_dir(): an empty override uses the
+      // default. Read the supplied environment exclusively when present, as for SDK dispatch.
+      let indexPath = "unresolved";
       try {
+        const indexDir = env.DETACH_CLAUDE_INDEX_DIR || join(env.HOME || homedir(), ".claude", "session-state", "detach-claude");
+        indexPath = join(indexDir, `${sessionId}.json`);
         await mkdir(indexDir, { recursive: true });
         await writeFile(indexPath, JSON.stringify({
           session_id: sessionId, label: indexLabel, started: localTimestamp(new Date()),
@@ -169,7 +179,7 @@ export class ClaudeConnector {
         }), { encoding: "utf8", mode: 0o600 });
       } catch (error) {
         // Non-fatal diagnostics use a stderr log, never an assistant relay message.
-        console.error(`WARNING stratum: Claude session index write failed at ${indexPath}: ${error instanceof Error ? error.message : String(error)}; spend-attribution label was lost`);
+        console.error(`WARNING stratum: Claude session index write failed at ${indexPath}: ${error instanceof Error ? error.message : String(error)}; spend-attribution label "${indexLabel}" was lost`);
       }
       // Report only the effort handed to the SDK, including when query throws.
       dispatchedEffort = effort !== undefined ? { effort } : {};

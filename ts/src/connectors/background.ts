@@ -13,7 +13,7 @@ import { AGENT_TYPES, describeAgentTypes, finiteNonnegative, modelIdentity } fro
 import { assertDevinSandboxAllowed, devinModelIdentity, resolveDevinModel } from "./devin-model.js";
 import { fullAccessAuthorization, isSandboxEscalated } from "../config/index.js";
 import type { CodexApprovalPolicy, SandboxPolicy, SandboxPolicyAudit, SandboxPolicyKey } from "../config/types.js";
-import type { ClaudeConnectorOptions } from "./claude.js";
+import { validateClaudeSessionIdentity, type ClaudeConnectorOptions } from "./claude.js";
 import { applyHeadlessShellEnv, assertCodexSandboxAllowed, codexCommand, codexErrorMessage, resolveCodexModel, withSandboxPreamble } from "./codex.js";
 import { procStartTime, processGroupId, processIdentity, processIdentityMatches } from "./proc_identity.js";
 import { normalizePeerLabel, peerName, resolveSessionsDir, resolveSockDir, shouldRegister, sweepDeadStratumPeers, type PeerRecordFile } from "./peer-registry.js";
@@ -465,6 +465,8 @@ async function startClaudeBackgroundRun(options: StartBackgroundRunOptions): Pro
   if (options.sandboxMode === "danger-full-access") {
     throw new Error("sandboxMode='danger-full-access' is Codex-only; Claude does not enforce Codex sandbox modes");
   }
+  // Same typed refusal as the foreground path, before any run directory or worker exists.
+  validateClaudeSessionIdentity(options.sessionId, options.indexLabel);
   const registryRoot = options.registryRoot ?? agentRunsRoot();
   const { runId, runDir } = await newRunDir(registryRoot);
   const streamPath = join(runDir, "stream.jsonl");
