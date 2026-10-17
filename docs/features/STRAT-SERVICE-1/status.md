@@ -29,6 +29,11 @@ finished jobs' logs); a cross-tick dead-job status cache brings a warm tick to ~
 by the final Opus fix, no r3 (rule 8). Record: `smart-memory-ops/units/TICK-COST-1/README.md`. **The 2 clean pilot days restart
 from 2026-10-17 07:42**, then the owner's go-live yes.
 
+2026-10-17 14:5x: pilot clock BROKEN at 14:02. 5 deadline ticks (14:02-14:41) under 1-min load 125-142, each only 2-5 s CPU
+(machine starvation, not tick cost; normal post-TC1 ticks ~2-3 s CPU). Owner ruling via s1-chat: keep the bar, a starved tick is not
+clean; **the 2 clean pilot days restart from the first clean tick after the 1-min load is under 32**, then the owner's go-live yes.
+REPORT-DEADLINE-GROUP + TC1-F1 landed (smart-memory-ops `6dd8abb`).
+
 The sections below are the design-phase history (2026-10-08 to 10-12).
 
 **2026-10-12: DESIGN rewritten as the shrunk shape, then revised after Codex review r1 (NOT CLEAN, 14 findings, all
