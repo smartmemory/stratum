@@ -294,6 +294,24 @@ sys.exit(1)`);
     expect(JSON.parse(readFileSync(seen, "utf8"))).toEqual(["--engine=codex", "--label=l", "--model=m", "--account=inherit", "--launch-gate=full", "--max-wait-s=120", `--marker-file=${brief}`, "--json"]);
   });
 
+  it("admit itself runs without an inherited LAUNCH_GATE_ADMITTED or CLAUDECODE (the strip happens before step 1, not only in the detach env)", async () => {
+    // Mutation gate-strip (c4b): keeping LAUNCH_GATE_ADMITTED in `base` changed nothing the other rows read, because FAKE_DETACH sees the
+    // door's own label either way. This row reads the env admit gets.
+    const recorder = py(`
+open(os.environ["U2_SEEN"], "w").write(json.dumps({k: os.environ.get(k, "<unset>") for k in ("LAUNCH_GATE_ADMITTED", "CLAUDECODE")}))
+print(json.dumps({"admitted": False, "code": "gate-denied", "reason": "no", "engine": "claude", "account": None, "env": {}, "checks": [], "launch_gate_label": None}))
+sys.exit(1)`);
+    const scripts = S.fakeScripts("session_admit.py", recorder);
+    writeFileSync(join(scripts, "detach_job.py"), FAKE_DETACH);
+    const fx = S.fixture({ scripts });
+    const seen = join(fx.root, "admit-env.json");
+    const envelope = await backend(fx, { U2_SEEN: seen, LAUNCH_GATE_ADMITTED: "inherited", CLAUDECODE: "1" }).launch({
+      session: "s", label: "l", engine: "claude", model: "m", brief: join(fx.root, "b.md"), report: join(fx.root, "r.md"),
+    });
+    expect(code(envelope)).toBe("gate-denied");
+    expect(JSON.parse(readFileSync(seen, "utf8"))).toEqual({ LAUNCH_GATE_ADMITTED: "<unset>", CLAUDECODE: "<unset>" });
+  });
+
   it("mode none: launch is backend-unconfigured and runs nothing", async () => {
     const fx = S.fixture({ envDir: "unset" });
     const envelope = await backend(fx).launch({ session: "s", label: "l", engine: "claude", model: "m", brief: join(fx.root, "b.md"), report: join(fx.root, "r.md") });
