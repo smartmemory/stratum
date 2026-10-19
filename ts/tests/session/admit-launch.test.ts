@@ -116,6 +116,25 @@ describe("stratum session admit (CLI)", () => {
     expect(run.stdout).not.toContain(TOKEN);
   }, 60_000);
 
+  // Plan probes 1 to 3 (U2 section): the real session_admit.py through the CLI on the fixture.
+  const REAL_ADMIT_ROWS: Array<{ name: string; args: string[]; stdin: string; env: Partial<NodeJS.ProcessEnv>; code: string; reason?: string }> = [
+    { name: "probe 1: no --model -> gate-denied naming the explicit model", args: ["--engine", "claude", "--label", "x", "--account", "seat2"], stdin: "", env: {}, code: "gate-denied", reason: "explicit model" },
+    { name: "probe 2a: --model opus, marker text without hard: -> gate-denied", args: ["--engine", "claude", "--label", "x", "--model", "opus", "--account", "seat2"], stdin: "no marker\n", env: {}, code: "gate-denied" },
+    { name: "probe 2b: --model opus with `hard: probe of the opus rule` on stdin -> admitted", args: ["--engine", "claude", "--label", "x", "--model", "opus", "--account", "seat2"], stdin: "hard: probe of the opus rule\n", env: {}, code: "ok" },
+    { name: "probe 3: --account inherit with CLAUDE_CONFIG_DIR unset -> account-unset", args: ["--engine", "claude", "--label", "x", "--model", "sonnet", "--account", "inherit"], stdin: "", env: {}, code: "account-unset" },
+  ];
+  for (const row of REAL_ADMIT_ROWS.filter(() => HAVE_OPS)) {
+    it(`real session_admit.py: ${row.name}`, () => {
+      const fx = S.fixture();
+      openAll(fx);
+      const run = cli(fx, ["admit", ...row.args, "--launch-gate", "none", "--json"], row.env, row.stdin);
+      const envelope = run.envelope;
+      const got = envelope === null ? "no-envelope" : envelope.ok ? "ok" : envelope.refusal.code;
+      expect([got, run.status], run.stdout.slice(0, 300)).toEqual([row.code, row.code === "ok" ? 0 : 1]);
+      if (row.reason !== undefined) expect(envelope !== null && !envelope.ok ? envelope.refusal.reason : "").toContain(row.reason);
+    }, 60_000);
+  }
+
   const USAGE_ROWS: Array<{ name: string; args: string[] }> = [
     { name: "missing --engine", args: ["admit", "--label", "l", "--json"] },
     { name: "missing --label", args: ["admit", "--engine", "claude", "--json"] },
@@ -156,20 +175,20 @@ interface LaunchRun { fx: Fixture; envelope: Awaited<ReturnType<ReturnType<typeo
  * One launch on the REAL session_admit.py + detach_job.py with the fixture engine (DETACH_JOB_ENGINE_OVERRIDE, a /bin/sh -c
  * command): it records only the three variables the rows assert, writes the report and exits. Its group is killed in teardown.
  */
-async function realLaunch(options: { engine?: Vendor; account?: string; label?: string; withMax?: boolean; extra?: Partial<NodeJS.ProcessEnv> }): Promise<LaunchRun> {
+async function realLaunch(options: { engine?: Vendor; account?: string; label?: string; withMax?: boolean; extra?: Partial<NodeJS.ProcessEnv>; maxWaitS?: number; model?: string; briefText?: string | null }): Promise<LaunchRun> {
   const fx = S.fixture({ withMax: options.withMax === true });
   openAll(fx);
   if (options.withMax) putReading(fx, "max", openPct(fx), OPEN_ELAPSED_MIN);
   const brief = join(fx.root, "brief.md");
   const report = join(fx.root, "report.md");
   const childFile = join(fx.root, "child-env.txt");
-  writeFileSync(brief, `fixture brief ${S.token}\n`);
+  if (options.briefText !== null) writeFileSync(brief, options.briefText ?? `fixture brief ${S.token}\n`);
   const vars = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "LAUNCH_GATE_ADMITTED", "CLAUDECODE"];
   const engineCmd = `cat > /dev/null; { ${vars.map((v) => `printf '%s=%s\\n' ${v} "\${${v}-<unset>}"`).join("; ")}; } > '${childFile}'; echo done > '${report}'`;
   const engine = options.engine ?? "claude";
   const input: LaunchInput = {
-    session: `${S.token}-s`, label: options.label ?? `${S.token}-l`, engine, model: engine === "claude" ? "sonnet" : "gpt-6.1-sol",
-    brief, report, account: options.account ?? "seat2", maxWaitS: 60,
+    session: `${S.token}-s`, label: options.label ?? `${S.token}-l`, engine, model: options.model ?? (engine === "claude" ? "sonnet" : "gpt-6.1-sol"),
+    brief, report, account: options.account ?? "seat2", maxWaitS: options.maxWaitS ?? 60,
   };
   const envelope = await backend(fx, { DETACH_JOB_ENGINE_OVERRIDE: engineCmd, LAUNCH_GATE_LOAD_MAX: "100000", ...options.extra }).launch(input);
   let child: Record<string, string> | null = null;
@@ -220,6 +239,43 @@ describe.skipIf(!HAVE_OPS)("launch on the real scripts (fixture engine)", () => 
     expect(run.child!.CODEX_HOME).toBe(join(run.fx.root, "home", ".codex"));
     expect((run.envelope as { data: LaunchData }).data.account).toBe("codex");
   }, 120_000);
+
+  // Plan probes 4 to 6 (U2 section) on the real scripts and the fixture engine.
+  it("plan probe 4: launch --account seat3 -> meta account seat3, no account_pick, exactly one launches-log row", async () => {
+    const run = await realLaunch({ account: "seat3" });
+    expect(code(run.envelope), JSON.stringify(run.envelope)).toBe("ok");
+    const data = (run.envelope as { data: LaunchData }).data;
+    const m = meta(data);
+    expect([data.account, m.account, "account_pick" in m, launchesRows(run.fx).length]).toEqual(["seat3", "seat3", false, 1]);
+    expect(run.child!.CLAUDE_CONFIG_DIR).toBe(join(run.fx.root, "home", ".claude-seat3"));
+  }, 120_000);
+
+  for (const engine of ["claude", "codex"] as const) {
+    it(`plan probe 5 (${engine}): a held gate -> launch-gate-timeout, no engine process, no launches row, empty job registry`, async () => {
+      // LOAD_MAX=0 with IDLE_MIN=0 holds every launch on load alone (launch_gate.py docstring, LAUNCH-GATE-IDLE-1); max wait 1 s.
+      const run = await realLaunch({ engine, account: engine === "claude" ? "seat2" : "codex", maxWaitS: 1, extra: { LAUNCH_GATE_LOAD_MAX: "0", LAUNCH_GATE_IDLE_MIN: "0" } });
+      expect([code(run.envelope), run.envelope.op]).toEqual(["launch-gate-timeout", "launch"]);
+      expect(launchesRows(run.fx)).toEqual([]);
+      expect(existsSync(join(run.fx.root, "child-env.txt"))).toBe(false);
+      expect(readdirSync(run.fx.env.CLAUDE_JOBS_DIR!)).toEqual([]);
+    }, 120_000);
+  }
+
+  const BRIEF_ROWS: Array<{ name: string; briefText: string | null; model: string; expect: string }> = [
+    { name: "missing brief -> marker-unreadable", briefText: null, model: "sonnet", expect: "marker-unreadable" },
+    { name: "opus brief without hard: -> gate-denied", briefText: "no marker here\n", model: "opus", expect: "gate-denied" },
+    { name: "opus brief with hard: -> admitted", briefText: "hard: probe of the opus rule\n", model: "opus", expect: "ok" },
+  ];
+  for (const row of BRIEF_ROWS) {
+    it(`plan probe 6: ${row.name}`, async () => {
+      const run = await realLaunch({ briefText: row.briefText, model: row.model });
+      expect(code(run.envelope), JSON.stringify(run.envelope)).toBe(row.expect);
+      if (row.expect !== "ok") {
+        expect(launchesRows(run.fx)).toEqual([]);
+        expect(readdirSync(run.fx.env.CLAUDE_JOBS_DIR!)).toEqual([]);
+      }
+    }, 120_000);
+  }
 
   it("an admit refusal is returned with op launch; detach_job never runs and no launches-log row is written", async () => {
     const run = await realLaunch({ account: "nope" });
