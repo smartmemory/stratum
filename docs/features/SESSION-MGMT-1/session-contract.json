@@ -125,7 +125,7 @@
         "reason": "string",
         "engine": "'claude' | 'codex'",
         "account": "null | {id, vendor, label, config_dir_name}  (config_dir_name = basename only, e.g. '.claude-seat2')",
-        "env": "admitted: EXACTLY one key, the engine home variable (claude: CLAUDE_CONFIG_DIR, codex: CODEX_HOME) set to the chosen row's absolute, resolved config_dir, for every account mode INCLUDING inherit (never empty in mode scripts). Refused: {}. The ONLY place a path is returned.",
+        "env": "admitted: EXACTLY one key, the engine home variable (claude: CLAUDE_CONFIG_DIR, codex: CODEX_HOME) set to the chosen row's absolute, resolved config_dir, for every account mode INCLUDING inherit (never empty in mode scripts). Refused: {}. The ONLY place a path is returned. EXCEPTION (default-home rule, plan ## Risks Max row, forge-e0 2026-10-19): for the claude accounts row with default: true (Max, home ~/.claude) the value is JSON null, meaning REMOVE CLAUDE_CONFIG_DIR from the child env (an explicit ~/.claude gives Not logged in). Every consumer (U2 launch, U11, U13 assertAdmittedEnv, U14) treats null as delete-and-assert-absent, never as the string null or an empty value. When that row is retired, admit refuses it account-retired and the exception is unused.",
         "checks": "array of {name: 'account'|'retired'|'judge'|'launch-gate', result: 'pass'|'deny'|'skip', detail: string}; judge is 'skip' for codex (work_model_gate judges Claude launches)",
         "launch_gate_label": "string | null: the label recorded in the launches log when launch_gate was 'full'"
       },

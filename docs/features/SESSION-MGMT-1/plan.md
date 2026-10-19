@@ -633,6 +633,8 @@ time is not separately measured. **Not counted by either estimate:** the wait fo
   unset": the patch removes `CLAUDE_CONFIG_DIR`, and `assertAdmittedEnv` checks it is absent. Probe: U9 admits `account max` and the
   returned env carries the unset marker, not `~/.claude`. If Max has retired by the time U9 is authored, U9 refuses `max` instead and this
   row closes. MAX-SUNSET-7 adds logged-out detection to `pick`, which stops it choosing a Max that cannot run.
+  **Contract form (2026-10-19 21:xx, forge-e0, after MAX-SUNSET-7 landed with Max NOT retired, backstop `retire_after` now 2026-11-15):**
+  `operations.admit.script_output.env` carries `{"CLAUDE_CONFIG_DIR": null}` for the `default: true` row, null = delete from the child env.
 - **Security-tagged share is high (11 of 15).** Each keeps one pre-land review. The coordinator can batch U4/U6/U7 (one ops diff), U11/U12
   (one Stratum diff) and U13/U14 (one Compose diff) if the reviewer agrees.
 - **Compose and Stratum are published packages.** Behaviour changes only when `configured(env)` is true (D7), so external users see no change.
