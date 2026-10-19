@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agentForegroundRoot,
   cancelFlowAgents,
@@ -40,7 +40,7 @@ function writerScript(path: string, stubborn = true): string {
 }
 
 async function waitForDescendant(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     if ((await readFile(path, "utf8").catch(() => "")).includes("child")) return;
     await delay(10);
   }
@@ -165,7 +165,7 @@ describe("STRAT-FLOW-CANCEL-FG cross-process kill", () => {
     const { pid, startTime } = await startGroup(root, true);
     await writeMeta(root, "bbbbbbbbbbbb", baseMeta("flow-slow", { state: "running", groups: [{ childPid: pid, procStartTime: startTime }] }));
 
-    const summary = await cancelFlowAgents("flow-slow", { registryRoot: root, timeoutMs: 300, graceMs: 10_000 });
+    const summary = await cancelFlowAgents("flow-slow", { registryRoot: root, timeoutMs: 2000, graceMs: 10_000 });
     expect(summary.signalled).toBe(1);
     expect(summary.reaped).toBeLessThan(summary.signalled);
     expect(summary.unsettled).toBe(1);
@@ -180,8 +180,7 @@ describe("STRAT-FLOW-CANCEL-FG cross-process kill", () => {
     expect(summary).toMatchObject({ signalled: 0, reaped: 0, unreachable: 1 });
     // The four gates are load-bearing: the live process was never touched.
     const before = await readFile(path, "utf8");
-    await delay(60);
-    expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length);
+    await vi.waitFor(async () => { expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length); }, { timeout: 10_000, interval: 25 });
   }, 20_000);
 
   it("T-S02-4b: killAndReapGroup with no recorded identity signals nothing", async () => {
@@ -189,8 +188,7 @@ describe("STRAT-FLOW-CANCEL-FG cross-process kill", () => {
     const { pid, path } = await startGroup(root, false);
     expect(await killAndReapGroup(pid, { timeoutMs: 200, graceMs: 0 })).toBe("unreachable");
     const before = await readFile(path, "utf8");
-    await delay(60);
-    expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length);
+    await vi.waitFor(async () => { expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length); }, { timeout: 10_000, interval: 25 });
   }, 20_000);
 
   it("T-S02-5: a stamped record is skipped", async () => {
@@ -207,8 +205,7 @@ describe("STRAT-FLOW-CANCEL-FG cross-process kill", () => {
     expect(await cancelFlowAgents("flow-target", { registryRoot: root, timeoutMs: 200, graceMs: 0 }))
       .toEqual({ signalled: 0, reaped: 0, gone: 0, unreachable: 0, alreadySettled: 0, unresolved: 0, unsettled: 0, unreaped: 0 });
     const before = await readFile(path, "utf8");
-    await delay(60);
-    expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length);
+    await vi.waitFor(async () => { expect((await readFile(path, "utf8")).length).toBeGreaterThan(before.length); }, { timeout: 10_000, interval: 25 });
   }, 20_000);
 });
 

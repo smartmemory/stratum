@@ -747,6 +747,7 @@ it("bounds refusal callbacks to eight active and 32 queued attempts", async () =
     for (const socket of recipient.held) socket.end();
     await delay(100);
   }
+  await waitFor(async () => recipient.held.length, value => value === 40);
   expect(recipient.held).toHaveLength(40);
 },10000);
 it("preserves every idle notice when refusals saturate callbacks", async () => {

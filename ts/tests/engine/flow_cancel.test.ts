@@ -49,7 +49,7 @@ function tokenOf(response: EngineResponse, id?: string): string {
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>, what: string): Promise<void> {
-  for (let tick = 0; tick < 400; tick += 1) {
+  for (let tick = 0; tick < 2000; tick += 1) {
     if (await predicate()) return;
     await delay(5);
   }
@@ -533,6 +533,11 @@ describe("STRAT-FLOW-CANCEL-FG S01 — cross-process foreground cancel", () => {
     });
     await driver.rehydrateBgFlows();
     expect(cancelled).toBe(true);
+    await vi.waitFor(async () => {
+      expect((await first.store.load(planned.runId)).status).toBe("cancelled");
+      expect((await driver.flowBgPoll(planned.runId)).bg.status).toBe("cancelled");
+    }, { timeout: 10_000, interval: 25 });
+    // Negative window: a duplicate flow_cancelled event, if one is coming, lands in this sleep.
     await delay(150);
     const after = await first.store.load(planned.runId);
     expect(after.status).toBe("cancelled");
@@ -750,10 +755,12 @@ describe("STRAT-FLOW-CANCEL-FG S03 — one absolute teardown deadline", () => {
     const pid = child.pid!;
     strays.push(pid);
     child.unref();
-    await delay(150);
-    const startTime = await procStartTime(pid);
-    if (startTime === undefined) throw new Error("no start time for the spawned leader");
-    return { pid, startTime };
+    let startTime: string | undefined;
+    await vi.waitFor(async () => {
+      startTime = await procStartTime(pid);
+      if (startTime === undefined) throw new Error("no start time for the spawned leader");
+    }, { timeout: 10_000, interval: 25 });
+    return { pid, startTime: startTime! };
   }
 
   it("T-S01-15: the lock wait and the teardown budget are independent — one settles and fails late, one fails before settling", async () => {

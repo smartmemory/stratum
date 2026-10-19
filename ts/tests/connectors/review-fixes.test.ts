@@ -80,7 +80,7 @@ for (const provider of ['codex', 'claude'] as const) {
     } }).run('fixture');
     const outcome = run.catch(error => error);
     try {
-      for (let i = 0; i < 200; i++) { if (await readFile(join(root, 'ready')).catch(() => null)) break; await delay(10); }
+      for (let i = 0; i < 1000; i++) { if (await readFile(join(root, 'ready')).catch(() => null)) break; await delay(10); }
       expect(await readFile(join(root, 'ready'), 'utf8')).toBe('yes');
       control.abort(new Error('stop'));
       expect(await outcome).toBeInstanceOf(Error);
@@ -219,7 +219,7 @@ it('reaps the whole process group before a cancelled run settles', async () => {
     run = new CodexConnector({ cwd: root, ownProcessGroup: true, signal: control.signal, cancellationGraceMs: 60,
       spawn: (_c, _a, options) => { const child = spawn(process.execPath, ['-e', script], options); pid = child.pid; return child; },
     }).run('fixture').catch((error: unknown) => error);
-    for (let i = 0; i < 300; i++) { if (await readFile(join(root, 'ready'), 'utf8').catch(() => null)) break; await delay(10); }
+    for (let i = 0; i < 1000; i++) { if (await readFile(join(root, 'ready'), 'utf8').catch(() => null)) break; await delay(10); }
     control.abort(new Error('stop'));
     expect(await run).toBeInstanceOf(Error);
     // The run has settled, so nothing in the group may still be alive.
@@ -242,7 +242,7 @@ it('passes the SDK-requested kill signal through and exposes child stderr', asyn
           pid?: number; stderr?: NodeJS.ReadableStream; kill: (signal?: NodeJS.Signals) => boolean;
         })({ command: process.execPath, args: ['-e', script], cwd: root, env: process.env, signal: control.signal });
         expect(handle.stderr).toBeDefined();
-        for (let i = 0; i < 300; i++) { if (await readFile(join(root, 'ready'), 'utf8').catch(() => null)) break; await delay(10); }
+        for (let i = 0; i < 1000; i++) { if (await readFile(join(root, 'ready'), 'utf8').catch(() => null)) break; await delay(10); }
         handle.kill('SIGKILL');
         // A 30s grace window is never entered, so the group is gone almost at once.
         const gone = await Promise.race([

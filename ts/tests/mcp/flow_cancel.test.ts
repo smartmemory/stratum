@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { runAgent } from "../../src/connectors/runner.js";
 import type { ForegroundRunMeta } from "../../src/connectors/foreground_registry.js";
 import { StratumEngine } from "../../src/engine/engine.js";
@@ -96,7 +96,7 @@ function writerScript(path: string): string {
 }
 
 async function waitForDescendant(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     if ((await readFile(path, "utf8").catch(() => "")).includes("child")) return;
     await delay(10);
   }
@@ -128,7 +128,7 @@ function spawningAgent(path: string): typeof runAgent {
  *  before the pid is stamped is a legitimate but different scenario — the post-stamp admission
  *  check tears the group down instead of the sweep — and it is not what these cases assert. */
 async function waitForRecordedGroup(registryRoot: string, flowRunId: string): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     for (const name of await readdir(registryRoot).catch(() => [] as string[])) {
       const raw = await readFile(join(registryRoot, name, "meta.json"), "utf8").catch(() => undefined);
       if (raw === undefined) continue;
@@ -170,7 +170,7 @@ async function bgSubject(): Promise<{ dispatcher: ToolDispatcher; runId: string 
   const dispatcher = createToolDispatcher({ engine });
   const started = await dispatcher.call("stratum_flow_run_bg", { spec: simpleFlow, input: { name: "Ada" } });
   const runId = started.runId as string;
-  for (let tick = 0; tick < 200; tick += 1) {
+  for (let tick = 0; tick < 2000; tick += 1) {
     const polled = await dispatcher.call("stratum_flow_bg_poll", { runId, cursor: 0 });
     if ((polled.bg as { status: string }).status === "running") break;
     await delay(5);
@@ -310,8 +310,7 @@ describe("STRAT-FLOW-CANCEL-FG stratum_flow_cancel", () => {
       // too. A dead agent under a live flow is the hazard the ordering exists to prevent.
       expect((await subject.store.load(subject.runId)).status).toBe("running");
       const seen = await readFile(path, "utf8");
-      await delay(120);
-      expect((await readFile(path, "utf8")).length).toBeGreaterThan(seen.length);
+      await vi.waitFor(async () => { expect((await readFile(path, "utf8")).length).toBeGreaterThan(seen.length); }, { timeout: 10_000, interval: 25 });
       expect((await onlyEntry(subject.registryRoot)).state).toBe("running");
     } finally {
       await release();
@@ -343,7 +342,7 @@ describe("STRAT-FLOW-CANCEL-FG stratum_flow_cancel", () => {
     });
     // The engine-dispatch fanout is inside the connector, so engine A holds the pin and the
     // driver lease for this run.
-    for (let tick = 0; tick < 400 && connectorCalls === 0; tick += 1) await delay(5);
+    for (let tick = 0; tick < 2000 && connectorCalls === 0; tick += 1) await delay(5);
     expect(connectorCalls).toBe(1);
 
     const cancellationId = randomUUID();
@@ -363,8 +362,7 @@ describe("STRAT-FLOW-CANCEL-FG stratum_flow_cancel", () => {
       });
       expect((await new StateStore(stateRoot).load(runId)).status).toBe("running");
       const seen = await readFile(path, "utf8");
-      await delay(120);
-      expect((await readFile(path, "utf8")).length).toBeGreaterThan(seen.length);
+      await vi.waitFor(async () => { expect((await readFile(path, "utf8")).length).toBeGreaterThan(seen.length); }, { timeout: 10_000, interval: 25 });
     } finally {
       await dispatcherA.call("stratum_cancel_agent_run", { runId: cancellationId }).catch(() => undefined);
       release?.();

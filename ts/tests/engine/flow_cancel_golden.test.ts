@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, rm , readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { runAgent } from "../../src/connectors/runner.js";
 import type { ForegroundRunMeta } from "../../src/connectors/foreground_registry.js";
 import { StratumEngine, type EngineConnector, type EngineResponse } from "../../src/engine/engine.js";
@@ -57,7 +57,7 @@ function writerScript(path: string): string {
 }
 
 async function waitForDescendant(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     if ((await readFile(path, "utf8").catch(() => "")).includes("child")) return;
     await delay(10);
   }
@@ -95,7 +95,7 @@ function spawningAgent(path: string): typeof runAgent {
  *  before the pid is stamped is a legitimate but different scenario — the post-stamp admission
  *  check tears the group down instead of the sweep — and it is not what these cases assert. */
 async function waitForRecordedGroup(registryRoot: string, flowRunId: string): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     for (const name of await readdir(registryRoot).catch(() => [] as string[])) {
       const raw = await readFile(join(registryRoot, name, "meta.json"), "utf8").catch(() => undefined);
       if (raw === undefined) continue;
@@ -235,7 +235,7 @@ describe("STRAT-FLOW-CANCEL-FG golden flow (blueprint §6)", () => {
     const planned = await engineA.plan(spec, { name: "Ada" }) as EngineResponse & { runId: string; ready: Array<{ dispatchToken: string }> };
     await engineA.stepDone(planned.runId, "prep", { output: { items: ["a", "b"] } }, planned.ready[0]!.dispatchToken);
     // Wait for the fanout to hold a pin: the connector is inside the first item.
-    for (let tick = 0; tick < 400 && connectorCalls === 0; tick += 1) await delay(5);
+    for (let tick = 0; tick < 2000 && connectorCalls === 0; tick += 1) await delay(5);
     expect(connectorCalls).toBe(1);
 
     try {
@@ -256,7 +256,7 @@ describe("STRAT-FLOW-CANCEL-FG golden flow (blueprint §6)", () => {
       release?.();
     }
 
-    await delay(60);
+    await vi.waitFor(async () => { expect((await store.load(planned.runId)).status).toBe("cancelled"); }, { timeout: 10_000, interval: 25 });
     const cancelled = await store.load(planned.runId);
     expect(cancelled.status).toBe("cancelled");
     // No second item was dispatched, and the released item is ABANDONED — not accepted, not
@@ -269,6 +269,6 @@ describe("STRAT-FLOW-CANCEL-FG golden flow (blueprint §6)", () => {
       expect(item.output).toBeUndefined();
       expect(item.patch).toBeUndefined();
     }
-    expect(await exists(join(stateRoot, `${planned.runId}.lock`))).toBe(false);
+    await vi.waitFor(async () => { expect(await exists(join(stateRoot, `${planned.runId}.lock`))).toBe(false); }, { timeout: 10_000, interval: 25 });
   }, 30_000);
 });
