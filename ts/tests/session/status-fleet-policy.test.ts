@@ -6,7 +6,7 @@ import { backend, cli, code, type Fixture, HAVE_OPS, openAll, openPct, py, SEATS
 
 /**
  * SESSION-MGMT-1-U2: the read-only ops `status` (usage_watch status + launch_gate --status, merged) and
- * `fleet` (launch_gate --fleet). Real scripts on the fixture for the contracted paths; fixture scripts for
+ * `fleet` (launch_gate --fleet) and `policy` (session_policy --json). Real scripts on the fixture for the contracted paths; fixture scripts for
  * the shapes the real ones cannot print on demand (every validator is closed: a missing OR extra key is
  * backend-error, except forge-e0 ruling 1's cited launch_gate additions). Leak gate and fixture env: fixture.ts.
  */
@@ -201,5 +201,66 @@ describe.skipIf(!HAVE_OPS)("status / fleet on the real scripts", () => {
     expect([status.status, status.envelope?.op, fleet.status, fleet.envelope?.op], JSON.stringify(status.envelope)).toEqual([0, "status", 0, "fleet"]);
     expect([refused.status, refused.envelope && code(refused.envelope)]).toEqual([4, "backend-error"]);
     for (const args of [["status", "extra"], ["fleet", "--bogus"], ["status", "--name=x"]]) expect(cli(fx, args).status, args.join(" ")).toBe(2);
+  }, REAL_MS);
+});
+
+/** session_policy --json as the real script printed it on the fixture (probe 2026-10-20), trimmed to one key per section. */
+const POLICY_DOC: Doc = {
+  path: "usage-watch.accounts.json",
+  values: { version: 1, seat_map: { "s1-chat": "seat1" }, admission: { quota_limit_pct: 100 }, launch_gate: { fleet_max: 16 } },
+  sources: { version: "file", seat_map: "default", "launch_gate.fleet_max": "env:LAUNCH_GATE_FLEET_MAX" },
+  warnings: [],
+};
+
+const POLICY_ROWS: ReadonlyArray<{ name: string; doc: () => Doc; exit?: number; expect: string }> = [
+  { name: "policy: good document (file, default and env sources)", doc: () => POLICY_DOC, expect: "ok" },
+  { name: "policy: extra top-level key", doc: () => ({ ...POLICY_DOC, extra: 1 }), expect: "backend-error" },
+  { name: "policy: missing top-level key", doc: () => edit(POLICY_DOC, (c) => { delete c.warnings; }), expect: "backend-error" },
+  { name: "policy: values with an extra key", doc: () => edit(POLICY_DOC, (c) => { (c.values as Doc).other = 1; }), expect: "backend-error" },
+  { name: "policy: values missing a key", doc: () => edit(POLICY_DOC, (c) => { delete (c.values as Doc).launch_gate; }), expect: "backend-error" },
+  { name: "policy: path with a slash", doc: () => ({ ...POLICY_DOC, path: "/etc/usage-watch.accounts.json" }), expect: "backend-error" },
+  { name: "policy: sources value outside file/default/env:VAR", doc: () => ({ ...POLICY_DOC, sources: { version: "cli" } }), expect: "backend-error" },
+  { name: "policy: sources env: without a name", doc: () => ({ ...POLICY_DOC, sources: { version: "env:" } }), expect: "backend-error" },
+  { name: "policy: warnings not strings", doc: () => ({ ...POLICY_DOC, warnings: [1] }), expect: "backend-error" },
+  { name: "policy: exit 1 is backend-error", doc: () => POLICY_DOC, exit: 1, expect: "backend-error" },
+  { name: "policy: exit 2 is outside the contract map", doc: () => POLICY_DOC, exit: 2, expect: "backend-error" },
+];
+
+describe("policy: closed shape and the exit map", () => {
+  for (const row of POLICY_ROWS) {
+    it(row.name, async () => {
+      const fx = S.fixture({ scripts: fakeDir("session_policy.py") });
+      const envelope = await backend(fx, { U2_DOC_session_policy: JSON.stringify(row.doc()), U2_EXIT_session_policy: String(row.exit ?? 0) }).policy();
+      expect(code(envelope), JSON.stringify(envelope)).toBe(row.expect);
+      if (!envelope.ok) expect(envelope.refusal.script).toBe("session_policy.py");
+    });
+  }
+});
+
+describe.skipIf(!HAVE_OPS)("policy on the real script", () => {
+  it("ok: the four keys, values keys exactly version/seat_map/admission/launch_gate", async () => {
+    const fx = S.fixture();
+    const envelope = await backend(fx).policy();
+    expect(envelope.ok, JSON.stringify(envelope)).toBe(true);
+    if (!envelope.ok) return;
+    expect(Object.keys(envelope.data).sort()).toEqual(["path", "sources", "values", "warnings"]);
+    expect(Object.keys(envelope.data.values).sort()).toEqual(["admission", "launch_gate", "seat_map", "version"]);
+    expect(envelope.data.path).not.toContain("/");
+  }, REAL_MS);
+
+  it("a bad accounts JSON is backend-error with no record", async () => {
+    const fx = S.fixture();
+    const bad = join(fx.root, "bad-accounts.json");
+    writeFileSync(bad, "{");
+    const envelope = await backend(fx, { USAGE_WATCH_ACCOUNTS: bad, SEAT_ACCOUNTS: bad }).policy();
+    expect(code(envelope)).toBe("backend-error");
+    if (!envelope.ok) expect([envelope.refusal.script, envelope.refusal.script_exit, envelope.record]).toEqual(["session_policy.py", 1, null]);
+  }, REAL_MS);
+
+  it("CLI: policy --json exits 0 with op policy; an extra argument exits 2", () => {
+    const fx = S.fixture();
+    const ok = cli(fx, ["policy", "--json"]);
+    expect([ok.status, ok.envelope?.op], JSON.stringify(ok.envelope)).toEqual([0, "policy"]);
+    expect(cli(fx, ["policy", "extra"]).status).toBe(2);
   }, REAL_MS);
 });

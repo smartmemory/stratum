@@ -10,6 +10,7 @@ import {
   ENGINE_HOME_VAR,
   type Envelope,
   type FleetData,
+  type PolicyData,
   firstLine,
   type GateStatus,
   type HopCheckInput,
@@ -515,6 +516,18 @@ const fleetValidator: Validator = (doc, exit) => {
   return jobs.length === (doc as Record<string, unknown>).count ? null : "launch_gate fleet jobs.length differs from count";
 };
 
+/** contract `operations.policy.script_output` (ops json-contract.json "session_policy": 4 required keys, values keys fixed). */
+const POLICY_VALUES_KEYS = Object.freeze(["version", "seat_map", "admission", "launch_gate"] as const);
+const isPolicySource = (value: unknown): boolean => typeof value === "string" && (value === "file" || value === "default" || /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(value));
+const POLICY_FIELDS: FieldTable = [
+  ["path", (v) => isString(v) && (v as string).length > 0 && !(v as string).includes("/"), "a basename (no '/')"],
+  ["values", (v) => isRecord(v) && closedProblem("session_policy values", v, POLICY_VALUES_KEYS.map((key) => [key, () => true, "any"] as const), []) === null, `an object with exactly ${POLICY_VALUES_KEYS.join(", ")}`],
+  ["sources", (v) => isRecord(v) && Object.values(v).every(isPolicySource), "a map of 'file'|'default'|'env:<VAR>'"],
+  ["warnings", arrayOf(isString), "an array of strings"],
+];
+
+const policyValidator: Validator = (doc, exit) => (exit !== 0 ? "session_policy exits only 0 or 1" : closedProblem("session_policy", doc, POLICY_FIELDS, []));
+
 /** contract `operations.hop.timeout_s`: one per door. */
 export const HOP_TIMEOUT_S = Object.freeze({ check: 60, dryRun: 60, live: 300 });
 
@@ -776,6 +789,14 @@ export class ScriptsBackend implements SessionBackend {
       op: "fleet", script: "launch_gate.py", args: ["--fleet", "--json"],
       exits: { 0: "ok", 1: "backend-error" }, validate: fleetValidator, env: scriptEnv(this.#env), stdin: null,
       timeoutMs: this.#timeout("fleet", OP_TIMEOUT_S.fleet),
+    });
+  }
+
+  async policy(): Promise<Envelope<PolicyData>> {
+    return this.#run<PolicyData>({
+      op: "policy", script: "session_policy.py", args: ["--json"],
+      exits: { 0: "ok", 1: "backend-error" }, validate: policyValidator, env: scriptEnv(this.#env), stdin: null,
+      timeoutMs: this.#timeout("policy", OP_TIMEOUT_S.policy),
     });
   }
 

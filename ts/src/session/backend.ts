@@ -310,4 +310,6 @@ export interface SessionBackend {
   hopDryRun(input: HopDryRunInput): Promise<Envelope<HopData>>;
   /** session_hop live: moves a real session. CLI only (never reachable from the MCP module). */
   hopLive(input: HopLiveInput): Promise<Envelope<HopData>>;
+  /** session_policy --json: the effective policy values and where each came from (read-only). */
+  policy(): Promise<Envelope<PolicyData>>;
 }

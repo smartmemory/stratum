@@ -50,6 +50,7 @@ export async function sessionCommand(argv: readonly string[]): Promise<number> {
     if (verb === "launch") return await launchVerb(rest);
     if (verb === "status") return await readOnlyVerb(rest, (backend) => backend.status());
     if (verb === "fleet") return await readOnlyVerb(rest, (backend) => backend.fleet());
+    if (verb === "policy") return await readOnlyVerb(rest, (b) => b.policy());
     if (verb === "hop") return await hopVerb(rest);
   } catch (error) {
     if (error instanceof UsageError) return usage(error.message);
