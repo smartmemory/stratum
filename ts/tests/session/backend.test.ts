@@ -619,7 +619,7 @@ describe.skipIf(!HAVE_OPS)("real scripts (ops claude/scripts, read-only)", () =>
 
   it("pick: every seat at its ceiling -> no-eligible-account with the seat table as record", async () => {
     const fx = fixture();
-    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 95, 299);
+    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 100, 299);
     const pick = await backend(fx).pick({ kind: "author" });
     expect(code(pick), JSON.stringify(pick)).toBe("no-eligible-account");
     expect(pick.ok ? null : (pick.record as { seats: unknown[] }).seats.length).toBe(4);
@@ -688,7 +688,7 @@ describe("stratum session CLI", () => {
 
   it.skipIf(!HAVE_OPS)("probes 3, 4, 7 through the CLI on real scripts", () => {
     const fx = fixture();
-    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 95, 299);
+    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 100, 299);
     const closed = cli(fx, ["pick", "--kind", "author", "--json"]);
     expect([closed.status, closed.envelope && code(closed.envelope)]).toEqual([1, "no-eligible-account"]);
     expect(closed.envelope && !closed.envelope.ok ? (closed.envelope.record as { seats: unknown[] }).seats.length : null).toBe(4);
