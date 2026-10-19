@@ -29,6 +29,7 @@ const USAGE = [
   "         [--work-kind K] [--priority P0..P3] [--account inherit|auto|ID] [--max-wait-s N]   admit (full gate) then start a detached job",
   "  status                                                              accounts, pick recommendation and launch gate (read-only)",
   "  fleet                                                               alive detached Claude jobs vs the fleet cap (read-only)",
+  "  policy                                                              the effective session policy and where each value came from (read-only)",
   "  hop --check NAME                                                    does session NAME need a hop (read-only)",
   "  hop NAME --dry-run [--to T] [--reason R]                            the hop plan, no tab or session change",
   "  hop NAME --live [--to T] [--reason R] [--force] [--allow-closed]    move session NAME to another account (a NAME starting with - goes after --)",

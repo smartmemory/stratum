@@ -263,4 +263,12 @@ describe.skipIf(!HAVE_OPS)("policy on the real script", () => {
     expect([ok.status, ok.envelope?.op], JSON.stringify(ok.envelope)).toEqual([0, "policy"]);
     expect(cli(fx, ["policy", "extra"]).status).toBe(2);
   }, REAL_MS);
+
+  it("CLI: --help exits 0 and lists all nine verbs (pick, jobs, register, admit, launch, status, fleet, hop, policy)", () => {
+    const fx = S.fixture();
+    const help = cli(fx, ["--help"]);
+    expect(help.status).toBe(0);
+    const verbs = ["pick", "jobs", "register", "admit", "launch", "status", "fleet", "hop", "policy"];
+    expect(verbs.filter((verb) => !new RegExp(`^  ${verb} `, "m").test(help.stdout))).toEqual([]);
+  });
 });
