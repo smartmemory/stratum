@@ -1,5 +1,12 @@
 # STRAT-SERVICE-1 — status (resume point)
 
+**LIVE 2026-10-19 08:41:10 +08:00 (owner, forge-e0 tab: "sooner").** S3 step 3 done: the plist runs `tick` without `--dry-run`.
+- The owner dropped the "2 clean pilot days" bar. That reverses the 2026-10-17 keep-the-bar ruling: the 2-day shadow's purpose
+  (measuring concurrency for the O2 caps) was met 2026-10-15, and every deadline tick since was host starvation.
+- Launch-safety check: SAFE-WITH-RAMP, ramp skipped because live had no writes to make.
+- First live tick `a3970552`: 0 launched, 0 adopted, 0 stopped, 2 held.
+- Record, kill switch, rollback and follow-ups GOLIVE-F1..F3: `smart-memory-ops/units/S3-GOLIVE/README.md`.
+
 ## Build status (2026-10-14)
 
 Code lives in `~/.claude/scripts` (O5); build folder `forge/scratch/2026-10-12-strat-service-build/` (one subfolder per
