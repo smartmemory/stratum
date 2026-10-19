@@ -13,7 +13,7 @@ import {
 
 /**
  * `stratum session <verb>` (SESSION-MGMT-1, contract `operations.*.cli`, `cli_exit_codes`).
- * U1 verbs: pick, jobs, register; U2: admit, launch, status, fleet. Each prints the envelope (`--json`) or a short text form,
+ * U1 verbs: pick, jobs, register; U2: admit, launch, status, fleet, hop. Each prints the envelope (`--json`) or a short text form,
  * and exits 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.
  */
 
@@ -29,6 +29,10 @@ const USAGE = [
   "         [--work-kind K] [--priority P0..P3] [--account inherit|auto|ID] [--max-wait-s N]   admit (full gate) then start a detached job",
   "  status                                                              accounts, pick recommendation and launch gate (read-only)",
   "  fleet                                                               alive detached Claude jobs vs the fleet cap (read-only)",
+  "  hop --check NAME                                                    does session NAME need a hop (read-only)",
+  "  hop NAME --dry-run [--to T] [--reason R]                            the hop plan, no tab or session change",
+  "  hop NAME --live [--to T] [--reason R] [--force] [--allow-closed]    move session NAME to another account (a NAME starting with - goes after --)",
+  "      exactly one of --check / --dry-run / --live: none is a usage error, never a default",
   "Exit: 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.",
 ].join("\n");
 
@@ -46,6 +50,7 @@ export async function sessionCommand(argv: readonly string[]): Promise<number> {
     if (verb === "launch") return await launchVerb(rest);
     if (verb === "status") return await readOnlyVerb(rest, (backend) => backend.status());
     if (verb === "fleet") return await readOnlyVerb(rest, (backend) => backend.fleet());
+    if (verb === "hop") return await hopVerb(rest);
   } catch (error) {
     if (error instanceof UsageError) return usage(error.message);
     throw error;
@@ -201,4 +206,52 @@ async function launchVerb(args: readonly string[]): Promise<number> {
   const wait = maxWait(values);
   if (wait !== undefined) input.maxWaitS = wait;
   return emit(await createSessionBackend().launch(input as unknown as LaunchInput), values.json === true);
+}
+
+/**
+ * contract `operations.hop.cli`: exactly one door, each a literal branch calling its own backend method (forge-e0 ruling 3: no
+ * helper takes the mode as a value). --check NAME takes no positional and no plan flags; --dry-run / --live take exactly one
+ * positional name; --force / --allow-closed go with --live only.
+ */
+async function hopVerb(args: readonly string[]): Promise<number> {
+  let parsed: { values: Record<string, string | boolean | undefined>; positionals: string[] };
+  try {
+    parsed = parseArgs({
+      args: [...args], strict: true, allowPositionals: true,
+      options: {
+        check: { type: "string" }, "dry-run": { type: "boolean" }, live: { type: "boolean" }, to: { type: "string" }, reason: { type: "string" },
+        force: { type: "boolean" }, "allow-closed": { type: "boolean" }, json: { type: "boolean" },
+      },
+    }) as typeof parsed;
+  } catch (error) {
+    throw new UsageError(error instanceof Error ? error.message : String(error));
+  }
+  const { values, positionals } = parsed;
+  const check = str(values, "check");
+  const dryRun = values["dry-run"] === true;
+  const live = values.live === true;
+  if ((check !== undefined ? 1 : 0) + (dryRun ? 1 : 0) + (live ? 1 : 0) !== 1) {
+    throw new UsageError("hop needs exactly one of --check NAME, --dry-run, --live (there is no default)");
+  }
+  const to = str(values, "to");
+  const reason = str(values, "reason");
+  const force = values.force === true;
+  const allowClosed = values["allow-closed"] === true;
+  const json = values.json === true;
+  if (check !== undefined) {
+    if (positionals.length !== 0) throw new UsageError("hop --check NAME takes no positional name");
+    if (to !== undefined || reason !== undefined || force || allowClosed) throw new UsageError("hop --check takes no --to, --reason, --force or --allow-closed");
+    return emit(await createSessionBackend().hopCheck({ name: check }), json);
+  }
+  if (positionals.length !== 1) throw new UsageError("hop --dry-run / --live takes exactly one session name");
+  const name = positionals[0]!;
+  const plan = { name, ...(to !== undefined ? { to } : {}), ...(reason !== undefined ? { reason } : {}) };
+  if (dryRun) {
+    if (force || allowClosed) throw new UsageError("--force and --allow-closed go with --live only");
+    return emit(await createSessionBackend().hopDryRun(plan), json);
+  }
+  if (live) {
+    return emit(await createSessionBackend().hopLive({ ...plan, ...(force ? { force: true } : {}), ...(allowClosed ? { allowClosed: true } : {}) }), json);
+  }
+  throw new UsageError("hop needs exactly one of --check NAME, --dry-run, --live (there is no default)");
 }

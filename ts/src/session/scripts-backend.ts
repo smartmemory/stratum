@@ -12,6 +12,12 @@ import {
   type FleetData,
   firstLine,
   type GateStatus,
+  type HopCheckInput,
+  type HopData,
+  type HopDryRunInput,
+  type HopLiveInput,
+  HOP_RESULTS,
+  type HopResult,
   isRefusalCode,
   JOB_KINDS,
   type JobsListData,
@@ -509,6 +515,48 @@ const fleetValidator: Validator = (doc, exit) => {
   return jobs.length === (doc as Record<string, unknown>).count ? null : "launch_gate fleet jobs.length differs from count";
 };
 
+/** contract `operations.hop.timeout_s`: one per door. */
+export const HOP_TIMEOUT_S = Object.freeze({ check: 60, dryRun: 60, live: 300 });
+
+/** contract `operations.hop.script_output` (ops json-contract.json "session_hop": these 8 keys required, none optional). */
+const HOP_FIELDS: FieldTable = [
+  ["result", (v) => isOneOf(HOP_RESULTS, v), `one of ${HOP_RESULTS.join(", ")}`], ["name", isString, "a string"],
+  ["from", isStringOrNull, "string|null"], ["to", isStringOrNull, "string|null"],
+  ["hop_recommended", (v) => v === null || typeof v === "boolean", "boolean|null"], ["reason", isString, "a string"], ["line", isString, "a string"],
+  ["left_open", arrayOf(isString), "an array of tab ids"],
+];
+
+/**
+ * Per door: script exit -> the results that exit may carry (session_hop.py:11-17, ops json-contract.json "session_hop"
+ * exit_codes) and the door's exit map (contract `script_exit_check` / `script_exit_hop`). A result outside its door's
+ * row (HOPPED from a dry-run, NOT-READY from a check) is backend-error: the door never reports what it did not ask for.
+ */
+const HOP_CHECK_RESULTS: Readonly<Record<number, readonly HopResult[]>> = Object.freeze({ 0: ["OK"], 1: ["HOP"], 2: ["UNKNOWN"] });
+const HOP_DRY_RUN_RESULTS: Readonly<Record<number, readonly HopResult[]>> = Object.freeze({ 0: ["DRY-RUN", "ALREADY"], 2: ["REFUSED"], 3: ["BUSY"] });
+const HOP_LIVE_RESULTS: Readonly<Record<number, readonly HopResult[]>> = Object.freeze({
+  0: ["HOPPED", "ALREADY"], 2: ["REFUSED"], 3: ["BUSY"], 4: ["NOT-READY"], 5: ["PARTIAL"],
+});
+const HOP_CHECK_EXITS = Object.freeze({ 0: "ok", 1: "ok", 2: "backend-error" } as const);
+const HOP_EXITS = Object.freeze({ 0: "ok", 2: "hop-refused", 3: "hop-busy", 4: "hop-not-ready", 5: "hop-partial" } as const);
+
+/** The record for `name` whose result is one its door allows at this exit. Takes a results table, never a mode: it cannot choose an argv. */
+function hopValidator(name: string, results: Readonly<Record<number, readonly HopResult[]>>): Validator {
+  return (doc, exit) => {
+    const shape = closedProblem("hop output", doc, HOP_FIELDS, []);
+    if (shape !== null) return shape;
+    const record = doc as unknown as HopData;
+    if (record.name !== name) return "hop output name differs from the request";
+    if (!(results[exit] ?? []).includes(record.result)) return `hop exit ${exit} with result ${record.result}`;
+    // hop_recommended: true for HOP, false for OK, null for UNKNOWN and every hop-mode result.
+    const recommended = record.result === "HOP" ? true : record.result === "OK" ? false : null;
+    if (record.hop_recommended !== recommended) return `hop result ${record.result} with hop_recommended ${String(record.hop_recommended)}`;
+    // left_open: the tabs a human must see to; NOT-READY always leaves the new tab, every result but NOT-READY / PARTIAL leaves none.
+    if (record.result === "NOT-READY" && record.left_open.length === 0) return "hop NOT-READY without the new tab in left_open";
+    if (record.result !== "NOT-READY" && record.result !== "PARTIAL" && record.left_open.length !== 0) return `hop result ${record.result} with a non-empty left_open`;
+    return null;
+  };
+}
+
 // ---------------------------------------------------------------- the backend
 
 interface OpSpec {
@@ -521,6 +569,8 @@ interface OpSpec {
   readonly env: NodeJS.ProcessEnv;
   readonly stdin: string | null;
   readonly timeoutMs: number;
+  /** A refusal exit without the op's JSON record is backend-error (hop: --json prints one record on every exit path of main). */
+  readonly recordRequired?: boolean;
 }
 
 export class ScriptsBackend implements SessionBackend {
@@ -729,6 +779,50 @@ export class ScriptsBackend implements SessionBackend {
     });
   }
 
+  // Hop is three doors (contract `operations.hop.script_argv_by_mode`, forge-e0 ruling 2): each method writes its own literal
+  // argv, and nothing shared takes the mode as a value. A check or a dry-run can only ever build an argv carrying --check= or
+  // --dry-run before the `--`; only hopLive builds the live argv, and the MCP module never calls it (plan D4).
+
+  async hopCheck(input: HopCheckInput): Promise<Envelope<HopData>> {
+    const bad = hopNameProblem(input.name);
+    if (bad !== null) return refused("hop", this.kind, "usage", bad);
+    return this.#run<HopData>({
+      op: "hop", script: "session_hop.py",
+      args: [`--check=${input.name}`, "--json"],
+      exits: HOP_CHECK_EXITS, validate: hopValidator(input.name, HOP_CHECK_RESULTS), recordRequired: true,
+      env: scriptEnv(this.#env), stdin: null, timeoutMs: this.#timeout("hop", HOP_TIMEOUT_S.check),
+    });
+  }
+
+  async hopDryRun(input: HopDryRunInput): Promise<Envelope<HopData>> {
+    const bad = hopNameProblem(input.name) ?? hopToReasonProblem(input);
+    if (bad !== null) return refused("hop", this.kind, "usage", bad);
+    return this.#run<HopData>({
+      op: "hop", script: "session_hop.py",
+      args: ["--dry-run", `--to=${input.to ?? "auto"}`, `--reason=${input.reason ?? "quota hop"}`, "--json", "--", input.name],
+      exits: HOP_EXITS, validate: hopValidator(input.name, HOP_DRY_RUN_RESULTS), recordRequired: true,
+      env: scriptEnv(this.#env), stdin: null, timeoutMs: this.#timeout("hop", HOP_TIMEOUT_S.dryRun),
+    });
+  }
+
+  async hopLive(input: HopLiveInput): Promise<Envelope<HopData>> {
+    const bad = hopNameProblem(input.name) ?? hopToReasonProblem(input) ?? usageCheck([
+      [input.force === undefined || typeof input.force === "boolean", "force must be a boolean"],
+      [input.allowClosed === undefined || typeof input.allowClosed === "boolean", "allow_closed must be a boolean"],
+    ]);
+    if (bad !== null) return refused("hop", this.kind, "usage", bad);
+    return this.#run<HopData>({
+      op: "hop", script: "session_hop.py",
+      args: [
+        `--to=${input.to ?? "auto"}`, `--reason=${input.reason ?? "quota hop"}`,
+        ...(input.force === true ? ["--force"] : []), ...(input.allowClosed === true ? ["--allow-closed"] : []),
+        "--json", "--", input.name,
+      ],
+      exits: HOP_EXITS, validate: hopValidator(input.name, HOP_LIVE_RESULTS), recordRequired: true,
+      env: scriptEnv(this.#env), stdin: null, timeoutMs: this.#timeout("hop", HOP_TIMEOUT_S.live),
+    });
+  }
+
   #timeout(op: SessionOp, fallbackSOrMs: number): number {
     const override = this.#timeoutsMs[op];
     if (override !== undefined) return override;
@@ -789,6 +883,9 @@ export class ScriptsBackend implements SessionBackend {
     }
     // A refusal: its stdout is either nothing or one JSON document of the op's shape.
     let record: unknown = null;
+    if (doc === NO_JSON && spec.recordRequired === true) {
+      return refused(op, kind, "backend-error", `${script} exited ${exit} without its JSON record${stderrLine ? `: ${stderrLine}` : ""}`, script, exit);
+    }
     if (doc !== NO_JSON) {
       const wrong = spec.validate(doc, exit);
       if (wrong !== null) return refused(op, kind, "backend-error", `${script}: refusal output of the wrong shape: ${wrong}`, script, exit);
@@ -815,6 +912,18 @@ export function admittedChildEnv(childEnv: NodeJS.ProcessEnv, admitted: Readonly
     else env[key] = value;
   }
   return env;
+}
+
+/** contract `operations.hop.input.name`: non-empty, no NUL (nor any other control character: the name is one line of argv). Checked before any spawn. */
+function hopNameProblem(name: unknown): string | null {
+  return typeof name === "string" && name.length > 0 && textOk(name) ? null : "name must be a non-empty string without NUL or control characters";
+}
+
+function hopToReasonProblem(input: HopDryRunInput): string | null {
+  return usageCheck([
+    [input.to === undefined || tokenOk(input.to), "to must be non-empty, trimmed, one line"],
+    [input.reason === undefined || textOk(input.reason), "reason must be one line of text without NUL"],
+  ]);
 }
 
 function usageCheck(rules: ReadonlyArray<readonly [boolean, string]>): string | null {

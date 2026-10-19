@@ -304,4 +304,10 @@ export interface SessionBackend {
   status(): Promise<Envelope<StatusData>>;
   /** launch_gate --fleet (read-only). */
   fleet(): Promise<Envelope<FleetData>>;
+  /** session_hop --check: ok with hop_recommended true/false; an unusable reading is backend-error with the record. */
+  hopCheck(input: HopCheckInput): Promise<Envelope<HopData>>;
+  /** session_hop --dry-run: the plan, no tab or session change. */
+  hopDryRun(input: HopDryRunInput): Promise<Envelope<HopData>>;
+  /** session_hop live: moves a real session. CLI only (never reachable from the MCP module). */
+  hopLive(input: HopLiveInput): Promise<Envelope<HopData>>;
 }
