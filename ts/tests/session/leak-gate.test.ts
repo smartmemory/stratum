@@ -1,13 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { gate, listing } from "./leak-gate.js";
+import { checkContent, gate, listing, TOKEN_READ_CAP } from "./leak-gate.js";
 
 /**
  * SESSION-MGMT-1-U1-FU2: the leak gate fails on any difference in a strict dir (review F4's three
  * repros: a new untagged file, a deleted file, an in-place change) and keeps the token filter in
- * the noisy dirs. Run on a scratch-only tree, never the real ones.
+ * the noisy dirs. U1-FU4: the token arm re-reads whole changed files (same-size rewrite, token
+ * before the old EOF while growing), fails a removed token path, and fails closed over the read
+ * cap. Run on a scratch-only tree, never the real ones.
  */
 
 const TOKEN = "u1lgfixture";
@@ -16,11 +18,14 @@ let STRICT = "";
 let NOISY = "";
 let LOOSE = "";
 
-const run = (mutate: () => void) => {
+const run = (mutate: () => void, readCap?: number) => {
   const before = listing([STRICT, NOISY]);
   mutate();
-  return gate(before, listing([STRICT, NOISY]), { strictDirs: [STRICT], looseDirs: [LOOSE], token: TOKEN });
+  return gate(before, listing([STRICT, NOISY]), { strictDirs: [STRICT], looseDirs: [LOOSE], token: TOKEN, ...(readCap === undefined ? {} : { readCap }) });
 };
+
+const BIG_OLD = "x".repeat(100);
+const FIXED_MTIME = 1_700_000_000;
 
 /** Every row starts from the same fresh tree. */
 beforeEach(() => {
@@ -36,12 +41,14 @@ beforeEach(() => {
   writeFileSync(join(STRICT, "a.txt"), "aaaa");
   writeFileSync(join(STRICT, "sub", "b.txt"), "bbbb");
   writeFileSync(join(NOISY, "live.log"), "line\n");
-  utimesSync(join(STRICT, "a.txt"), 1_700_000_000, 1_700_000_000);
+  writeFileSync(join(NOISY, "big.log"), BIG_OLD);
+  writeFileSync(join(NOISY, `${TOKEN}-old.json`), "{}");
+  for (const file of [join(STRICT, "a.txt"), join(NOISY, "big.log")]) utimesSync(file, FIXED_MTIME, FIXED_MTIME); // a rewrite is then always a new mtime
 });
 
 afterAll(() => { if (TREE) rmSync(TREE, { recursive: true, force: true }); });
 
-interface Row { name: string; mutate: () => void; violations: RegExp[]; other: number }
+interface Row { name: string; mutate: () => void; violations: RegExp[]; other: number; readCap?: number }
 
 const ROWS: Row[] = [
   { name: "no change passes", mutate: () => undefined, violations: [], other: 0 },
@@ -56,15 +63,48 @@ const ROWS: Row[] = [
   { name: "an untagged change in a noisy dir is counted, not failed", mutate: () => writeFileSync(join(NOISY, "live.log"), "line\nmore\n"), violations: [], other: 1 },
   { name: "a noisy-dir file whose name carries the token fails", mutate: () => writeFileSync(join(NOISY, `${TOKEN}-x.json`), "{}"), violations: [/^token .*u1lgfixture-x\.json$/], other: 0 },
   { name: "a noisy-dir append whose new bytes carry the token fails", mutate: () => writeFileSync(join(NOISY, "live.log"), `line\n${TOKEN} appended\n`), violations: [/^token .*live\.log$/], other: 0 },
+  // U1-FU4: the token arm reads whole changed files and watches removals
+  { name: "FU4 repro: same-size rewrite that puts the token inside an existing file", mutate: () => writeFileSync(join(NOISY, "big.log"), `${TOKEN}${"x".repeat(100 - TOKEN.length)}`), violations: [/^token .*big\.log$/], other: 0 },
+  { name: "FU4 repro: token inserted before the old EOF while the file grows", mutate: () => writeFileSync(join(NOISY, "big.log"), `${TOKEN}${BIG_OLD}${BIG_OLD}`), violations: [/^token .*big\.log$/], other: 0 },
+  { name: "FU4 repro: deleting a token-named file", mutate: () => rmSync(join(NOISY, `${TOKEN}-old.json`)), violations: [/^removed-token .*u1lgfixture-old\.json$/], other: 0 },
+  { name: "a same-size rewrite without the token is counted, not failed", mutate: () => writeFileSync(join(NOISY, "big.log"), "y".repeat(100)), violations: [], other: 1 },
+  { name: "deleting an untagged file in a noisy dir is not a failure", mutate: () => rmSync(join(NOISY, "big.log")), violations: [], other: 0 },
+  { name: "a new file whose untagged name hides the token in its content fails", mutate: () => writeFileSync(join(NOISY, "fresh.log"), `a ${TOKEN} b`), violations: [/^token .*fresh\.log$/], other: 0 },
+  { name: "a new symlink whose target path carries the token fails", mutate: () => symlinkSync(join(TREE, `${TOKEN}-target`), join(NOISY, "ln")), violations: [/^token .*ln$/], other: 0 },
+  { name: "a changed file over the read cap fails closed, token or not", mutate: () => writeFileSync(join(NOISY, "big.log"), "z".repeat(101)), violations: [/^over-cap .*big\.log \(101 bytes\)$/], other: 0, readCap: 100 },
+  { name: "an unreadable changed file fails closed", mutate: () => { writeFileSync(join(NOISY, "big.log"), "q"); chmodSync(join(NOISY, "big.log"), 0o000); }, violations: [/^unreadable .*big\.log: .*EACCES/], other: 0 },
+  { name: "a loose-subtree file with the token in its content fails", mutate: () => writeFileSync(join(LOOSE, "run.json"), `{"s":"${TOKEN}"}`), violations: [/^token .*run\.json$/], other: 0 },
 ];
 
 describe("leak gate: strict dirs fail on any difference, noisy dirs on the run token", () => {
   for (const row of ROWS) {
     it(row.name, () => {
-      const result = run(row.mutate);
+      const result = run(row.mutate, row.readCap);
       expect(result.violations.length, result.violations.join(" | ")).toBe(row.violations.length);
       row.violations.forEach((pattern, i) => expect(result.violations[i]).toMatch(pattern));
       expect(result.otherChanges).toBe(row.other);
     });
   }
+});
+
+describe("leak gate: typed fallbacks", () => {
+  it("a changed file that vanished before its content was read is a warning, not a violation", () => {
+    const before = listing([NOISY]);
+    const ghost = join(NOISY, "ghost.log");
+    const after = new Map(before).set(ghost, { kind: "file", size: 3, mtimeMs: 1 });
+    const result = gate(before, after, { strictDirs: [STRICT], token: TOKEN });
+    expect(result.violations).toEqual([]);
+    expect(result.warnings).toEqual([`vanished before its content was read: ${ghost}`]);
+    expect(result.otherChanges).toBe(1);
+  });
+
+  it("checkContent reports each outcome as its own kind, and the default cap is 128 MiB", () => {
+    const file = join(NOISY, "probe.txt");
+    writeFileSync(file, `x${TOKEN}`);
+    expect(checkContent(file, TOKEN).kind).toBe("hit");
+    expect(checkContent(file, "nomatch").kind).toBe("miss");
+    expect(checkContent(file, TOKEN, 2)).toEqual({ kind: "over-cap", size: 1 + TOKEN.length });
+    expect(checkContent(join(NOISY, "missing.txt"), TOKEN).kind).toBe("vanished");
+    expect(TOKEN_READ_CAP).toBe(128 * 1024 * 1024);
+  });
 });

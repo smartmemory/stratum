@@ -26,6 +26,7 @@ import {
   type SessionBackend,
   type SessionOp,
   VENDORS,
+  WORK_KINDS,
 } from "./backend.js";
 
 /**
@@ -208,7 +209,7 @@ const DIAGNOSTIC_SOURCES = ["registry", "priority", "queue"] as const;
 
 /** contract `operations.pick.script_output.choice`. */
 const PICK_CHOICE_FIELDS: FieldTable = [
-  ["id", isString, "a string"], ["vendor", isString, "a string"], ["label", isStringOrNull, "string|null"], ["command", isString, "a string"],
+  ["id", isString, "a string"], ["vendor", (v) => isOneOf(VENDORS, v), `one of ${VENDORS.join(", ")}`], ["label", isStringOrNull, "string|null"], ["command", isString, "a string"],
 ];
 /** contract `operations.pick.script_output.seats[]`; `used` is null for a seat with no usable 5h reading (usage_watch.py:1908). */
 const PICK_SEAT_REQUIRED: FieldTable = [
@@ -251,8 +252,8 @@ function pickValidator(input: PickInput): Validator {
 
 /** The registry fields shared by a list row and the stored add event (claude/scripts/json-contract.json `list`, jobs.py:296-312). */
 const JOB_OPTIONAL_FIELDS: FieldTable = [
-  ["pid", isPosInt, "a positive integer"], ["log", isString, "a string"], ["work_kind", isString, "a string"],
-  ["vendor", (v) => isOneOf(VENDORS, v), "claude|codex"], ["model", isString, "a string"], ["account", isString, "a string"],
+  ["pid", isPosInt, "a positive integer"], ["log", isString, "a string"], ["work_kind", (v) => isOneOf(WORK_KINDS, v), `one of ${WORK_KINDS.join(", ")}`],
+  ["vendor", (v) => isOneOf(VENDORS, v), `one of ${VENDORS.join(", ")}`], ["model", isString, "a string"], ["account", isString, "a string"],
   ["for_id", isString, "a string"], ["session_id", isString, "a string"],
   ["done_ts", isFiniteNumber, "a finite number"], ["outcome", (v) => isOneOf(JOB_OUTCOMES, v), `one of ${JOB_OUTCOMES.join(", ")}`],
   ["rounds", isNonNegInt, "a non-negative integer"],

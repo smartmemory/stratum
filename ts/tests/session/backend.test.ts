@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadSessionConfig, loadStratumConfig } from "../../src/config/index.js";
 import { resolveLearnConfig } from "../../src/config/learn.js";
 import { gate, listing, type Listing } from "./leak-gate.js";
+import { WORK_KINDS } from "../../src/session/backend.js";
 import { cliExitFor, configured, createSessionBackend, type Envelope, MARKER_CAP_BYTES } from "../../src/session/index.js";
 
 /**
@@ -73,7 +74,8 @@ beforeAll(() => {
 
 afterAll(() => {
   // Fixture engines: U1 starts none (no launch op); the timeout row kills its own group.
-  const { violations, otherChanges } = gate(BEFORE, listing(WATCHED_DIRS), { strictDirs: STRICT_DIRS, looseDirs: LOOSE_DIRS, token: TOKEN });
+  const { violations, warnings, otherChanges } = gate(BEFORE, listing(WATCHED_DIRS), { strictDirs: STRICT_DIRS, looseDirs: LOOSE_DIRS, token: TOKEN });
+  for (const warning of warnings) process.stderr.write(`[leak-gate] WARNING ${warning}\n`);
   if (ROOT) rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   process.stderr.write(`[leak-gate] token=${TOKEN} violations=${violations.length} other-changes(live sessions)=${otherChanges}\n`);
   if (violations.length > 0) throw new Error(`leak gate: real state touched by this run: ${violations.join(", ")}`);
@@ -447,6 +449,8 @@ const SHAPE_ROWS: ShapeRow[] = [
   { name: "pick: seat target is a string", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "target"], "40")) },
   { name: "pick: seat behind is a string", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "behind"], "1")) },
   { name: "pick: choice label is a number", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "label"], 5)), choiceShape: true },
+  { name: "pick: choice vendor outside the enum (U1-FU3 repro: gemini)", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "vendor"], "gemini")), choiceShape: true },
+  { name: "pick: choice vendor is a number", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "vendor"], 1)), choiceShape: true },
   // jobs list: every required row key, every diagnostic key, the enums
   ...ROW_KEYS.map((k): ShapeRow => ({ name: `jobs: row missing ${k}`, op: "jobs", doc: edit(GOOD_JOBS, without("rows", k)) })),
   ...DIAG_KEYS.map((k): ShapeRow => ({ name: `jobs: diagnostic missing ${k}`, op: "jobs", doc: edit(GOOD_JOBS, without("diagnostics", k)) })),
@@ -463,6 +467,11 @@ const SHAPE_ROWS: ShapeRow[] = [
   { name: "jobs: diagnostic source outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["diagnostics", "source"], "elsewhere")) },
   { name: "jobs: diagnostic affects item lacks session", op: "jobs", doc: edit(GOOD_JOBS, setAt(["diagnostics", "affects"], [{ id: null }])) },
   { name: "jobs: bad_count missing", op: "jobs", doc: edit(GOOD_JOBS, without("bad_count")) },
+  { name: "jobs: envelope missing rows (U1-FU3)", op: "jobs", doc: edit(GOOD_JOBS, without("rows")) },
+  { name: "jobs: envelope missing diagnostics (U1-FU3)", op: "jobs", doc: edit(GOOD_JOBS, without("diagnostics")) },
+  { name: "jobs: diagnostic affects item missing id (U1-FU3)", op: "jobs", doc: edit(GOOD_JOBS, without("diagnostics", "affects", "id")) },
+  { name: "jobs: row work_kind outside the enum (U1-FU3 repro: nope)", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "work_kind"], "nope")) },
+  { name: "jobs: row vendor outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "vendor"], "gemini")) },
   // jobs register: the stored add event
   ...ADD_KEYS.map((k): ShapeRow => ({ name: `register: missing ${k}`, op: "register", doc: edit(GOOD_ADD, without(k)) })),
   { name: "register: pid is a string", op: "register", doc: edit(GOOD_ADD, setAt(["pid"], "1")) },
@@ -470,6 +479,7 @@ const SHAPE_ROWS: ShapeRow[] = [
   { name: "register: vendor outside the enum", op: "register", doc: edit(GOOD_ADD, setAt(["vendor"], "gemini")) },
   { name: "register: priority outside the enum", op: "register", doc: edit(GOOD_ADD, setAt(["priority"], "P9")) },
   { name: "register: ts is not finite (string)", op: "register", doc: edit(GOOD_ADD, setAt(["ts"], "now")) },
+  { name: "register: work_kind outside the enum (U1-FU3 repro: nope)", op: "register", doc: edit(GOOD_ADD, setAt(["work_kind"], "nope")) },
 ];
 
 const SHAPE_OK_ROWS: ShapeRow[] = [
@@ -479,6 +489,9 @@ const SHAPE_OK_ROWS: ShapeRow[] = [
   { name: "jobs: a done row with every optional key", op: "jobs",
     doc: edit(GOOD_JOBS, (c) => { c.rows = [{ ...GOOD_ROW, status: "done", pid: 7, log: "/l", work_kind: "author", vendor: "codex", model: "m", account: "a", for_id: "f", session_id: "s", done_ts: 2, outcome: "passed", rounds: 1 }]; }) },
   { name: "register: the bare add event", op: "register", doc: GOOD_ADD },
+  { name: "pick: choice vendor codex", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "vendor"], "codex")) },
+  { name: "jobs: every work_kind member", op: "jobs", doc: edit(GOOD_JOBS, (c) => { c.rows = WORK_KINDS.map((work_kind, i) => ({ ...GOOD_ROW, id: `${TOKEN}-wk${i}`, work_kind })); }) },
+  { name: "register: work_kind land", op: "register", doc: edit(GOOD_ADD, (c) => { c.work_kind = "land"; }) },
 ];
 
 /** A refusal record must pass the same validator: exit 1 for pick (choice null), jobs and register. */
