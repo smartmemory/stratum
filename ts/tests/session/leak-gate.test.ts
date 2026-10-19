@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { checkContent, gate, listing, TOKEN_READ_CAP } from "./leak-gate.js";
+import { checkContent, gate, listing, mintToken, TOKEN_READ_CAP } from "./leak-gate.js";
 
 /**
  * SESSION-MGMT-1-U1-FU2: the leak gate fails on any difference in a strict dir (review F4's three
@@ -106,5 +106,25 @@ describe("leak gate: typed fallbacks", () => {
     expect(checkContent(file, TOKEN, 2)).toEqual({ kind: "over-cap", size: 1 + TOKEN.length });
     expect(checkContent(join(NOISY, "missing.txt"), TOKEN).kind).toBe("vanished");
     expect(TOKEN_READ_CAP).toBe(128 * 1024 * 1024);
+  });
+});
+
+describe("leak gate: documented removal boundary (SESSION-MGMT-1-LEAKGATE-TS-1)", () => {
+  it("a removed file whose CONTENT carries the token but whose path does not passes: contract test_fixture.leak_gate, isolation covers it", () => {
+    const plain = join(NOISY, "plain.log");
+    writeFileSync(plain, `${TOKEN} in a baseline file`); // U1-FU34 review F1 repro; unreachable in the real suite (token minted before the baseline)
+    const before = listing([STRICT, NOISY]);
+    rmSync(plain);
+    const result = gate(before, listing([STRICT, NOISY]), { strictDirs: [STRICT], looseDirs: [LOOSE], token: TOKEN });
+    expect(result.violations).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("mintToken returns distinct prefixed hex tokens", () => {
+    const a = mintToken("u1lg");
+    const b = mintToken("u1lg");
+    expect(a).toMatch(/^u1lg[0-9a-f]{8,}$/);
+    expect(b).toMatch(/^u1lg[0-9a-f]{8,}$/);
+    expect(a).not.toBe(b);
   });
 });
