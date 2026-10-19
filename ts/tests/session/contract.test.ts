@@ -6,9 +6,9 @@ import { CONTRACT_FILE, type Fixture, HAVE_OPS, openAll, OPS_SCRIPTS, py, script
 
 /**
  * SESSION-MGMT-1-U2 review item 7: session-contract.json `operations.<op>.script_output` against what the REAL ops script prints on the
- * fixture (missing AND extra keys), cross-checked with the ops json-contract.json entry for the same script. The only keys allowed beyond the
- * session-contract are the table below (the same additions scripts-backend.ts GATE_STATUS_ADDITIONS / GATE_LAUNCHES_ADDITIONS allow);
- * any other extra key fails. Hop runs `--check=` only, under SESSION_HOP_ITERM_FIXTURE; launch runs with the fixture engine
+ * fixture (missing AND extra keys), cross-checked with the ops json-contract.json entry for the same script. The expected-extra table below is
+ * empty (the contract lists every key the scripts emit), so any extra or missing key fails. relaunch_print runs `seat_relaunch.py --all --json`,
+ * which only prints (its docstring, seat_relaunch.py:2-3), and only under the fixture env. Hop runs `--check=` only, under SESSION_HOP_ITERM_FIXTURE; launch runs with the fixture engine
  * (DETACH_JOB_ENGINE_OVERRIDE). No live session, tab or server is ever touched. Leak gate and fixture env: fixture.ts.
  */
 
@@ -217,6 +217,20 @@ describe.skipIf(!HAVE_OPS)("session-contract script_output vs the real ops scrip
     expect(problems("jobs_register", [{ part: "jobs_register", keys: keysOf(doc) }])).toEqual([]);
   }, REAL_MS);
 
+  it("relaunch_print (seat_relaunch.py --all --json: print-only, fixture env only)", () => {
+    const fx = S.fixture();
+    openAll(fx);
+    const run = spawnSync(fx.env.STRATUM_SESSION_PYTHON ?? "python3", [join(fx.scripts, "seat_relaunch.py"), "--all", "--json"], {
+      env: scriptRunEnv(fx, {}), cwd: fx.root, encoding: "utf8", timeout: 120_000,
+    });
+    const rows = JSON.parse(run.stdout) as Json[];
+    // Exit 1 when any row is refused (seat_relaunch.py main: `rc = 1 if any(r['refused'] ...)`), 0 otherwise; the document is the same either way.
+    expect(run.status, run.stderr.slice(0, 200)).toBe(rows.some((row) => row.refused !== null) ? 1 : 0);
+    expect(Array.isArray(rows) && rows.length > 0, "one row per map name").toBe(true);
+    const spec = contractKeys(((sessionContract().relaunch_print as Json).script_output as string).replace(/^array of /, ""));
+    for (const row of rows) expect(keyProblem(`relaunch_print row ${String(row.session)}`, keysOf(row), spec), JSON.stringify(row)).toBeNull();
+  }, REAL_MS);
+
   it("policy (session_policy --json)", () => {
     const fx = S.fixture();
     const { doc } = runScript(fx, "session_policy.py", ["--json"]);
@@ -226,9 +240,8 @@ describe.skipIf(!HAVE_OPS)("session-contract script_output vs the real ops scrip
 
 describe("the comparison itself", () => {
   it("contract parse: every op with a script_output has a non-empty key set", () => {
-    // relaunch_print (seat_relaunch.py --all --json) is the one op not run here: the unit brief forbids running seat_relaunch.py.
-    const ops = Object.entries(sessionContract()).filter(([name, op]) => op.script_output !== undefined && name !== "relaunch_print");
-    expect(ops.map(([name]) => name).sort()).toEqual(["admit", "fleet", "hop", "jobs_list", "jobs_register", "launch", "pick", "policy", "status"]);
+    const ops = Object.entries(sessionContract()).filter(([name, op]) => op.script_output !== undefined);
+    expect(ops.map(([name]) => name).sort()).toEqual(["admit", "fleet", "hop", "jobs_list", "jobs_register", "launch", "pick", "policy", "relaunch_print", "status"]);
     for (const [name, op] of ops) {
       const output = op.script_output;
       const keys = name === "status"
