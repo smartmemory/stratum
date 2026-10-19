@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -115,25 +115,58 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
     expect(existsSync(layout.credentialsCopyPath)).toBe(false);
   });
 
-  it("SIGTERM to the group (stratum cancel): the trap still removes the credentials copy", async () => {
+  // One table: a group signal while the agent runs (stratum cancel is TERM; INT and HUP are handled the same).
+  // The stub sleeps 30 s, so a close later than 5 s means the cancel was consumed. rc is 128+signo.
+  it.each([
+    ["SIGTERM", 143],
+    ["SIGINT", 130],
+    ["SIGHUP", 129],
+  ] as const)("%s to the group while the agent runs: prompt exit, copy removed, rc %i, one sentinel", async (signal, rc) => {
     const { layout, env, stub } = scaffold(temporaryRoot());
     stub("devin", "sleep 30");
     const child = spawn("sh", [layout.wrapperPath, "devin", "-p"], {
       env, stdio: ["ignore", "ignore", "ignore"], detached: true,
     });
-    // Wait for the copy to exist, then SIGTERM the wrapper's group.
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
     const deadline = Date.now() + 5_000;
     while (!existsSync(layout.credentialsCopyPath)) {
       if (Date.now() > deadline) throw new Error("wrapper never copied credentials");
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    process.kill(-child.pid!, "SIGTERM");
-    await new Promise<void>((resolve) => child.once("close", () => resolve()));
+    const sentAt = Date.now();
+    process.kill(-child.pid!, signal);
+    await Promise.race([
+      closed,
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`${signal} consumed: wrapper still alive after 5 s`)), 5_000)),
+    ]);
+    expect(Date.now() - sentAt).toBeLessThan(5_000);
     expect(existsSync(layout.credentialsCopyPath)).toBe(false);
-    // On this sh the TERM trap fires and the script continues: devin's rc is
-    // still written — an exit.rc is present on every handled exit (verified:
-    // group SIGTERM yields 143). A wrapper that dies on SIGKILL is the only
-    // exit without one, and that is the sweep's case (D2).
+    expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
+    expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
+  });
+
+  it("SIGTERM to the group while cp is blocked (before the agent starts): exit at once, no copy, no agent, rc 143, one sentinel", async () => {
+    const { layout, env, home, stub, credsSource } = scaffold(temporaryRoot());
+    // The credentials source is a FIFO with no writer, so cp blocks on open: the deterministic cp window.
+    rmSync(credsSource);
+    execFileSync("mkfifo", [credsSource]);
+    const ranMarker = join(home, "agent-ran");
+    stub("devin", `touch "${ranMarker}"; sleep 30`);
+    const child = spawn("sh", [layout.wrapperPath, "devin", "-p"], {
+      env, stdio: ["ignore", "ignore", "ignore"], detached: true,
+    });
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    // Let the wrapper reach the blocked cp (the copy never appears, so there is nothing to poll for).
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const sentAt = Date.now();
+    process.kill(-child.pid!, "SIGTERM");
+    await Promise.race([
+      closed,
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("TERM consumed: wrapper still alive after 3 s")), 3_000)),
+    ]);
+    expect(Date.now() - sentAt).toBeLessThan(3_000);
+    expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+    expect(existsSync(ranMarker)).toBe(false);
     expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("143");
     expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":143}\n');
   });

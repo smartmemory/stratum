@@ -133,13 +133,45 @@ export const DEVIN_CONFIG_JSON = JSON.stringify({
  */
 export const DEVIN_WRAPPER_SCRIPT = `#!/bin/sh
 # STRAT-AGENT-DEVIN-1 supervisor wrapper — owns the credentials copy's life.
-trap 'rm -f "$STRATUM_DEVIN_CREDS_COPY"' EXIT HUP INT TERM
+# STRAT-DEVIN-TRAP-1: HUP/INT/TERM end the wrapper in every window (before cp,
+# during cp, before the agent starts, while it runs) with rc 128+signo; a
+# handler never returns into the script, so a cancel is never consumed. The
+# agent runs in the background and the wrapper polls it with short foreground
+# sleeps: this shell runs a pending trap only when a foreground command ends
+# (and may lose one that lands before a wait starts), so a signal that landed
+# between commands would otherwise be held until the agent finished. sleep 0
+# before the spawn is the same checkpoint, so a cancel that landed earlier
+# stops the wrapper before the agent starts. done
+# makes the status write happen exactly once (a signal in the normal-exit tail
+# returns to the tail, which writes it).
+trap 'rm -f "$STRATUM_DEVIN_CREDS_COPY"' EXIT
+finish() {
+  rm -f "$STRATUM_DEVIN_CREDS_COPY"
+  echo "$1" > "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" && mv "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" "$STRATUM_DEVIN_RUN_DIR/exit.rc"
+  printf '{"__t2f5_done__":%d}\\n' "$1" >> "$STRATUM_DEVIN_RUN_DIR/stream.jsonl"
+}
+on_signal() {
+  [ -n "$done" ] && return
+  done=1
+  if [ -n "$!" ]; then
+    kill -TERM "$!" 2>/dev/null
+    wait "$!" 2>/dev/null
+  fi
+  finish "$1"
+  exit "$1"
+}
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 cp "$STRATUM_DEVIN_CREDS_SOURCE" "$STRATUM_DEVIN_CREDS_COPY" && chmod 600 "$STRATUM_DEVIN_CREDS_COPY"
-"$@" < /dev/null
+sleep 0
+"$@" < /dev/null &
+pid=$!
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+wait "$pid"
 rc=$?
-rm -f "$STRATUM_DEVIN_CREDS_COPY"
-echo "$rc" > "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" && mv "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" "$STRATUM_DEVIN_RUN_DIR/exit.rc"
-printf '{"__t2f5_done__":%d}\\n' "$rc" >> "$STRATUM_DEVIN_RUN_DIR/stream.jsonl"
+done=1
+finish "$rc"
 exit "$rc"
 `;
 
