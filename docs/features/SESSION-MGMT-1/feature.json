@@ -1,0 +1,10 @@
+{
+  "code": "SESSION-MGMT-1",
+  "description": "Session management as a Stratum capability: a thin Stratum front door (`stratum session` CLI commands + MCP tools) over the shipped session/job scripts in ~/.claude/scripts (seat pinning, launch gate, quota-aware pick, session hop/relaunch, detached job registry and watcher), the owner's numbers (seat per session, caps, ceilings, account retire dates) in one settings file, and Compose's and Stratum's own claude spawns launching through it. Owner pick 2026-10-19 17:2x (via s1-chat): shape 1 of 3 (shape proposal smart-memory-ops/units/SESSION-MGMT-1/shape.md). Starts after MAX-SUNSET-2..5 land. A Compose Sessions screen is a later layer, not this feature.",
+  "status": "PLANNED",
+  "phase": "Standalone Tickets",
+  "created": "2026-10-19",
+  "updated": "2026-10-19",
+  "complexity": "M",
+  "impact": "high"
+}

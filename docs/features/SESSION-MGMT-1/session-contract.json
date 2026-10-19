@@ -1,0 +1,319 @@
+{
+  "_source": {
+    "doc": "Derived from the scripts' real behaviour, not invented. Fix round 1 (2026-10-19 18:4x) re-read every cited site at smart-memory-ops 543da2dd (HEAD, holds MAX-SUNSET-2 6c4fff37, MAX-SUNSET-3 merge 78aee3d8, MAX-SUNSET-4 merge 98b03936), forge/stratum dbc64e2, forge/compose bc996708. Paths under claude/ are relative to smart-memory-ops (symlinked as ~/.claude/{scripts,hooks}). MAX-SUNSET-5 and -7 have not landed; units that touch their files re-read by symbol after they land.",
+    "pick": ["claude/scripts/usage_watch.py:3120 (pick --kind choices)", "claude/scripts/usage_watch.py:3247 (pick call)", "claude/scripts/usage_watch.py:67 (PACE_EXIT = 3)", "claude/scripts/usage_watch.py:70 (OVERFLOW_KINDS doc/land/spike/other: the only kinds that may return Codex)", "claude/scripts/usage_watch.py:1878 (pick signature)", "claude/scripts/usage_watch.py:1946-1950 (review pool = the other vendor)", "claude/scripts/usage_watch.py:2046-2048 (_choice: choice {id, vendor, label, command})", "claude/scripts/usage_watch.py:1851-1860 (launch_command: ccdN only for ~/.claude-seat[1-4], bare ccd otherwise)"],
+    "status": ["claude/scripts/usage_watch.py status --json (generated_at, target_pct, accounts, recommendation)", "claude/scripts/launch_gate.py:614-632 (main: argv == ['--status'] / ['--fleet'] exactly)", "claude/scripts/launch_gate.py status_report / fleet_report (text today)"],
+    "admit": ["claude/hooks/work_model_gate.py:98-113 (Launch; text is the only place hard: counts)", "claude/hooks/work_model_gate.py:73 (FILE_CAP 256 KiB read from a brief)", "claude/hooks/work_model_gate.py:388 (_read_file)", "claude/hooks/work_model_gate.py:1136-1137 (detach_job --brief read with --cwd fallback)", "claude/hooks/work_model_gate.py:116-117 (_session_config_dir: unset CLAUDE_CONFIG_DIR = ~/.claude)", "claude/scripts/detach_job.py:313-336 (resolve_account: unknown, never a guess)", "claude/scripts/detach_job.py:339-384 (resolve_retired_home, MAX-SUNSET-4: None for a live seat home)", "claude/scripts/detach_job.py:2813-2829 (admit_launch: codex and engine override skip at :2820, LAUNCH_GATE_ADMITTED skip at :2822-2825, gate subprocess inherits stdout at :2827)", "claude/scripts/launch_gate.py:47-48 (exit codes 0/1/2/3)", "claude/scripts/launch_gate.py:53, :96-97 (LAUNCH_GATE_MAX_WAIT unset = wait forever)"],
+    "launch": ["claude/scripts/detach_job.py:2842 (run parser)", "claude/scripts/detach_job.py:2888-2896 (run: admit_launch, run, text print at :2893, account line at :2894-2895)", "claude/scripts/detach_job.py:2910-2919 (REFUSED + exit 1 / 3 / 128+signal)", "claude/scripts/detach_job.py:1833-1839 (engine override popped from the child; account_pick applied)", "claude/scripts/detach_job.py:104-108, :135-138 (test/ops env overrides and their HOME-based defaults)"],
+    "hop": ["claude/scripts/session_hop.py:3-4 (usage)", "claude/scripts/session_hop.py:13-18 (exit codes hop and --check)", "claude/scripts/session_hop.py:104-105 (EXIT_* constants)", "claude/scripts/session_hop.py:1441-1449 (main and parser: positional name, --check NAME, --to, --reason, --dry-run, --force, --allow-closed)", "claude/scripts/session_hop.py:1451-1452 (exactly one of name / --check)", "claude/scripts/session_hop.py:1453 (file logging on unless --dry-run)", "claude/scripts/session_hop.py:1461-1466 (check branch; hop branch + tab_order unless dry-run)", "claude/scripts/session_hop.py:568-573 (default_env builds HopITerm(): real tabs)", "claude/scripts/session_hop.py:34-35, :571-572, :1430 (SESSION_HOP_* and USAGE_WATCH_STATE_DIR overrides)"],
+    "jobs": ["claude/scripts/jobs.py:277-313 (add: the stored event)", "claude/scripts/jobs.py:1155-1164 (add prints the event JSON; priority_source 'explicit' only when --priority)", "claude/scripts/jobs.py:204-208 (check_session)", "claude/scripts/jobs.py:1054-1080 (add / list args)", "claude/scripts/jobs.py:56-60 (KINDS, WORK_KINDS, VENDORS, OUTCOMES)", "claude/scripts/jobs.py:1207-1210 (exit 0 / REFUSED exit 1)", "claude/scripts/json-contract.json (list, pending, queue list, pause-order)"],
+    "relaunch": ["claude/scripts/seat_relaunch.py:29-33 (SEAT_MAP, SESSIONS)", "claude/scripts/seat_relaunch.py:13-14, :37, :41, :65, :78 (SEAT_STATE_DIR, SEAT_CONTEXT_DIR, SEAT_ACCOUNTS)", "claude/scripts/seat_relaunch.py:85-90 (command: ccd + seat[-1], blind)", "claude/scripts/seat_relaunch.py:93-121 (main, text output, per-name refusals)"],
+    "policy": ["claude/scripts/usage_watch.py:64 (DEFAULT_SEAT_CEILING_PCT)", "claude/hooks/work_model_gate.py:72 (QUOTA_LIMIT_PCT 100)", "claude/scripts/launch_gate.py:80-97 (Config: spacing 45, max_recent 16, window 900, load_max 32, fleet_max 16, env overrides)", "claude/scripts/usage_watch.py:96-111 (accounts_path, load_accounts: reads only keys it knows)", "claude/scripts/usage_watch.py:302-360 (retired_at, seat_limits: the one retire source since MAX-SUNSET-2)"],
+    "backend_config": ["stratum/ts/src/config/index.ts:106 (user config: STRATUM_CONFIG_FILE else ~/.stratum/config.toml)", "stratum/ts/src/config/index.ts:107 (project config: <root>/stratum.toml, same applyFile)", "stratum/ts/src/config/index.ts:186 (rejectUnknown: only [sandbox] and [learn] today)", "compose/lib/stratum-engine.js:208-245 (resolveStratumBin: env, installed package, sibling; throws when none)"],
+    "child_env": ["stratum/ts/src/connectors/claude.ts:101-102 (env = options.env ?? process.env, then SENSITIVE_ENV_VARS scrub)", "stratum/ts/src/connectors/background.ts:231-240 (codex env = options.env ?? process.env + T2F5_*)", "stratum/ts/src/connectors/background.ts:496 (claude worker connectorOptions.env)", "compose/server/agent-spawn.js:50-51, compose/server/vision-utils.js:128-129, compose/server/summarizer.js:71-72 (cleanEnv)", "compose/server/agent-workspace.js:192 (SDK env)", "compose/lib/local-claude-connector.js:195-196 (env = opts.env ?? process.env, then scrub)"]
+  },
+  "_roadmap": "stratum/docs/features/SESSION-MGMT-1/plan.md (units SESSION-MGMT-1-U1..U15, ## Admission owners, ## Fix round 1); stratum/docs/features/SESSION-MGMT-1/feature.json; shape: smart-memory-ops/units/SESSION-MGMT-1/shape.md (owner pick C, 2026-10-19 17:2x); review: smart-memory-ops/units/SESSION-MGMT-1/plan-review-r1.md",
+  "version": 2,
+
+  "backend": {
+    "kind": "scripts",
+    "configured_test": {
+      "rule": "configured(env) is true when EITHER (a) env.STRATUM_SESSION_SCRIPTS_DIR is a non-empty string, OR (b) the Stratum USER config file (env.STRATUM_CONFIG_FILE if non-empty, else ~/.stratum/config.toml; stratum/ts/src/config/index.ts:106) exists and holds a [session] table. Nothing else makes it true or false. Owner Q2 (2026-10-19 17:59, via s1-chat): not configured = pass through; configured = every failure refuses.",
+      "stratum_impl": "U1: parsed with the existing TOML loader. A [session] table in a PROJECT stratum.toml (index.ts:107) is a config error naming the file: scripts_dir is never taken from a repository file.",
+      "compose_impl": "U13 (fix round 2, R2-H1). Compose never decides 'configured' while the stratum CLI resolves: admitClaude ALWAYS runs `stratum session admit --json` and Stratum's TOML parse decides (mode none returns the candidate env unchanged). sessionConfigured(env) is used ONLY when resolveStratumBin('cli') throws, and it is a conservative SUPERSET of Stratum's rule (Compose has no TOML parser): true when (a) as above, OR (b) the file exists AND (it is unreadable OR its text contains the substring `session` anywhere, comments and string values included, OR it contains a TOML unicode escape `\\u` or `\\U`). So every TOML spelling of the table ([session], [ session ], [\"session\"], ['session'], [session.x], dotted `session.scripts_dir = ...`, inline `session = {...}`, escaped quoted keys) reads configured. A false positive only refuses a launch that has no stratum CLI anyway (fail closed); a false negative is impossible for any file Stratum would read as configured.",
+      "fixtures": "one shared table (configured-fixtures.json, U1), run by U1 (stratum) and U13 (compose). Rule: on every row, stratum configured => compose configured (compose may say configured where stratum says not, never the reverse); each row records both expected values. Rows: env set / env empty string / env unset; file absent / [session] with scripts_dir / [ session ] with scripts_dir / [\"session\"] with scripts_dir / ['session'] with scripts_dir / top-level dotted session.scripts_dir / inline session = {scripts_dir = ...} / [session] empty / [session] commented out (stratum: no, compose: yes) / [sandbox] only (both no) / [sandbox] with a string value containing 'session' (stratum: no, compose: yes) / file unreadable (compose: configured, stratum: config error = configured-and-broken). U13 runs every row twice: once with the stratum CLI stub present (Compose follows the stub's admit answer, its own detector is never called: asserted by a spy) and once with the CLI absent (stratum-configured rows => backend-unavailable, no spawn).",
+      "configured_but_broken": "configured with no usable scripts_dir (absent, empty, not a directory), a missing script, a missing python, a missing stratum CLI (Compose), or a config parse error = refusal backend-unavailable for every op, admit included. Never pass-through."
+    },
+    "scripts_dir": {
+      "env": "STRATUM_SESSION_SCRIPTS_DIR",
+      "config": "[session] scripts_dir in the Stratum USER config only; env wins",
+      "default": null
+    },
+    "python": {"env": "STRATUM_SESSION_PYTHON", "config": "[session] python", "default": "python3"},
+    "exec": "argv only (execFile, never a shell), cwd unchanged, one timeout per op (timeout_s below), the child's process group killed on timeout. stdout is parsed as ONE JSON document and checked against the op's script_output shape; anything else is a backend-error refusal, never a guess. stderr is kept (first 500 chars) for the refusal reason.",
+    "stdin": "closed ('ignore') for every op EXCEPT admit: admit writes marker_text (at most 262144 bytes, the gate's FILE_CAP, work_model_gate.py:73; longer = truncated to the head) to the child's stdin and ends the stream. marker_text never appears in argv, logs or output.",
+    "child_env_rule": "The script's env is the CANDIDATE CHILD ENV the caller will launch with (operations.admit.child_env), minus CLAUDECODE and minus LAUNCH_GATE_ADMITTED (an inherited admission marker is never trusted). For ops other than admit and launch it is the front door's own process env with the same two removals.",
+    "modes": {
+      "none": "configured(env) false. admit returns {ok:true, op:'admit', backend:'none', data:{admitted:true, code:null, reason:'session backend not configured', engine, account:null, env:{}, checks:[], launch_gate_label:null}} and the caller launches with its candidate env unchanged (today's behaviour). Every other op returns refusal backend-unconfigured.",
+      "scripts": "configured(env) true. Every op runs its script; every failure is a refusal (configured_but_broken). admit success always returns a non-empty env naming the engine home (operations.admit.script_output.env)."
+    }
+  },
+
+  "envelope": {
+    "ok": {"ok": "true", "op": "string (one of operations)", "backend": "'scripts' | 'none'", "data": "object (the op's data shape)"},
+    "refused": {
+      "ok": "false",
+      "op": "string",
+      "backend": "'scripts' | 'none'",
+      "refusal": {"code": "string (refusal_codes)", "reason": "string (the script's own text, first line, at most 500 chars, env values never included)", "script": "string | null (script file name)", "script_exit": "integer | null"},
+      "record": "object | null: the script's parsed stdout when it printed one valid JSON document of the op's script_output shape (pick: the seat table; admit: checks; hop: result, from, to, left_open; launch: refused + reason). null when it printed none. Validated like a success: a refusal whose stdout is JSON of the WRONG shape is backend-error."
+    },
+    "partial": "a refusal with cli_exit 5 (hop-not-ready, hop-partial): record is REQUIRED and record.left_open lists every tab left open; a partial without it is backend-error"
+  },
+
+  "cli_exit_codes": {
+    "0": "ok",
+    "1": "refused by policy (no-eligible-account, account-unknown, account-unset, account-retired, gate-denied, marker-unreadable, launch-gate-refused, hop-refused, detach-refused, registry-refused)",
+    "2": "usage error (bad argv to stratum session)",
+    "3": "waited and gave up or held (ahead-of-pace, launch-gate-timeout, hop-busy)",
+    "4": "backend problem (backend-unconfigured, backend-unavailable, backend-error, backend-timeout, admission-env-mismatch)",
+    "5": "partial action (hop-partial, hop-not-ready): something was opened or left open; record names it"
+  },
+
+  "refusal_codes": {
+    "backend-unconfigured": {"cli_exit": 4, "from": "configured(env) false, every op except admit"},
+    "backend-unavailable": {"cli_exit": 4, "from": "configured(env) true but broken (backend.configured_test.configured_but_broken)"},
+    "backend-error": {"cli_exit": 4, "from": "script exit not in the op's script_exit map, or stdout not one JSON document / not the contracted shape"},
+    "backend-timeout": {"cli_exit": 4, "from": "the op's timeout_s elapsed; the child's process group is killed"},
+    "admission-env-mismatch": {"cli_exit": 4, "from": "the caller-side check: the env about to be launched does not carry exactly the admitted engine home (library.child_env_check); nothing is launched"},
+    "no-eligible-account": {"cli_exit": 1, "from": "usage_watch pick returned no choice, or a choice whose vendor is not the engine's (session_admit vendor check)"},
+    "ahead-of-pace": {"cli_exit": 3, "from": "usage_watch pick code ahead-of-pace = PACE_EXIT (usage_watch.py:67)"},
+    "account-unknown": {"cli_exit": 1, "from": "account id not a row of the engine's vendor, or the inherited home matches no row or two (detach_job.resolve_account semantics, detach_job.py:313-336)"},
+    "account-unset": {"cli_exit": 1, "from": "engine claude, account 'inherit', and the candidate child env has no non-empty CLAUDE_CONFIG_DIR (owner Q2: never fall back to ~/.claude when configured; work_model_gate.py:116-117 is that fallback). Reason names the fix: pass account 'auto' or an id."},
+    "account-retired": {"cli_exit": 1, "from": "seat_limits(...)[id].retired is true (usage_watch.py:302-360; MAX-SUNSET-7 adds a persisted marker read by the same function)"},
+    "gate-denied": {"cli_exit": 1, "from": "work_model_gate.judge returned a reason (quota, ceiling, reserve, explicit model, Opus hard:, Fable); reason is the gate's text verbatim"},
+    "marker-unreadable": {"cli_exit": 1, "from": "admit --marker-file given and the path is missing, not a regular file, or not readable (os.access R_OK), checked BEFORE work_model_gate._read_file (work_model_gate.py:388-396), which returns \"\" for those cases and for an empty file alike. An empty readable file is empty marker text, not a refusal."},
+    "launch-gate-refused": {"cli_exit": 1, "from": "launch_gate.py exit 1 (launch_gate.py:47)"},
+    "launch-gate-timeout": {"cli_exit": 3, "from": "launch_gate.py exit 3 after LAUNCH_GATE_MAX_WAIT, which admit ALWAYS sets (launch_gate.py:48)"},
+    "hop-refused": {"cli_exit": 1, "from": "session_hop.py exit 2 in hop / dry-run mode (session_hop.py:13, :104)"},
+    "hop-busy": {"cli_exit": 3, "from": "session_hop.py exit 3"},
+    "hop-not-ready": {"cli_exit": 5, "from": "session_hop.py exit 4"},
+    "hop-partial": {"cli_exit": 5, "from": "session_hop.py exit 5"},
+    "detach-refused": {"cli_exit": 1, "from": "detach_job.py exit 1 (REFUSED, detach_job.py:2910-2919)"},
+    "mark-mismatch": {"cli_exit": 1, "from": "detach_job.py stop exit 3 (not exposed in v1, listed so the map is total)"},
+    "registry-refused": {"cli_exit": 1, "from": "jobs.py exit 1 (REFUSED, jobs.py:1210)"},
+    "usage": {"cli_exit": 2, "from": "the script's argparse exit 2 (an argv the front door built wrong is a bug, reported, never retried). session_hop's ap.error (session_hop.py:1452) also exits 2: in check mode exit 2 is mapped by script_exit_check, so the front door validates name before running (non-empty, no NUL) and never sends both name and --check."}
+  },
+
+  "operations": {
+    "pick": {
+      "unit": "U1",
+      "cli": "stratum session pick --kind KIND [--author-vendor claude|codex] [--name NAME] --json",
+      "mcp": "stratum_session_pick",
+      "input": {"kind": "'author'|'fix-round'|'review'|'diagnose'|'land'|'doc'|'spike'|'other' (usage_watch.py:3120)", "author_vendor": "'claude'|'codex' (default 'claude')", "name": "string (default '<name>')"},
+      "script_argv": ["{python}", "{scripts_dir}/usage_watch.py", "pick", "--kind={kind}", "--author-vendor={author_vendor}", "--name={name}", "--json"],
+      "script_exit": {"0": "ok", "1": "no-eligible-account", "3": "ahead-of-pace", "2": "usage"},
+      "script_output": {"kind": "string", "choice": "null | {id, vendor, label, command}", "reason": "string", "rule": "string", "code": "optional 'ahead-of-pace'", "seats": "optional array of {id, ceiling, used, state: 'reserved'|'closed'|'weekly'|'unstarted'|'behind'|'ahead', detail, target?, behind?}"},
+      "data": "script_output unchanged; a refusal carries it as envelope.refused.record",
+      "timeout_s": 60,
+      "side_effects": "none (read-only)"
+    },
+
+    "admit": {
+      "unit": "U9 (script), U2 (front door), U13 (Compose helper)",
+      "cli": "stratum session admit --engine claude|codex --label LABEL [--model MODEL] [--account inherit|auto|ID] [--marker-file ABS] [--launch-gate full|none] [--max-wait-s N] --json   (marker text on stdin when no --marker-file; the CLI's own process env IS the candidate child env)",
+      "mcp": "stratum_session_admit (child env = the MCP server's env; marker_text field)",
+      "purpose": "One question every launch asks before it spawns: which account, may it start now, and with exactly which engine home. Never spawns anything itself.",
+      "callers": "plan.md ## Admission owners: one row per launch path, who calls admit and with which launch_gate",
+      "input": {
+        "engine": "'claude' | 'codex'",
+        "label": "string, one token, no leading '-' (launch_gate never takes a label starting with '-', launch_gate.py:24-27)",
+        "model": "string; required for engine claude (work_model_gate.py: no explicit model is denied)",
+        "account": "'inherit' (default) | 'auto' | an account id of the engine's vendor. inherit: claude reads CLAUDE_CONFIG_DIR of the candidate child env and REFUSES account-unset when it is unset or empty (configured mode); codex reads CODEX_HOME, default ~/.codex (detach_job.py:144). Then detach_job.resolve_account semantics (one row of that vendor with that home, else account-unknown). auto: claude = pick(kind 'author') (never an overflow kind, usage_watch.py:70); codex = pick(kind 'review', author_vendor 'claude') (the Codex pool, usage_watch.py:1946). The chosen row's vendor must equal engine, else no-eligible-account.",
+        "marker_text": "string, optional: the launch's own prompt or brief head, where hard: and fable: count (work_model_gate.py:98-102). Sent on stdin (backend.stdin). Never logged.",
+        "marker_file": "absolute path, optional, exclusive with marker_text: session_admit reads it with work_model_gate._read_file (same FILE_CAP and resolution as the gate's own detach_job --brief read, work_model_gate.py:1136-1137); missing / not a regular file / unreadable = marker-unreadable",
+        "launch_gate": "'full' (spacing, rate, load, fleet; launch_gate.py <label> --engine E) | 'none' (account + judge only). Which callers use which: plan.md ## Admission owners (rule: full when the launch returns before the agent finishes).",
+        "max_wait_s": "number, default 120, range [1, 1800]: ALWAYS exported as LAUNCH_GATE_MAX_WAIT for launch_gate 'full' (unset would wait forever, launch_gate.py:53, :96-97)",
+        "child_env": "library and Compose helper only: the exact env object the caller will hand to spawn / the SDK, BEFORE its own secret scrub. The CLI and MCP use their own process env."
+      },
+      "script_argv": ["{python}", "{scripts_dir}/session_admit.py", "--engine={engine}", "--label={label}", "--model={model}", "--account={account}", "--launch-gate={launch_gate}", "--max-wait-s={max_wait_s}", "[--marker-file={marker_file}]", "--json"],
+      "script_stdin": "marker_text when given and no marker_file; else empty and closed",
+      "script_exit": {"0": "ok (admitted)", "1": "account-unknown | account-unset | account-retired | no-eligible-account | gate-denied | marker-unreadable | launch-gate-refused (output.code says which)", "2": "usage", "3": "ahead-of-pace | launch-gate-timeout (output.code says which)"},
+      "script_output": {
+        "admitted": "boolean",
+        "code": "null when admitted, else one refusal_codes key",
+        "reason": "string",
+        "engine": "'claude' | 'codex'",
+        "account": "null | {id, vendor, label, config_dir_name}  (config_dir_name = basename only, e.g. '.claude-seat2')",
+        "env": "admitted: EXACTLY one key, the engine home variable (claude: CLAUDE_CONFIG_DIR, codex: CODEX_HOME) set to the chosen row's absolute, resolved config_dir, for every account mode INCLUDING inherit (never empty in mode scripts). Refused: {}. The ONLY place a path is returned.",
+        "checks": "array of {name: 'account'|'retired'|'judge'|'launch-gate', result: 'pass'|'deny'|'skip', detail: string}; judge is 'skip' for codex (work_model_gate judges Claude launches)",
+        "launch_gate_label": "string | null: the label recorded in the launches log when launch_gate was 'full'"
+      },
+      "data": "script_output",
+      "library_result": "the envelope plus childEnv = {...child_env, ...data.env} (mode none: child_env unchanged). Callers launch with childEnv and nothing else.",
+      "timeout_s": "max_wait_s + 60",
+      "side_effects": "launch_gate 'full' appends one row to the launches log; the judge writes its own decision log line"
+    },
+
+    "launch": {
+      "unit": "U10 (script --json), U2 (front door)",
+      "cli": "stratum session launch --session S --label L --engine claude|codex --model M [--effort E] --brief ABS --report ABS [--cwd ABS] [--work-kind K] [--priority P0..P3] [--account inherit|auto|ID] [--max-wait-s N] --json",
+      "mcp": "stratum_session_launch",
+      "input": {"session": "string", "label": "string", "engine": "'claude'|'codex'", "model": "string", "effort": "string?", "brief": "absolute path", "report": "absolute path", "cwd": "absolute path?", "work_kind": "jobs.py WORK_KINDS (jobs.py:58)", "priority": "'P0'|'P1'|'P2'|'P3'?", "account": "as admit.input.account, default 'inherit'", "max_wait_s": "as admit, default 120"},
+      "steps": [
+        "1. admit(engine, label, model, account, marker_file = brief, launch_gate 'full', max_wait_s) with child_env = the front door env minus CLAUDECODE and LAUNCH_GATE_ADMITTED. Refused: return that refusal; detach_job never runs.",
+        "2. detach_job env = childEnv from step 1 + LAUNCH_GATE_ADMITTED=<label> (detach_job's existing skip, detach_job.py:2822-2825, so the full gate runs once, in admit) + LAUNCH_GATE_MAX_WAIT=<max_wait_s> (a skip that fails can never wait forever).",
+        "3. Run script_argv. detach_job.resolve_retired_home returns None for the admitted live home (detach_job.py:368), so it selects no second account; the meta must carry no account_pick (a probe asserts it)."
+      ],
+      "script_argv": ["{python}", "{scripts_dir}/detach_job.py", "run", "--session={session}", "--label={label}", "--engine={engine}", "--model={model}", "--brief={brief}", "--report={report}", "[--effort={effort}]", "[--cwd={cwd}]", "[--work-kind={work_kind}]", "[--priority={priority}]", "--json"],
+      "script_exit": {"0": "ok", "1": "detach-refused", "2": "usage"},
+      "script_output": {"pid": "integer", "pgid": "integer", "log": "absolute path", "meta": "absolute path", "label": "string", "session": "string", "account": "string (resolve_account id or 'unknown')"},
+      "script_output_refused": {"refused": "true", "reason": "string"},
+      "stdout_rule": "with --json detach_job prints exactly one JSON document on stdout; any nested launch_gate text goes to stderr (U10)",
+      "data": "script_output",
+      "timeout_s": "admit timeout (max_wait_s + 60) for step 1, then 60 for step 3",
+      "side_effects": "one launches-log row (admit), one detached job, its jobs.py registration (kind detached), its index meta"
+    },
+
+    "status": {
+      "unit": "U5 (launch_gate --json), U2 (front door)",
+      "cli": "stratum session status --json",
+      "mcp": "stratum_session_status",
+      "input": {},
+      "script_argv": [["{python}", "{scripts_dir}/usage_watch.py", "status", "--json", "--no-spend"], ["{python}", "{scripts_dir}/launch_gate.py", "--status", "--json"]],
+      "script_exit": {"0": "ok", "1": "backend-error (launch_gate REFUSED --status)", "2": "usage"},
+      "script_output": {
+        "usage_watch": "{generated_at, target_pct, accounts: [{id, vendor, label, status, windows, pace, ceiling_pct?, ceiling_source?, reserved?, reserved_why?, owner_sessions?, unused_24h_pts?, extra_windows?, fable?}], recommendation}",
+        "launch_gate": "{engines: {claude: {would_pass: bool, reason: string|null}, codex: {...}}, queue: {mode: 'fifo'|'off', waiting: [{engine, label, pid, waiting_s, alive}]}, launches: {kept, recent, window_s, last_age_s|null}, load1, load_max, fleet: {count|null, max}, limits: {spacing_s, max_recent, window_s}}  (U5 adds this; same facts as status_report)"
+      },
+      "data": "{accounts: usage_watch.accounts, recommendation: usage_watch.recommendation, gate: launch_gate}",
+      "timeout_s": 90,
+      "side_effects": "none"
+    },
+
+    "fleet": {
+      "unit": "U5, U2",
+      "cli": "stratum session fleet --json",
+      "mcp": "(folded into stratum_session_status)",
+      "script_argv": ["{python}", "{scripts_dir}/launch_gate.py", "--fleet", "--json"],
+      "script_exit": {"0": "ok", "1": "backend-error"},
+      "script_output": {"count": "integer", "max": "integer", "jobs": "array of {session, label, pid}"},
+      "timeout_s": 30,
+      "side_effects": "none"
+    },
+
+    "hop": {
+      "unit": "U8 (script --json + fixture transport), U2 (front door)",
+      "cli": "stratum session hop --check NAME --json | stratum session hop NAME --dry-run [--to T] [--reason R] --json | stratum session hop NAME --live [--to T] [--reason R] [--force] [--allow-closed] --json   (exactly one of --check / --dry-run / --live; none = usage error, never a default)",
+      "mcp": "stratum_session_hop: input.mode enum ['check', 'dry-run'] ONLY (plan decision D4). The MCP handler calls backend.hopCheck / backend.hopDryRun; backend.hopLive is not reachable from the MCP module (plan U3 acceptance).",
+      "input": {"name": "string, non-empty, no NUL", "mode": "'check'|'dry-run'|'live' (live: CLI only)", "to": "string, default 'auto'", "reason": "string, default 'quota hop'", "force": "bool (live only)", "allow_closed": "bool (live only)"},
+      "script_argv_by_mode": {
+        "check": ["{python}", "{scripts_dir}/session_hop.py", "--check={name}", "--json"],
+        "dry-run": ["{python}", "{scripts_dir}/session_hop.py", "--dry-run", "--to={to}", "--reason={reason}", "--json", "--", "{name}"],
+        "live": ["{python}", "{scripts_dir}/session_hop.py", "--to={to}", "--reason={reason}", "[--force]", "[--allow-closed]", "--json", "--", "{name}"]
+      },
+      "argv_derivation": "session_hop.py:1443-1449: name is positional, --check takes NAME, --dry-run/--force/--allow-closed are store_true. The '=' form and the '--' separator keep a name or value starting with '-' from being read as an option. check has no positional (session_hop.py:1451-1452 refuses both). dry-run ALWAYS carries --dry-run; it and live never carry --check.",
+      "script_exit_hop": {"0": "ok (HOPPED | ALREADY | DRY-RUN)", "2": "hop-refused", "3": "hop-busy", "4": "hop-not-ready", "5": "hop-partial"},
+      "script_exit_check": {"0": "ok (hop_recommended false)", "1": "ok (hop_recommended true: hop recommended or logged out)", "2": "backend-error (reading unusable or unexpected error: record.reason names it)"},
+      "script_output": {"result": "'HOPPED'|'ALREADY'|'DRY-RUN'|'REFUSED'|'BUSY'|'NOT-READY'|'PARTIAL'|'OK'|'HOP'|'UNKNOWN'", "name": "string", "from": "account id | null", "to": "account id | null", "hop_recommended": "boolean | null (check mode: true for HOP, false for OK, null for UNKNOWN; hop modes: null)", "reason": "string (the WARNING text for REFUSED / UNKNOWN, else '')", "line": "the script's one-line summary (today's text output)", "left_open": "array of tab ids ([] unless NOT-READY / PARTIAL)"},
+      "timeout_s": "check 60, dry-run 60, live 300",
+      "side_effects": "live: opens a tab, types a resume command, /exits and closes the old tab, writes a ledger line. check / dry-run: no tab or session change; check writes its diagnostic hop log (session_hop.py:1453, logging is off only for --dry-run), which is existing behaviour and kept"
+    },
+
+    "jobs_list": {
+      "unit": "U1",
+      "cli": "stratum session jobs [--session S] --json",
+      "mcp": "stratum_session_jobs",
+      "script_argv": ["{python}", "{scripts_dir}/jobs.py", "list", "[--session={session}]", "--json", "--diagnostics"],
+      "script_exit": {"0": "ok", "1": "registry-refused"},
+      "script_output": "json-contract.json `list` with --diagnostics: {rows, bad_count, diagnostics}",
+      "data": "{rows, bad_count, diagnostics}: bad_count > 0 is passed through, never hidden",
+      "timeout_s": 30,
+      "side_effects": "none"
+    },
+
+    "jobs_register": {
+      "unit": "U1",
+      "cli": "stratum session register --session S --kind agent|stratum|bash|tab|detached --id ID [--report ABS] [--collect TEXT] [--label L] [--pid N] [--log ABS] [--work-kind K] [--vendor claude|codex] [--model M] [--account ID] [--priority P0..P3] --json",
+      "mcp": "stratum_session_register",
+      "script_argv": ["{python}", "{scripts_dir}/jobs.py", "add", "--session={session}", "--kind={kind}", "--id={id}", "[--report={report}]", "[--collect={collect}]", "[--label={label}]", "[--pid={pid}]", "[--log={log}]", "[--work-kind={work_kind}]", "[--vendor={vendor}]", "[--model={model}]", "[--account={account}]", "[--priority={priority}]"],
+      "script_exit": {"0": "ok", "1": "registry-refused", "2": "usage"},
+      "script_output": "the stored add event, printed as JSON by jobs.py:1162-1164: {op: 'add', session, kind, id, report: string|null, collect: string|null, label: string|null, ts: number, pid?, log?, work_kind?, vendor?, model?, account?, for_id?, priority?, session_id?, priority_source?: 'explicit' (present only when priority was given)} (fields from jobs.py:296-312)",
+      "data": "script_output unchanged (validated: op 'add', session and id equal the input)",
+      "timeout_s": 30,
+      "side_effects": "appends one add record to the session's registry"
+    },
+
+    "policy": {
+      "unit": "U4 (script), U2 (front door)",
+      "cli": "stratum session policy --json",
+      "mcp": "stratum_session_policy",
+      "script_argv": ["{python}", "{scripts_dir}/session_policy.py", "--json"],
+      "script_exit": {"0": "ok", "1": "backend-error (file unreadable: the script prints the error)"},
+      "script_output": "{path: accounts file name (basename), values: <policy_schema.properties with effective values>, sources: {<dotted key>: 'file'|'default'|'env:<VAR>'}, warnings: [string]}",
+      "timeout_s": 30,
+      "side_effects": "none"
+    },
+
+    "relaunch_print": {
+      "unit": "U7",
+      "cli": "(not a front-door verb in v1: seat_relaunch prints commands for a human or the coordinator; U7 adds --json for status pages)",
+      "script_argv": ["{python}", "{scripts_dir}/seat_relaunch.py", "--all", "--json"],
+      "script_output": "array of {session, seat, resume_file|null, command|null, refused: null | {code: 'no-resume'|'no-seat'|'retired'|'no-launch-function'|'unknown-account', reason}} ; one row per map name, refused rows included (never silently omitted)",
+      "launch_function": "usage_watch.launch_function(account) (U7, refactored out of launch_command, usage_watch.py:1851-1860): 'ccdN' for a Claude row whose config_dir resolves to ~/.claude-seatN (N 1-4), 'ccd' for ~/.claude, None otherwise. seat_relaunch.command uses it; None = refused 'no-launch-function'."
+    }
+  },
+
+  "policy_schema": {
+    "home": "claude/scripts/usage-watch.accounts.json, new top-level key `session_policy` (one settings file: account rows, retire dates, ceilings and owner_session_policy already live there). load_accounts reads only the keys it knows, so the new key changes nothing for existing readers.",
+    "reader": "claude/scripts/session_policy.py load_policy(path=None) (new, U4): the ONE reader of `session_policy`; path resolution shared with usage_watch.accounts_path (usage_watch.py:96-97), which U4 makes delegate to it.",
+    "precedence": "env override (existing variables only, for kill switches and tests) > file > built-in default. Built-in defaults equal today's constants, so a missing block changes nothing.",
+    "malformed": "a field of the wrong type or out of range: one WARNING per process naming the file and key, then the built-in default. An unknown key inside session_policy: one WARNING, ignored.",
+    "type": "object",
+    "properties": {
+      "version": {"type": "integer", "const": 1},
+      "_doc": {"type": "string"},
+      "seat_map": {
+        "type": "object (session name -> account id)",
+        "default": {"sm-chat": "seat1", "sm-align": "seat1", "sm-coord": "seat2", "sm-sync": "seat3", "sm-scanner": "seat3", "sm-infra": "seat4", "sm-maya": "seat4", "s1-chat": "seat1", "s2-coord": "seat2", "s3-scanner": "seat3", "s4-infra": "seat4"},
+        "default_source": "seat_relaunch.py:29-31",
+        "validation": "load_policy keeps EVERY entry whose value is a string; it never drops one. seat_relaunch decides per line: value not a Claude row = refused 'unknown-account'; a row with no launch function (relaunch_print.launch_function) = refused 'no-launch-function'; a retired row = refused 'retired'. Non-string value = malformed (WARNING, entry dropped, the only drop).",
+        "read_by": "seat_relaunch.py (U7)"
+      },
+      "admission": {
+        "type": "object",
+        "properties": {
+          "quota_limit_pct": {"type": "number", "range": "(0, 100]", "default": 100, "default_source": "work_model_gate.py:72", "env": null, "read_by": "work_model_gate.py (U6)"},
+          "default_seat_ceiling_pct": {"type": "number", "range": "(0, 100]", "default": 90, "default_source": "usage_watch.py:64", "env": null, "read_by": "usage_watch.seat_limits (U6); a row's ceiling_pct and owner sessions still lower it"}
+        }
+      },
+      "launch_gate": {
+        "type": "object",
+        "properties": {
+          "spacing_s": {"type": "number", "range": ">= 0", "default": 45, "env": "LAUNCH_GATE_SPACING", "default_source": "launch_gate.py:83"},
+          "max_recent": {"type": "integer", "range": ">= 1", "default": 16, "env": "LAUNCH_GATE_MAX_RECENT", "default_source": "launch_gate.py:84"},
+          "window_s": {"type": "number", "range": "> 0", "default": 900, "env": "LAUNCH_GATE_WINDOW", "default_source": "launch_gate.py:85"},
+          "load_max": {"type": "number", "range": "> 0", "default": 32, "env": "LAUNCH_GATE_LOAD_MAX", "default_source": "launch_gate.py:86"},
+          "fleet_max": {"type": "integer", "range": ">= 1", "default": 16, "env": "LAUNCH_GATE_FLEET_MAX", "default_source": "launch_gate.py:92"}
+        },
+        "read_by": "launch_gate.Config (U5); kill switches LAUNCH_GATE=0, LAUNCH_GATE_FLEET=0, LAUNCH_GATE_FIFO=0 stay env-only"
+      }
+    },
+    "not_in_v1": {
+      "retire dates, per-row ceilings, reserved, owner_session_policy": "already data in the same file; unchanged",
+      "dispatch caps 20/8/8": "stay in claude/scripts/dispatch-kinds.json `caps` (owner Q3, 2026-10-19 17:59: caps stay there)",
+      "Fable caps": "already data (fable_cap_pct on account rows)"
+    }
+  },
+
+  "test_fixture": {
+    "home": "one isolated root per test run, under the unit's --basetemp: <root>/home",
+    "env_for_every_script_subprocess": {
+      "HOME": "<root>/home (catches every Path.home() / ~ default: detach_job.py:135-138, seat_relaunch.py:37, session_hop.py:571-572, :1430, the gate's log)",
+      "USAGE_WATCH_ACCOUNTS": "<root>/accounts.json (fixture: max, seat1-4, codex)",
+      "USAGE_WATCH_HOME / USAGE_WATCH_STATE_DIR / USAGE_WATCH_SESSION_STATE / USAGE_WATCH_JOBS_DIR / USAGE_WATCH_DETACHED_DIR / USAGE_WATCH_POLL_DIR / USAGE_WATCH_PROBE_DIR / USAGE_WATCH_SAT_LOG / USAGE_WATCH_JOBS_PY": "under <root>",
+      "LAUNCH_GATE_STATE_DIR": "<root>/gate (REQUIRED: its default is <ops repo>/status/launch-gate, not under HOME, launch_gate.py:51, :82)",
+      "LAUNCH_GATE_JOBS_DIR / CLAUDE_JOBS_DIR": "<root>/jobs",
+      "DETACH_JOB_JOBS_PY / DETACH_JOB_INDEX_DIR / DETACH_JOB_ACTION_LOG / DETACH_JOB_LAUNCH_GATE / DETACH_JOB_RESUME_WAIT=0": "under <root> / the worktree's launch_gate.py (detach_job.py:104-108)",
+      "SEAT_STATE_DIR / SEAT_CONTEXT_DIR / SEAT_ACCOUNTS": "under <root> (seat_relaunch.py:13-14)",
+      "SESSION_HOP_SESSIONS_DIR / SESSION_HOP_LEDGER / SESSION_HOP_LOG": "under <root> (session_hop.py:35)",
+      "SESSION_HOP_ITERM_FIXTURE": "<root>/tabs.json (NEW, U8): default_env builds a fixture iTerm from it instead of HopITerm(); every write method raises; never set outside tests",
+      "STRATUM_CONFIG_FILE": "<root>/stratum.toml",
+      "CLAUDECODE / LAUNCH_GATE_ADMITTED": "removed"
+    },
+    "leak_gate": "before and after the run: no file under the REAL ~/.claude/{logs,session-state,usage}, the ops status/launch-gate dir, or ~/.stratum changed (mtime + size listing); any change fails the suite. Fixture engine processes (DETACH_JOB_ENGINE_OVERRIDE) are killed by process group in teardown, on the failure path too."
+  },
+
+  "mcp_tools": {
+    "home": "stratum/ts/contracts/mcp-surface.json (existing; U3 adds the tools there, the surface number bumps by one)",
+    "tools": ["stratum_session_pick", "stratum_session_admit", "stratum_session_launch", "stratum_session_status", "stratum_session_hop (mode enum check | dry-run)", "stratum_session_jobs", "stratum_session_register", "stratum_session_policy"],
+    "response": "the envelope above, as the tool's JSON result; a refusal is a normal result (ok:false), never an MCP protocol error"
+  },
+
+  "library": {
+    "home": "stratum/ts/src/session/ (new, U1/U2)",
+    "exports": "createSessionBackend(options?: {env?, configPath?}) -> SessionBackend. Methods: pick, admit(input, {childEnv}) -> envelope & {childEnv}, launch, status, fleet, hopCheck(name), hopDryRun(name, to?, reason?), hopLive(name, to?, reason?, force?, allow_closed?), jobsList, jobsRegister, policy. Used by the CLI (U1/U2), the MCP server (U3: never hopLive) and Stratum's runner/background (U11, U12). Compose does NOT import it: it runs `stratum session admit --json` with env = its candidate child env through resolveStratumBin('cli') (plan decision D5).",
+    "child_env_check": "assertAdmittedEnv(finalEnv, admitted): immediately before spawn / SDK query, AFTER the caller's own scrub, finalEnv[homeVar] must equal admitted.data.env[homeVar] (mode scripts) or be untouched from childEnv (mode none); else refusal admission-env-mismatch and no launch. Compose has the same function in session-door.js.",
+    "compose_helper": "compose/server/session-door.js admitClaude({label, model, markerText, projectRoot, childEnv, launchGate, maxWaitS}) -> Promise<{childEnv}> or throws SessionRefusal {code, reason, cliExit}. stratum CLI found -> always runs admit (Stratum decides configured; mode none -> {childEnv} unchanged). stratum CLI not found -> sessionConfigured(childEnv) (backend.configured_test.compose_impl, a superset of Stratum's rule): false -> {childEnv} unchanged; true -> throws backend-unavailable."
+  }
+}
