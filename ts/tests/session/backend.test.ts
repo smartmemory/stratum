@@ -1,33 +1,30 @@
 import { spawnSync } from "node:child_process";
-import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync,
-  utimesSync, writeFileSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { loadSessionConfig, loadStratumConfig } from "../../src/config/index.js";
 import { resolveLearnConfig } from "../../src/config/learn.js";
-import { gate, listing, mintToken, type Listing } from "./leak-gate.js";
 import { WORK_KINDS } from "../../src/session/backend.js";
 import { cliExitFor, configured, createSessionBackend, type Envelope, MARKER_CAP_BYTES } from "../../src/session/index.js";
+import {
+  assertFixtureEnv, backend, cli, closeAll, code, type Fixture, HAVE_OPS, openAll, OPS_SCRIPTS, py, SEATS, suite,
+} from "./fixture.js";
 
 /**
  * SESSION-MGMT-1-U1. Real scripts (the ops checkout's claude/scripts, read-only), never
  * mocks of them; misbehaving fixture scripts only for the error rows the real ones cannot
  * produce on demand (unmapped exit, bad stdout, sleep). Every script subprocess runs under
- * contract `test_fixture`: HOME and every script override under one root, and the leak gate
- * below checks the real ~/.claude/{logs,session-state,usage}, the ops status/launch-gate dir
+ * contract `test_fixture` (fixture.ts): HOME and every script override under one root, and the
+ * leak gate checks the real ~/.claude/{logs,session-state,usage}, the ops status/launch-gate dir
  * and ~/.stratum around the whole file.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BIN = join(HERE, "..", "..", "src", "cli", "bin.mjs");
-const OPS_SCRIPTS = process.env.SESSION_MGMT_OPS_SCRIPTS || "/Users/ruze/reg/my/SmartMemory/smart-memory-ops/claude/scripts";
-const HAVE_OPS = existsSync(join(OPS_SCRIPTS, "usage_watch.py")) && existsSync(join(OPS_SCRIPTS, "jobs.py"));
-const PYTHON = findPython();
-const TOKEN = mintToken("u1lg");
+const S = suite("u1lg");
+const TOKEN = S.token;
+const fixture = S.fixture;
+const fakeScripts = S.fakeScripts;
 const FIXTURES = JSON.parse(readFileSync(join(HERE, "configured-fixtures.json"), "utf8")) as {
   rows: Array<{
     name: string; env: "set" | "empty" | "unset"; file: string | null | { special: Special };
@@ -36,153 +33,6 @@ const FIXTURES = JSON.parse(readFileSync(join(HERE, "configured-fixtures.json"),
 };
 
 type Special = "file-mode-000" | "ancestor-mode-000" | "directory" | "dangling-symlink";
-
-let ROOT = "";
-
-function findPython(): string {
-  for (const dir of (process.env.PATH ?? "").split(":")) {
-    const candidate = join(dir, "python3");
-    if (dir && existsSync(candidate)) return candidate;
-  }
-  return "python3";
-}
-
-// ---------------------------------------------------------------- leak gate (contract test_fixture.leak_gate)
-
-const REAL_HOME = homedir();
-/** Nothing may be added, removed or changed here (leak-gate.ts: ~/.stratum is quiet outside ts/agent_runs, which other sessions' stratum_agent_run writes). */
-const STRICT_DIRS = [join(REAL_HOME, ".stratum")];
-const LOOSE_DIRS = [join(REAL_HOME, ".stratum", "ts", "agent_runs")];
-/** Live sessions and launchd jobs write these all the time (usage: ai.smartmemory.usage-watch every 5 min), so only this run's token fails. */
-const TOKEN_DIRS = [
-  join(REAL_HOME, ".claude", "logs"),
-  join(REAL_HOME, ".claude", "session-state"),
-  join(REAL_HOME, ".claude", "usage"),
-  join(OPS_SCRIPTS, "..", "..", "status", "launch-gate"),
-];
-const WATCHED_DIRS = [...STRICT_DIRS, ...TOKEN_DIRS];
-
-/** A listing walks ~100K real files: 4.5 s idle, over 10 s under a loaded suite (vitest default hook timeout). */
-const HOOK_TIMEOUT_MS = 120_000;
-let BEFORE: Listing = new Map();
-
-beforeAll(() => {
-  BEFORE = listing(WATCHED_DIRS);
-  ROOT = mkdtempSync(join(tmpdir(), "stratum-u1-"));
-}, HOOK_TIMEOUT_MS);
-
-afterAll(() => {
-  // Fixture engines: U1 starts none (no launch op); the timeout row kills its own group.
-  const { violations, warnings, otherChanges } = gate(BEFORE, listing(WATCHED_DIRS), { strictDirs: STRICT_DIRS, looseDirs: LOOSE_DIRS, token: TOKEN });
-  for (const warning of warnings) process.stderr.write(`[leak-gate] WARNING ${warning}\n`);
-  if (ROOT) rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  process.stderr.write(`[leak-gate] token=${TOKEN} violations=${violations.length} other-changes(live sessions)=${otherChanges}\n`);
-  if (violations.length > 0) throw new Error(`leak gate: real state touched by this run: ${violations.join(", ")}`);
-}, HOOK_TIMEOUT_MS);
-
-// ---------------------------------------------------------------- the fixture (contract test_fixture)
-
-let caseNo = 0;
-
-interface Fixture { root: string; env: NodeJS.ProcessEnv; configFile: string; scripts: string }
-
-const STRIPPED_PREFIX = /^(USAGE_WATCH_|LAUNCH_GATE_|DETACH_JOB_|SEAT_|SESSION_HOP_|WORK_MODEL_|STRATUM_SESSION_|CLAUDE_JOBS_DIR$|STRATUM_CONFIG_FILE$|CLAUDECODE$|CLAUDE_CONFIG_DIR$|CODEX_HOME$)/;
-
-function fixture(options: { scripts?: string; envDir?: "set" | "empty" | "unset"; config?: string | null } = {}): Fixture {
-  const root = join(ROOT, `c${(caseNo += 1)}`);
-  const home = join(root, "home");
-  const scripts = options.scripts ?? OPS_SCRIPTS;
-  for (const dir of [home, join(home, ".claude", "session-state"), join(root, "uw-home"), join(root, "jobs"), join(root, "gate"), join(root, "detached")]) {
-    mkdirSync(dir, { recursive: true });
-  }
-  const base = Object.fromEntries(Object.entries(process.env).filter(([key]) => !STRIPPED_PREFIX.test(key)));
-  const configFile = join(root, "user-config.toml");
-  const env: NodeJS.ProcessEnv = {
-    ...base,
-    HOME: home,
-    PYTHONDONTWRITEBYTECODE: "1",
-    USAGE_WATCH_ACCOUNTS: join(root, "accounts.json"),
-    USAGE_WATCH_HOME: join(root, "uw-home"),
-    USAGE_WATCH_STATE_DIR: join(home, ".claude", "session-state"),
-    USAGE_WATCH_SESSION_STATE: join(home, ".claude", "session-state"),
-    USAGE_WATCH_JOBS_DIR: join(root, "jobs"),
-    USAGE_WATCH_DETACHED_DIR: join(root, "detached"),
-    USAGE_WATCH_POLL_DIR: join(root, "poll"),
-    USAGE_WATCH_PROBE_DIR: join(root, "probe"),
-    USAGE_WATCH_SAT_LOG: join(root, "sat-log.md"),
-    USAGE_WATCH_JOBS_PY: join(scripts, "jobs.py"),
-    LAUNCH_GATE_STATE_DIR: join(root, "gate"),
-    LAUNCH_GATE_JOBS_DIR: join(root, "jobs"),
-    CLAUDE_JOBS_DIR: join(root, "jobs"),
-    DETACH_JOB_JOBS_PY: join(scripts, "jobs.py"),
-    DETACH_JOB_INDEX_DIR: join(root, "detached"),
-    DETACH_JOB_ACTION_LOG: join(root, "detach-actions.log"),
-    DETACH_JOB_LAUNCH_GATE: join(scripts, "launch_gate.py"),
-    DETACH_JOB_RESUME_WAIT: "0",
-    SEAT_STATE_DIR: join(root, "seat-state"),
-    SEAT_CONTEXT_DIR: join(root, "seat-context"),
-    SEAT_ACCOUNTS: join(root, "accounts.json"),
-    SESSION_HOP_SESSIONS_DIR: join(root, "hop-sessions"),
-    SESSION_HOP_LEDGER: join(root, "ledger.md"),
-    SESSION_HOP_LOG: join(root, "hop.log"),
-    SESSION_HOP_ITERM_FIXTURE: join(root, "tabs.json"),
-    STRATUM_CONFIG_FILE: configFile,
-  };
-  const envDir = options.envDir ?? "set";
-  if (envDir === "set") env.STRATUM_SESSION_SCRIPTS_DIR = scripts;
-  if (envDir === "empty") env.STRATUM_SESSION_SCRIPTS_DIR = "";
-  if (options.config !== undefined && options.config !== null) writeFileSync(configFile, options.config);
-  writeAccounts(root);
-  return { root, env, configFile, scripts };
-}
-
-function writeAccounts(root: string): void {
-  const home = join(root, "home");
-  const accounts = [
-    ...["seat1", "seat2", "seat3", "seat4"].map((id) => ({ id, vendor: "claude", config_dir: join(home, `.claude-${id}`), label: id })),
-    { id: "codex", vendor: "codex", config_dir: join(home, ".codex"), label: "codex" },
-  ];
-  writeFileSync(join(root, "accounts.json"), JSON.stringify({ target_pct: 90, accounts }));
-  // pick runs a blank account through the spend backstop; a fresh $10 record keeps it ranking pace (as test_seat_reserve.py does).
-  const now = Date.now() / 1000;
-  const day = new Date().toLocaleDateString("sv-SE");
-  writeFileSync(join(root, "uw-home", "spend-status.json"), JSON.stringify({ version: 1, generated_at: now - 60, day, last_1h: 10.0 }));
-}
-
-/** A 5h reading for `seat` (test_seat_reserve.py put_state shape), stamped now. */
-function putReading(fx: Fixture, seat: string, pct: number, elapsedMin: number): void {
-  const now = Date.now() / 1000;
-  const file = join(fx.env.USAGE_WATCH_STATE_DIR!, `${TOKEN}-${seat}.json`);
-  writeFileSync(file, JSON.stringify({
-    session_id: `${TOKEN}-${seat}`, config_dir: join(fx.root, "home", `.claude-${seat}`), ts: now - 30,
-    rl5_pct: pct, rl5_reset: now + (300 - elapsedMin) * 60, rl5_ts: now - 30,
-  }));
-  utimesSync(file, now - 30, now - 30);
-}
-
-/** A scripts dir holding one fixture script. */
-function fakeScripts(name: string, body: string): string {
-  const dir = join(ROOT, `fake${(caseNo += 1)}`);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, name), body);
-  return dir;
-}
-
-function backend(fx: Fixture, extra: Partial<NodeJS.ProcessEnv> = {}, timeoutsMs?: Record<string, number>) {
-  return createSessionBackend({ env: { ...fx.env, ...extra }, projectRoot: fx.root, ...(timeoutsMs ? { timeoutsMs } : {}) });
-}
-
-function cli(fx: Fixture, args: string[], extra: Partial<NodeJS.ProcessEnv> = {}) {
-  const run = spawnSync(process.execPath, [BIN, "session", ...args], { env: { ...fx.env, ...extra }, cwd: fx.root, encoding: "utf8", timeout: 120_000 });
-  const line = run.stdout.trim().split("\n").filter(Boolean).pop() ?? "";
-  let envelope: Envelope<unknown> | null = null;
-  try { envelope = JSON.parse(line) as Envelope<unknown>; } catch { envelope = null; }
-  return { status: run.status, envelope, stdout: run.stdout, stderr: run.stderr };
-}
-
-function code(envelope: Envelope<unknown>): string {
-  return envelope.ok ? "ok" : envelope.refusal.code;
-}
 
 // ---------------------------------------------------------------- configured(): the shared fixture table
 
@@ -223,6 +73,7 @@ describe("configured(env): contract backend.configured_test, one row per fixture
         const config = loadSessionConfig({ env, projectRoot: fx.root });
         expect(config.error !== null, `error: ${config.error}`).toBe(row.stratum === "broken");
 
+        assertFixtureEnv(fx, env);
         const b = createSessionBackend({ env, projectRoot: fx.root });
         const jobs = await b.jobsList({ session: `${TOKEN}-none` });
         const admit = await b.admit({ engine: "claude", label: "probe", model: "sonnet", launchGate: "none" }, { childEnv: env });
@@ -252,6 +103,7 @@ describe("[session] in a project stratum.toml is a config error naming the file"
     const userFile = join(fx.root, "user.toml");
     const env = { ...fx.env, STRATUM_CONFIG_FILE: userFile };
     expect(() => loadStratumConfig({ env, projectRoot: fx.root })).toThrow(project);
+    assertFixtureEnv(fx, env);
     const pick = await createSessionBackend({ env, projectRoot: fx.root }).pick({ kind: "author" });
     expect([code(pick), pick.backend]).toEqual(["backend-unavailable", "scripts"]);
     expect(pick.ok ? "" : pick.refusal.reason).toContain(project);
@@ -303,6 +155,7 @@ const READ_SITE_ROWS: Array<{
     },
     check: async (fx, env, bad) => {
       expect(() => loadStratumConfig({ env, projectRoot: fx.root })).toThrow(bad);
+      assertFixtureEnv(fx, env);
       const admit = await createSessionBackend({ env, projectRoot: fx.root }).admit({ engine: "claude", label: "probe", launchGate: "none" }, { childEnv: env });
       expect([code(admit), admit.backend, admit.childEnv, admit.ok ? "" : admit.refusal.reason.includes(bad)]).toEqual(["backend-unavailable", "scripts", null, true]);
     },
@@ -311,6 +164,7 @@ const READ_SITE_ROWS: Array<{
     name: "project stratum.toml not TOML: door backend-unavailable naming it",
     make: (fx) => { const project = join(fx.root, "stratum.toml"); writeFileSync(project, "this = = is not toml\n"); return { env: fx.env, bad: project, restore: () => {} }; },
     check: async (fx, env, bad) => {
+      assertFixtureEnv(fx, env);
       const jobs = await createSessionBackend({ env, projectRoot: fx.root }).jobsList({ session: `${TOKEN}-none` });
       expect([code(jobs), jobs.backend, jobs.ok ? "" : jobs.refusal.reason.includes(bad)]).toEqual(["backend-unavailable", "scripts", true]);
     },
@@ -342,7 +196,6 @@ interface ErrorRow {
   check?: (envelope: Envelope<unknown>, fx: Fixture) => void;
 }
 
-const py = (body: string) => `import json, os, sys, time\n${body}\n`;
 
 const ERROR_ROWS: ErrorRow[] = [
   { name: "configured + scripts dir missing", op: "pick", setup: (fx) => ({ STRATUM_SESSION_SCRIPTS_DIR: join(fx.root, "no-such-dir") }), expectCode: "backend-unavailable" },
@@ -603,7 +456,7 @@ describe("exec boundary", () => {
 describe.skipIf(!HAVE_OPS)("real scripts (ops claude/scripts, read-only)", () => {
   it("golden flow: register a job -> jobs shows it -> pick returns a seat", async () => {
     const fx = fixture();
-    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 10, 150);
+    openAll(fx);
     const b = backend(fx);
     const session = `${TOKEN}-golden`;
     const reg = await b.jobsRegister({ session, kind: "agent", id: `${TOKEN}-g1`, report: join(fx.root, "report.md"), label: "golden" });
@@ -619,10 +472,10 @@ describe.skipIf(!HAVE_OPS)("real scripts (ops claude/scripts, read-only)", () =>
 
   it("pick: every seat at its ceiling -> no-eligible-account with the seat table as record", async () => {
     const fx = fixture();
-    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 100, 299);
+    closeAll(fx);
     const pick = await backend(fx).pick({ kind: "author" });
     expect(code(pick), JSON.stringify(pick)).toBe("no-eligible-account");
-    expect(pick.ok ? null : (pick.record as { seats: unknown[] }).seats.length).toBe(4);
+    expect(pick.ok ? null : (pick.record as { seats: unknown[] }).seats.length).toBe(SEATS.length);
     expect(cliExitFor(pick)).toBe(1);
   }, 60_000);
 
@@ -688,13 +541,13 @@ describe("stratum session CLI", () => {
 
   it.skipIf(!HAVE_OPS)("probes 3, 4, 7 through the CLI on real scripts", () => {
     const fx = fixture();
-    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(fx, seat, 100, 299);
+    closeAll(fx);
     const closed = cli(fx, ["pick", "--kind", "author", "--json"]);
     expect([closed.status, closed.envelope && code(closed.envelope)]).toEqual([1, "no-eligible-account"]);
-    expect(closed.envelope && !closed.envelope.ok ? (closed.envelope.record as { seats: unknown[] }).seats.length : null).toBe(4);
+    expect(closed.envelope && !closed.envelope.ok ? (closed.envelope.record as { seats: unknown[] }).seats.length : null).toBe(SEATS.length);
 
     const open = fixture();
-    for (const seat of ["seat1", "seat2", "seat3", "seat4"]) putReading(open, seat, 10, 150);
+    openAll(open);
     const name = `$(touch ${join(open.root, "x")})`;
     const picked = cli(open, ["pick", "--kind", "author", "--name", name, "--json"]);
     expect(picked.status, picked.stderr).toBe(0);
