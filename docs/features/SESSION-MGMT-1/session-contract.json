@@ -30,7 +30,7 @@
       "default": null
     },
     "python": {"env": "STRATUM_SESSION_PYTHON", "config": "[session] python", "default": "python3"},
-    "exec": "argv only (execFile, never a shell), cwd unchanged, one timeout per op (timeout_s below), the child's process group killed on timeout. stdout is parsed as ONE JSON document and checked against the op's script_output shape; anything else is a backend-error refusal, never a guess. stderr is kept (first 500 chars) for the refusal reason.",
+    "exec": "argv only (spawn with an argv array, shell false, own process group; never a shell; U1 review F5 wording 2026-10-19), cwd unchanged, one timeout per op (timeout_s below), the child's process group killed on timeout. stdout is parsed as ONE JSON document and checked against the op's script_output shape; anything else is a backend-error refusal, never a guess. stderr is kept (first 500 chars) for the refusal reason.",
     "stdin": "closed ('ignore') for every op EXCEPT admit: admit writes marker_text (at most 262144 bytes, the gate's FILE_CAP, work_model_gate.py:73; longer = truncated to the head) to the child's stdin and ends the stream. marker_text never appears in argv, logs or output.",
     "child_env_rule": "The script's env is the CANDIDATE CHILD ENV the caller will launch with (operations.admit.child_env), minus CLAUDECODE and minus LAUNCH_GATE_ADMITTED (an inherited admission marker is never trusted). For ops other than admit and launch it is the front door's own process env with the same two removals.",
     "modes": {

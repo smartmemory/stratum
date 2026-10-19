@@ -155,7 +155,7 @@ Test files: one table, one row per case, no stacked `parametrize`, at most ~300 
 hard: new trust boundary (argv exec of host scripts, the configured/not-configured switch, fail-closed modes, Stratum's strict config parser).
 
 Files: `stratum/ts/src/session/backend.ts` (new: `SessionBackend` interface, envelope incl. `record`, refusal mapping), `stratum/ts/src/session/scripts-backend.ts`
-(new: execFile runner, stdin rule, timeouts, process-group kill, single-JSON parse + shape check for successes AND refusals), `stratum/ts/src/session/configured.ts`
+(new: argv-array spawn runner (no shell, own process group; F5 wording, 2026-10-19), stdin rule, timeouts, process-group kill, single-JSON parse + shape check for successes AND refusals), `stratum/ts/src/session/configured.ts`
 (new: `configured(env)` per contract `backend.configured_test`), `stratum/ts/src/session/index.ts` (new: `createSessionBackend`),
 `stratum/ts/src/config/index.ts` (existing: accept `[session]` with `scripts_dir`, `python` in the user file only; reject it in a project
 `stratum.toml`; `rejectUnknown` at `:186`), `stratum/ts/src/cli/session.ts` (new: `pick`, `jobs`, `register` verbs), `stratum/ts/src/cli/stratum.ts`
@@ -165,7 +165,7 @@ Files: `stratum/ts/src/session/backend.ts` (new: `SessionBackend` interface, env
 - [ ] `configured(env)` exactly per contract `backend.configured_test`; every row of `configured-fixtures.json` passes
 - [ ] Configured but broken (no usable `scripts_dir`, missing script, missing python, config parse error, a user config file that exists but cannot be read) → `backend-unavailable` for every op, `admit` included; never `backend: 'none'`
 - [ ] `[session]` in a project `stratum.toml` → config error naming the file; an unknown key inside `[session]` → config error naming the key
-- [ ] Every op runs `execFile` with an argv array, never a shell; stdin `ignore` for every op except `admit` (contract `backend.stdin`); `CLAUDECODE` and `LAUNCH_GATE_ADMITTED` removed from the script env (`backend.child_env_rule`); timeout per op, child process group killed on timeout
+- [ ] Every op runs `spawn` with an argv array (`shell: false`, `detached: true` for its own process group), never a shell; stdin `ignore` for every op except `admit` (contract `backend.stdin`); `CLAUDECODE` and `LAUNCH_GATE_ADMITTED` removed from the script env (`backend.child_env_rule`); timeout per op, child process group killed on timeout
 - [ ] A refusal whose stdout is one valid JSON document of the op's shape is returned with it as `record`; JSON of the wrong shape is `backend-error`; no JSON → `record: null`
 - [ ] Refusal codes exactly as `refusal_codes`; a script exit not in the op's map is `backend-error`, never `ok`
 - [ ] `pick` maps exit 0/1/3 per contract; a refusal carries the seat table in `record`
