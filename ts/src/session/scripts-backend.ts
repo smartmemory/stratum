@@ -9,7 +9,9 @@ import {
   type BackendKind,
   ENGINE_HOME_VAR,
   type Envelope,
+  type FleetData,
   firstLine,
+  type GateStatus,
   isRefusalCode,
   JOB_KINDS,
   type JobsListData,
@@ -27,6 +29,7 @@ import {
   refused,
   type SessionBackend,
   type SessionOp,
+  type StatusData,
   VENDORS,
   WORK_KINDS,
 } from "./backend.js";
@@ -376,6 +379,136 @@ function launchValidator(input: LaunchInput): Validator {
   };
 }
 
+/** tableProblem, and no key outside the two tables (a closed shape: an extra key is backend-error). */
+function closedProblem(what: string, record: unknown, required: FieldTable, optional: FieldTable): string | null {
+  if (!isRecord(record)) return `${what} is not an object`;
+  const wrong = tableProblem(what, record, required, optional);
+  if (wrong !== null) return wrong;
+  const known = new Set([...required, ...optional].map(([key]) => key));
+  const extra = Object.keys(record).find((key) => !known.has(key));
+  return extra === undefined ? null : `${what} has an uncontracted key ${JSON.stringify(extra)}`;
+}
+
+const arrayOf = (test: (value: unknown) => boolean) => (value: unknown): boolean => Array.isArray(value) && value.every(test);
+const isNumberOrNull = (value: unknown): boolean => value === null || isFiniteNumber(value);
+/** Both scripts' refusal: `{refused: true, reason}` on stdout (launch_gate.py:723-742, ops json-contract.json "launch_gate status".refused). */
+const GATE_REFUSED_FIELDS: FieldTable = [["refused", (v) => v === true, "true"], ["reason", isString, "a string"]];
+
+/** contract `operations.status.script_output.usage_watch` accounts[] (closed: the listed optional keys and no others). */
+const UW_ACCOUNT_REQUIRED: FieldTable = [
+  ["id", isString, "a string"], ["vendor", (v) => isOneOf(VENDORS, v), `one of ${VENDORS.join(", ")}`], ["label", isStringOrNull, "string|null"],
+  ["status", isString, "a string"], ["windows", isRecord, "an object"], ["pace", (v) => v === null || isRecord(v), "an object|null"],
+];
+const UW_ACCOUNT_OPTIONAL: FieldTable = [
+  ["ceiling_pct", isFiniteNumber, "a finite number"], ["ceiling_source", isString, "a string"], ["reserved", (v) => typeof v === "boolean", "a boolean"],
+  ["reserved_why", isString, "a string"], ["owner_sessions", Array.isArray, "an array"], ["unused_24h_pts", isNumberOrNull, "a finite number|null"],
+  ["extra_windows", (v) => isRecord(v) || Array.isArray(v), "an object or array"], ["fable", (v) => v === null || isRecord(v), "an object|null"],
+];
+/** usage_watch's `recommendation` is the pick record for kind author (usage_watch.py status_data). */
+const UW_RECOMMENDATION_REQUIRED: FieldTable = [
+  ["kind", isString, "a string"], ["choice", (v) => v === null || (isRecord(v) && tableProblem("", v, PICK_CHOICE_FIELDS, []) === null), "null|{id, vendor, label, command}"],
+  ["reason", isString, "a string"], ["rule", isString, "a string"],
+];
+const UW_RECOMMENDATION_OPTIONAL: FieldTable = [
+  ["code", (v) => v === "ahead-of-pace", "'ahead-of-pace'"],
+  ["seats", arrayOf((seat) => isRecord(seat) && tableProblem("", seat, PICK_SEAT_REQUIRED, PICK_SEAT_OPTIONAL) === null), "an array of seat rows"],
+];
+const UW_STATUS_FIELDS: FieldTable = [
+  ["generated_at", isFiniteNumber, "a finite number"], ["target_pct", isFiniteNumber, "a finite number"],
+  ["accounts", Array.isArray, "an array"], ["recommendation", (v) => v === null || isRecord(v), "an object|null"],
+];
+
+const usageStatusValidator: Validator = (doc) => {
+  const top = closedProblem("usage_watch status", doc, UW_STATUS_FIELDS, []);
+  if (top !== null) return top;
+  const record = doc as Record<string, unknown>;
+  for (const row of record.accounts as unknown[]) {
+    const wrong = closedProblem("usage_watch status account", row, UW_ACCOUNT_REQUIRED, UW_ACCOUNT_OPTIONAL);
+    if (wrong !== null) return wrong;
+  }
+  if (record.recommendation !== null) {
+    return closedProblem("usage_watch status recommendation", record.recommendation, UW_RECOMMENDATION_REQUIRED, UW_RECOMMENDATION_OPTIONAL);
+  }
+  return null;
+};
+
+const GATE_ENGINE_FIELDS: FieldTable = [["would_pass", (v) => typeof v === "boolean", "a boolean"], ["reason", isStringOrNull, "string|null"]];
+const GATE_WAITING_FIELDS: FieldTable = [
+  ["engine", isString, "a string"], ["label", isStringOrNull, "string|null"], ["pid", isPosInt, "a positive integer"],
+  ["waiting_s", isFiniteNumber, "a finite number"], ["alive", (v) => typeof v === "boolean", "a boolean"],
+];
+const GATE_LAUNCHES_REQUIRED: FieldTable = [
+  ["kept", isNonNegInt, "a non-negative integer"], ["recent", isNonNegInt, "a non-negative integer"],
+  ["window_s", isFiniteNumber, "a finite number"], ["last_age_s", isNumberOrNull, "a finite number|null"],
+];
+const GATE_LIMITS_FIELDS: FieldTable = [
+  ["spacing_s", isFiniteNumber, "a finite number"], ["max_recent", isNonNegInt, "a non-negative integer"], ["window_s", isFiniteNumber, "a finite number"],
+];
+const GATE_FLEET_FIELDS: FieldTable = [["count", (v) => v === null || isNonNegInt(v), "a non-negative integer|null"], ["max", isNonNegInt, "a non-negative integer"]];
+const GATE_STATUS_REQUIRED: FieldTable = [
+  ["engines", isRecord, "an object"], ["queue", isRecord, "an object"], ["launches", isRecord, "an object"],
+  ["load1", isFiniteNumber, "a finite number"], ["load_max", isFiniteNumber, "a finite number"],
+  ["fleet", isRecord, "an object"], ["limits", isRecord, "an object"],
+];
+/**
+ * forge-e0 ruling 1 (SESSION-MGMT-1-U2): the keys launch_gate --status --json prints beyond session-contract
+ * `operations.status.script_output.launch_gate`. They are SESSION-MGMT-1-U5 additions recorded only in ops
+ * claude/scripts/json-contract.json "launch_gate status" `_doc` ("`bypassed`, launches.last_label and launches.retain_s
+ * carry the text form's other facts ... and are additions to that shape"). Allowed here and nowhere else: any other
+ * extra key stays backend-error.
+ */
+const GATE_IDLE_FIELDS: FieldTable = [
+  ["min", isFiniteNumber, "a finite number"], ["sampled", (v) => typeof v === "boolean", "a boolean"], ["pct", isNumberOrNull, "a finite number|null"],
+];
+const GATE_STATUS_ADDITIONS: FieldTable = [
+  ["bypassed", (v) => typeof v === "boolean", "a boolean"],
+  // LAUNCH-GATE-IDLE-1 (ops f88ad09a, 30f5b4fd, landed during U2-c3): `idle` is in the same ops entry's `required` and `types`
+  // ("{min: number, sampled: boolean, pct: number|null}"); the same class as ruling 1's additions, listed in U2-c3-report Findings.
+  ["idle", (v) => isRecord(v) && closedProblem("idle", v, GATE_IDLE_FIELDS, []) === null, "{min: number, sampled: boolean, pct: number|null}"],
+];
+const GATE_LAUNCHES_ADDITIONS: FieldTable = [["last_label", isStringOrNull, "string|null"], ["retain_s", isFiniteNumber, "a finite number"]];
+
+const gateStatusValidator: Validator = (doc, exit) => {
+  if (exit !== 0) return closedProblem("launch_gate status refusal", doc, GATE_REFUSED_FIELDS, []);
+  const top = closedProblem("launch_gate status", doc, GATE_STATUS_REQUIRED, GATE_STATUS_ADDITIONS);
+  if (top !== null) return top;
+  const record = doc as Record<string, unknown>;
+  const engines = record.engines as Record<string, unknown>;
+  const engineKeys = Object.keys(engines).sort().join(",");
+  if (engineKeys !== [...VENDORS].sort().join(",")) return `launch_gate status engines must be exactly {${VENDORS.join(", ")}}`;
+  for (const engine of VENDORS) {
+    const wrong = closedProblem(`launch_gate status engines.${engine}`, engines[engine], GATE_ENGINE_FIELDS, []);
+    if (wrong !== null) return wrong;
+  }
+  const queue = closedProblem("launch_gate status queue", record.queue, [
+    ["mode", (v) => v === "fifo" || v === "off", "'fifo'|'off'"], ["waiting", Array.isArray, "an array"],
+  ], []);
+  if (queue !== null) return queue;
+  for (const item of (record.queue as Record<string, unknown>).waiting as unknown[]) {
+    const wrong = closedProblem("launch_gate status queue.waiting item", item, GATE_WAITING_FIELDS, []);
+    if (wrong !== null) return wrong;
+  }
+  return closedProblem("launch_gate status launches", record.launches, GATE_LAUNCHES_REQUIRED, GATE_LAUNCHES_ADDITIONS)
+    ?? closedProblem("launch_gate status fleet", record.fleet, GATE_FLEET_FIELDS, [])
+    ?? closedProblem("launch_gate status limits", record.limits, GATE_LIMITS_FIELDS, []);
+};
+
+/** contract `operations.fleet.script_output` (ops json-contract.json "launch_gate fleet": jobs.length == count). */
+const FLEET_FIELDS: FieldTable = [["count", isNonNegInt, "a non-negative integer"], ["max", isNonNegInt, "a non-negative integer"], ["jobs", Array.isArray, "an array"]];
+const FLEET_JOB_FIELDS: FieldTable = [["session", isString, "a string"], ["label", isStringOrNull, "string|null"], ["pid", isPosInt, "a positive integer"]];
+
+const fleetValidator: Validator = (doc, exit) => {
+  if (exit !== 0) return closedProblem("launch_gate fleet refusal", doc, GATE_REFUSED_FIELDS, []);
+  const top = closedProblem("launch_gate fleet", doc, FLEET_FIELDS, []);
+  if (top !== null) return top;
+  const jobs = (doc as Record<string, unknown>).jobs as unknown[];
+  for (const job of jobs) {
+    const wrong = closedProblem("launch_gate fleet job", job, FLEET_JOB_FIELDS, []);
+    if (wrong !== null) return wrong;
+  }
+  return jobs.length === (doc as Record<string, unknown>).count ? null : "launch_gate fleet jobs.length differs from count";
+};
+
 // ---------------------------------------------------------------- the backend
 
 interface OpSpec {
@@ -566,6 +699,33 @@ export class ScriptsBackend implements SessionBackend {
       env: detachEnv,
       stdin: null,
       timeoutMs: this.#timeout("launch", OP_TIMEOUT_S.launch),
+    });
+  }
+
+  async status(): Promise<Envelope<StatusData>> {
+    const env = scriptEnv(this.#env);
+    const timeoutMs = this.#timeout("status", OP_TIMEOUT_S.status);
+    // Both are read-only, so they run side by side under the op's one timeout.
+    const [usage, gate] = await Promise.all([
+      this.#run<{ accounts: StatusData["accounts"]; recommendation: StatusData["recommendation"] }>({
+        op: "status", script: "usage_watch.py", args: ["status", "--json", "--no-spend"],
+        exits: { 0: "ok", 1: "backend-error", 2: "usage" }, validate: usageStatusValidator, env, stdin: null, timeoutMs,
+      }),
+      this.#run<GateStatus>({
+        op: "status", script: "launch_gate.py", args: ["--status", "--json"],
+        exits: { 0: "ok", 1: "backend-error", 2: "usage" }, validate: gateStatusValidator, env, stdin: null, timeoutMs,
+      }),
+    ]);
+    if (!usage.ok) return usage;
+    if (!gate.ok) return gate;
+    return okEnvelope("status", this.kind, { accounts: usage.data.accounts, recommendation: usage.data.recommendation, gate: gate.data });
+  }
+
+  async fleet(): Promise<Envelope<FleetData>> {
+    return this.#run<FleetData>({
+      op: "fleet", script: "launch_gate.py", args: ["--fleet", "--json"],
+      exits: { 0: "ok", 1: "backend-error" }, validate: fleetValidator, env: scriptEnv(this.#env), stdin: null,
+      timeoutMs: this.#timeout("fleet", OP_TIMEOUT_S.fleet),
     });
   }
 

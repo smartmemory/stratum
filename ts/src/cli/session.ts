@@ -8,11 +8,12 @@ import {
   type LaunchInput,
   MARKER_CAP_BYTES,
   type PickInput,
+  type SessionBackend,
 } from "../session/index.js";
 
 /**
  * `stratum session <verb>` (SESSION-MGMT-1, contract `operations.*.cli`, `cli_exit_codes`).
- * U1 verbs: pick, jobs, register; U2: admit, launch. Each prints the envelope (`--json`) or a short text form,
+ * U1 verbs: pick, jobs, register; U2: admit, launch, status, fleet. Each prints the envelope (`--json`) or a short text form,
  * and exits 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.
  */
 
@@ -26,6 +27,8 @@ const USAGE = [
   "        [--launch-gate full|none] [--max-wait-s N]   may this launch start, on which account (marker text on stdin without --marker-file)",
   "  launch --session S --label L --engine claude|codex --model M --brief ABS --report ABS [--effort E] [--cwd ABS]",
   "         [--work-kind K] [--priority P0..P3] [--account inherit|auto|ID] [--max-wait-s N]   admit (full gate) then start a detached job",
+  "  status                                                              accounts, pick recommendation and launch gate (read-only)",
+  "  fleet                                                               alive detached Claude jobs vs the fleet cap (read-only)",
   "Exit: 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.",
 ].join("\n");
 
@@ -41,6 +44,8 @@ export async function sessionCommand(argv: readonly string[]): Promise<number> {
     if (verb === "register") return await registerVerb(rest);
     if (verb === "admit") return await admitVerb(rest);
     if (verb === "launch") return await launchVerb(rest);
+    if (verb === "status") return await readOnlyVerb(rest, (backend) => backend.status());
+    if (verb === "fleet") return await readOnlyVerb(rest, (backend) => backend.fleet());
   } catch (error) {
     if (error instanceof UsageError) return usage(error.message);
     throw error;
@@ -168,6 +173,12 @@ async function admitVerb(args: readonly string[]): Promise<number> {
   const result = await createSessionBackend().admit(input, { childEnv: process.env });
   const { childEnv: _childEnv, ...envelope } = result;
   return emit(envelope as Envelope<unknown>, values.json === true);
+}
+
+/** A verb with no options besides --json. */
+async function readOnlyVerb(args: readonly string[], call: (backend: SessionBackend) => Promise<Envelope<unknown>>): Promise<number> {
+  const values = parse(args, {});
+  return emit(await call(createSessionBackend()), values.json === true);
 }
 
 const LAUNCH_FLAGS = {

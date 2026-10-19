@@ -233,9 +233,63 @@ export interface LaunchData {
   readonly account: string;
 }
 
+/** contract `operations.status.script_output.launch_gate` plus the ops additions (`bypassed`, launches.last_label, launches.retain_s). */
+export interface GateStatus {
+  readonly engines: Readonly<Record<Vendor, { readonly would_pass: boolean; readonly reason: string | null }>>;
+  readonly queue: { readonly mode: "fifo" | "off"; readonly waiting: readonly Record<string, unknown>[] };
+  readonly launches: Readonly<Record<string, unknown>>;
+  readonly load1: number;
+  readonly load_max: number;
+  readonly fleet: { readonly count: number | null; readonly max: number };
+  readonly limits: { readonly spacing_s: number; readonly max_recent: number; readonly window_s: number };
+  readonly bypassed?: boolean;
+}
+
+/** contract `operations.status.data`: usage_watch's accounts and recommendation, launch_gate's status. */
+export interface StatusData {
+  readonly accounts: readonly Record<string, unknown>[];
+  readonly recommendation: Readonly<Record<string, unknown>> | null;
+  readonly gate: GateStatus;
+}
+
+/** contract `operations.fleet.script_output`. */
+export interface FleetData {
+  readonly count: number;
+  readonly max: number;
+  readonly jobs: readonly { readonly session: string; readonly label: string | null; readonly pid: number }[];
+}
+
+export const HOP_RESULTS = Object.freeze(["HOPPED", "ALREADY", "DRY-RUN", "REFUSED", "BUSY", "NOT-READY", "PARTIAL", "OK", "HOP", "UNKNOWN"] as const);
+export type HopResult = (typeof HOP_RESULTS)[number];
+
+/** contract `operations.hop.script_output` (ops json-contract.json "session_hop": 8 required keys, no optional ones). */
+export interface HopData {
+  readonly result: HopResult;
+  readonly name: string;
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly hop_recommended: boolean | null;
+  readonly reason: string;
+  readonly line: string;
+  readonly left_open: readonly string[];
+}
+
+export interface HopCheckInput { readonly name: string }
+export interface HopDryRunInput { readonly name: string; readonly to?: string; readonly reason?: string }
+export interface HopLiveInput extends HopDryRunInput { readonly force?: boolean; readonly allowClosed?: boolean }
+
+/** contract `operations.policy.script_output`. */
+export interface PolicyData {
+  readonly path: string;
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly sources: Readonly<Record<string, string>>;
+  readonly warnings: readonly string[];
+}
+
 /**
  * contract `library.exports`. U1 implements pick, admit's mode handling, jobsList and
  * jobsRegister; U2 adds launch, status, fleet, hopCheck, hopDryRun, hopLive and policy.
+ * Hop is three methods, one per door: no method takes the mode as a value.
  */
 export interface SessionBackend {
   /** 'scripts' when configured (even when broken), 'none' otherwise. */
@@ -246,4 +300,8 @@ export interface SessionBackend {
   launch(input: LaunchInput): Promise<Envelope<LaunchData>>;
   jobsList(input?: JobsListInput): Promise<Envelope<JobsListData>>;
   jobsRegister(input: JobsRegisterInput): Promise<Envelope<JobsRegisterData>>;
+  /** usage_watch status + launch_gate --status, merged (read-only). */
+  status(): Promise<Envelope<StatusData>>;
+  /** launch_gate --fleet (read-only). */
+  fleet(): Promise<Envelope<FleetData>>;
 }
