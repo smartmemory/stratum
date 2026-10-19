@@ -458,11 +458,10 @@ const GATE_STATUS_REQUIRED: FieldTable = [
   ["fleet", isRecord, "an object"], ["limits", isRecord, "an object"],
 ];
 /**
- * forge-e0 ruling 1 (SESSION-MGMT-1-U2): the keys launch_gate --status --json prints beyond session-contract
- * `operations.status.script_output.launch_gate`. They are SESSION-MGMT-1-U5 additions recorded only in ops
- * claude/scripts/json-contract.json "launch_gate status" `_doc` ("`bypassed`, launches.last_label and launches.retain_s
- * carry the text form's other facts ... and are additions to that shape"). Allowed here and nowhere else: any other
- * extra key stays backend-error.
+ * The keys launch_gate --status --json prints beyond the plan's first six: `bypassed`, `idle`, launches.last_label and launches.retain_s.
+ * They are contracted: session-contract `operations.status.script_output.launch_gate` lists them (c4b, forge-e0 ruling: the contract follows the
+ * scripts) and ops json-contract.json "launch_gate status" requires them (U5, LAUNCH-GATE-IDLE-1). This table is the validator's allow-list;
+ * `ts/tests/session/contract.test.ts` fails if the two drift. Any other extra key stays backend-error.
  */
 const GATE_IDLE_FIELDS: FieldTable = [
   ["min", isFiniteNumber, "a finite number"], ["sampled", (v) => typeof v === "boolean", "a boolean"], ["pct", isNumberOrNull, "a finite number|null"],

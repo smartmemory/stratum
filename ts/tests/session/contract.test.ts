@@ -70,14 +70,12 @@ function keyProblem(what: string, actual: readonly string[], spec: KeySpec, expe
 }
 
 /**
- * The ONE expected-extra table: keys the real scripts emit that session-contract does not list, recorded in the ops json-contract
- * (c3 Findings 1). Same additions as scripts-backend.ts `GATE_STATUS_ADDITIONS` (bypassed, idle) and `GATE_LAUNCHES_ADDITIONS`
- * (launches.last_label, launches.retain_s). Any other extra key fails.
+ * The ONE expected-extra table: keys the real scripts emit that session-contract does not list. Empty since c4b: the four launch_gate
+ * status keys (bypassed, idle, launches.last_label, launches.retain_s) are now in session-contract, so the contract follows the scripts.
+ * A future omission fails the "ops required keys absent from session-contract" check below, and an unlisted extra key fails the comparison.
  */
-const EXPECTED_EXTRA: Readonly<Record<string, readonly string[]>> = {
-  "status.launch_gate": ["bypassed", "idle"],
-  "status.launch_gate.launches": ["last_label", "retain_s"],
-};
+const EXPECTED_EXTRA: Readonly<Record<string, readonly string[]>> = {};
+
 
 /** ops json-contract.json entry per op/part (an entry is a script's required/optional); null = the ops file has no entry for it. */
 const OPS_ENTRY: Readonly<Record<string, string | null>> = {
@@ -249,8 +247,11 @@ describe("the comparison itself", () => {
     expect(found.join("\n")).toContain("extra [cnt]");
   });
 
-  it("an extra key outside the expected-extra table fails (status.launch_gate gains `cpu`)", () => {
-    const extra = keyProblem("x", ["engines", "queue", "bypassed", "cpu"], { required: ["engines", "queue"], optional: [] }, EXPECTED_EXTRA["status.launch_gate"]);
-    expect(extra).toContain("extra [cpu]");
+  it("an extra key fails (status.launch_gate gains `cpu`) and a key the contract omits fails (the table is empty)", () => {
+    const spec = contractKeys(((sessionContract().status as Json).script_output as Json).launch_gate);
+    expect(spec.required).toEqual(expect.arrayContaining(["bypassed", "idle"]));
+    expect(keyProblem("x", [...spec.required, "cpu"], spec, EXPECTED_EXTRA["status.launch_gate"])).toContain("extra [cpu]");
+    expect(keyProblem("x", spec.required.filter((key) => key !== "idle"), spec)).toContain("missing [idle]");
+    expect(EXPECTED_EXTRA).toEqual({});
   });
 });
