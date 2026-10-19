@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -97,7 +97,8 @@ export class ResolvedStratumConfig {
 
 /**
  * Resolve defaults < user preferences < project config < dispatch params < env.
- * Missing TOML files are intentionally no-ops; malformed or unknown content is fatal.
+ * Missing TOML files (proven absent: readConfigFile) are intentionally no-ops; unreadable,
+ * malformed or unknown content is fatal.
  */
 export function loadStratumConfig(options: LoadStratumConfigOptions = {}): ResolvedStratumConfig {
   const env = options.env ?? process.env;
@@ -172,10 +173,12 @@ function applyFile(
   path: string,
   layer: Extract<ConfigLayer, "user" | "project">,
 ): void {
-  if (!existsSync(path)) return;
+  const file = readConfigFile(path);
+  if (file.kind === "absent") return;
+  if (file.kind === "error") throw new Error(`${path}: ${file.message}`);
   let raw: unknown;
   try {
-    raw = parse(readFileSync(path, "utf8"));
+    raw = parse(file.text);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`${path}: TOML parse error: ${detail}`, { cause: error });
@@ -223,8 +226,8 @@ export interface LoadSessionConfigOptions {
 /**
  * The session door's configuration (contract `backend.configured_test`, `backend.scripts_dir`,
  * `backend.python`). `configured` follows the contract rule exactly: the env variable is a
- * non-empty string, or the USER config file holds a `session` key. A user file that exists
- * but cannot be read or parsed is configured-and-broken (`error` set): the door then refuses
+ * non-empty string, or the USER config file holds a `session` key. A user file that is not
+ * proven absent but cannot be read or parsed is configured-and-broken (`error` set): the door then refuses
  * every op, it never passes through. A `session` key in a project stratum.toml is a config
  * error naming that file. Nothing here throws.
  */
@@ -253,22 +256,21 @@ export function loadSessionConfig(options: LoadSessionConfigOptions = {}): Sessi
   let fileScriptsDir: string | null = null;
   let filePython: string | null = null;
 
-  if (existsSync(userPath)) {
+  // Only proven absence leaves the file out of the decision (SESSION-MGMT-1-U1 fix 1). A file
+  // that cannot be read, or does not parse, is configured-and-broken whatever it holds and
+  // whatever the env says: the door then refuses every op, it never passes through.
+  const file = readConfigFile(userPath);
+  if (file.kind === "error") {
+    fileConfigured = true;
+    errors.push(`${userPath}: cannot read session config: ${file.message}`);
+  }
+  if (file.kind === "text") {
     let raw: unknown;
-    let text: string | null = null;
     try {
-      text = readFileSync(userPath, "utf8");
-      raw = parse(text);
+      raw = parse(file.text);
     } catch (error) {
-      // Unreadable: we cannot tell whether it holds [session], so it is configured-and-broken
-      // (fixture row "file unreadable"). Readable but not TOML: configured-and-broken when the
-      // text could spell a `session` key (the word, or a \u / \U escape in a quoted key);
-      // text that can spell no such key cannot configure the door, so it stays unconfigured.
-      // This keeps "Stratum configured => Compose configured" (contract configured_test.fixtures).
-      if (text === null || mayNameSession(text)) {
-        fileConfigured = true;
-        errors.push(`${userPath}: cannot read session config: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      fileConfigured = true;
+      errors.push(`${userPath}: TOML parse error: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (isRecord(raw) && Object.prototype.hasOwnProperty.call(raw, "session")) {
       fileConfigured = true;
@@ -306,30 +308,70 @@ export function loadSessionConfig(options: LoadSessionConfigOptions = {}): Sessi
   });
 }
 
-/** True when TOML text could hold a `session` key: the word itself, or a unicode escape that could spell it. */
-function mayNameSession(text: string): boolean {
-  return text.includes("session") || text.includes("\\u") || text.includes("\\U");
-}
-
 function projectSessionError(path: string): string {
   return `${path}: [session] is not allowed in a project stratum.toml; set it in the user config (STRATUM_CONFIG_FILE or ~/.stratum/config.toml)`;
 }
 
 /**
- * A project file never supplies session settings. One that parses and holds a `session`
- * key is a config error naming the file. One that does not parse cannot supply anything to
- * the door either (it is never read for session values), so its parse error stays the
- * sandbox loader's to report.
+ * A project file never supplies session settings. One that holds a `session` key is a config
+ * error naming the file. One that exists but cannot be read or parsed is an error too: the
+ * door cannot prove the rule holds, so it refuses (only proven absence is clean).
  */
 function projectSessionCheck(path: string): string | null {
-  if (!existsSync(path)) return null;
+  const file = readConfigFile(path);
+  if (file.kind === "absent") return null;
+  if (file.kind === "error") return `${path}: ${file.message}; cannot check it for a forbidden [session]`;
   let raw: unknown;
   try {
-    raw = parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
+    raw = parse(file.text);
+  } catch (error) {
+    return `${path}: TOML parse error: ${error instanceof Error ? error.message : String(error)}; cannot check it for a forbidden [session]`;
   }
   return isRecord(raw) && Object.prototype.hasOwnProperty.call(raw, "session") ? projectSessionError(path) : null;
+}
+
+// ---------------------------------------------------------------- reading a config file
+
+export type ConfigFileRead =
+  | { readonly kind: "absent" }
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "error"; readonly message: string };
+
+/** The errno codes that prove a path does not exist: ENOENT (it, or an ancestor, is missing), ENOTDIR (an ancestor is a file). */
+const ABSENT_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
+
+/**
+ * The one way a Stratum config file (user or project) is read. `absent` only on proven
+ * absence: stat fails with ENOENT or ENOTDIR. A dangling symlink is ENOENT on its target, so
+ * it is absent, the same answer as a missing ancestor. Every other outcome is an `error` the
+ * caller must surface, never absence: EACCES / EPERM (on the file or an ancestor), EIO,
+ * ELOOP, an unknown error, a path that is not a regular file (directory, FIFO), or a read
+ * failure after a successful stat.
+ */
+export function readConfigFile(path: string): ConfigFileRead {
+  let isFile: boolean;
+  try {
+    isFile = statSync(path).isFile();
+  } catch (error) {
+    const code = errnoCode(error);
+    if (code !== undefined && ABSENT_CODES.has(code)) return Object.freeze({ kind: "absent" as const });
+    return Object.freeze({ kind: "error" as const, message: `cannot stat config file: ${code ?? errorText(error)}` });
+  }
+  if (!isFile) return Object.freeze({ kind: "error" as const, message: "config path is not a regular file" });
+  try {
+    return Object.freeze({ kind: "text" as const, text: readFileSync(path, "utf8") });
+  } catch (error) {
+    return Object.freeze({ kind: "error" as const, message: `cannot read config file: ${errnoCode(error) ?? errorText(error)}` });
+  }
+}
+
+function errnoCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function applyLayer(

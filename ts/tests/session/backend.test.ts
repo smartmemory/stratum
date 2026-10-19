@@ -1,13 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, utimesSync, writeFileSync,
+  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync,
+  utimesSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadSessionConfig, loadStratumConfig } from "../../src/config/index.js";
+import { resolveLearnConfig } from "../../src/config/learn.js";
 import { cliExitFor, configured, createSessionBackend, type Envelope, MARKER_CAP_BYTES } from "../../src/session/index.js";
 
 /**
@@ -26,8 +28,13 @@ const HAVE_OPS = existsSync(join(OPS_SCRIPTS, "usage_watch.py")) && existsSync(j
 const PYTHON = findPython();
 const TOKEN = `u1lg${randomBytes(4).toString("hex")}`;
 const FIXTURES = JSON.parse(readFileSync(join(HERE, "configured-fixtures.json"), "utf8")) as {
-  rows: Array<{ name: string; env: "set" | "empty" | "unset"; file: string | null | { unreadable: true }; stratum: "configured" | "broken" | "unconfigured"; compose: boolean }>;
+  rows: Array<{
+    name: string; env: "set" | "empty" | "unset"; file: string | null | { special: Special };
+    stratum: "configured" | "broken" | "unconfigured"; compose: boolean;
+  }>;
 };
+
+type Special = "file-mode-000" | "ancestor-mode-000" | "directory" | "dangling-symlink";
 
 let ROOT = "";
 
@@ -232,37 +239,51 @@ describe("configured(env): contract backend.configured_test, one row per fixture
   for (const row of FIXTURES.rows) {
     it(`${row.name}: stratum ${row.stratum}, compose ${row.compose}`, async () => {
       const fx = fixture({ envDir: row.env, config: null });
-      if (typeof row.file === "string") writeFileSync(fx.configFile, row.file.replaceAll("{SCRIPTS_DIR}", OPS_SCRIPTS));
-      if (row.file !== null && typeof row.file === "object") {
-        writeFileSync(fx.configFile, `[session]\nscripts_dir = "${OPS_SCRIPTS}"\n`);
-        chmodSync(fx.configFile, 0o000);
+      const special = row.file !== null && typeof row.file === "object" ? row.file.special : null;
+      // ancestor-mode-000: review F1's repro, a [session] file inside a directory this process cannot search.
+      const locked = join(fx.root, "locked");
+      const env = special === "ancestor-mode-000" ? { ...fx.env, STRATUM_CONFIG_FILE: join(locked, "user-config.toml") } : fx.env;
+      const configFile = env.STRATUM_CONFIG_FILE!;
+      if (typeof row.file === "string") writeFileSync(configFile, row.file.replaceAll("{SCRIPTS_DIR}", OPS_SCRIPTS));
+      if (special === "file-mode-000") {
+        writeFileSync(configFile, `[session]\nscripts_dir = "${OPS_SCRIPTS}"\n`);
+        chmodSync(configFile, 0o000);
       }
+      if (special === "ancestor-mode-000") {
+        mkdirSync(locked);
+        writeFileSync(configFile, `[session]\nscripts_dir = "/missing"\n`);
+        chmodSync(locked, 0o000);
+      }
+      if (special === "directory") mkdirSync(configFile);
+      if (special === "dangling-symlink") symlinkSync(join(fx.root, "nowhere.toml"), configFile);
       try {
-        // compose column = contract configured_test.compose_impl, recomputed so the table cannot drift.
-        const text = typeof row.file === "string" ? row.file : "";
-        const composeRule = (fx.env.STRATUM_SESSION_SCRIPTS_DIR ?? "") !== ""
-          || (row.file !== null && (typeof row.file === "object" || text.includes("session") || text.includes("\\u") || text.includes("\\U")));
+        // compose column = contract configured_test.compose_impl, recomputed so the table cannot drift:
+        // env non-empty, or the user config path is not proven absent (stat errno other than ENOENT/ENOTDIR, or stat succeeds).
+        let provenAbsent = false;
+        try { statSync(configFile); } catch (error) { provenAbsent = ["ENOENT", "ENOTDIR"].includes((error as { code?: string }).code ?? ""); }
+        const composeRule = (env.STRATUM_SESSION_SCRIPTS_DIR ?? "") !== "" || !provenAbsent;
         expect(composeRule, "compose column").toBe(row.compose);
 
-        expect(configured(fx.env)).toBe(row.stratum !== "unconfigured");
-        const config = loadSessionConfig({ env: fx.env, projectRoot: fx.root });
+        expect(configured(env)).toBe(row.stratum !== "unconfigured");
+        const config = loadSessionConfig({ env, projectRoot: fx.root });
         expect(config.error !== null, `error: ${config.error}`).toBe(row.stratum === "broken");
 
-        const b = backend(fx);
+        const b = createSessionBackend({ env, projectRoot: fx.root });
         const jobs = await b.jobsList({ session: `${TOKEN}-none` });
-        const admit = await b.admit({ engine: "claude", label: "probe", model: "sonnet", launchGate: "none" }, { childEnv: fx.env });
+        const admit = await b.admit({ engine: "claude", label: "probe", model: "sonnet", launchGate: "none" }, { childEnv: env });
         if (row.stratum === "unconfigured") {
           expect([code(jobs), jobs.backend]).toEqual(["backend-unconfigured", "none"]);
-          expect(admit.ok && admit.backend === "none" && admit.childEnv === fx.env).toBe(true);
+          expect(admit.ok && admit.backend === "none" && admit.childEnv === env).toBe(true);
         } else if (row.stratum === "broken" || config.scriptsDir === null) {
           expect([code(jobs), jobs.backend]).toEqual(["backend-unavailable", "scripts"]);
-          expect([code(admit), admit.backend]).toEqual(["backend-unavailable", "scripts"]);
+          expect([code(admit), admit.backend, admit.childEnv]).toEqual(["backend-unavailable", "scripts", null]);
         } else {
           expect(admit.backend).toBe("scripts");
           if (HAVE_OPS) expect(code(jobs)).toBe("ok");
         }
       } finally {
-        if (existsSync(fx.configFile)) chmodSync(fx.configFile, 0o600);
+        if (special === "ancestor-mode-000") chmodSync(locked, 0o700);
+        if (special === "file-mode-000") chmodSync(configFile, 0o600);
       }
     });
   }
@@ -285,6 +306,70 @@ describe("[session] in a project stratum.toml is a config error naming the file"
     expect(() => loadStratumConfig({ env, projectRoot: fx.root })).not.toThrow();
     expect(loadSessionConfig({ env, projectRoot: fx.root }).error).toContain('"session.bogus"');
   });
+});
+
+// ---------------------------------------------------------------- every config-file read site (fix round 1)
+
+/**
+ * The bug class "a failure to read or parse a Stratum config file is treated as absence",
+ * one row per read site (config/index.ts readConfigFile is the only reader). `make` builds the
+ * bad path and returns what to restore; `check` asserts the site's broken arm.
+ */
+const READ_SITE_ROWS: Array<{
+  name: string;
+  make: (fx: Fixture) => { env: NodeJS.ProcessEnv; bad: string; restore: () => void };
+  check: (fx: Fixture, env: NodeJS.ProcessEnv, bad: string) => Promise<void> | void;
+}> = [
+  {
+    name: "sandbox loader: unreadable user file throws, naming it",
+    make: (fx) => { writeFileSync(fx.configFile, "[sandbox]\n"); chmodSync(fx.configFile, 0o000); return { env: fx.env, bad: fx.configFile, restore: () => chmodSync(fx.configFile, 0o600) }; },
+    check: (fx, env, bad) => { expect(() => loadStratumConfig({ env, projectRoot: fx.root })).toThrow(bad); },
+  },
+  {
+    name: "sandbox loader: a dangling-symlink user file is absent (no throw)",
+    make: (fx) => { symlinkSync(join(fx.root, "nowhere.toml"), fx.configFile); return { env: fx.env, bad: fx.configFile, restore: () => {} }; },
+    check: (fx, env) => { expect(() => loadStratumConfig({ env, projectRoot: fx.root })).not.toThrow(); },
+  },
+  {
+    name: "learn loader: unreadable user file is a diagnostic, every switch off",
+    make: (fx) => { writeFileSync(fx.configFile, "[learn]\ndeliver = true\n"); chmodSync(fx.configFile, 0o000); return { env: fx.env, bad: fx.configFile, restore: () => chmodSync(fx.configFile, 0o600) }; },
+    check: (fx, env, bad) => {
+      const learn = resolveLearnConfig({ env, projectRoot: fx.root });
+      expect([learn.deliver, learn.inline, learn.diagnostics.some((line) => line.includes(bad))]).toEqual([false, false, true]);
+    },
+  },
+  {
+    name: "project stratum.toml unreadable: both loaders refuse, door backend-unavailable naming it",
+    make: (fx) => {
+      const project = join(fx.root, "stratum.toml");
+      writeFileSync(project, "[sandbox]\n");
+      chmodSync(project, 0o000);
+      return { env: fx.env, bad: project, restore: () => chmodSync(project, 0o600) };
+    },
+    check: async (fx, env, bad) => {
+      expect(() => loadStratumConfig({ env, projectRoot: fx.root })).toThrow(bad);
+      const admit = await createSessionBackend({ env, projectRoot: fx.root }).admit({ engine: "claude", label: "probe", launchGate: "none" }, { childEnv: env });
+      expect([code(admit), admit.backend, admit.childEnv, admit.ok ? "" : admit.refusal.reason.includes(bad)]).toEqual(["backend-unavailable", "scripts", null, true]);
+    },
+  },
+  {
+    name: "project stratum.toml not TOML: door backend-unavailable naming it",
+    make: (fx) => { const project = join(fx.root, "stratum.toml"); writeFileSync(project, "this = = is not toml\n"); return { env: fx.env, bad: project, restore: () => {} }; },
+    check: async (fx, env, bad) => {
+      const jobs = await createSessionBackend({ env, projectRoot: fx.root }).jobsList({ session: `${TOKEN}-none` });
+      expect([code(jobs), jobs.backend, jobs.ok ? "" : jobs.refusal.reason.includes(bad)]).toEqual(["backend-unavailable", "scripts", true]);
+    },
+  },
+];
+
+describe("only proven absence is absence: every config-file read site", () => {
+  for (const row of READ_SITE_ROWS) {
+    it(row.name, async () => {
+      const fx = fixture({ envDir: "unset" });
+      const { env, bad, restore } = row.make(fx);
+      try { await row.check(fx, env, bad); } finally { restore(); }
+    });
+  }
 });
 
 // ---------------------------------------------------------------- error table (one row per case)

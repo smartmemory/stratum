@@ -1,5 +1,5 @@
 {
-  "_doc": "SESSION-MGMT-1 contract backend.configured_test.fixtures: the ONE table both sides run (stratum: tests/session/backend.test.ts, U1; compose: test/session-door.test.js, U13). Rule: on every row, stratum configured (configured or broken) => compose true; compose may be true where stratum is unconfigured, never the reverse. Columns: env = STRATUM_SESSION_SCRIPTS_DIR set to the scripts dir / set to '' / unset; file = the user config text (STRATUM_CONFIG_FILE points at it) with {SCRIPTS_DIR} replaced by the test's scripts dir, null = no file, {unreadable: true} = a file the process cannot read (mode 000); stratum = configured (configured(env) true, config valid) | broken (configured(env) true and a config error: every op refuses backend-unavailable) | unconfigured (configured(env) false); compose = sessionConfigured(env) of contract configured_test.compose_impl. Stratum's column is the smol-toml parse in stratum/ts/src/config/index.ts loadSessionConfig, never a regex.",
+  "_doc": "SESSION-MGMT-1 contract backend.configured_test.fixtures: the ONE table both sides run (stratum: tests/session/backend.test.ts, U1; compose: test/session-door.test.js, U13). Rule: on every row, stratum configured (configured or broken) => compose true; compose may be true where stratum is unconfigured, never the reverse. Columns: env = STRATUM_SESSION_SCRIPTS_DIR set to the scripts dir / set to '' / unset; file = the user config text (STRATUM_CONFIG_FILE points at it) with {SCRIPTS_DIR} replaced by the test's scripts dir, null = no file, {special: ...} = a path the test builds: file-mode-000 (a [session] file the process cannot read), ancestor-mode-000 (a [session] file with scripts_dir \"/missing\" inside a directory of mode 000), directory (the path is a directory), dangling-symlink (the path is a symlink to a file that does not exist: ENOENT on its target, proven absence like a missing ancestor); stratum = configured (configured(env) true, config valid) | broken (configured(env) true and a config error: every op refuses backend-unavailable, admit included) | unconfigured (configured(env) false); compose = sessionConfigured(env) of contract configured_test.compose_impl (env non-empty, or the user config path is not proven absent: stat fails with anything but ENOENT/ENOTDIR, or succeeds). Only proven absence (ENOENT/ENOTDIR) may leave Stratum unconfigured; any other read failure and any TOML parse error is broken (U1 fix round 1). Stratum's column is the smol-toml parse in stratum/ts/src/config/index.ts loadSessionConfig, never a regex.",
   "_source": "stratum/docs/features/SESSION-MGMT-1/session-contract.json backend.configured_test",
   "rows": [
     {
@@ -133,7 +133,7 @@
       "env": "unset",
       "file": "[sandbox]\nfilesystemMode = \"read-only\"\n",
       "stratum": "unconfigured",
-      "compose": false
+      "compose": true
     },
     {
       "name": "sandbox-string-mentions-session",
@@ -153,17 +153,51 @@
       "name": "parse-error-no-session-word",
       "env": "unset",
       "file": "this = = is not toml\n",
-      "stratum": "unconfigured",
-      "compose": false
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "parse-error-no-session-word-env-set",
+      "env": "set",
+      "file": "this = = is not toml\n",
+      "stratum": "broken",
+      "compose": true
     },
     {
       "name": "file-unreadable",
       "env": "unset",
       "file": {
-        "unreadable": true
+        "special": "file-mode-000"
       },
       "stratum": "broken",
       "compose": true
+    },
+    {
+      "name": "ancestor-unreadable",
+      "env": "unset",
+      "file": {
+        "special": "ancestor-mode-000"
+      },
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "file-is-a-directory",
+      "env": "unset",
+      "file": {
+        "special": "directory"
+      },
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "file-dangling-symlink",
+      "env": "unset",
+      "file": {
+        "special": "dangling-symlink"
+      },
+      "stratum": "unconfigured",
+      "compose": false
     }
   ]
 }

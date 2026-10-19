@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
+import { readConfigFile } from "./index.js";
 import type { ConfigProvenance } from "./types.js";
 
 /** The `[learn]` switches this resolver owns, each with its env override. */
@@ -108,10 +108,16 @@ export function resolveLearnConfig(options: LearnConfigOptions = {}): ResolvedLe
 }
 
 function fileTable(path: string, diagnostics: string[]): Record<string, unknown> | "invalid" | undefined {
+  // An unreadable file is reported like a parse error (every key invalid), never as absence.
+  const file = readConfigFile(path);
+  if (file.kind === "absent") return undefined;
+  if (file.kind === "error") {
+    diagnostics.push(`${path}: ${file.message}`);
+    return "invalid";
+  }
   let raw: unknown;
   try {
-    if (!existsSync(path)) return undefined;
-    raw = parse(readFileSync(path, "utf8"));
+    raw = parse(file.text);
   } catch (error) {
     diagnostics.push(`${path}: TOML parse error: ${error instanceof Error ? error.message : String(error)}`);
     return "invalid";
