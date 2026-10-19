@@ -8,7 +8,7 @@ import { backend, cli, code, type Fixture, HAVE_OPS, openAll, openPct, py, SEATS
  * SESSION-MGMT-1-U2: the read-only ops `status` (usage_watch status + launch_gate --status, merged) and
  * `fleet` (launch_gate --fleet) and `policy` (session_policy --json). Real scripts on the fixture for the contracted paths; fixture scripts for
  * the shapes the real ones cannot print on demand (every validator is closed: a missing OR extra key is
- * backend-error, except forge-e0 ruling 1's cited launch_gate additions). Leak gate and fixture env: fixture.ts.
+ * backend-error). Leak gate and fixture env: fixture.ts.
  */
 
 const S = suite("u2sf");
@@ -80,8 +80,15 @@ interface Row {
 
 const ROWS: Row[] = [
   { name: "status: both documents good", op: "status", script: "launch_gate", doc: () => GATE_DOC, expect: "ok" },
-  { name: "status: gate without the ruling-1 additions", op: "status", script: "launch_gate",
-    doc: () => edit(GATE_DOC, (c) => { delete c.bypassed; delete c.idle; const l = c.launches as Doc; delete l.last_label; delete l.retain_s; }), expect: "ok" },
+  { name: "status: gate lacks bypassed (U2-FU1 F1: contracted, so required)", op: "status", script: "launch_gate",
+    doc: () => edit(GATE_DOC, (c) => { delete c.bypassed; }), expect: "backend-error" },
+  { name: "status: gate lacks idle (U2-FU1 F1: contracted, so required)", op: "status", script: "launch_gate",
+    doc: () => edit(GATE_DOC, (c) => { delete c.idle; }), expect: "backend-error" },
+  { name: "status: gate lacks launches.last_label (U2-FU1 F1: contracted, so required)", op: "status", script: "launch_gate",
+    doc: () => edit(GATE_DOC, (c) => { delete (c.launches as Doc).last_label; }), expect: "backend-error" },
+  { name: "status: gate lacks launches.retain_s (U2-FU1 F1: contracted, so required)", op: "status", script: "launch_gate",
+    doc: () => edit(GATE_DOC, (c) => { delete (c.launches as Doc).retain_s; }), expect: "backend-error" },
+  { name: "status: gate with all four contracted fields present (F1 control)", op: "status", script: "launch_gate", doc: () => clone(GATE_DOC), expect: "ok" },
   { name: "status: gate idle sampled with a pct (LAUNCH-GATE-IDLE-1)", op: "status", script: "launch_gate", doc: () => ({ ...GATE_DOC, idle: { min: 20, sampled: true, pct: 12.5 } }), expect: "ok" },
   { name: "status: gate idle extra key", op: "status", script: "launch_gate", doc: () => ({ ...GATE_DOC, idle: { min: 20, sampled: false, pct: null, cpu: 1 } }), expect: "backend-error" },
   { name: "status: gate fleet.count null (cap off)", op: "status", script: "launch_gate", doc: () => edit(GATE_DOC, (c) => { (c.fleet as Doc).count = null; }), expect: "ok" },
@@ -118,7 +125,7 @@ const ROWS: Row[] = [
   { name: "fleet: exit 2 is outside the contract map", op: "fleet", script: "launch_gate", doc: () => REFUSAL, exit: 2, expect: "backend-error", record: false },
 ];
 
-describe("status / fleet: closed shapes, the ruling-1 additions, the refusal record, the exit map", () => {
+describe("status / fleet: closed shapes, the four required launch_gate fields, the refusal record, the exit map", () => {
   for (const row of ROWS) {
     it(row.name, async () => {
       const fx = S.fixture({ scripts: fakeDir("usage_watch.py", "launch_gate.py") });

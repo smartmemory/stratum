@@ -447,6 +447,7 @@ const GATE_WAITING_FIELDS: FieldTable = [
 const GATE_LAUNCHES_REQUIRED: FieldTable = [
   ["kept", isNonNegInt, "a non-negative integer"], ["recent", isNonNegInt, "a non-negative integer"],
   ["window_s", isFiniteNumber, "a finite number"], ["last_age_s", isNumberOrNull, "a finite number|null"],
+  ["last_label", isStringOrNull, "string|null"], ["retain_s", isFiniteNumber, "a finite number"],
 ];
 const GATE_LIMITS_FIELDS: FieldTable = [
   ["spacing_s", isFiniteNumber, "a finite number"], ["max_recent", isNonNegInt, "a non-negative integer"], ["window_s", isFiniteNumber, "a finite number"],
@@ -456,27 +457,23 @@ const GATE_STATUS_REQUIRED: FieldTable = [
   ["engines", isRecord, "an object"], ["queue", isRecord, "an object"], ["launches", isRecord, "an object"],
   ["load1", isFiniteNumber, "a finite number"], ["load_max", isFiniteNumber, "a finite number"],
   ["fleet", isRecord, "an object"], ["limits", isRecord, "an object"],
-];
-/**
- * The keys launch_gate --status --json prints beyond the plan's first six: `bypassed`, `idle`, launches.last_label and launches.retain_s.
- * They are contracted: session-contract `operations.status.script_output.launch_gate` lists them (c4b, forge-e0 ruling: the contract follows the
- * scripts) and ops json-contract.json "launch_gate status" requires them (U5, LAUNCH-GATE-IDLE-1). This table is the validator's allow-list;
- * `ts/tests/session/contract.test.ts` fails if the two drift. Any other extra key stays backend-error.
- */
-const GATE_IDLE_FIELDS: FieldTable = [
-  ["min", isFiniteNumber, "a finite number"], ["sampled", (v) => typeof v === "boolean", "a boolean"], ["pct", isNumberOrNull, "a finite number|null"],
-];
-const GATE_STATUS_ADDITIONS: FieldTable = [
   ["bypassed", (v) => typeof v === "boolean", "a boolean"],
   // LAUNCH-GATE-IDLE-1 (ops f88ad09a, 30f5b4fd, landed during U2-c3): `idle` is in the same ops entry's `required` and `types`
   // ("{min: number, sampled: boolean, pct: number|null}"); the same class as ruling 1's additions, listed in U2-c3-report Findings.
   ["idle", (v) => isRecord(v) && closedProblem("idle", v, GATE_IDLE_FIELDS, []) === null, "{min: number, sampled: boolean, pct: number|null}"],
 ];
-const GATE_LAUNCHES_ADDITIONS: FieldTable = [["last_label", isStringOrNull, "string|null"], ["retain_s", isFiniteNumber, "a finite number"]];
-
+/**
+ * `bypassed`, `idle`, launches.last_label and launches.retain_s are REQUIRED, not optional (SESSION-MGMT-1-U2-FU1): session-contract
+ * `operations.status.script_output.launch_gate` lists them (c4b, forge-e0 ruling: the contract follows the scripts) and ops json-contract.json
+ * "launch_gate status" requires them (U5, LAUNCH-GATE-IDLE-1). `ts/tests/session/contract.test.ts` fails if the two drift.
+ * Any other extra key stays backend-error.
+ */
+const GATE_IDLE_FIELDS: FieldTable = [
+  ["min", isFiniteNumber, "a finite number"], ["sampled", (v) => typeof v === "boolean", "a boolean"], ["pct", isNumberOrNull, "a finite number|null"],
+];
 const gateStatusValidator: Validator = (doc, exit) => {
   if (exit !== 0) return closedProblem("launch_gate status refusal", doc, GATE_REFUSED_FIELDS, []);
-  const top = closedProblem("launch_gate status", doc, GATE_STATUS_REQUIRED, GATE_STATUS_ADDITIONS);
+  const top = closedProblem("launch_gate status", doc, GATE_STATUS_REQUIRED, []);
   if (top !== null) return top;
   const record = doc as Record<string, unknown>;
   const engines = record.engines as Record<string, unknown>;
@@ -494,7 +491,7 @@ const gateStatusValidator: Validator = (doc, exit) => {
     const wrong = closedProblem("launch_gate status queue.waiting item", item, GATE_WAITING_FIELDS, []);
     if (wrong !== null) return wrong;
   }
-  return closedProblem("launch_gate status launches", record.launches, GATE_LAUNCHES_REQUIRED, GATE_LAUNCHES_ADDITIONS)
+  return closedProblem("launch_gate status launches", record.launches, GATE_LAUNCHES_REQUIRED, [])
     ?? closedProblem("launch_gate status fleet", record.fleet, GATE_FLEET_FIELDS, [])
     ?? closedProblem("launch_gate status limits", record.limits, GATE_LIMITS_FIELDS, []);
 };
