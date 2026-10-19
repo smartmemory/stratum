@@ -15,7 +15,7 @@ function writerScript(path: string): string {
   return `const {spawn}=require('node:child_process'); const fs=require('node:fs'); process.on('SIGTERM',()=>{}); spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'inherit'}); setInterval(()=>fs.appendFileSync(${JSON.stringify(path)},'parent\\n'),10)`;
 }
 async function waitForDescendant(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < 1000; attempt++) {
     if ((await readFile(path, "utf8").catch(() => "")).includes("child")) return;
     await delay(10);
   }

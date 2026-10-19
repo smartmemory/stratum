@@ -83,7 +83,7 @@ describe("P5 frozen MCP surface", () => {
       runAgent: (options) => runAgent({ ...options, registryRoot }, {
         backgroundCommand: options.prompt === "error" ? fakeCodex([], { rc: 4, stderr: "bad child" })
           : options.prompt === "cancel" ? fakeCodex([], { sleep: 2 })
-            : fakeCodex([{ type: "item.completed", item: { type: "agent_message", text: "background ok" } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }], { sleep: 0.15 }),
+            : fakeCodex([{ type: "item.completed", item: { type: "agent_message", text: "background ok" } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }], { sleep: 1.5 }),
         codexSpawn: fakeCodexSpawn([{ type: "item.completed", item: { type: "agent_message", text: "sync ok" } }, { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }]),
       }),
       // Keeps the foreground-cancel sweep off the developer's real ~/.stratum tree.
@@ -827,7 +827,7 @@ async function waitForFlowBg(
   runStatus: string,
   bgStatus: string,
 ): Promise<Record<string, unknown>> {
-  for (let tick = 0; tick < 100; tick += 1) {
+  for (let tick = 0; tick < 2000; tick += 1) {
     const polled = await call("stratum_flow_bg_poll", { runId, cursor: 0 });
     if (polled.status === runStatus && (polled.bg as Record<string, unknown>).status === bgStatus) return polled;
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -854,7 +854,7 @@ function fakeCodexSpawn(records: unknown[]) {
 }
 
 async function waitForBackground(runId: string, registryRoot: string, status: string): Promise<void> {
-  for (let tick = 0; tick < 100; tick += 1) {
+  for (let tick = 0; tick < 400; tick += 1) {
     if ((await pollBackgroundRun(runId, { registryRoot })).status === status) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }

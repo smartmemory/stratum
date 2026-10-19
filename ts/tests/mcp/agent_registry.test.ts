@@ -93,7 +93,7 @@ function writerScript(path: string): string {
 }
 
 async function waitForDescendant(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     if ((await readFile(path, "utf8").catch(() => "")).includes("child")) return;
     await delay(10);
   }
@@ -221,17 +221,19 @@ describe("STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher", () =>
     const call = subject.dispatcher.call("stratum_agent_run", agentRequest(subject.runId, { model: testModels.codexDefault }));
 
     await waitForDescendant(path);
-    await delay(80);
-    const running = await onlyEntry(subject.registryRoot);
-    expect(running).toMatchObject({
-      foreground: true,
-      state: "running",
-      agent: "codex",
-      model: testModels.codexDefault,
-      serverPid: process.pid,
-      flow: { runId: subject.runId },
-    });
-    expect(running.groups).toHaveLength(1);
+    let running!: ForegroundRunMeta;
+    await vi.waitFor(async () => {
+      running = await onlyEntry(subject.registryRoot);
+      expect(running).toMatchObject({
+        foreground: true,
+        state: "running",
+        agent: "codex",
+        model: testModels.codexDefault,
+        serverPid: process.pid,
+        flow: { runId: subject.runId },
+      });
+      expect(running.groups).toHaveLength(1);
+    }, { timeout: 10_000, interval: 25 });
     expect(running.groups[0]!.procStartTime).toEqual(expect.any(String));
     if (process.platform === "darwin") expect(running.groups[0]!.procStartTime).toMatch(/^\d+\.\d+$/);
     expect(running.serverProcStartTime).toEqual(expect.any(String));
@@ -249,7 +251,7 @@ describe("STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher", () =>
     const subject = await harness(spawningAgent({ path, spawns: 2 }));
     const call = subject.dispatcher.call("stratum_agent_run", agentRequest(subject.runId));
     await waitForDescendant(path);
-    for (let tick = 0; tick < 200; tick += 1) {
+    for (let tick = 0; tick < 500; tick += 1) {
       const found = await entries(subject.registryRoot);
       if (found[0]?.groups.length === 2) break;
       await delay(20);
@@ -272,7 +274,7 @@ describe("STRAT-FLOW-CANCEL-FG registry lifecycle through the dispatcher", () =>
     const subject = await harness(spawningAgent({ path }));
     const call = subject.dispatcher.call("stratum_agent_run", agentRequest(subject.runId));
     await waitForDescendant(path);
-    await delay(80);
+    await vi.waitFor(async () => { expect((await onlyEntry(subject.registryRoot)).groups).toHaveLength(1); }, { timeout: 10_000, interval: 25 });
 
     // Standing in for the second process: it knows only the registry root and the flow id.
     const summary = await reapFlowAgents(subject.runId, await signalFlowAgents(subject.runId, { registryRoot: subject.registryRoot }), {

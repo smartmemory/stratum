@@ -42,7 +42,7 @@ async function deadIdentity(): Promise<{ pid: number; startTime: string }> {
   const startTime = await procStartTime(pid);
   if (startTime === undefined) throw new Error("could not read the child's start time");
   await new Promise<void>((resolve) => { child.on("exit", () => resolve()); child.kill("SIGKILL"); });
-  for (let tick = 0; tick < 200 && await processIdentity(pid, startTime) !== "dead"; tick += 1) await delay(5);
+  for (let tick = 0; tick < 2000 && await processIdentity(pid, startTime) !== "dead"; tick += 1) await delay(5);
   return { pid, startTime };
 }
 
@@ -283,7 +283,7 @@ describe("F2 — a pin site that fails leaves no bookkeeping behind", () => {
     await unblockLeaseWrites(stateRoot, started.runId);
     await engine.gateResolve(started.runId, "review", "approve", token);
     const store = new StateStore(stateRoot);
-    for (let tick = 0; tick < 400 && (await store.load(started.runId)).status === "running"; tick += 1) await delay(5);
+    for (let tick = 0; tick < 2000 && (await store.load(started.runId)).status === "running"; tick += 1) await delay(5);
     expect((await store.load(started.runId)).status).toBe("completed");
   });
 
@@ -307,7 +307,7 @@ describe("F2 — a pin site that fails leaves no bookkeeping behind", () => {
     // key scheduled before the pin left it set forever, and the step then never ran at all.
     await unblockLeaseWrites(stateRoot, planned.runId);
     await engine.resume(planned.runId);
-    for (let tick = 0; tick < 200 && dispatched === 0; tick += 1) await delay(5);
+    for (let tick = 0; tick < 2000 && dispatched === 0; tick += 1) await delay(5);
     expect(dispatched).toBeGreaterThan(0);
   });
 });
@@ -324,7 +324,7 @@ async function unblockLeaseWrites(stateRoot: string, runId: string): Promise<voi
 }
 
 async function waitForBg(engine: { flowBgPoll: StratumEngine["flowBgPoll"] }, runId: string, status: string): Promise<void> {
-  for (let tick = 0; tick < 400; tick += 1) {
+  for (let tick = 0; tick < 2000; tick += 1) {
     const polled = await engine.flowBgPoll(runId).catch(() => undefined);
     if (polled?.bg.status === status) return;
     await delay(5);

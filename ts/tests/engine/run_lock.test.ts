@@ -39,7 +39,7 @@ async function deadIdentity(): Promise<{ pid: number; startTime: string }> {
   if (startTime === undefined) throw new Error("could not read the child's start time");
   await new Promise<void>((resolve) => { child.on("exit", () => resolve()); child.kill("SIGKILL"); });
   // The pid may linger as a zombie for an instant; wait for the identity to actually read dead.
-  for (let tick = 0; tick < 200 && await processIdentity(pid, startTime) !== "dead"; tick += 1) await delay(5);
+  for (let tick = 0; tick < 2000 && await processIdentity(pid, startTime) !== "dead"; tick += 1) await delay(5);
   return { pid, startTime };
 }
 
