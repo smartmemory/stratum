@@ -42,7 +42,7 @@ export function isRefusalCode(value: unknown): value is RefusalCode {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(REFUSAL_CLI_EXIT, value);
 }
 
-export type SessionOp = "pick" | "admit" | "jobs_list" | "jobs_register";
+export type SessionOp = "pick" | "admit" | "launch" | "status" | "fleet" | "hop" | "jobs_list" | "jobs_register" | "policy";
 
 export interface Refusal {
   readonly code: RefusalCode;
@@ -203,6 +203,36 @@ export const ENGINE_HOME_VAR = Object.freeze({ claude: "CLAUDE_CONFIG_DIR", code
 
 export type AdmitResult = Envelope<AdmitData> & { readonly childEnv: NodeJS.ProcessEnv | null };
 
+/** contract `operations.launch.input`. */
+export interface LaunchInput {
+  readonly session: string;
+  readonly label: string;
+  readonly engine: Vendor;
+  readonly model: string;
+  readonly effort?: string;
+  /** Absolute path; also the admit marker file (hard: / fable: count from its head). */
+  readonly brief: string;
+  readonly report: string;
+  readonly cwd?: string;
+  readonly workKind?: string;
+  readonly priority?: (typeof PRIORITIES)[number];
+  /** As admit: 'inherit' (default) | 'auto' | an account id. */
+  readonly account?: string;
+  readonly maxWaitS?: number;
+}
+
+/** contract `operations.launch.script_output`: detach_job.py run --json. */
+export interface LaunchData {
+  readonly pid: number;
+  readonly pgid: number;
+  readonly log: string;
+  readonly meta: string;
+  readonly label: string;
+  readonly session: string;
+  /** resolve_account id or 'unknown'. */
+  readonly account: string;
+}
+
 /**
  * contract `library.exports`. U1 implements pick, admit's mode handling, jobsList and
  * jobsRegister; U2 adds launch, status, fleet, hopCheck, hopDryRun, hopLive and policy.
@@ -212,6 +242,8 @@ export interface SessionBackend {
   readonly kind: BackendKind;
   pick(input: PickInput): Promise<Envelope<PickData>>;
   admit(input: AdmitInput, options: { readonly childEnv: NodeJS.ProcessEnv }): Promise<AdmitResult>;
+  /** admit (launch_gate full, marker = the brief) then detach_job with the admitted childEnv only. */
+  launch(input: LaunchInput): Promise<Envelope<LaunchData>>;
   jobsList(input?: JobsListInput): Promise<Envelope<JobsListData>>;
   jobsRegister(input: JobsRegisterInput): Promise<Envelope<JobsRegisterData>>;
 }

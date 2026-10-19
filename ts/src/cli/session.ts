@@ -5,13 +5,14 @@ import {
   createSessionBackend,
   type Envelope,
   type JobsRegisterInput,
+  type LaunchInput,
   MARKER_CAP_BYTES,
   type PickInput,
 } from "../session/index.js";
 
 /**
  * `stratum session <verb>` (SESSION-MGMT-1, contract `operations.*.cli`, `cli_exit_codes`).
- * U1 verbs: pick, jobs, register; U2: admit. Each prints the envelope (`--json`) or a short text form,
+ * U1 verbs: pick, jobs, register; U2: admit, launch. Each prints the envelope (`--json`) or a short text form,
  * and exits 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.
  */
 
@@ -23,6 +24,8 @@ const USAGE = [
   "           [--work-kind K] [--vendor claude|codex] [--model M] [--account ID] [--priority P0..P3]   record a job (writes the registry)",
   "  admit --engine claude|codex --label L [--model M] [--account inherit|auto|ID] [--marker-file ABS]",
   "        [--launch-gate full|none] [--max-wait-s N]   may this launch start, on which account (marker text on stdin without --marker-file)",
+  "  launch --session S --label L --engine claude|codex --model M --brief ABS --report ABS [--effort E] [--cwd ABS]",
+  "         [--work-kind K] [--priority P0..P3] [--account inherit|auto|ID] [--max-wait-s N]   admit (full gate) then start a detached job",
   "Exit: 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.",
 ].join("\n");
 
@@ -37,6 +40,7 @@ export async function sessionCommand(argv: readonly string[]): Promise<number> {
     if (verb === "jobs") return await jobsVerb(rest);
     if (verb === "register") return await registerVerb(rest);
     if (verb === "admit") return await admitVerb(rest);
+    if (verb === "launch") return await launchVerb(rest);
   } catch (error) {
     if (error instanceof UsageError) return usage(error.message);
     throw error;
@@ -164,4 +168,26 @@ async function admitVerb(args: readonly string[]): Promise<number> {
   const result = await createSessionBackend().admit(input, { childEnv: process.env });
   const { childEnv: _childEnv, ...envelope } = result;
   return emit(envelope as Envelope<unknown>, values.json === true);
+}
+
+const LAUNCH_FLAGS = {
+  session: "session", label: "label", engine: "engine", model: "model", effort: "effort", brief: "brief", report: "report", cwd: "cwd",
+  "work-kind": "workKind", priority: "priority", account: "account",
+} as const;
+
+async function launchVerb(args: readonly string[]): Promise<number> {
+  const values = parse(args, {
+    ...Object.fromEntries(Object.keys(LAUNCH_FLAGS).map((flag) => [flag, { type: "string" as const }])), "max-wait-s": { type: "string" },
+  });
+  const input: Record<string, string | number> = {};
+  for (const [flag, key] of Object.entries(LAUNCH_FLAGS)) {
+    const value = str(values, flag);
+    if (value !== undefined) input[key] = value;
+  }
+  for (const required of ["session", "label", "engine", "model", "brief", "report"]) {
+    if (input[required] === undefined) throw new UsageError(`launch needs --${required}`);
+  }
+  const wait = maxWait(values);
+  if (wait !== undefined) input.maxWaitS = wait;
+  return emit(await createSessionBackend().launch(input as unknown as LaunchInput), values.json === true);
 }

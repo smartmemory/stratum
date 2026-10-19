@@ -13,6 +13,8 @@ import {
   isRefusalCode,
   JOB_KINDS,
   type JobsListData,
+  type LaunchData,
+  type LaunchInput,
   type JobsListInput,
   type JobsRegisterData,
   type JobsRegisterInput,
@@ -39,11 +41,15 @@ import {
  * group) or a per-stream `stdio` (stdin must be 'ignore' for every op except admit).
  */
 
-/** contract `operations.<op>.timeout_s` (admit: max_wait_s + 60). */
-export const OP_TIMEOUT_S: Readonly<Record<Exclude<SessionOp, "admit">, number>> = Object.freeze({
+/** contract `operations.<op>.timeout_s` (admit: max_wait_s + 60; hop has one per mode: check 60, dry-run 60, live 300). */
+export const OP_TIMEOUT_S: Readonly<Record<Exclude<SessionOp, "admit" | "hop">, number>> = Object.freeze({
   pick: 60,
+  launch: 60,
+  status: 90,
+  fleet: 30,
   jobs_list: 30,
   jobs_register: 30,
+  policy: 30,
 });
 
 /** contract `backend.stdin`: the gate's FILE_CAP (work_model_gate.py:73). */
@@ -351,6 +357,25 @@ function admitValidator(input: AdmitInput): Validator {
   };
 }
 
+/** contract `operations.launch.script_output` (success) and `script_output_refused` (detach_job.py:2942-2946). */
+const LAUNCH_FIELDS: FieldTable = [
+  ["pid", isPosInt, "a positive integer"], ["pgid", isPosInt, "a positive integer"],
+  ["log", (v) => typeof v === "string" && isAbsolute(v), "an absolute path"], ["meta", (v) => typeof v === "string" && isAbsolute(v), "an absolute path"],
+  ["label", isString, "a string"], ["session", isString, "a string"], ["account", (v) => typeof v === "string" && v !== "", "a non-empty string"],
+];
+const LAUNCH_REFUSED_FIELDS: FieldTable = [["refused", (v) => v === true, "true"], ["reason", isString, "a string"]];
+
+function launchValidator(input: LaunchInput): Validator {
+  return (doc, exit) => {
+    if (!isRecord(doc)) return "launch output is not an object";
+    if (exit !== 0) return tableProblem("launch refusal", doc, LAUNCH_REFUSED_FIELDS, []);
+    const shape = tableProblem("launch output", doc, LAUNCH_FIELDS, []);
+    if (shape !== null) return shape;
+    if (doc.label !== input.label || doc.session !== input.session) return "launch output label/session differ from the request";
+    return null;
+  };
+}
+
 // ---------------------------------------------------------------- the backend
 
 interface OpSpec {
@@ -485,6 +510,63 @@ export class ScriptsBackend implements SessionBackend {
     // contract `operations.admit.library_result`: childEnv = {...child_env, ...data.env}, where a null
     // value deletes the key (default-home rule), never sets the string "null" or "".
     return { ...envelope, childEnv: envelope.ok ? admittedChildEnv(options.childEnv, envelope.data.env) : null };
+  }
+
+  async launch(input: LaunchInput): Promise<Envelope<LaunchData>> {
+    const maxWaitS = input.maxWaitS ?? MAX_WAIT_DEFAULT_S;
+    const absolute = (value: unknown): boolean => typeof value === "string" && isAbsolute(value) && textOk(value);
+    const bad = usageCheck([
+      [tokenOk(input.session), "session must be non-empty, trimmed, one line"],
+      [typeof input.label === "string" && /^[^\s-][^\s]*$/.test(input.label) && textOk(input.label), "label must be one token not starting with '-'"],
+      [(VENDORS as readonly string[]).includes(input.engine), "engine must be claude or codex"],
+      [tokenOk(input.model), "model must be non-empty, one line"],
+      [input.effort === undefined || tokenOk(input.effort), "effort must be non-empty, one line"],
+      [absolute(input.brief), "brief must be an absolute path"],
+      [absolute(input.report), "report must be an absolute path"],
+      [input.cwd === undefined || absolute(input.cwd), "cwd must be an absolute path"],
+      [input.workKind === undefined || (WORK_KINDS as readonly string[]).includes(input.workKind), `work_kind must be one of ${WORK_KINDS.join(", ")}`],
+      [input.priority === undefined || (PRIORITIES as readonly string[]).includes(input.priority), "priority must be P0..P3"],
+      [input.account === undefined || tokenOk(input.account), "account must be inherit, auto or an account id"],
+      [Number.isFinite(maxWaitS) && maxWaitS >= 1 && maxWaitS <= 1800, "max_wait_s must be in [1, 1800]"],
+    ]);
+    if (bad !== null) return refused("launch", this.kind, "usage", bad);
+    // detach_job.py must be runnable before admit takes a launch-gate slot (mode none refuses backend-unconfigured here).
+    const ready = this.#preflight("launch", "detach_job.py", scriptEnv(this.#env));
+    if ("ok" in ready) return ready;
+    // Step 1 (contract `operations.launch.steps`): admit with the full gate for EVERY engine, on the front door env minus
+    // CLAUDECODE and any inherited LAUNCH_GATE_ADMITTED (never trusted).
+    const base = scriptEnv(this.#env);
+    const admitted = await this.admit(
+      { engine: input.engine, label: input.label, model: input.model, account: input.account ?? "inherit", markerFile: input.brief, launchGate: "full", maxWaitS },
+      { childEnv: base },
+    );
+    if (!admitted.ok || admitted.childEnv === null) {
+      const refusal = admitted.ok ? { code: "backend-error" as const, reason: "admit returned no child env", script: "session_admit.py", script_exit: null } : admitted.refusal;
+      return refused("launch", this.kind, refusal.code, refusal.reason, refusal.script, refusal.script_exit, admitted.ok ? null : admitted.record);
+    }
+    // Step 2: the detach env is the admitted childEnv and nothing else from the caller: the account (engine home) comes only from
+    // admit. LAUNCH_GATE_ADMITTED=<label> is detach_job's skip (the full gate already ran, once, in admit); LAUNCH_GATE_MAX_WAIT
+    // bounds any gate wait that still happens.
+    const detachEnv: NodeJS.ProcessEnv = { ...admitted.childEnv, LAUNCH_GATE_ADMITTED: input.label, LAUNCH_GATE_MAX_WAIT: String(maxWaitS) };
+    const optional: Array<[string, string | undefined]> = [
+      ["effort", input.effort], ["cwd", input.cwd], ["work-kind", input.workKind], ["priority", input.priority],
+    ];
+    // Step 3.
+    return this.#run<LaunchData>({
+      op: "launch",
+      script: "detach_job.py",
+      args: [
+        "run", `--session=${input.session}`, `--label=${input.label}`, `--engine=${input.engine}`, `--model=${input.model}`,
+        `--brief=${input.brief}`, `--report=${input.report}`,
+        ...optional.filter(([, value]) => value !== undefined).map(([flag, value]) => `--${flag}=${value}`),
+        "--json",
+      ],
+      exits: { 0: "ok", 1: "detach-refused", 2: "usage" },
+      validate: launchValidator(input),
+      env: detachEnv,
+      stdin: null,
+      timeoutMs: this.#timeout("launch", OP_TIMEOUT_S.launch),
+    });
   }
 
   #timeout(op: SessionOp, fallbackSOrMs: number): number {
