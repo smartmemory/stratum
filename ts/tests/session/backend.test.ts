@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync,
   utimesSync, writeFileSync,
@@ -10,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadSessionConfig, loadStratumConfig } from "../../src/config/index.js";
 import { resolveLearnConfig } from "../../src/config/learn.js";
-import { gate, listing, type Listing } from "./leak-gate.js";
+import { gate, listing, mintToken, type Listing } from "./leak-gate.js";
 import { WORK_KINDS } from "../../src/session/backend.js";
 import { cliExitFor, configured, createSessionBackend, type Envelope, MARKER_CAP_BYTES } from "../../src/session/index.js";
 
@@ -28,7 +27,7 @@ const BIN = join(HERE, "..", "..", "src", "cli", "bin.mjs");
 const OPS_SCRIPTS = process.env.SESSION_MGMT_OPS_SCRIPTS || "/Users/ruze/reg/my/SmartMemory/smart-memory-ops/claude/scripts";
 const HAVE_OPS = existsSync(join(OPS_SCRIPTS, "usage_watch.py")) && existsSync(join(OPS_SCRIPTS, "jobs.py"));
 const PYTHON = findPython();
-const TOKEN = `u1lg${randomBytes(4).toString("hex")}`;
+const TOKEN = mintToken("u1lg");
 const FIXTURES = JSON.parse(readFileSync(join(HERE, "configured-fixtures.json"), "utf8")) as {
   rows: Array<{
     name: string; env: "set" | "empty" | "unset"; file: string | null | { special: Special };

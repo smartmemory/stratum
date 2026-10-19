@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync } from "node:fs";
 import { join, sep } from "node:path";
 
@@ -14,8 +15,17 @@ import { join, sep } from "node:path";
  *    ~/.claude/session-state, ~/.claude/usage rewritten every 5 min by ai.smartmemory.usage-watch,
  *    the ops status/launch-gate dir: 33 files changed in 20 s). A new or changed file fails the gate when its
  *    path or its new bytes carry this run's token (every session, id, label and name the tests create
- *    carries it); other changes are counted and reported, not failed.
+ *    carries it); other changes are counted and reported, not failed. A REMOVED entry fails only when its
+ *    path carries the token: the content of a removed file is not checked, by design. The token is
+ *    minted fresh per run (`mintToken`, at least 32 random bits) before the baseline listing, so no
+ *    baseline content can carry it; a test that rewrites a real pre-existing file and then deletes it
+ *    is prevented by ISOLATION (the fixture env), not detected here (SESSION-MGMT-1-LEAKGATE-TS-1).
  */
+
+/** A fresh run token: `prefix` plus 8 hex chars (32 random bits). Mint it before the baseline listing. */
+export function mintToken(prefix: string): string {
+  return `${prefix}${randomBytes(4).toString("hex")}`;
+}
 
 export interface Entry { readonly kind: "file" | "dir"; readonly size: number; readonly mtimeMs: number }
 export type Listing = Map<string, Entry>;
@@ -89,7 +99,7 @@ export interface GateOptions {
   readonly readCap?: number;
 }
 export interface GateResult {
-  /** Failures: one line each, `added|removed|changed <path>`, `token <path>`, `removed-token <path>`, `over-cap <path>` or `unreadable <path>`. */
+  /** Failures: one line each, `added|removed|changed <path>`, `token <path>`, `removed-token <path>` (path carries the token; a removed file's content is never read), `over-cap <path>` or `unreadable <path>`. */
   readonly violations: string[];
   /** Typed fallbacks that did not fail the gate (a file that vanished before its content was read); the caller logs them. */
   readonly warnings: string[];
