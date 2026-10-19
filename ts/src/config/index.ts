@@ -183,7 +183,10 @@ function applyFile(
   if (!isRecord(raw)) throw new Error(`${path}: config root must be a table`);
   // `[learn]` belongs to resolveLearnConfig() (config/learn.ts); sandbox resolution
   // ignores its contents entirely so an invalid learn value can never fail a dispatch.
-  rejectUnknown(raw, new Set(["sandbox", "learn"]), path, "");
+  // `[session]` belongs to loadSessionConfig() (below) and is legal in the USER file only
+  // (SESSION-MGMT-1 D7): a repository can never point the session door at its own scripts.
+  if (layer === "project" && Object.prototype.hasOwnProperty.call(raw, "session")) throw new Error(projectSessionError(path));
+  rejectUnknown(raw, new Set(layer === "user" ? ["sandbox", "learn", "session"] : ["sandbox", "learn"]), path, "");
   const sandbox = raw.sandbox;
   if (sandbox === undefined) return;
   if (!isRecord(sandbox)) throw new Error(`${path}: sandbox must be a table`);
@@ -203,6 +206,130 @@ function applyFile(
       : {}),
   };
   applyLayer(values, provenance, parsed, layer, path);
+}
+
+// ---------------------------------------------------------------- [session] (SESSION-MGMT-1-U1)
+
+export const SESSION_SCRIPTS_DIR_ENV = "STRATUM_SESSION_SCRIPTS_DIR";
+export const SESSION_PYTHON_ENV = "STRATUM_SESSION_PYTHON";
+const SESSION_KEYS = Object.freeze(["scripts_dir", "python"] as const);
+
+export interface LoadSessionConfigOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  /** Where a project stratum.toml would be read from (default process.cwd(), as loadStratumConfig). */
+  readonly projectRoot?: string;
+}
+
+/**
+ * The session door's configuration (contract `backend.configured_test`, `backend.scripts_dir`,
+ * `backend.python`). `configured` follows the contract rule exactly: the env variable is a
+ * non-empty string, or the USER config file holds a `session` key. A user file that exists
+ * but cannot be read or parsed is configured-and-broken (`error` set): the door then refuses
+ * every op, it never passes through. A `session` key in a project stratum.toml is a config
+ * error naming that file. Nothing here throws.
+ */
+export interface SessionConfig {
+  readonly configured: boolean;
+  /** The user config file consulted (STRATUM_CONFIG_FILE if non-empty, else ~/.stratum/config.toml). */
+  readonly userPath: string;
+  /** Effective scripts dir (env wins over the user file); null when neither names one. */
+  readonly scriptsDir: string | null;
+  readonly scriptsDirSource: "env" | "user" | null;
+  /** Effective python (env > user file > "python3"). */
+  readonly python: string;
+  /** A configuration error: the door is broken, never pass-through. */
+  readonly error: string | null;
+}
+
+export function sessionUserConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.STRATUM_CONFIG_FILE || join(homedir(), ".stratum", "config.toml");
+}
+
+export function loadSessionConfig(options: LoadSessionConfigOptions = {}): SessionConfig {
+  const env = options.env ?? process.env;
+  const userPath = sessionUserConfigPath(env);
+  const errors: string[] = [];
+  let fileConfigured = false;
+  let fileScriptsDir: string | null = null;
+  let filePython: string | null = null;
+
+  if (existsSync(userPath)) {
+    let raw: unknown;
+    let text: string | null = null;
+    try {
+      text = readFileSync(userPath, "utf8");
+      raw = parse(text);
+    } catch (error) {
+      // Unreadable: we cannot tell whether it holds [session], so it is configured-and-broken
+      // (fixture row "file unreadable"). Readable but not TOML: configured-and-broken when the
+      // text could spell a `session` key (the word, or a \u / \U escape in a quoted key);
+      // text that can spell no such key cannot configure the door, so it stays unconfigured.
+      // This keeps "Stratum configured => Compose configured" (contract configured_test.fixtures).
+      if (text === null || mayNameSession(text)) {
+        fileConfigured = true;
+        errors.push(`${userPath}: cannot read session config: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (isRecord(raw) && Object.prototype.hasOwnProperty.call(raw, "session")) {
+      fileConfigured = true;
+      const table = raw.session;
+      if (!isRecord(table)) {
+        errors.push(`${userPath}: session must be a table`);
+      } else {
+        const unknown = Object.keys(table).find((key) => !(SESSION_KEYS as readonly string[]).includes(key));
+        if (unknown !== undefined) errors.push(`${userPath}: unknown config key ${JSON.stringify(`session.${unknown}`)}`);
+        if (table.scripts_dir !== undefined) {
+          if (typeof table.scripts_dir !== "string") errors.push(`${userPath}: session.scripts_dir must be a string`);
+          else fileScriptsDir = table.scripts_dir;
+        }
+        if (table.python !== undefined) {
+          if (typeof table.python !== "string" || table.python === "") errors.push(`${userPath}: session.python must be a non-empty string`);
+          else filePython = table.python;
+        }
+      }
+    }
+  }
+
+  const projectError = projectSessionCheck(join(options.projectRoot ?? process.cwd(), "stratum.toml"));
+  if (projectError !== null) errors.push(projectError);
+
+  const envDir = env[SESSION_SCRIPTS_DIR_ENV];
+  const envConfigured = typeof envDir === "string" && envDir !== "";
+  const envPython = env[SESSION_PYTHON_ENV];
+  return Object.freeze({
+    configured: envConfigured || fileConfigured,
+    userPath,
+    scriptsDir: envConfigured ? envDir : fileScriptsDir,
+    scriptsDirSource: envConfigured ? "env" as const : fileScriptsDir !== null ? "user" as const : null,
+    python: typeof envPython === "string" && envPython !== "" ? envPython : filePython ?? "python3",
+    error: errors.length > 0 ? errors.join("; ") : null,
+  });
+}
+
+/** True when TOML text could hold a `session` key: the word itself, or a unicode escape that could spell it. */
+function mayNameSession(text: string): boolean {
+  return text.includes("session") || text.includes("\\u") || text.includes("\\U");
+}
+
+function projectSessionError(path: string): string {
+  return `${path}: [session] is not allowed in a project stratum.toml; set it in the user config (STRATUM_CONFIG_FILE or ~/.stratum/config.toml)`;
+}
+
+/**
+ * A project file never supplies session settings. One that parses and holds a `session`
+ * key is a config error naming the file. One that does not parse cannot supply anything to
+ * the door either (it is never read for session values), so its parse error stays the
+ * sandbox loader's to report.
+ */
+function projectSessionCheck(path: string): string | null {
+  if (!existsSync(path)) return null;
+  let raw: unknown;
+  try {
+    raw = parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  return isRecord(raw) && Object.prototype.hasOwnProperty.call(raw, "session") ? projectSessionError(path) : null;
 }
 
 function applyLayer(
