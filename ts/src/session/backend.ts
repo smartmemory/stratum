@@ -189,7 +189,11 @@ export interface AdmitData {
   readonly reason: string;
   readonly engine: Vendor;
   readonly account: { readonly id: string; readonly vendor: string; readonly label: string | null; readonly config_dir_name: string } | null;
-  readonly env: Readonly<Record<string, string>>;
+  /**
+   * Admitted: exactly the engine home variable. A string is the absolute home; null (engine claude
+   * only, the default-home row: Max) means REMOVE CLAUDE_CONFIG_DIR from the child env. Refused: {}.
+   */
+  readonly env: Readonly<Record<string, string | null>>;
   readonly checks: readonly AdmitCheck[];
   readonly launch_gate_label: string | null;
 }

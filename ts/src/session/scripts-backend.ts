@@ -329,16 +329,19 @@ function admitValidator(input: AdmitInput): Validator {
     if (!isRecord(doc)) return "admit output is not an object";
     if (typeof doc.admitted !== "boolean" || typeof doc.reason !== "string") return "admit output lacks admitted/reason";
     if (doc.engine !== input.engine) return "admit output engine differs from the request";
-    if (!isRecord(doc.env) || Object.values(doc.env).some((value) => typeof value !== "string")) return "admit output env is not a string map";
+    if (!isRecord(doc.env) || Object.values(doc.env).some((value) => value !== null && typeof value !== "string")) return "admit output env is not a map of string|null";
     if (!Array.isArray(doc.checks) || doc.checks.some((check) => !isRecord(check))) return "admit output checks is not an array of objects";
     if (!isStringOrNull(doc.launch_gate_label)) return "admit output launch_gate_label is not string|null";
     if (doc.account !== null && !(isRecord(doc.account) && typeof doc.account.id === "string")) return "admit output account is not null|{id, ...}";
     const keys = Object.keys(doc.env);
     if (exit === 0) {
       if (doc.admitted !== true || doc.code !== null) return "admit exit 0 is not admitted";
-      // contract `operations.admit.script_output.env`: EXACTLY the engine home, absolute.
+      // contract `operations.admit.script_output.env`: EXACTLY the engine home, absolute. The default-home
+      // rule (Max): JSON null means remove CLAUDE_CONFIG_DIR, and only engine claude has that row.
       const home = doc.env[homeVar];
-      if (keys.length !== 1 || typeof home !== "string" || !isAbsolute(home)) return `admit env must be exactly {${homeVar}: <absolute path>}`;
+      if (keys.length !== 1 || !(homeVar in doc.env)) return `admit env must be exactly {${homeVar}: <absolute path>}`;
+      if (home === null) return input.engine === "claude" ? null : `admit env ${homeVar} is null: the default-home rule is for engine claude only`;
+      if (typeof home !== "string" || !isAbsolute(home)) return `admit env must be exactly {${homeVar}: <absolute path>}`;
       return null;
     }
     if (doc.admitted !== false || keys.length !== 0) return "admit refusal must be admitted:false with env {}";
@@ -479,8 +482,9 @@ export class ScriptsBackend implements SessionBackend {
       stdin: input.markerFile !== undefined ? "" : input.markerText ?? "",
       timeoutMs: this.#timeout("admit", (maxWaitS + 60) * 1000),
     });
-    // contract `operations.admit.library_result`: childEnv = {...child_env, ...data.env}.
-    return { ...envelope, childEnv: envelope.ok ? { ...options.childEnv, ...envelope.data.env } : null };
+    // contract `operations.admit.library_result`: childEnv = {...child_env, ...data.env}, where a null
+    // value deletes the key (default-home rule), never sets the string "null" or "".
+    return { ...envelope, childEnv: envelope.ok ? admittedChildEnv(options.childEnv, envelope.data.env) : null };
   }
 
   #timeout(op: SessionOp, fallbackSOrMs: number): number {
@@ -559,6 +563,16 @@ export class ScriptsBackend implements SessionBackend {
     const docReason = isRecord(record) && typeof record.reason === "string" ? firstLine(record.reason) : "";
     return refused(op, kind, code, docReason || stderrLine || `${script} exited ${exit}`, script, exit, record);
   }
+}
+
+/** {...childEnv, ...admitted}, with a null admitted value removing the key. */
+export function admittedChildEnv(childEnv: NodeJS.ProcessEnv, admitted: Readonly<Record<string, string | null>>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...childEnv };
+  for (const [key, value] of Object.entries(admitted)) {
+    if (value === null) delete env[key];
+    else env[key] = value;
+  }
+  return env;
 }
 
 function usageCheck(rules: ReadonlyArray<readonly [boolean, string]>): string | null {

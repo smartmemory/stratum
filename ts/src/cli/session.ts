@@ -1,15 +1,17 @@
 import { parseArgs } from "node:util";
 import {
+  type AdmitInput,
   cliExitFor,
   createSessionBackend,
   type Envelope,
   type JobsRegisterInput,
+  MARKER_CAP_BYTES,
   type PickInput,
 } from "../session/index.js";
 
 /**
  * `stratum session <verb>` (SESSION-MGMT-1, contract `operations.*.cli`, `cli_exit_codes`).
- * U1 verbs: pick, jobs, register. Each prints the envelope (`--json`) or a short text form,
+ * U1 verbs: pick, jobs, register; U2: admit. Each prints the envelope (`--json`) or a short text form,
  * and exits 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.
  */
 
@@ -19,6 +21,8 @@ const USAGE = [
   "  jobs [--session S]                                                  list the job registry (read-only)",
   "  register --session S --kind K --id ID [--report ABS] [--collect T] [--label L] [--pid N] [--log ABS]",
   "           [--work-kind K] [--vendor claude|codex] [--model M] [--account ID] [--priority P0..P3]   record a job (writes the registry)",
+  "  admit --engine claude|codex --label L [--model M] [--account inherit|auto|ID] [--marker-file ABS]",
+  "        [--launch-gate full|none] [--max-wait-s N]   may this launch start, on which account (marker text on stdin without --marker-file)",
   "Exit: 0 ok, 1 refused by policy, 2 usage, 3 waited/held, 4 backend problem, 5 partial.",
 ].join("\n");
 
@@ -32,6 +36,7 @@ export async function sessionCommand(argv: readonly string[]): Promise<number> {
     if (verb === "pick") return await pickVerb(rest);
     if (verb === "jobs") return await jobsVerb(rest);
     if (verb === "register") return await registerVerb(rest);
+    if (verb === "admit") return await admitVerb(rest);
   } catch (error) {
     if (error instanceof UsageError) return usage(error.message);
     throw error;
@@ -113,4 +118,50 @@ async function registerVerb(args: readonly string[]): Promise<number> {
   }
   for (const required of ["session", "kind", "id"]) if (input[required] === undefined) throw new UsageError(`register needs --${required}`);
   return emit(await createSessionBackend().jobsRegister(input as unknown as JobsRegisterInput), values.json === true);
+}
+
+/** `--max-wait-s N`: a finite number (the backend checks the range [1, 1800]). */
+function maxWait(values: Record<string, string | boolean | undefined>): number | undefined {
+  const raw = str(values, "max-wait-s");
+  if (raw === undefined) return undefined;
+  if (!/^[0-9]+(\.[0-9]+)?$/.test(raw)) throw new UsageError("--max-wait-s must be a number of seconds");
+  return Number(raw);
+}
+
+/** The marker on stdin: never read from a TTY; at most the cap (the backend truncates to the head too). */
+async function readMarker(): Promise<string | undefined> {
+  if (process.stdin.isTTY) return undefined;
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin as AsyncIterable<Buffer>) {
+    chunks.push(chunk);
+    bytes += chunk.length;
+    if (bytes > MARKER_CAP_BYTES) break;
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  return text === "" ? undefined : text;
+}
+
+async function admitVerb(args: readonly string[]): Promise<number> {
+  const values = parse(args, {
+    engine: { type: "string" }, label: { type: "string" }, model: { type: "string" }, account: { type: "string" },
+    "marker-file": { type: "string" }, "launch-gate": { type: "string" }, "max-wait-s": { type: "string" },
+  });
+  const engine = str(values, "engine");
+  const label = str(values, "label");
+  if (engine === undefined) throw new UsageError("admit needs --engine");
+  if (label === undefined) throw new UsageError("admit needs --label");
+  const markerFile = str(values, "marker-file");
+  const markerText = markerFile === undefined ? await readMarker() : undefined;
+  const optional: Record<string, string | number | undefined> = {
+    model: str(values, "model"), account: str(values, "account"), launchGate: str(values, "launch-gate"),
+    maxWaitS: maxWait(values), markerFile, markerText,
+  };
+  const input = {
+    engine, label, ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== undefined)),
+  } as unknown as AdmitInput;
+  // contract `operations.admit.cli`: the CLI's own process env IS the candidate child env.
+  const result = await createSessionBackend().admit(input, { childEnv: process.env });
+  const { childEnv: _childEnv, ...envelope } = result;
+  return emit(envelope as Envelope<unknown>, values.json === true);
 }
