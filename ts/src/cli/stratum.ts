@@ -35,7 +35,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "distill") return (await import("./distill.js")).distillCommand(args);
   if (command === "learn") return (await import("./learn.js")).learnCommand(args);
   if (command === "watch") return watchCommand(args);
-  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|flow|learn|distill|mcp|doctor|upgrade|watch|models> ...\n");
+  if (command === "session") return (await import("./session.js")).sessionCommand(args);
+  process.stderr.write("Usage: stratum <validate|migrate|query|gate|guard|flow|learn|distill|mcp|doctor|upgrade|watch|models|session> ...\n");
   return 2;
 }
 

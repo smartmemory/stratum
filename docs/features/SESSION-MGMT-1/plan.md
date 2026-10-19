@@ -163,7 +163,7 @@ Files: `stratum/ts/src/session/backend.ts` (new: `SessionBackend` interface, env
 `stratum/ts/tests/session/configured-fixtures.json` (new: the shared fixture table U13 also runs), `stratum/CHANGELOG.md` (existing).
 
 - [ ] `configured(env)` exactly per contract `backend.configured_test`; every row of `configured-fixtures.json` passes
-- [ ] Configured but broken (no usable `scripts_dir`, missing script, missing python, config parse error) → `backend-unavailable` for every op, `admit` included; never `backend: 'none'`
+- [ ] Configured but broken (no usable `scripts_dir`, missing script, missing python, config parse error, a user config file that exists but cannot be read) → `backend-unavailable` for every op, `admit` included; never `backend: 'none'`
 - [ ] `[session]` in a project `stratum.toml` → config error naming the file; an unknown key inside `[session]` → config error naming the key
 - [ ] Every op runs `execFile` with an argv array, never a shell; stdin `ignore` for every op except `admit` (contract `backend.stdin`); `CLAUDECODE` and `LAUNCH_GATE_ADMITTED` removed from the script env (`backend.child_env_rule`); timeout per op, child process group killed on timeout
 - [ ] A refusal whose stdout is one valid JSON document of the op's shape is returned with it as `record`; JSON of the wrong shape is `backend-error`; no JSON → `record: null`
@@ -427,7 +427,7 @@ Files: `compose/server/session-door.js` (new: `sessionConfigured(env)`, `admitCl
 
 - [ ] Each site builds its candidate env exactly as today (`cleanEnv`), calls `admitClaude({..., childEnv: cleanEnv, launchGate})` with the level in `## Admission owners` rows 7-9, and spawns with the returned `childEnv` only; `CLAUDECODE` stays deleted; `assertAdmittedEnv` right before `spawn`
 - [ ] `admitClaude` runs `stratum session admit --json` with `env = childEnv` (D8), marker text on stdin
-- [ ] **CLI found → Compose never runs its own detector; Stratum's `admit` decides** (mode none = candidate env unchanged). `sessionConfigured` runs only when `resolveStratumBin('cli')` throws, and is the conservative superset in C `backend.configured_test.compose_impl` (any `session` substring or `\u`/`\U` escape in a readable user config file, or an unreadable file, reads configured)
+- [ ] **CLI found → Compose never runs its own detector; Stratum's `admit` decides** (mode none = candidate env unchanged). `sessionConfigured` runs only when `resolveStratumBin('cli')` throws, and is the conservative superset in C `backend.configured_test.compose_impl` (the user config path not proven absent, i.e. `statSync` succeeds or fails with anything but ENOENT/ENOTDIR, reads configured; U1 fix round 1)
 - [ ] On every row of the shared fixture table (header spellings `[session]`, `[ session ]`, `["session"]`, `['session']`, dotted, inline included): Stratum configured ⇒ `sessionConfigured` true; rows where only Compose says configured are listed in the table, never the reverse
 - [ ] **Configured (by the superset) and the stratum CLI not found → `SessionRefusal backend-unavailable`, no spawn.** Not configured → today's behaviour, one INFO line at server start, not per call
 - [ ] `agent-spawn.js` and `vision-utils.js` pass an explicit Sonnet-class `--model` (D6)

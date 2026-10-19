@@ -1,0 +1,203 @@
+{
+  "_doc": "SESSION-MGMT-1 contract backend.configured_test.fixtures: the ONE table both sides run (stratum: tests/session/backend.test.ts, U1; compose: test/session-door.test.js, U13). Rule: on every row, stratum configured (configured or broken) => compose true; compose may be true where stratum is unconfigured, never the reverse. Columns: env = STRATUM_SESSION_SCRIPTS_DIR set to the scripts dir / set to '' / unset; file = the user config text (STRATUM_CONFIG_FILE points at it) with {SCRIPTS_DIR} replaced by the test's scripts dir, null = no file, {special: ...} = a path the test builds: file-mode-000 (a [session] file the process cannot read), ancestor-mode-000 (a [session] file with scripts_dir \"/missing\" inside a directory of mode 000), directory (the path is a directory), dangling-symlink (the path is a symlink to a file that does not exist: ENOENT on its target, proven absence like a missing ancestor); stratum = configured (configured(env) true, config valid) | broken (configured(env) true and a config error: every op refuses backend-unavailable, admit included) | unconfigured (configured(env) false); compose = sessionConfigured(env) of contract configured_test.compose_impl (env non-empty, or the user config path is not proven absent: stat fails with anything but ENOENT/ENOTDIR, or succeeds). Only proven absence (ENOENT/ENOTDIR) may leave Stratum unconfigured; any other read failure and any TOML parse error is broken (U1 fix round 1). Stratum's column is the smol-toml parse in stratum/ts/src/config/index.ts loadSessionConfig, never a regex.",
+  "_source": "stratum/docs/features/SESSION-MGMT-1/session-contract.json backend.configured_test",
+  "rows": [
+    {
+      "name": "env-set-file-absent",
+      "env": "set",
+      "file": null,
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "env-empty-file-absent",
+      "env": "empty",
+      "file": null,
+      "stratum": "unconfigured",
+      "compose": false
+    },
+    {
+      "name": "env-unset-file-absent",
+      "env": "unset",
+      "file": null,
+      "stratum": "unconfigured",
+      "compose": false
+    },
+    {
+      "name": "env-set-and-session-file",
+      "env": "set",
+      "file": "[session]\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "env-empty-and-session-file",
+      "env": "empty",
+      "file": "[session]\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "header-plain",
+      "env": "unset",
+      "file": "[session]\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "header-spaced",
+      "env": "unset",
+      "file": "[ session ]\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "header-double-quoted",
+      "env": "unset",
+      "file": "[\"session\"]\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "header-single-quoted",
+      "env": "unset",
+      "file": "['session']\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "header-unicode-escape",
+      "env": "unset",
+      "file": "[\"\\u0073ession\"]\nscripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "dotted-top-level",
+      "env": "unset",
+      "file": "session.scripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "inline-table",
+      "env": "unset",
+      "file": "session = { scripts_dir = \"{SCRIPTS_DIR}\" }\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "session-empty-table",
+      "env": "unset",
+      "file": "[session]\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "session-with-python",
+      "env": "unset",
+      "file": "[session]\nscripts_dir = \"{SCRIPTS_DIR}\"\npython = \"python3\"\n",
+      "stratum": "configured",
+      "compose": true
+    },
+    {
+      "name": "session-subtable",
+      "env": "unset",
+      "file": "[session.extra]\nx = 1\n",
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "session-unknown-key",
+      "env": "unset",
+      "file": "[session]\nscripts_dir = \"{SCRIPTS_DIR}\"\nbogus = 1\n",
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "session-not-a-table",
+      "env": "unset",
+      "file": "session = \"on\"\n",
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "session-commented-out",
+      "env": "unset",
+      "file": "# [session]\n# scripts_dir = \"{SCRIPTS_DIR}\"\n",
+      "stratum": "unconfigured",
+      "compose": true
+    },
+    {
+      "name": "sandbox-only",
+      "env": "unset",
+      "file": "[sandbox]\nfilesystemMode = \"read-only\"\n",
+      "stratum": "unconfigured",
+      "compose": true
+    },
+    {
+      "name": "sandbox-string-mentions-session",
+      "env": "unset",
+      "file": "[sandbox]\nwritableRoots = [\"/work/session-notes\"]\n",
+      "stratum": "unconfigured",
+      "compose": true
+    },
+    {
+      "name": "parse-error-mentions-session",
+      "env": "unset",
+      "file": "[session\nscripts_dir = \n",
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "parse-error-no-session-word",
+      "env": "unset",
+      "file": "this = = is not toml\n",
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "parse-error-no-session-word-env-set",
+      "env": "set",
+      "file": "this = = is not toml\n",
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "file-unreadable",
+      "env": "unset",
+      "file": {
+        "special": "file-mode-000"
+      },
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "ancestor-unreadable",
+      "env": "unset",
+      "file": {
+        "special": "ancestor-mode-000"
+      },
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "file-is-a-directory",
+      "env": "unset",
+      "file": {
+        "special": "directory"
+      },
+      "stratum": "broken",
+      "compose": true
+    },
+    {
+      "name": "file-dangling-symlink",
+      "env": "unset",
+      "file": {
+        "special": "dangling-symlink"
+      },
+      "stratum": "unconfigured",
+      "compose": false
+    }
+  ]
+}
