@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync,
   utimesSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadSessionConfig, loadStratumConfig } from "../../src/config/index.js";
 import { resolveLearnConfig } from "../../src/config/learn.js";
+import { gate, listing, type Listing } from "./leak-gate.js";
 import { cliExitFor, configured, createSessionBackend, type Envelope, MARKER_CAP_BYTES } from "../../src/session/index.js";
 
 /**
@@ -49,81 +50,34 @@ function findPython(): string {
 // ---------------------------------------------------------------- leak gate (contract test_fixture.leak_gate)
 
 const REAL_HOME = homedir();
-const LEAK_DIRS = [
+/** Nothing may be added, removed or changed here (leak-gate.ts: ~/.stratum is quiet outside ts/agent_runs, which other sessions' stratum_agent_run writes). */
+const STRICT_DIRS = [join(REAL_HOME, ".stratum")];
+const LOOSE_DIRS = [join(REAL_HOME, ".stratum", "ts", "agent_runs")];
+/** Live sessions and launchd jobs write these all the time (usage: ai.smartmemory.usage-watch every 5 min), so only this run's token fails. */
+const TOKEN_DIRS = [
   join(REAL_HOME, ".claude", "logs"),
   join(REAL_HOME, ".claude", "session-state"),
   join(REAL_HOME, ".claude", "usage"),
   join(OPS_SCRIPTS, "..", "..", "status", "launch-gate"),
-  join(REAL_HOME, ".stratum"),
 ];
-type Listing = Map<string, { size: number; mtimeMs: number }>;
+const WATCHED_DIRS = [...STRICT_DIRS, ...TOKEN_DIRS];
 
-function listing(): Listing {
-  const out: Listing = new Map();
-  const walk = (dir: string): void => {
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.isFile()) {
-        try { const st = lstatSync(path); out.set(path, { size: st.size, mtimeMs: st.mtimeMs }); } catch { /* raced away */ }
-      }
-    }
-  };
-  for (const dir of LEAK_DIRS) walk(dir);
-  return out;
-}
-
-/** The bytes a file gained since `before` (whole file, capped, when it shrank or is new). */
-function newBytes(path: string, before: { size: number } | undefined): string {
-  const cap = 4 * 1024 * 1024;
-  try {
-    const fd = openSync(path, "r");
-    try {
-      const size = lstatSync(path).size;
-      const start = before !== undefined && size >= before.size ? before.size : 0;
-      const length = Math.min(size - start, cap);
-      const buf = Buffer.alloc(Math.max(length, 0));
-      if (length > 0) readSync(fd, buf, 0, length, start);
-      return buf.toString("latin1");
-    } finally { closeSync(fd); }
-  } catch { return ""; }
-}
-
-/**
- * Live sessions on this Mac write these dirs all the time, so "any change fails" would fail
- * every run. The gate fails on any changed or new file whose name or new bytes carry this
- * run's token (every session, id, label and name the tests create carries it) and reports
- * the count of other changes. The fixture's own root is outside every gated dir.
- */
-function leaksSince(before: Listing): { leaks: string[]; otherChanges: number } {
-  const after = listing();
-  const leaks: string[] = [];
-  let otherChanges = 0;
-  for (const [path, st] of after) {
-    const prior = before.get(path);
-    if (prior !== undefined && prior.size === st.size && prior.mtimeMs === st.mtimeMs) continue;
-    if (path.includes(TOKEN) || newBytes(path, prior).includes(TOKEN)) leaks.push(path);
-    else otherChanges += 1;
-  }
-  return { leaks, otherChanges };
-}
-
+/** A listing walks ~100K real files: 4.5 s idle, over 10 s under a loaded suite (vitest default hook timeout). */
+const HOOK_TIMEOUT_MS = 120_000;
 let BEFORE: Listing = new Map();
 
 beforeAll(() => {
-  BEFORE = listing();
+  BEFORE = listing(WATCHED_DIRS);
   ROOT = mkdtempSync(join(tmpdir(), "stratum-u1-"));
-});
+}, HOOK_TIMEOUT_MS);
 
 afterAll(() => {
   // Fixture engines: U1 starts none (no launch op); the timeout row kills its own group.
-  const { leaks, otherChanges } = leaksSince(BEFORE);
+  const { violations, otherChanges } = gate(BEFORE, listing(WATCHED_DIRS), { strictDirs: STRICT_DIRS, looseDirs: LOOSE_DIRS, token: TOKEN });
   if (ROOT) rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  process.stderr.write(`[leak-gate] token=${TOKEN} leaks=${leaks.length} other-changes(live sessions)=${otherChanges}\n`);
-  if (leaks.length > 0) throw new Error(`leak gate: real state touched by this run: ${leaks.join(", ")}`);
-});
+  process.stderr.write(`[leak-gate] token=${TOKEN} violations=${violations.length} other-changes(live sessions)=${otherChanges}\n`);
+  if (violations.length > 0) throw new Error(`leak gate: real state touched by this run: ${violations.join(", ")}`);
+}, HOOK_TIMEOUT_MS);
 
 // ---------------------------------------------------------------- the fixture (contract test_fixture)
 
@@ -443,6 +397,120 @@ describe("error table: every failure is a typed refusal", () => {
       if (!envelope.ok && row.expectRecord === "null") expect(envelope.record).toBeNull();
       if (!envelope.ok && row.expectRecord === "object") expect(typeof envelope.record).toBe("object");
       row.check?.(envelope, fx);
+    }, 30_000);
+  }
+});
+
+// ---------------------------------------------------------------- shapes: every contracted key, success and refusal (SESSION-MGMT-1-U1-FU1)
+
+type Doc = Record<string, unknown>;
+const GOOD_CHOICE = { id: "seat1", vendor: "claude", label: "seat1", command: "ccd1 -n x" };
+const GOOD_SEAT = { id: "seat1", ceiling: 90, used: 12.5, state: "behind", detail: "d", target: 40, behind: 27.5 };
+const GOOD_PICK: Doc = { kind: "author", choice: GOOD_CHOICE, reason: "r", rule: "u", seats: [GOOD_SEAT] };
+const GOOD_ROW: Doc = {
+  op: "add", session: TOKEN, kind: "agent", id: `${TOKEN}-1`, report: null, collect: null, label: null, ts: 1.5,
+  status: "running", priority: "P2", priority_source: "defaulted",
+};
+const GOOD_DIAG: Doc = { kind: "bad-line", source: "registry", file: "/x/s.jsonl", line: 3, reason: "r", affects: [{ session: TOKEN, id: null }] };
+const GOOD_JOBS: Doc = { rows: [GOOD_ROW], bad_count: 1, diagnostics: [GOOD_DIAG] };
+const GOOD_ADD: Doc = { op: "add", session: TOKEN, kind: "agent", id: `${TOKEN}-1`, report: null, collect: null, label: null, ts: 1.5 };
+
+/** `base` with `edit` applied to a deep copy. */
+const edit = (base: Doc, change: (copy: Doc) => void): Doc => { const copy = structuredClone(base); change(copy); return copy; };
+const without = (...path: string[]) => (copy: Doc) => {
+  let node: any = copy;
+  for (const key of path.slice(0, -1)) node = Array.isArray(node[key]) ? node[key][0] : node[key];
+  delete node[path.at(-1)!];
+};
+const setAt = (path: string[], value: unknown) => (copy: Doc) => {
+  let node: any = copy;
+  for (const key of path.slice(0, -1)) node = Array.isArray(node[key]) ? node[key][0] : node[key];
+  node[path.at(-1)!] = value;
+};
+
+/** `choiceShape`: the row breaks the choice object, which a refusal (choice null) does not carry, so only exit 0 applies. */
+interface ShapeRow { name: string; op: "pick" | "jobs" | "register"; doc: Doc; choiceShape?: true }
+const ROW_KEYS = Object.keys(GOOD_ROW);
+const CHOICE_KEYS = Object.keys(GOOD_CHOICE);
+const SEAT_REQUIRED = ["id", "ceiling", "used", "state", "detail"];
+const DIAG_KEYS = Object.keys(GOOD_DIAG);
+const ADD_KEYS = Object.keys(GOOD_ADD);
+
+const SHAPE_ROWS: ShapeRow[] = [
+  // pick: one row per required key at each level
+  ...["kind", "choice", "reason", "rule"].map((k): ShapeRow => ({ name: `pick: missing ${k}`, op: "pick", doc: edit(GOOD_PICK, without(k)) })),
+  ...CHOICE_KEYS.map((k): ShapeRow => ({ name: `pick: choice missing ${k}`, op: "pick", doc: edit(GOOD_PICK, without("choice", k)), choiceShape: true })),
+  ...SEAT_REQUIRED.map((k): ShapeRow => ({ name: `pick: seat missing ${k} (review F3 repro for ceiling/used)`, op: "pick", doc: edit(GOOD_PICK, without("seats", k)) })),
+  { name: "pick: seat ceiling is a string", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "ceiling"], "90")) },
+  { name: "pick: seat used is a string", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "used"], "1")) },
+  { name: "pick: seat state outside the enum", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "state"], "nope")) },
+  { name: "pick: seat target is a string", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "target"], "40")) },
+  { name: "pick: seat behind is a string", op: "pick", doc: edit(GOOD_PICK, setAt(["seats", "behind"], "1")) },
+  { name: "pick: choice label is a number", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "label"], 5)), choiceShape: true },
+  // jobs list: every required row key, every diagnostic key, the enums
+  ...ROW_KEYS.map((k): ShapeRow => ({ name: `jobs: row missing ${k}`, op: "jobs", doc: edit(GOOD_JOBS, without("rows", k)) })),
+  ...DIAG_KEYS.map((k): ShapeRow => ({ name: `jobs: diagnostic missing ${k}`, op: "jobs", doc: edit(GOOD_JOBS, without("diagnostics", k)) })),
+  { name: "jobs: review F3 repro (4-field row, diagnostics [{}])", op: "jobs",
+    doc: { rows: [{ session: "review-u1", id: "review-u1-id", kind: "agent", status: "running" }], bad_count: 0, diagnostics: [{}] } },
+  { name: "jobs: row status outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "status"], "paused")) },
+  { name: "jobs: row priority outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "priority"], "P9")) },
+  { name: "jobs: row priority_source outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "priority_source"], "guessed")) },
+  { name: "jobs: row kind outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "kind"], "thread")) },
+  { name: "jobs: row ts is a string", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "ts"], "1")) },
+  { name: "jobs: row pid is zero", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "pid"], 0)) },
+  { name: "jobs: row outcome outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "outcome"], "meh")) },
+  { name: "jobs: diagnostic kind outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["diagnostics", "kind"], "weird")) },
+  { name: "jobs: diagnostic source outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["diagnostics", "source"], "elsewhere")) },
+  { name: "jobs: diagnostic affects item lacks session", op: "jobs", doc: edit(GOOD_JOBS, setAt(["diagnostics", "affects"], [{ id: null }])) },
+  { name: "jobs: bad_count missing", op: "jobs", doc: edit(GOOD_JOBS, without("bad_count")) },
+  // jobs register: the stored add event
+  ...ADD_KEYS.map((k): ShapeRow => ({ name: `register: missing ${k}`, op: "register", doc: edit(GOOD_ADD, without(k)) })),
+  { name: "register: pid is a string", op: "register", doc: edit(GOOD_ADD, setAt(["pid"], "1")) },
+  { name: "register: log is a number", op: "register", doc: edit(GOOD_ADD, setAt(["log"], 1)) },
+  { name: "register: vendor outside the enum", op: "register", doc: edit(GOOD_ADD, setAt(["vendor"], "gemini")) },
+  { name: "register: priority outside the enum", op: "register", doc: edit(GOOD_ADD, setAt(["priority"], "P9")) },
+  { name: "register: ts is not finite (string)", op: "register", doc: edit(GOOD_ADD, setAt(["ts"], "now")) },
+];
+
+const SHAPE_OK_ROWS: ShapeRow[] = [
+  { name: "pick: the full documented shape", op: "pick", doc: GOOD_PICK },
+  { name: "pick: unmeasured seat (used null, no target/behind)", op: "pick", doc: edit(GOOD_PICK, (c) => { c.seats = [{ id: "seat2", ceiling: 90, used: null, state: "unstarted", detail: "unstarted" }]; }) },
+  { name: "jobs: the full documented shape", op: "jobs", doc: GOOD_JOBS },
+  { name: "jobs: a done row with every optional key", op: "jobs",
+    doc: edit(GOOD_JOBS, (c) => { c.rows = [{ ...GOOD_ROW, status: "done", pid: 7, log: "/l", work_kind: "author", vendor: "codex", model: "m", account: "a", for_id: "f", session_id: "s", done_ts: 2, outcome: "passed", rounds: 1 }]; }) },
+  { name: "register: the bare add event", op: "register", doc: GOOD_ADD },
+];
+
+/** A refusal record must pass the same validator: exit 1 for pick (choice null), jobs and register. */
+const asRefusal = (row: ShapeRow, doc: Doc): Doc => (row.op === "pick" && "choice" in doc ? { ...doc, choice: null } : doc);
+
+async function shapeRun(row: ShapeRow, exit: number, doc: Doc): Promise<Envelope<unknown>> {
+  const file = row.op === "pick" ? "usage_watch.py" : "jobs.py";
+  const fx = fixture({ scripts: fakeScripts(file, py(`print(${JSON.stringify(JSON.stringify(doc))}); sys.exit(${exit})`)) });
+  const b = backend(fx);
+  return row.op === "pick" ? b.pick({ kind: "author" })
+    : row.op === "jobs" ? b.jobsList({ session: TOKEN })
+    : b.jobsRegister({ session: TOKEN, kind: "agent", id: `${TOKEN}-1` });
+}
+
+describe("script output shapes: every contracted key, the same validator on success and refusal", () => {
+  for (const row of SHAPE_ROWS) {
+    it(`${row.name}: backend-error at exit 0 and at exit 1`, async () => {
+      const ok = await shapeRun(row, 0, row.doc);
+      expect(code(ok), JSON.stringify(ok)).toBe("backend-error");
+      if (row.choiceShape) return;
+      const refused = await shapeRun(row, 1, asRefusal(row, row.doc));
+      expect(code(refused), JSON.stringify(refused)).toBe("backend-error");
+    }, 30_000);
+  }
+
+  for (const row of SHAPE_OK_ROWS) {
+    it(`${row.name}: accepted at exit 0, record kept at exit 1`, async () => {
+      const ok = await shapeRun(row, 0, row.doc);
+      expect(code(ok), JSON.stringify(ok)).toBe("ok");
+      const refused = await shapeRun(row, 1, asRefusal(row, row.doc));
+      expect(code(refused), JSON.stringify(refused)).toBe(row.op === "pick" ? "no-eligible-account" : "registry-refused");
+      expect(refused.ok ? null : typeof refused.record).toBe("object");
     }, 30_000);
   }
 });

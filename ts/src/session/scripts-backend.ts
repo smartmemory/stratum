@@ -172,30 +172,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 const isStringOrNull = (value: unknown): boolean => value === null || typeof value === "string";
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isNonNegInt = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+const isPosInt = (value: unknown): value is number => isNonNegInt(value) && value > 0;
+const isOneOf = (list: readonly string[], value: unknown): boolean => typeof value === "string" && list.includes(value);
 
 /** A validator returns null when `doc` has the op's shape for this exit, else what is wrong. */
 type Validator = (doc: unknown, exit: number) => string | null;
 
-const SEAT_STATES = new Set(["reserved", "closed", "weekly", "unstarted", "behind", "ahead"]);
+/**
+ * Field tables: one entry per contracted key, `[key, test, what it must be]`. A required key must be
+ * present and pass; an optional key is checked only when present. The table is the shape, so a new
+ * contract key is one row, and the same table answers the success record and the refusal record.
+ */
+type FieldTable = ReadonlyArray<readonly [key: string, test: (value: unknown) => boolean, expected: string]>;
+
+function tableProblem(what: string, record: Record<string, unknown>, required: FieldTable, optional: FieldTable): string | null {
+  for (const [key, test, expected] of required) {
+    if (!(key in record)) return `${what} lacks ${key}`;
+    if (!test(record[key])) return `${what} ${key} is not ${expected}`;
+  }
+  for (const [key, test, expected] of optional) {
+    if (key in record && !test(record[key])) return `${what} ${key} is not ${expected}`;
+  }
+  return null;
+}
+
+const isString = (value: unknown): boolean => typeof value === "string";
+const SEAT_STATES = ["reserved", "closed", "weekly", "unstarted", "behind", "ahead"] as const;
+const JOB_STATUSES = ["running", "done"] as const;
+const PRIORITY_SOURCES = ["explicit", "defaulted", "set"] as const;
+const JOB_OUTCOMES = ["passed", "failed", "superseded"] as const;
+const DIAGNOSTIC_KINDS = ["bad-line", "degraded", "source-unreadable"] as const;
+const DIAGNOSTIC_SOURCES = ["registry", "priority", "queue"] as const;
+
+/** contract `operations.pick.script_output.choice`. */
+const PICK_CHOICE_FIELDS: FieldTable = [
+  ["id", isString, "a string"], ["vendor", isString, "a string"], ["label", isStringOrNull, "string|null"], ["command", isString, "a string"],
+];
+/** contract `operations.pick.script_output.seats[]`; `used` is null for a seat with no usable 5h reading (usage_watch.py:1908). */
+const PICK_SEAT_REQUIRED: FieldTable = [
+  ["id", isString, "a string"],
+  ["ceiling", isFiniteNumber, "a finite number"],
+  ["used", (v) => v === null || isFiniteNumber(v), "a finite number|null"],
+  ["state", (v) => isOneOf(SEAT_STATES, v), `one of ${SEAT_STATES.join(", ")}`],
+  ["detail", isString, "a string"],
+];
+const PICK_SEAT_OPTIONAL: FieldTable = [["target", isFiniteNumber, "a finite number"], ["behind", isFiniteNumber, "a finite number"]];
 
 function pickValidator(input: PickInput): Validator {
   return (doc, exit) => {
     if (!isRecord(doc)) return "pick output is not an object";
+    if (typeof doc.kind !== "string") return "pick output lacks kind";
     if (doc.kind !== input.kind) return "pick output kind does not match the request";
     if (typeof doc.reason !== "string" || typeof doc.rule !== "string") return "pick output lacks reason/rule";
+    if (!("choice" in doc)) return "pick output lacks choice";
     if (doc.choice !== null) {
-      const c = doc.choice;
-      if (!isRecord(c) || typeof c.id !== "string" || typeof c.vendor !== "string" || !isStringOrNull(c.label) || typeof c.command !== "string") {
-        return "pick output choice is not {id, vendor, label, command}";
-      }
+      if (!isRecord(doc.choice)) return "pick output choice is not null|{id, vendor, label, command}";
+      const wrong = tableProblem("pick output choice", doc.choice, PICK_CHOICE_FIELDS, []);
+      if (wrong !== null) return wrong;
     }
     if (doc.code !== undefined && doc.code !== "ahead-of-pace") return "pick output code is not 'ahead-of-pace'";
     if (doc.seats !== undefined) {
       if (!Array.isArray(doc.seats)) return "pick output seats is not an array";
       for (const seat of doc.seats) {
-        if (!isRecord(seat) || typeof seat.id !== "string" || typeof seat.detail !== "string" || typeof seat.state !== "string" || !SEAT_STATES.has(seat.state)) {
-          return "pick output seat row is not {id, state, detail}";
-        }
+        if (!isRecord(seat)) return "pick output seat row is not an object";
+        const wrong = tableProblem("pick output seat row", seat, PICK_SEAT_REQUIRED, PICK_SEAT_OPTIONAL);
+        if (wrong !== null) return wrong;
       }
     }
     // The exit and the record must agree (usage_watch.py:3254).
@@ -206,27 +249,64 @@ function pickValidator(input: PickInput): Validator {
   };
 }
 
+/** The registry fields shared by a list row and the stored add event (claude/scripts/json-contract.json `list`, jobs.py:296-312). */
+const JOB_OPTIONAL_FIELDS: FieldTable = [
+  ["pid", isPosInt, "a positive integer"], ["log", isString, "a string"], ["work_kind", isString, "a string"],
+  ["vendor", (v) => isOneOf(VENDORS, v), "claude|codex"], ["model", isString, "a string"], ["account", isString, "a string"],
+  ["for_id", isString, "a string"], ["session_id", isString, "a string"],
+  ["done_ts", isFiniteNumber, "a finite number"], ["outcome", (v) => isOneOf(JOB_OUTCOMES, v), `one of ${JOB_OUTCOMES.join(", ")}`],
+  ["rounds", isNonNegInt, "a non-negative integer"],
+];
+/** Required `list` keys (json-contract.json:6). */
+const JOB_ROW_REQUIRED: FieldTable = [
+  ["op", (v) => v === "add", "'add'"], ["session", isString, "a string"], ["kind", (v) => isOneOf(JOB_KINDS, v), `one of ${JOB_KINDS.join(", ")}`],
+  ["id", isString, "a string"], ["report", isStringOrNull, "string|null"], ["collect", isStringOrNull, "string|null"], ["label", isStringOrNull, "string|null"],
+  ["ts", isFiniteNumber, "a finite number"], ["status", (v) => isOneOf(JOB_STATUSES, v), `one of ${JOB_STATUSES.join(", ")}`],
+  ["priority", (v) => isOneOf(PRIORITIES, v), `one of ${PRIORITIES.join(", ")}`],
+  ["priority_source", (v) => isOneOf(PRIORITY_SOURCES, v), `one of ${PRIORITY_SOURCES.join(", ")}`],
+];
+/** `diagnostics.item` (json-contract.json:56): kind, source, file, line, reason, affects. */
+const DIAGNOSTIC_REQUIRED: FieldTable = [
+  ["kind", (v) => isOneOf(DIAGNOSTIC_KINDS, v), `one of ${DIAGNOSTIC_KINDS.join(", ")}`],
+  ["source", (v) => isOneOf(DIAGNOSTIC_SOURCES, v), `one of ${DIAGNOSTIC_SOURCES.join(", ")}`],
+  ["file", isString, "a string"],
+  ["line", (v) => v === null || isNonNegInt(v), "a non-negative integer|null"],
+  ["reason", isString, "a string"],
+  ["affects", (v) => Array.isArray(v) && v.every((a) => isRecord(a) && typeof a.session === "string" && "id" in a && isStringOrNull(a.id)), "an array of {session, id: string|null}"],
+];
+
 const jobsListValidator: Validator = (doc) => {
   if (!isRecord(doc)) return "jobs list output is not {rows, bad_count, diagnostics}";
   if (!Array.isArray(doc.rows) || !Array.isArray(doc.diagnostics)) return "jobs list rows/diagnostics are not arrays";
-  if (typeof doc.bad_count !== "number" || !Number.isInteger(doc.bad_count) || doc.bad_count < 0) return "jobs list bad_count is not a non-negative integer";
+  if (!isNonNegInt(doc.bad_count)) return "jobs list bad_count is not a non-negative integer";
   for (const row of doc.rows) {
-    if (!isRecord(row) || typeof row.session !== "string" || typeof row.id !== "string" || typeof row.kind !== "string" || typeof row.status !== "string") {
-      return "jobs list row lacks session/id/kind/status";
-    }
+    if (!isRecord(row)) return "jobs list row is not an object";
+    const wrong = tableProblem("jobs list row", row, JOB_ROW_REQUIRED, JOB_OPTIONAL_FIELDS);
+    if (wrong !== null) return wrong;
   }
-  for (const item of doc.diagnostics) if (!isRecord(item)) return "jobs list diagnostic is not an object";
+  for (const item of doc.diagnostics) {
+    if (!isRecord(item)) return "jobs list diagnostic is not an object";
+    const wrong = tableProblem("jobs list diagnostic", item, DIAGNOSTIC_REQUIRED, []);
+    if (wrong !== null) return wrong;
+  }
   return null;
 };
+
+/** The stored add event (jobs.py:296-312): the list row without the folded `status`, `priority`, `priority_source`, `done_ts`, `outcome`, `rounds`. */
+const REGISTER_REQUIRED: FieldTable = JOB_ROW_REQUIRED.filter(([key]) => !["status", "priority", "priority_source"].includes(key));
+const REGISTER_OPTIONAL: FieldTable = [
+  ...JOB_OPTIONAL_FIELDS.filter(([key]) => !["done_ts", "outcome", "rounds"].includes(key)),
+  ["priority", (v) => isOneOf(PRIORITIES, v), `one of ${PRIORITIES.join(", ")}`],
+  ["priority_source", (v) => v === "explicit", "'explicit'"],
+];
 
 function jobsRegisterValidator(input: JobsRegisterInput): Validator {
   return (doc) => {
     if (!isRecord(doc)) return "register output is not the stored add event";
-    if (doc.op !== "add") return "register output op is not 'add'";
+    const shape = tableProblem("register output", doc, REGISTER_REQUIRED, REGISTER_OPTIONAL);
+    if (shape !== null) return shape;
     if (doc.session !== input.session || doc.id !== input.id) return "register output session/id differ from the request";
     if (doc.kind !== input.kind) return "register output kind differs from the request";
-    if (typeof doc.ts !== "number" || !Number.isFinite(doc.ts)) return "register output ts is not a number";
-    if (!isStringOrNull(doc.report) || !isStringOrNull(doc.collect) || !isStringOrNull(doc.label)) return "register output report/collect/label are not string|null";
     if (input.pid !== undefined && doc.pid !== input.pid) return "register output pid differs from the request";
     if (input.priority !== undefined) {
       if (doc.priority !== input.priority || doc.priority_source !== "explicit") return "register output lacks the explicit priority";
