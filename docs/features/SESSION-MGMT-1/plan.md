@@ -625,6 +625,14 @@ time is not separately measured. **Not counted by either estimate:** the wait fo
 - **Configured mode refuses unset `CLAUDE_CONFIG_DIR` (D7, D9).** Any caller on this Mac whose env has no `CLAUDE_CONFIG_DIR` (for example a
   session started with bare `ccd` on Max, whose MCP children inherit that env) gets `account-unset` from Stratum and Compose until it passes
   `account: "auto"` or an id. Intended by the owner's Q2 ruling; U15's docs say it in the first paragraph.
+- **Max's home must be launched UNSET, not as `~/.claude` (added 2026-10-19 19:1x, s2-coord evidence; unverified by forge-e0 beyond one run).**
+  A detached `claude -p` with `CLAUDE_CONFIG_DIR=/Users/ruze/.claude` died "Not logged in · Please run /login" at 19:08 (U1 launch 2, log
+  `units/SESSION-MGMT-1/SESSION-MGMT-1-U1-author.log` at that time), while s2-coord's Max author launched with `env -u CLAUDE_CONFIG_DIR`
+  finished READY. D8's "admit always returns an absolute engine home" would set exactly the failing value for Max. Until Max retires
+  (2026-10-30), U9 (`session_admit.py`) and U2 (`launch`) must treat the default-home account (accounts row `default: true`) as "home =
+  unset": the patch removes `CLAUDE_CONFIG_DIR`, and `assertAdmittedEnv` checks it is absent. Probe: U9 admits `account max` and the
+  returned env carries the unset marker, not `~/.claude`. If Max has retired by the time U9 is authored, U9 refuses `max` instead and this
+  row closes. MAX-SUNSET-7 adds logged-out detection to `pick`, which stops it choosing a Max that cannot run.
 - **Security-tagged share is high (11 of 15).** Each keeps one pre-land review. The coordinator can batch U4/U6/U7 (one ops diff), U11/U12
   (one Stratum diff) and U13/U14 (one Compose diff) if the reviewer agrees.
 - **Compose and Stratum are published packages.** Behaviour changes only when `configured(env)` is true (D7), so external users see no change.
