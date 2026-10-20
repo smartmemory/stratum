@@ -68,6 +68,41 @@ function runWrapper(env: NodeJS.ProcessEnv, wrapperPath: string, argv: string[])
   });
 }
 
+/** The wrapper in its own process group (a stratum cancel signals the group). */
+function startWrapper(env: NodeJS.ProcessEnv, wrapperPath: string) {
+  const child = spawn("sh", [wrapperPath, "devin", "-p"], { env, stdio: ["ignore", "ignore", "ignore"], detached: true });
+  const closed = new Promise<{ code: number | null }>((resolve) => child.once("close", (code) => resolve({ code })));
+  return { child, closed };
+}
+
+async function waitFor(condition: () => boolean, message: string, boundMs = 5_000): Promise<void> {
+  const deadline = Date.now() + boundMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function closeWithin<T>(closed: Promise<T>, boundMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), boundMs); });
+  return Promise.race([closed, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** True when `pid` has a live child whose command name is `name`. */
+function hasChild(pid: number, name: string): boolean {
+  const out = execFileSync("ps", ["-axo", "pid=,ppid=,comm="], { encoding: "utf8" });
+  return out.split("\n").some((line) => {
+    const [, ppid, ...comm] = line.trim().split(/\s+/);
+    return Number(ppid) === pid && comm.join(" ").split("/").pop() === name;
+  });
+}
+
+/** Cleanup: KILL the probe's own process group (exact pgid, never by pattern). */
+function killGroup(pgid: number): void {
+  try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+}
+
 describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
   it("exit 0: credentials copy removed, exit.rc=0, sentinel written", async () => {
     const { layout, env, credsSource, stub } = scaffold(temporaryRoot());
@@ -116,34 +151,80 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
   });
 
   // One table: a group signal while the agent runs (stratum cancel is TERM; INT and HUP are handled the same).
-  // The stub sleeps 30 s, so a close later than 5 s means the cancel was consumed. rc is 128+signo.
+  // The agent signals readiness itself, so the signal lands while it really runs. The stub sleeps 30 s, so a
+  // close later than 5 s means the cancel was consumed. rc is 128+signo. Outer timeout 15 s covers setup + both bounds.
   it.each([
     ["SIGTERM", 143],
     ["SIGINT", 130],
     ["SIGHUP", 129],
   ] as const)("%s to the group while the agent runs: prompt exit, copy removed, rc %i, one sentinel", async (signal, rc) => {
-    const { layout, env, stub } = scaffold(temporaryRoot());
-    stub("devin", "sleep 30");
-    const child = spawn("sh", [layout.wrapperPath, "devin", "-p"], {
-      env, stdio: ["ignore", "ignore", "ignore"], detached: true,
-    });
-    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-    const deadline = Date.now() + 5_000;
-    while (!existsSync(layout.credentialsCopyPath)) {
-      if (Date.now() > deadline) throw new Error("wrapper never copied credentials");
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    stub("devin", `touch "${join(home, "agent-ready")}"; sleep 30`);
+    const { child, closed } = startWrapper(env, layout.wrapperPath);
+    try {
+      await waitFor(() => existsSync(join(home, "agent-ready")), "agent never started");
+      expect(existsSync(layout.credentialsCopyPath)).toBe(true);
+      const sentAt = Date.now();
+      process.kill(-child.pid!, signal);
+      await closeWithin(closed, 5_000, `${signal} consumed: wrapper still alive after 5 s`);
+      expect(Date.now() - sentAt).toBeLessThan(5_000);
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
+      expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
+    } finally {
+      killGroup(child.pid!);
     }
-    const sentAt = Date.now();
-    process.kill(-child.pid!, signal);
-    await Promise.race([
-      closed,
-      new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`${signal} consumed: wrapper still alive after 5 s`)), 5_000)),
-    ]);
-    expect(Date.now() - sentAt).toBeLessThan(5_000);
-    expect(existsSync(layout.credentialsCopyPath)).toBe(false);
-    expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
-    expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
-  });
+  }, 15_000);
+
+  // F1: an agent that ignores TERM must not keep the credentials copy alive. The handler revokes the copy first,
+  // then waits a bounded time and KILLs the agent, so the wrapper still ends with 143 and one sentinel.
+  it("SIGTERM to the group with a TERM-ignoring agent: copy revoked before any external KILL, rc 143, one sentinel", async () => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    stub("devin", `trap '' TERM; echo $$ > "${join(home, "agent-pid")}"; touch "${join(home, "agent-ready")}"; while :; do sleep 0.1; done`);
+    const { child, closed } = startWrapper(env, layout.wrapperPath);
+    try {
+      await waitFor(() => existsSync(join(home, "agent-ready")), "agent never started");
+      process.kill(-child.pid!, "SIGTERM");
+      // The copy goes at once (next checkpoint, <= 0.2 s), while the wrapper is still inside its 2 s bound: the
+      // TERM-ignoring agent is still alive then, i.e. the revoke came before the wrapper's own KILL.
+      await waitFor(() => !existsSync(layout.credentialsCopyPath), "copy still present 5 s after TERM", 5_000);
+      const agentPid = Number(readFileSync(join(home, "agent-pid"), "utf8").trim());
+      expect(() => process.kill(agentPid, 0)).not.toThrow();
+      await closeWithin(closed, 5_000, "wrapper still alive 5 s after TERM (unbounded agent wait)");
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("143");
+      expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":143}\n');
+    } finally {
+      killGroup(child.pid!);
+    }
+  }, 15_000);
+
+  // F2: a signal that lands while finish is running on the normal path (agent already exited 7) wins: the first rm
+  // inside finish is held by a shim that ignores the signals, so the window is deterministic.
+  it.each([
+    ["SIGTERM", 143],
+    ["SIGINT", 130],
+    ["SIGHUP", 129],
+  ] as const)("%s while the normal-exit tail is held: status is 128+signo, published once (rc %i)", async (signal, rc) => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    stub("devin", "exit 7");
+    const held = join(home, "rm-held");
+    const release = join(home, "rm-release");
+    stub("rm", `trap '' HUP INT TERM\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do sleep 0.05; done\nexec /bin/rm "$@"`);
+    const { child, closed } = startWrapper(env, layout.wrapperPath);
+    try {
+      await waitFor(() => existsSync(held), "finish never reached rm");
+      process.kill(-child.pid!, signal);
+      writeFileSync(release, "");
+      const { code } = await closeWithin(closed, 5_000, `wrapper still alive 5 s after ${signal}`);
+      expect(code).toBe(rc);
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
+      expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+    } finally {
+      writeFileSync(release, "");
+      killGroup(child.pid!);
+    }
+  }, 15_000);
 
   it("SIGTERM to the group while cp is blocked (before the agent starts): exit at once, no copy, no agent, rc 143, one sentinel", async () => {
     const { layout, env, home, stub, credsSource } = scaffold(temporaryRoot());
@@ -152,24 +233,22 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
     execFileSync("mkfifo", [credsSource]);
     const ranMarker = join(home, "agent-ran");
     stub("devin", `touch "${ranMarker}"; sleep 30`);
-    const child = spawn("sh", [layout.wrapperPath, "devin", "-p"], {
-      env, stdio: ["ignore", "ignore", "ignore"], detached: true,
-    });
-    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-    // Let the wrapper reach the blocked cp (the copy never appears, so there is nothing to poll for).
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const sentAt = Date.now();
-    process.kill(-child.pid!, "SIGTERM");
-    await Promise.race([
-      closed,
-      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("TERM consumed: wrapper still alive after 3 s")), 3_000)),
-    ]);
-    expect(Date.now() - sentAt).toBeLessThan(3_000);
-    expect(existsSync(layout.credentialsCopyPath)).toBe(false);
-    expect(existsSync(ranMarker)).toBe(false);
-    expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("143");
-    expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":143}\n');
-  });
+    const { child, closed } = startWrapper(env, layout.wrapperPath);
+    try {
+      // Observable readiness: the wrapper's own cp child exists (and is blocked on the FIFO, which has no writer).
+      await waitFor(() => hasChild(child.pid!, "cp"), "wrapper never reached cp");
+      const sentAt = Date.now();
+      process.kill(-child.pid!, "SIGTERM");
+      await closeWithin(closed, 3_000, "TERM consumed: wrapper still alive after 3 s");
+      expect(Date.now() - sentAt).toBeLessThan(3_000);
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+      expect(existsSync(ranMarker)).toBe(false);
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("143");
+      expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":143}\n');
+    } finally {
+      killGroup(child.pid!);
+    }
+  }, 15_000);
 
   it("devin's stdout is narration, never a status channel: a printed sentinel forges nothing", async () => {
     const { layout, env, stub } = scaffold(temporaryRoot());
