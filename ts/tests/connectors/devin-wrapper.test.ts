@@ -198,24 +198,37 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
     }
   }, 15_000);
 
-  // FU-1: the publication tail, one row per external command it runs (rm revokes the copy, mv commits exit.rc), the
-  // signals spread across rows. The agent has already exited 7. finish selects the status at out_rc=$pending_rc, after
-  // the revoke rm and before the mv: a signal held in rm wins (128+signo), a signal held in mv leaves 7 (the boundary).
-  // One shim ignores the signal while it holds; the other lets the group signal kill it mid-hold, so
-  // the wrapper must re-run it (a killed rm must not leave the copy, a killed mv must not leave exit.rc missing).
-  // echo and printf have no row: they are shell builtins, so a trap runs only after them, never inside them.
+  // FU-1: the publication tail, one row per command it runs (rm revokes the copy, echo and mv commit exit.rc, printf
+  // appends the sentinel), the signals spread across rows. The agent has already exited 7. finish selects the status
+  // at out_rc=$pending_rc, after the revoke rm and before the echo: a signal held in rm wins (128+signo), a signal at
+  // echo, mv or printf leaves 7 (the boundary). For rm and mv one PATH shim ignores the signal while it holds; the
+  // other lets the group signal kill it mid-hold, so the wrapper must re-run it (a killed rm must not leave the copy,
+  // a killed mv must not leave exit.rc missing). echo and printf are shell builtins, which a trap cannot split, so
+  // their rows hold at a checkpoint right before the builtin: a shell function of the same name (it shadows the
+  // builtin in both shells) is put in front of the unchanged script, holds in a foreground /bin/sleep loop that the
+  // group signal interrupts, then runs `command <builtin>`. The echo hold skips the poll's alive/gone echoes.
   it.each([
     ["rm", "shim ignores the signal", "SIGTERM", 143],
     ["rm", "shim killed by the signal", "SIGHUP", 129],
+    ["echo", "held just before the builtin", "SIGINT", 7],
     ["mv", "shim ignores the signal", "SIGINT", 7],
     ["mv", "shim killed by the signal", "SIGTERM", 7],
+    ["printf", "held just before the builtin", "SIGHUP", 7],
   ] as const)("%s held in the publication tail (%s), %s: rc %i in rc, exit.rc and one sentinel", async (command, shim, signal, rc) => {
     const { layout, env, home, stub } = scaffold(temporaryRoot());
     stub("devin", "exit 7");
     const held = join(home, `${command}-held`);
     const release = join(home, `${command}-release`);
-    const ignore = shim === "shim ignores the signal" ? "trap '' HUP INT TERM\n" : "";
-    stub(command, `${ignore}if [ ! -f "${release}" ]; then\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do /bin/sleep 0.05; done\nfi\nexec /bin/${command} "$@"`);
+    const hold = `if [ ! -f "${release}" ]; then\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do /bin/sleep 0.05; done\nfi\n`;
+    if (shim === "held just before the builtin") {
+      const skip = command === "echo" ? 'case "$1" in alive|gone) command echo "$@"; return ;; esac\n' : "";
+      const script = DEVIN_WRAPPER_SCRIPT.replace("#!/bin/sh\n", `#!/bin/sh\n${command}() {\n${skip}${hold}command ${command} "$@"\n}\n`);
+      expect(script).not.toBe(DEVIN_WRAPPER_SCRIPT);
+      writeFileSync(layout.wrapperPath, script, { mode: 0o700 });
+    } else {
+      const ignore = shim === "shim ignores the signal" ? "trap '' HUP INT TERM\n" : "";
+      stub(command, `${ignore}${hold}exec /bin/${command} "$@"`);
+    }
     const { child, closed } = startWrapper(env, layout.wrapperPath);
     try {
       await waitFor(() => existsSync(held), `finish never reached ${command}`);
@@ -230,6 +243,61 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
       writeFileSync(release, "");
       killGroup(child.pid!);
     }
+  }, 15_000);
+
+  // FU-1 fix r1 (review F1, F2): a tail step re-runs until its postcondition holds, however many attempts a handled
+  // signal kills. The shim is killed by a group SIGTERM at each of its first `holds` calls, then runs the real
+  // command. rm: 5 kills exhausted the old revoke (1 + 3 retries) and the EXIT trap's single rm, leaving the copy on a
+  // handled exit; now the revoke loop runs until the copy is gone and the first TERM (before selection) wins. mv: 3
+  // kills exhausted the old publish retries and the sentinel was written with exit.rc missing; now exit.rc is
+  // rewritten until it reads back as the selected status (7, chosen before any signal).
+  it.each([
+    ["rm", 5, 143],
+    ["mv", 3, 7],
+  ] as const)("%s killed by a group SIGTERM at each of its first %i calls: postcondition still met, rc %i everywhere, one sentinel", async (command, holds, rc) => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    stub("devin", "exit 7");
+    const count = join(home, `${command}-count`);
+    const held = (n: number): string => join(home, `${command}-held-${n}`);
+    stub(command, `n=0\n[ ! -f "${count}" ] || read n < "${count}"\nn=$((n+1))\necho "$n" > "${count}"\n`
+      + `if [ "$n" -le ${holds} ]; then\ntouch "${home}/${command}-held-$n"\nwhile :; do /bin/sleep 0.01; done\nfi\nexec /bin/${command} "$@"`);
+    const { child, closed } = startWrapper(env, layout.wrapperPath);
+    try {
+      for (let n = 1; n <= holds; n++) {
+        await waitFor(() => existsSync(held(n)), `${command} call ${n} never held`);
+        process.kill(-child.pid!, "SIGTERM");
+      }
+      const { code } = await closeWithin(closed, 5_000, `wrapper still alive 5 s after the last SIGTERM`);
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+      expect(code).toBe(rc);
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
+      expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
+    } finally {
+      killGroup(child.pid!);
+    }
+  }, 15_000);
+
+  // FU-1 fix r1 (found by devin-background's cancel test, ~1 in 40 on /bin/sh = bash 3.2): bash can run the parent's
+  // trap inside a forked shell child (the poll's command substitution, the agent spawn) before the child resets its
+  // traps. A child that ran the full handler published its own sentinel, so the stream held two. The race itself is
+  // not schedulable, so each row makes the child run the inherited handler deterministically (an on_signal call at
+  // the start of the child) and no signal reaches the wrapper: the wrapper holds busy across the fork, so the child
+  // only records and returns, and the run ends with the agent's own 7 once, the agent having seen the copy.
+  it.each([
+    ["poll probe", "agent_state=$(kill -0", "agent_state=$(on_signal 129; kill -0"],
+    ["agent spawn", '"$@" < /dev/null &', '{ on_signal 130; "$@" < /dev/null; } &'],
+  ] as const)("a forked shell child running the inherited handler (%s) publishes nothing: rc 7, one sentinel", async (_window, anchor, child) => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    const saw = join(home, "agent-saw-copy");
+    stub("devin", `test -f "$STRATUM_DEVIN_CREDS_COPY" && touch "${saw}"; exit 7`);
+    expect(DEVIN_WRAPPER_SCRIPT.split(anchor)).toHaveLength(2);
+    writeFileSync(layout.wrapperPath, DEVIN_WRAPPER_SCRIPT.replace(anchor, child), { mode: 0o700 });
+    const { code } = await runWrapper(env, layout.wrapperPath, ["devin", "-p"]);
+    expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":7}\n');
+    expect(code).toBe(7);
+    expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("7");
+    expect(existsSync(saw)).toBe(true);
+    expect(existsSync(layout.credentialsCopyPath)).toBe(false);
   }, 15_000);
 
   // FU-2: the wrapper never signals the agent's pid once it has seen it gone. kill is a shell builtin, so a PATH shim
