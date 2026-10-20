@@ -133,14 +133,70 @@ export const DEVIN_CONFIG_JSON = JSON.stringify({
  */
 export const DEVIN_WRAPPER_SCRIPT = `#!/bin/sh
 # STRAT-AGENT-DEVIN-1 supervisor wrapper — owns the credentials copy's life.
-trap 'rm -f "$STRATUM_DEVIN_CREDS_COPY"' EXIT HUP INT TERM
+# STRAT-DEVIN-TRAP-1: HUP/INT/TERM end the wrapper in every window (before cp,
+# during cp, before the agent starts, while it runs, during the normal-exit
+# tail) with rc 128+signo; a handler never returns into the script on the
+# cancel path, so a cancel is never consumed. The agent runs in the background
+# and the wrapper polls it with short foreground sleeps: this shell runs a
+# pending trap only when a foreground command ends (and may lose one that lands
+# before a wait starts), so a signal that landed between commands would
+# otherwise be held until the agent finished. sleep 0 before the spawn is the
+# same checkpoint, so a cancel that landed earlier stops the wrapper before the
+# agent starts.
+# Two separate facts: pending_rc (a signal arrived, its 128+signo) and
+# published (the status was written). busy means a handler or finish already
+# owns the ending, so a further signal only records pending_rc and returns.
+# A handler revokes the credentials copy FIRST, then TERMs the agent, waits a
+# bounded 2 s (10 x 0.2 s, under the 5 s watchdog grace), KILLs it, reaps it,
+# and only then publishes. finish publishes pending_rc over the agent's own
+# status, so a signal in the tail still wins. Exactly one exit.rc / sentinel.
+trap 'rm -f "$STRATUM_DEVIN_CREDS_COPY"' EXIT
+pending_rc=""
+published=""
+busy=""
+reaped=""
+agent=""
+out_rc=""
+finish() {
+  busy=1
+  rm -f "$STRATUM_DEVIN_CREDS_COPY"
+  out_rc=$pending_rc
+  [ -z "$out_rc" ] && out_rc=$1
+  echo "$out_rc" > "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" && mv "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" "$STRATUM_DEVIN_RUN_DIR/exit.rc"
+  printf '{"__t2f5_done__":%d}\\n' "$out_rc" >> "$STRATUM_DEVIN_RUN_DIR/stream.jsonl"
+  published=1
+}
+on_signal() {
+  [ -z "$pending_rc" ] && pending_rc=$1
+  [ -n "$published" ] && exit "$out_rc"
+  [ -n "$busy" ] && return
+  busy=1
+  rm -f "$STRATUM_DEVIN_CREDS_COPY"
+  target=$agent
+  [ -z "$target" ] && target=$!
+  if [ -z "$reaped" ] && [ -n "$target" ]; then
+    kill -TERM "$target" 2>/dev/null
+    n=0
+    while [ "$n" -lt 10 ] && kill -0 "$target" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
+    kill -0 "$target" 2>/dev/null && kill -KILL "$target" 2>/dev/null
+    wait "$target" 2>/dev/null
+  fi
+  finish "$pending_rc"
+  exit "$out_rc"
+}
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 cp "$STRATUM_DEVIN_CREDS_SOURCE" "$STRATUM_DEVIN_CREDS_COPY" && chmod 600 "$STRATUM_DEVIN_CREDS_COPY"
-"$@" < /dev/null
+sleep 0
+"$@" < /dev/null &
+agent=$!
+while kill -0 "$agent" 2>/dev/null; do sleep 0.2; done
+wait "$agent"
 rc=$?
-rm -f "$STRATUM_DEVIN_CREDS_COPY"
-echo "$rc" > "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" && mv "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" "$STRATUM_DEVIN_RUN_DIR/exit.rc"
-printf '{"__t2f5_done__":%d}\\n' "$rc" >> "$STRATUM_DEVIN_RUN_DIR/stream.jsonl"
-exit "$rc"
+reaped=1
+finish "$rc"
+exit "$out_rc"
 `;
 
 /** Env the wrapper consumes; also the test seam a fake spawn reads. */
