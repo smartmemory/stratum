@@ -198,21 +198,27 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
     }
   }, 15_000);
 
-  // F2: a signal that lands while finish is running on the normal path (agent already exited 7) wins: the first rm
-  // inside finish is held by a shim that ignores the signals, so the window is deterministic.
+  // FU-1: the publication tail, one row per external command it runs (rm revokes the copy, mv commits exit.rc), the
+  // signals spread across rows. The agent has already exited 7. finish selects the status at out_rc=$pending_rc, after
+  // the revoke rm and before the mv: a signal held in rm wins (128+signo), a signal held in mv leaves 7 (the boundary).
+  // One shim ignores the signal while it holds; the other lets the group signal kill it mid-hold, so
+  // the wrapper must re-run it (a killed rm must not leave the copy, a killed mv must not leave exit.rc missing).
+  // echo and printf have no row: they are shell builtins, so a trap runs only after them, never inside them.
   it.each([
-    ["SIGTERM", 143],
-    ["SIGINT", 130],
-    ["SIGHUP", 129],
-  ] as const)("%s while the normal-exit tail is held: status is 128+signo, published once (rc %i)", async (signal, rc) => {
+    ["rm", "shim ignores the signal", "SIGTERM", 143],
+    ["rm", "shim killed by the signal", "SIGHUP", 129],
+    ["mv", "shim ignores the signal", "SIGINT", 7],
+    ["mv", "shim killed by the signal", "SIGTERM", 7],
+  ] as const)("%s held in the publication tail (%s), %s: rc %i in rc, exit.rc and one sentinel", async (command, shim, signal, rc) => {
     const { layout, env, home, stub } = scaffold(temporaryRoot());
     stub("devin", "exit 7");
-    const held = join(home, "rm-held");
-    const release = join(home, "rm-release");
-    stub("rm", `trap '' HUP INT TERM\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do sleep 0.05; done\nexec /bin/rm "$@"`);
+    const held = join(home, `${command}-held`);
+    const release = join(home, `${command}-release`);
+    const ignore = shim === "shim ignores the signal" ? "trap '' HUP INT TERM\n" : "";
+    stub(command, `${ignore}if [ ! -f "${release}" ]; then\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do /bin/sleep 0.05; done\nfi\nexec /bin/${command} "$@"`);
     const { child, closed } = startWrapper(env, layout.wrapperPath);
     try {
-      await waitFor(() => existsSync(held), "finish never reached rm");
+      await waitFor(() => existsSync(held), `finish never reached ${command}`);
       process.kill(-child.pid!, signal);
       writeFileSync(release, "");
       const { code } = await closeWithin(closed, 5_000, `wrapper still alive 5 s after ${signal}`);
@@ -220,6 +226,77 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
       expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
       expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
       expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+    } finally {
+      writeFileSync(release, "");
+      killGroup(child.pid!);
+    }
+  }, 15_000);
+
+  // FU-2: the wrapper never signals the agent's pid once it has seen it gone. kill is a shell builtin, so a PATH shim
+  // cannot see it; instead a shell function named kill (which shadows the builtin in both shells) is put in front of
+  // the unchanged script and logs every call as "<args> rc=<status>". Invariant on every row: for the agent's pid,
+  // nothing follows the first failing call or the KILL. Rows: the post-wait window (R2-F2; a checkpoint is inserted
+  // after the wrapper's wait), the agent already reaped by the shell while the wrapper sleeps between probes, SIGINT
+  // (a background job inherits INT as ignored, so the handler's TERM ends the agent), and a TERM-ignoring agent.
+  it.each([
+    ["post-wait", "SIGTERM", 143],
+    ["reaped-between-probes", "SIGHUP", 129],
+    ["handler-term", "SIGINT", 130],
+    ["handler-kill", "SIGTERM", 143],
+  ] as const)("%s, %s: no signal to the agent's pid after it is seen gone, rc %i, one sentinel", async (row, signal, rc) => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    const log = join(home, "kill.log");
+    const held = join(home, "held");
+    const release = join(home, "release");
+    const pidFile = join(home, "agent-pid");
+    let script = DEVIN_WRAPPER_SCRIPT.replace("#!/bin/sh\n",
+      `#!/bin/sh\nkill() { command kill "$@"; kr=$?; printf '%s rc=%s\\n' "$*" "$kr" >> "${log}"; return $kr; }\n`);
+    if (row === "post-wait") {
+      const anchor = '\nwait "$agent"\n';
+      expect(script.split(anchor)).toHaveLength(2);
+      script = script.replace(anchor, `${anchor}wrc=$?; touch "${held}"; while [ ! -f "${release}" ]; do /bin/sleep 0.01; done; (exit $wrc)\n`);
+      stub("devin", `echo $$ > "${pidFile}"; exit 7`);
+    } else if (row === "reaped-between-probes") {
+      // The poll's sleep holds once the agent has started; the agent exits only after that, so the wrapper's last
+      // probe saw it alive and the shell reaps it during the held sleep.
+      stub("sleep", `if [ -f "${pidFile}" ] && [ ! -f "${held}" ]; then\ntrap '' HUP INT TERM\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do /bin/sleep 0.01; done\nexit 0\nfi\nexec /bin/sleep "$@"`);
+      stub("devin", `echo $$ > "${pidFile}"; while [ ! -f "${held}" ]; do /bin/sleep 0.01; done; exit 7`);
+    } else if (row === "handler-term") {
+      stub("devin", `echo $$ > "${pidFile}"; touch "${held}"; sleep 30`);
+    } else {
+      stub("devin", `trap '' TERM; echo $$ > "${pidFile}"; touch "${held}"; while :; do /bin/sleep 0.1; done`);
+    }
+    writeFileSync(layout.wrapperPath, script, { mode: 0o700 });
+    const { child, closed } = startWrapper(env, layout.wrapperPath);
+    try {
+      await waitFor(() => existsSync(held), `${row}: never reached its window`);
+      const agentPid = readFileSync(pidFile, "utf8").trim();
+      const calls = (): { args: string; rc: number }[] => (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n")
+        .filter((line) => line.split(" ")[1] === agentPid)
+        .map((line) => ({ args: line.replace(/ rc=\d+$/, ""), rc: Number(line.split(" rc=")[1]) }));
+      if (row === "reaped-between-probes") {
+        // The agent is gone from the process table (a zombie would still answer signal 0): the shell reaped it.
+        await waitFor(() => { try { process.kill(Number(agentPid), 0); return false; } catch { return true; } }, "agent never reaped");
+      }
+      const before = calls().length;
+      process.kill(-child.pid!, signal);
+      writeFileSync(release, "");
+      const { code } = await closeWithin(closed, 5_000, `wrapper still alive 5 s after ${signal}`);
+      expect(code).toBe(rc);
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
+      expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+      const all = calls();
+      const stop = all.findIndex((call) => call.rc !== 0 || call.args.startsWith("-KILL "));
+      expect(stop, `${row}: the agent was never seen gone or KILLed`).toBeGreaterThanOrEqual(0);
+      expect(all.slice(stop + 1), `${row}: signalled after seen gone`).toEqual([]);
+      const after = all.slice(before).map((call) => call.args.split(" ")[0]);
+      if (row === "post-wait") expect(after).toEqual([]);
+      if (row === "reaped-between-probes") expect(after).toEqual(["-0"]);
+      if (row === "handler-term") expect(after).toContain("-TERM");
+      if (row === "handler-term") expect(after).not.toContain("-KILL");
+      if (row === "handler-kill") expect(after).toContain("-TERM");
+      if (row === "handler-kill") expect(after[after.length - 1]).toBe("-KILL");
     } finally {
       writeFileSync(release, "");
       killGroup(child.pid!);
