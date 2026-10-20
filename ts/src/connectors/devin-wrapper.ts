@@ -143,42 +143,83 @@ export const DEVIN_WRAPPER_SCRIPT = `#!/bin/sh
 # otherwise be held until the agent finished. sleep 0 before the spawn is the
 # same checkpoint, so a cancel that landed earlier stops the wrapper before the
 # agent starts.
-# Two separate facts: pending_rc (a signal arrived, its 128+signo) and
-# published (the status was written). busy means a handler or finish already
-# owns the ending, so a further signal only records pending_rc and returns.
-# A handler revokes the credentials copy FIRST, then TERMs the agent, waits a
-# bounded 2 s (10 x 0.2 s, under the 5 s watchdog grace), KILLs it, reaps it,
-# and only then publishes. finish publishes pending_rc over the agent's own
-# status, so a signal in the tail still wins. Exactly one exit.rc / sentinel.
-trap 'rm -f "$STRATUM_DEVIN_CREDS_COPY"' EXIT
+# pending_rc is the first signal's 128+signo; published means the status is
+# written; busy means a handler or finish already owns the ending, so a further
+# signal only records pending_rc and returns. A handler revokes the credentials
+# copy FIRST, then TERMs the agent, waits a bounded 2 s (10 x 0.2 s, under the
+# 5 s watchdog grace), KILLs it, reaps it, and only then publishes.
+# Terminal boundary (STRAT-DEVIN-TRAP-FU-1): finish revokes the copy, then
+# SELECTS the status: out_rc=$pending_rc is the last read of pending_rc. A
+# signal that lands before that read wins (its 128+signo is the status). A
+# signal after it changes nothing: the agent is already reaped and the copy
+# already gone, so nothing is left to cancel, and the run publishes the status
+# it selected. Every step of the tail re-runs until its postcondition holds,
+# so a handled signal (which can kill the tail's external rm, mv or sleep)
+# costs one attempt, never the step, and SIGKILL is the only way out of it:
+# revoke loops until no regular file is left at the copy path, and the status
+# is selected only after that; exit.rc is rewritten until reading it back
+# gives the selected status, and only then is the one sentinel appended and
+# published set. The EXIT trap and a handler that finds the run published
+# revoke the same way before exiting, so no handled exit leaves the copy, and
+# exit.rc, the sentinel and the process rc are equal. A step that can never
+# succeed (a disk that stays full, a copy the agent made unremovable) holds the
+# wrapper until SIGKILL, which the dispatch-time sweep covers. echo, read and
+# printf are builtins, which a trap cannot split.
+# Agent bookkeeping (STRAT-DEVIN-TRAP-FU-2): agent_state is the result of the
+# latest kill -0, assigned in the same command that probes (a command
+# substitution), so no trap runs between seeing the agent gone and recording
+# it; a probe killed by the signal yields "" and counts as not gone. The
+# handler signals the agent only while agent_state is not "gone", and each
+# signal right after its own kill -0 found the pid; a failing probe or the KILL
+# ends all signalling. busy is also set while the wrapper forks a shell child
+# (the agent spawn and the probe's command substitution): bash can run the
+# parent's trap inside such a child before the child resets its traps, and a
+# child that ran the full handler would publish a second sentinel. The child
+# now only records pending_rc and returns; the parent then clears busy and
+# replays a signal it deferred meanwhile (release). Limit: bash and dash reap a
+# finished background child themselves, so the probe that finds the agent gone
+# already lands on a free pid; it carries no signal.
+trap 'revoke' EXIT
 pending_rc=""
+out_rc=""
 published=""
 busy=""
-reaped=""
 agent=""
-out_rc=""
+agent_state=""
+revoke() {
+  while [ -f "$STRATUM_DEVIN_CREDS_COPY" ]; do rm -f "$STRATUM_DEVIN_CREDS_COPY" || sleep 0.1; done
+}
 finish() {
   busy=1
-  rm -f "$STRATUM_DEVIN_CREDS_COPY"
+  revoke
   out_rc=$pending_rc
   [ -z "$out_rc" ] && out_rc=$1
-  echo "$out_rc" > "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" && mv "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" "$STRATUM_DEVIN_RUN_DIR/exit.rc"
+  while got=""; [ -f "$STRATUM_DEVIN_RUN_DIR/exit.rc" ] && read got < "$STRATUM_DEVIN_RUN_DIR/exit.rc"; [ "$got" != "$out_rc" ]; do
+    echo "$out_rc" > "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" && mv "$STRATUM_DEVIN_RUN_DIR/exit.rc.tmp" "$STRATUM_DEVIN_RUN_DIR/exit.rc" || sleep 0.1
+  done
   printf '{"__t2f5_done__":%d}\\n' "$out_rc" >> "$STRATUM_DEVIN_RUN_DIR/stream.jsonl"
   published=1
 }
+release() {
+  busy=""
+  [ -z "$pending_rc" ] || on_signal "$pending_rc"
+}
 on_signal() {
   [ -z "$pending_rc" ] && pending_rc=$1
-  [ -n "$published" ] && exit "$out_rc"
+  [ -n "$published" ] && { revoke; exit "$out_rc"; }
   [ -n "$busy" ] && return
   busy=1
-  rm -f "$STRATUM_DEVIN_CREDS_COPY"
+  revoke
   target=$agent
   [ -z "$target" ] && target=$!
-  if [ -z "$reaped" ] && [ -n "$target" ]; then
+  if [ "$agent_state" != gone ] && [ -n "$target" ] && kill -0 "$target" 2>/dev/null; then
     kill -TERM "$target" 2>/dev/null
     n=0
-    while [ "$n" -lt 10 ] && kill -0 "$target" 2>/dev/null; do sleep 0.2; n=$((n+1)); done
-    kill -0 "$target" 2>/dev/null && kill -KILL "$target" 2>/dev/null
+    while kill -0 "$target" 2>/dev/null; do
+      if [ "$n" -ge 10 ]; then kill -KILL "$target" 2>/dev/null; break; fi
+      sleep 0.2
+      n=$((n+1))
+    done
     wait "$target" 2>/dev/null
   fi
   finish "$pending_rc"
@@ -189,12 +230,13 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 cp "$STRATUM_DEVIN_CREDS_SOURCE" "$STRATUM_DEVIN_CREDS_COPY" && chmod 600 "$STRATUM_DEVIN_CREDS_COPY"
 sleep 0
+busy=1
 "$@" < /dev/null &
 agent=$!
-while kill -0 "$agent" 2>/dev/null; do sleep 0.2; done
+release
+while busy=1; agent_state=$(kill -0 "$agent" 2>/dev/null && echo alive || echo gone); release; [ "$agent_state" != gone ]; do sleep 0.2; done
 wait "$agent"
 rc=$?
-reaped=1
 finish "$rc"
 exit "$out_rc"
 `;
