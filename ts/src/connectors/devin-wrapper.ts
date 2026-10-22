@@ -21,6 +21,8 @@ import { processIdentity } from "./proc_identity.js";
  *                     that prints {"__t2f5_done__":0} forges nothing)
  *     .err            devin's raw stderr
  *     exit.rc         the wrapper's atomic exit-status channel (never stdout)
+ *     agent.done      created by the wrapper's runner once devin is reaped
+ *                     (the wrapper's liveness signal; never a kill by pid)
  *     agent/          A — the ONLY agent-writable area
  *       home/{data,cache,config,state}   per-run devin home (XDG redirects)
  *       home/config/devin/config.json    stratum-owned config (permissions.allow:[])
@@ -146,14 +148,16 @@ export const DEVIN_WRAPPER_SCRIPT = `#!/bin/sh
 # pending_rc is the first signal's 128+signo; published means the status is
 # written; busy means a handler or finish already owns the ending, so a further
 # signal only records pending_rc and returns. A handler revokes the credentials
-# copy FIRST, then TERMs the agent, waits a bounded 2 s (10 x 0.2 s, under the
-# 5 s watchdog grace), KILLs it, reaps it, and only then publishes.
+# copy FIRST, then TERMs the run's process group, waits a bounded 2 s
+# (10 x 0.2 s, under the 5 s watchdog grace) for the agent to end, reaps it and
+# publishes; an agent still running then is KILLed with the group right after
+# publication (STRAT-DEVIN-TRAP-FU-3, below).
 # Terminal boundary (STRAT-DEVIN-TRAP-FU-1): finish revokes the copy, then
 # SELECTS the status: out_rc=$pending_rc is the last read of pending_rc. A
 # signal that lands before that read wins (its 128+signo is the status). A
-# signal after it changes nothing: the agent is already reaped and the copy
-# already gone, so nothing is left to cancel, and the run publishes the status
-# it selected. Every step of the tail re-runs until its postcondition holds,
+# signal after it changes nothing: the copy is already gone and the agent is
+# reaped or marked for the group KILL, so nothing is left to cancel, and the
+# run publishes the status it selected. Every step of the tail re-runs until its postcondition holds,
 # so a handled signal (which can kill the tail's external rm, mv or sleep)
 # costs one attempt, never the step, and SIGKILL is the only way out of it:
 # revoke loops until no regular file is left at the copy path, and the status
@@ -161,31 +165,51 @@ export const DEVIN_WRAPPER_SCRIPT = `#!/bin/sh
 # gives the selected status, and only then is the one sentinel appended and
 # published set. The EXIT trap and a handler that finds the run published
 # revoke the same way before exiting, so no handled exit leaves the copy, and
-# exit.rc, the sentinel and the process rc are equal. A step that can never
+# exit.rc, the sentinel and the process rc are equal (except a TERM-ignoring
+# agent's run, whose wrapper process then ends by its own group KILL). A step that can never
 # succeed (a disk that stays full, a copy the agent made unremovable) holds the
 # wrapper until SIGKILL, which the dispatch-time sweep covers. echo, read and
 # printf are builtins, which a trap cannot split.
-# Agent bookkeeping (STRAT-DEVIN-TRAP-FU-2): agent_state is the result of the
-# latest kill -0, assigned in the same command that probes (a command
-# substitution), so no trap runs between seeing the agent gone and recording
-# it; a probe killed by the signal yields "" and counts as not gone. The
-# handler signals the agent only while agent_state is not "gone", and each
-# signal right after its own kill -0 found the pid; a failing probe or the KILL
-# ends all signalling. busy is also set while the wrapper forks a shell child
-# (the agent spawn and the probe's command substitution): bash can run the
-# parent's trap inside such a child before the child resets its traps, and a
-# child that ran the full handler would publish a second sentinel. The child
-# now only records pending_rc and returns; the parent then clears busy and
-# replays a signal it deferred meanwhile (release). Limit: bash and dash reap a
-# finished background child themselves, so the probe that finds the agent gone
-# already lands on a free pid; it carries no signal.
-trap 'revoke' EXIT
+# Signals (STRAT-DEVIN-TRAP-FU-3): no kill in this script names a pid. Both
+# bash and dash reap a finished background child at a point they choose (even
+# between two builtins), after which its number can be reused, so a kill by the
+# agent's pid could reach a stranger. Every kill here addresses group 0, the
+# caller's own process group, which the kernel resolves at the call. Stratum
+# spawns the wrapper detached, so it leads a new session and group, and only
+# its descendants can be in that group. Before the agent exists the wrapper
+# checks that it leads its group (ps pgid = $$); if not, group 0 would be its
+# parent's, so it refuses with rc 125 and never starts the agent.
+# Liveness needs no kill either: the agent runs under a runner subshell that
+# catches HUP/TERM (devin gets the default actions; INT stays ignored for the
+# background list), reaps devin in the foreground, creates agent.done in the
+# run dir and exits with devin's status, which wait (own children only) then
+# returns. The handler sends TERM to the group (the wrapper, busy, only records
+# it), waits up to 2 s for agent.done, and if the agent is still there marks
+# escalate and publishes the selected status; every exit after that (the
+# handler's own, one taken by a signal that lands after publication, the EXIT
+# trap) first sends KILL to the group, which ends the wrapper too. The KILL is
+# written out at each exit rather than left to the EXIT trap alone: in bash 3.2
+# a signal still pending at exit (the wrapper's own TERM from kill -TERM 0)
+# runs its trap first, and that trap's exit skips the EXIT trap (dash runs it). So a TERM-ignoring agent ends
+# with exit.rc and the sentinel at 128+signo and the wrapper's own process
+# status SIGKILL. busy is set while the wrapper forks a shell child (the runner
+# and the ps command substitution): bash can run the parent's trap inside such
+# a child before the child resets its traps, and a child that ran the full
+# handler would publish a second sentinel. The child now only records
+# pending_rc and returns; the parent then clears busy and replays a signal it
+# deferred meanwhile (release).
+trap 'fall' EXIT
 pending_rc=""
 out_rc=""
 published=""
 busy=""
 agent=""
-agent_state=""
+escalate=""
+done_mark="$STRATUM_DEVIN_RUN_DIR/agent.done"
+fall() {
+  revoke
+  [ -z "$escalate" ] || kill -KILL 0
+}
 revoke() {
   while [ -f "$STRATUM_DEVIN_CREDS_COPY" ]; do rm -f "$STRATUM_DEVIN_CREDS_COPY" || sleep 0.1; done
 }
@@ -206,35 +230,44 @@ release() {
 }
 on_signal() {
   [ -z "$pending_rc" ] && pending_rc=$1
-  [ -n "$published" ] && { revoke; exit "$out_rc"; }
+  [ -n "$published" ] && { fall; exit "$out_rc"; }
   [ -n "$busy" ] && return
   busy=1
   revoke
-  target=$agent
-  [ -z "$target" ] && target=$!
-  if [ "$agent_state" != gone ] && [ -n "$target" ] && kill -0 "$target" 2>/dev/null; then
-    kill -TERM "$target" 2>/dev/null
-    n=0
-    while kill -0 "$target" 2>/dev/null; do
-      if [ "$n" -ge 10 ]; then kill -KILL "$target" 2>/dev/null; break; fi
-      sleep 0.2
-      n=$((n+1))
-    done
-    wait "$target" 2>/dev/null
+  if [ -n "$agent" ]; then
+    if [ ! -f "$done_mark" ]; then
+      kill -TERM 0 2>/dev/null
+      n=0
+      while [ ! -f "$done_mark" ]; do
+        if [ "$n" -ge 10 ]; then escalate=1; break; fi
+        sleep 0.2
+        n=$((n+1))
+      done
+    fi
+    [ -n "$escalate" ] || wait "$agent" 2>/dev/null
   fi
   finish "$pending_rc"
+  fall
   exit "$out_rc"
 }
 trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
+busy=1
+group=$(ps -o pgid= -p $$ 2>/dev/null)
+release
+if [ "\${group##* }" != "$$" ]; then
+  echo "stratum devin wrapper: pid $$ does not lead its process group (pgid \${group:-unknown}); refusing to start the agent" >&2
+  finish 125
+  exit "$out_rc"
+fi
 cp "$STRATUM_DEVIN_CREDS_SOURCE" "$STRATUM_DEVIN_CREDS_COPY" && chmod 600 "$STRATUM_DEVIN_CREDS_COPY"
 sleep 0
 busy=1
-"$@" < /dev/null &
+{ trap : HUP TERM; "$@" < /dev/null; rc=$?; until [ -f "$done_mark" ]; do : > "$done_mark" || sleep 0.1; done; exit "$rc"; } &
 agent=$!
 release
-while busy=1; agent_state=$(kill -0 "$agent" 2>/dev/null && echo alive || echo gone); release; [ "$agent_state" != gone ]; do sleep 0.2; done
+while [ ! -f "$done_mark" ]; do sleep 0.2; done
 wait "$agent"
 rc=$?
 finish "$rc"

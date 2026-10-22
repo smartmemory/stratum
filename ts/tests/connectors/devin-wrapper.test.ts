@@ -63,7 +63,8 @@ function scaffold(root: string) {
 
 function runWrapper(env: NodeJS.ProcessEnv, wrapperPath: string, argv: string[]): Promise<{ code: number | null; signal: string | null }> {
   return new Promise((resolve) => {
-    const child = spawn("sh", [wrapperPath, ...argv], { env, stdio: ["ignore", "ignore", "ignore"] });
+    // Detached like production (FU-3: the wrapper refuses to run unless it leads its own process group).
+    const child = spawn("sh", [wrapperPath, ...argv], { env, stdio: ["ignore", "ignore", "ignore"], detached: true });
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
 }
@@ -278,14 +279,14 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
   }, 15_000);
 
   // FU-1 fix r1 (found by devin-background's cancel test, ~1 in 40 on /bin/sh = bash 3.2): bash can run the parent's
-  // trap inside a forked shell child (the poll's command substitution, the agent spawn) before the child resets its
+  // trap inside a forked shell child (FU-3: the leader check's command substitution, the runner spawn) before the child resets its
   // traps. A child that ran the full handler published its own sentinel, so the stream held two. The race itself is
   // not schedulable, so each row makes the child run the inherited handler deterministically (an on_signal call at
   // the start of the child) and no signal reaches the wrapper: the wrapper holds busy across the fork, so the child
   // only records and returns, and the run ends with the agent's own 7 once, the agent having seen the copy.
   it.each([
-    ["poll probe", "agent_state=$(kill -0", "agent_state=$(on_signal 129; kill -0"],
-    ["agent spawn", '"$@" < /dev/null &', '{ on_signal 130; "$@" < /dev/null; } &'],
+    ["leader check", "group=$(ps", "group=$(on_signal 129; ps"],
+    ["runner spawn", "{ trap : HUP TERM;", "{ on_signal 130; trap : HUP TERM;"],
   ] as const)("a forked shell child running the inherited handler (%s) publishes nothing: rc 7, one sentinel", async (_window, anchor, child) => {
     const { layout, env, home, stub } = scaffold(temporaryRoot());
     const saw = join(home, "agent-saw-copy");
@@ -300,76 +301,185 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
     expect(existsSync(layout.credentialsCopyPath)).toBe(false);
   }, 15_000);
 
-  // FU-2: the wrapper never signals the agent's pid once it has seen it gone. kill is a shell builtin, so a PATH shim
-  // cannot see it; instead a shell function named kill (which shadows the builtin in both shells) is put in front of
-  // the unchanged script and logs every call as "<args> rc=<status>". Invariant on every row: for the agent's pid,
-  // nothing follows the first failing call or the KILL. Rows: the post-wait window (R2-F2; a checkpoint is inserted
-  // after the wrapper's wait), the agent already reaped by the shell while the wrapper sleeps between probes, SIGINT
-  // (a background job inherits INT as ignored, so the handler's TERM ends the agent), and a TERM-ignoring agent.
+  // FU-3: no kill in the wrapper names a pid. Both shells reap a finished background child at a point they choose,
+  // after which its number can belong to a stranger, so each pid-addressed kill of the base wrapper (f6b36d9 :215,
+  // :216, :218, :219, :237) could reach one. kill is a shell builtin, so a PATH shim cannot see it: a shell function
+  // named kill (it shadows the builtin in both shells) is put in front of the script. It logs every call BEFORE running
+  // it (a group KILL ends the wrapper) and simulates pid reuse: once the agent's pid is gone from the process table, an
+  // operand naming it is redirected to a decoy, a loop in its own process group that logs every TERM, HUP or INT.
+  function withKillShim(script: string, log: string, pidFile: string, decoyPid: number): string {
+    const shim = "kill() {\n"
+      + `  printf '%s\\n' "$*" >> "${log}"\n`
+      + `  kshim_ap=""; [ -f "${pidFile}" ] && read kshim_ap < "${pidFile}"\n`
+      + '  kshim_args=""\n'
+      + '  for kshim_x in "$@"; do\n'
+      + `    if [ -n "$kshim_ap" ] && [ "$kshim_x" = "$kshim_ap" ] && ! command kill -0 "$kshim_ap" 2>/dev/null; then kshim_x=${decoyPid}; fi\n`
+      + '    kshim_args="$kshim_args $kshim_x"\n'
+      + "  done\n"
+      + "  command kill $kshim_args\n"
+      + "}\n";
+    const shimmed = script.replace("#!/bin/sh\n", `#!/bin/sh\n${shim}`);
+    expect(shimmed).not.toBe(script);
+    return shimmed;
+  }
+
+  /** The decoy: an unrelated process in its own group that survives TERM/HUP/INT and logs each one it receives. */
+  async function startDecoy(home: string) {
+    const log = join(home, "decoy.log");
+    const ready = join(home, "decoy-ready");
+    const child = spawn("sh", ["-c", `for s in TERM HUP INT; do trap "echo $s >> '${log}'" $s; done; touch '${ready}'; while :; do /bin/sleep 0.05; done`],
+      { stdio: "ignore", detached: true });
+    let exited = false;
+    child.once("exit", () => { exited = true; });
+    await waitFor(() => existsSync(ready), "decoy never started");
+    return {
+      pid: child.pid!,
+      alive: (): boolean => !exited && pidAlive(child.pid!),
+      received: (): string => (existsSync(log) ? readFileSync(log, "utf8") : ""),
+    };
+  }
+
+  function pidAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  function killCalls(log: string): string[] {
+    return (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n").filter((line) => line.length > 0);
+  }
+
+  // One row per base site, each driving the scenario that reaches that site after the shell has reaped the agent.
+  // reaped-during-poll: the poll's sleep holds once the agent has started, the agent exits during the hold and is reaped,
+  // then the hold ends with no signal (probe C: an agent that exits normally mid-wait draws no kill at all).
+  // reaped-between-probes: the same, plus a group SIGHUP after the reap and before the hold ends.
+  // post-wait (R2-F2, kept from FU-2): a group SIGTERM after the wrapper's own wait has reaped the agent.
+  // reaped-in-handler-wait: a group SIGINT while the agent runs (a background job inherits INT as ignored), so the
+  // handler's TERM ends the agent and the shell reaps it while the handler waits.
+  // Each row first asserts the symptom its base site produces (on f6b36d9 every row fails there, or the poll waits on the
+  // decoy and never closes), then the class invariants: the decoy is alive and received nothing, every kill the wrapper
+  // issued addresses group 0, and the status is published once (probe A).
+  const agentPidNamed = (calls: string[], agentPid: string): string[] => calls.filter((call) => call.split(" ").includes(agentPid));
   it.each([
-    ["post-wait", "SIGTERM", 143],
-    ["reaped-between-probes", "SIGHUP", 129],
-    ["handler-term", "SIGINT", 130],
-    ["handler-kill", "SIGTERM", 143],
-  ] as const)("%s, %s: no signal to the agent's pid after it is seen gone, rc %i, one sentinel", async (row, signal, rc) => {
+    { site: ":237 poll kill -0", scenario: "reaped-during-poll", signal: undefined, rc: 7, kills: [] as string[], symptom: "names-agent" },
+    { site: ":215 handler kill -0", scenario: "reaped-between-probes", signal: "SIGHUP", rc: 129, kills: [], symptom: "names-agent" },
+    { site: ":216 handler kill -TERM", scenario: "reaped-between-probes", signal: "SIGHUP", rc: 129, kills: [], symptom: "decoy-signalled" },
+    { site: ":218 handler-wait kill -0", scenario: "reaped-in-handler-wait", signal: "SIGINT", rc: 130, kills: ["-TERM 0"], symptom: "names-agent" },
+    { site: ":219 handler-wait kill -KILL", scenario: "reaped-in-handler-wait", signal: "SIGINT", rc: 130, kills: ["-TERM 0"], symptom: "decoy-killed" },
+    { site: "post-wait window (R2-F2)", scenario: "post-wait", signal: "SIGTERM", rc: 143, kills: [], symptom: "names-agent" },
+  ] as const)("base $site ($scenario): no kill names a pid, the decoy survives untouched, rc $rc once", async ({ scenario, signal, rc, kills, symptom }) => {
     const { layout, env, home, stub } = scaffold(temporaryRoot());
     const log = join(home, "kill.log");
     const held = join(home, "held");
     const release = join(home, "release");
     const pidFile = join(home, "agent-pid");
-    let script = DEVIN_WRAPPER_SCRIPT.replace("#!/bin/sh\n",
-      `#!/bin/sh\nkill() { command kill "$@"; kr=$?; printf '%s rc=%s\\n' "$*" "$kr" >> "${log}"; return $kr; }\n`);
-    if (row === "post-wait") {
+    const decoy = await startDecoy(home);
+    writeFileSync(layout.wrapperPath, withKillShim(DEVIN_WRAPPER_SCRIPT, log, pidFile, decoy.pid), { mode: 0o700 });
+    if (scenario === "reaped-in-handler-wait") {
+      stub("devin", `echo $$ > "${pidFile}"; touch "${held}"; sleep 30`);
+    } else if (scenario === "post-wait") {
+      // A checkpoint after the wrapper's wait: the agent is reaped by that wait, then the group gets SIGTERM.
       const anchor = '\nwait "$agent"\n';
+      const script = readFileSync(layout.wrapperPath, "utf8");
       expect(script.split(anchor)).toHaveLength(2);
-      script = script.replace(anchor, `${anchor}wrc=$?; touch "${held}"; while [ ! -f "${release}" ]; do /bin/sleep 0.01; done; (exit $wrc)\n`);
+      writeFileSync(layout.wrapperPath, script.replace(anchor, `${anchor}wrc=$?; touch "${held}"; while [ ! -f "${release}" ]; do /bin/sleep 0.01; done; (exit $wrc)\n`), { mode: 0o700 });
       stub("devin", `echo $$ > "${pidFile}"; exit 7`);
-    } else if (row === "reaped-between-probes") {
-      // The poll's sleep holds once the agent has started; the agent exits only after that, so the wrapper's last
-      // probe saw it alive and the shell reaps it during the held sleep.
+    } else {
       stub("sleep", `if [ -f "${pidFile}" ] && [ ! -f "${held}" ]; then\ntrap '' HUP INT TERM\ntouch "${held}"\nwhile [ ! -f "${release}" ]; do /bin/sleep 0.01; done\nexit 0\nfi\nexec /bin/sleep "$@"`);
       stub("devin", `echo $$ > "${pidFile}"; while [ ! -f "${held}" ]; do /bin/sleep 0.01; done; exit 7`);
-    } else if (row === "handler-term") {
-      stub("devin", `echo $$ > "${pidFile}"; touch "${held}"; sleep 30`);
-    } else {
-      stub("devin", `trap '' TERM; echo $$ > "${pidFile}"; touch "${held}"; while :; do /bin/sleep 0.1; done`);
     }
-    writeFileSync(layout.wrapperPath, script, { mode: 0o700 });
     const { child, closed } = startWrapper(env, layout.wrapperPath);
     try {
-      await waitFor(() => existsSync(held), `${row}: never reached its window`);
+      await waitFor(() => existsSync(held), `${scenario}: never reached its window`);
       const agentPid = readFileSync(pidFile, "utf8").trim();
-      const calls = (): { args: string; rc: number }[] => (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n")
-        .filter((line) => line.split(" ")[1] === agentPid)
-        .map((line) => ({ args: line.replace(/ rc=\d+$/, ""), rc: Number(line.split(" rc=")[1]) }));
-      if (row === "reaped-between-probes") {
-        // The agent is gone from the process table (a zombie would still answer signal 0): the shell reaped it.
-        await waitFor(() => { try { process.kill(Number(agentPid), 0); return false; } catch { return true; } }, "agent never reaped");
+      if (scenario !== "reaped-in-handler-wait") {
+        // Gone from the process table (a zombie would still answer signal 0): reaped.
+        await waitFor(() => !pidAlive(Number(agentPid)), "agent never reaped");
       }
-      const before = calls().length;
-      process.kill(-child.pid!, signal);
+      if (signal !== undefined) process.kill(-child.pid!, signal);
       writeFileSync(release, "");
-      const { code } = await closeWithin(closed, 5_000, `wrapper still alive 5 s after ${signal}`);
-      expect(code).toBe(rc);
+      const closedOrTimeout = await closeWithin(closed, 5_000, `${scenario}: wrapper still alive 5 s after release (it waited on the decoy)`)
+        .catch((error: Error) => error);
+      const calls = killCalls(log);
+      if (symptom === "names-agent") expect(agentPidNamed(calls, agentPid), "a kill named the reaped agent's pid").toEqual([]);
+      if (symptom === "decoy-signalled") expect(decoy.received(), "the decoy (the reused pid) was signalled").toBe("");
+      if (symptom === "decoy-killed") expect(decoy.alive(), "the decoy (the reused pid) was killed").toBe(true);
+      if (closedOrTimeout instanceof Error) throw closedOrTimeout;
+      expect(closedOrTimeout.code).toBe(rc);
       expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe(String(rc));
       expect(readFileSync(layout.streamPath, "utf8")).toBe(`{"__t2f5_done__":${rc}}\n`);
       expect(existsSync(layout.credentialsCopyPath)).toBe(false);
-      const all = calls();
-      const stop = all.findIndex((call) => call.rc !== 0 || call.args.startsWith("-KILL "));
-      expect(stop, `${row}: the agent was never seen gone or KILLed`).toBeGreaterThanOrEqual(0);
-      expect(all.slice(stop + 1), `${row}: signalled after seen gone`).toEqual([]);
-      const after = all.slice(before).map((call) => call.args.split(" ")[0]);
-      if (row === "post-wait") expect(after).toEqual([]);
-      if (row === "reaped-between-probes") expect(after).toEqual(["-0"]);
-      if (row === "handler-term") expect(after).toContain("-TERM");
-      if (row === "handler-term") expect(after).not.toContain("-KILL");
-      if (row === "handler-kill") expect(after).toContain("-TERM");
-      if (row === "handler-kill") expect(after[after.length - 1]).toBe("-KILL");
+      expect(decoy.alive()).toBe(true);
+      expect(decoy.received()).toBe("");
+      expect(calls.filter((call) => call.split(" ").pop() !== "0"), "a kill addressed something other than group 0").toEqual([]);
+      expect(calls).toEqual(kills);
     } finally {
       writeFileSync(release, "");
       killGroup(child.pid!);
+      killGroup(decoy.pid);
     }
   }, 15_000);
+
+  // Probe B: an agent that ignores TERM is still ended, by a KILL to the run's own group only. The wrapper publishes the
+  // selected 143 first; its own process then ends by that same group KILL (FU-3: a KILL cannot spare its sender).
+  it("TERM-ignoring agent: -TERM 0 then -KILL 0, agent dead, decoy untouched, 143 published once, wrapper ends by SIGKILL", async () => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    const log = join(home, "kill.log");
+    const held = join(home, "held");
+    const pidFile = join(home, "agent-pid");
+    const decoy = await startDecoy(home);
+    writeFileSync(layout.wrapperPath, withKillShim(DEVIN_WRAPPER_SCRIPT, log, pidFile, decoy.pid), { mode: 0o700 });
+    stub("devin", `trap '' TERM; echo $$ > "${pidFile}"; touch "${held}"; while :; do /bin/sleep 0.1; done`);
+    const child = spawn("sh", [layout.wrapperPath, "devin", "-p"], { env, stdio: ["ignore", "ignore", "ignore"], detached: true });
+    const closed = new Promise<{ code: number | null; signal: string | null }>((resolve) => child.once("close", (code, sig) => resolve({ code, signal: sig })));
+    try {
+      await waitFor(() => existsSync(held), "agent never started");
+      const agentPid = Number(readFileSync(pidFile, "utf8").trim());
+      process.kill(-child.pid!, "SIGTERM");
+      const { code, signal } = await closeWithin(closed, 5_000, "wrapper still alive 5 s after TERM");
+      expect({ code, signal }).toEqual({ code: null, signal: "SIGKILL" });
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("143");
+      expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":143}\n');
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+      await waitFor(() => !pidAlive(agentPid), "TERM-ignoring agent survived the group KILL");
+      expect(killCalls(log)).toEqual(["-TERM 0", "-KILL 0"]);
+      expect(decoy.alive()).toBe(true);
+      expect(decoy.received()).toBe("");
+    } finally {
+      killGroup(child.pid!);
+      killGroup(decoy.pid);
+    }
+  }, 15_000);
+
+  // FU-3 guard: group 0 is the wrapper's own group only when it leads one. A wrapper that does not (here the child of a
+  // detached outer shell, so a failed guard could only reach that outer group) refuses before the copy and the agent.
+  it("not the leader of its process group: no copy, no agent, no kill, rc 125 published once", async () => {
+    const { layout, env, home, stub } = scaffold(temporaryRoot());
+    const log = join(home, "kill.log");
+    const ran = join(home, "agent-ran");
+    const rcFile = join(home, "wrapper-rc");
+    writeFileSync(layout.wrapperPath, withKillShim(DEVIN_WRAPPER_SCRIPT, log, join(home, "agent-pid"), 1), { mode: 0o700 });
+    stub("devin", `touch "${ran}"; exit 0`);
+    const outer = spawn("sh", ["-c", 'sh "$0" devin -p; echo $? > "$1"', layout.wrapperPath, rcFile],
+      { env, stdio: ["ignore", "ignore", "ignore"], detached: true });
+    const closed = new Promise<void>((resolve) => outer.once("close", () => resolve()));
+    try {
+      await closeWithin(closed, 5_000, "outer shell still alive after 5 s");
+      expect(readFileSync(rcFile, "utf8").trim()).toBe("125");
+      expect(readFileSync(layout.exitRcPath, "utf8").trim()).toBe("125");
+      expect(readFileSync(layout.streamPath, "utf8")).toBe('{"__t2f5_done__":125}\n');
+      expect(existsSync(layout.credentialsCopyPath)).toBe(false);
+      expect(existsSync(ran)).toBe(false);
+      expect(killCalls(log)).toEqual([]);
+    } finally {
+      killGroup(outer.pid!);
+    }
+  }, 15_000);
+
+  // Completeness guard over the class: a new kill site with any operand other than group 0 fails here.
+  it("every kill in the wrapper text addresses group 0", () => {
+    const code = DEVIN_WRAPPER_SCRIPT.split("\n").filter((line) => !line.trimStart().startsWith("#"));
+    const sites = code.flatMap((line) => line.match(/\bkill\b[^;|&]*/g) ?? []).map((site) => site.replace(/\s*2>\/dev\/null\s*$/, "").trim());
+    expect(sites).toEqual(["kill -KILL 0", "kill -TERM 0"]);
+  });
 
   it("SIGTERM to the group while cp is blocked (before the agent starts): exit at once, no copy, no agent, rc 143, one sentinel", async () => {
     const { layout, env, home, stub, credsSource } = scaffold(temporaryRoot());
