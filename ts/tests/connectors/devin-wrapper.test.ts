@@ -178,7 +178,8 @@ describe("DEVIN_WRAPPER_SCRIPT — real shell (D2)", () => {
   }, 15_000);
 
   // F1: an agent that ignores TERM must not keep the credentials copy alive. The handler revokes the copy first,
-  // then waits a bounded time and KILLs the agent, so the wrapper still ends with 143 and one sentinel.
+  // then waits a bounded time and KILLs the agent, so exit.rc and the one sentinel still read 143 (FU-3: the KILL goes to
+  // the wrapper's own group, so the wrapper process itself then ends by SIGKILL; asserted in the FU-3 probe B row).
   it("SIGTERM to the group with a TERM-ignoring agent: copy revoked before any external KILL, rc 143, one sentinel", async () => {
     const { layout, env, home, stub } = scaffold(temporaryRoot());
     stub("devin", `trap '' TERM; echo $$ > "${join(home, "agent-pid")}"; touch "${join(home, "agent-ready")}"; while :; do sleep 0.1; done`);
