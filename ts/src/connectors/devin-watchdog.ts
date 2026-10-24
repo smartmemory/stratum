@@ -1,7 +1,29 @@
 import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+
+/** STRAT-CANCEL-EPERM-1: this file runs as a standalone script (no loader, no relative imports), so it
+ *  carries a copy of `killGroup` from process_group.ts rather than importing it. macOS answers EPERM
+ *  for `kill(-pgid, sig)` when every member is an unreaped zombie; that is "gone", a live EPERM is not. */
+function killGroup(pid: number, signal: NodeJS.Signals | 0): void {
+  try { process.kill(-pid, signal); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "EPERM") {
+      let zombieOnly = false;
+      try {
+        const out = execFileSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] });
+        zombieOnly = out.split("\n").every((line) => {
+          const [group, stat] = line.trim().split(/\s+/);
+          return Number(group) !== pid || !stat || stat.startsWith("Z");
+        });
+      } catch { /* unreadable ps fails closed */ }
+      if (zombieOnly) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    }
+    throw error;
+  }
+}
 
 export const DEVIN_STALL_MS = 15 * 60 * 1000;
 export const DEVIN_MAX_RUN_MS = 4 * 60 * 60 * 1000;
@@ -188,7 +210,7 @@ async function watchBackground(runDir: string, runId: string, root: string, ms: 
     }
   }
   function groupGone() {
-    try { process.kill(-meta.childPid, 0); return false; }
+    try { killGroup(meta.childPid, 0); return false; }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   }
   function progress(): boolean {
@@ -236,7 +258,7 @@ async function watchBackground(runDir: string, runId: string, root: string, ms: 
       if (!escalated && Date.now() >= escalationAt) {
         // The authenticated group's pgid cannot be reused while members remain,
         // even after TERM reaps its leader. Escalation must include those orphans.
-        try { process.kill(-meta.childPid, "SIGKILL"); escalated = true; }
+        try { killGroup(meta.childPid, "SIGKILL"); escalated = true; }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return stop(); throw error; }
       }
     } else {

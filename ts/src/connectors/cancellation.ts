@@ -7,6 +7,7 @@ export function linkAbort(signal: AbortSignal | undefined, controller: AbortCont
 }
 
 import type { ChildProcess } from "node:child_process";
+import { killGroup } from "./process_group.js";
 
 export function cancellationGraceMs(env: NodeJS.ProcessEnv = process.env): number {
   const value = Number(env.STRATUM_CANCEL_GRACE_MS ?? 5000);
@@ -43,13 +44,13 @@ export function processTermination(child: ChildProcess, group: boolean, graceMs 
   let forceKill: (() => void) | undefined;
   const send = (signal: NodeJS.Signals): void => {
     if (group && child.pid) {
-      try { process.kill(-child.pid, signal); }
+      try { killGroup(child.pid, signal); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
     } else if (!closed) child.kill(signal);
   };
   const alive = (): boolean => {
     if (!group || !child.pid) return !closed;
-    try { process.kill(-child.pid, 0); return true; }
+    try { killGroup(child.pid, 0); return true; }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ESRCH") return false;
