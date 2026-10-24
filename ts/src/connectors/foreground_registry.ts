@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { killGroup } from "./process_group.js";
 import { homedir } from "node:os";
 import { AGENT_TYPES, type AgentType } from "./base.js";
 import { join } from "node:path";
@@ -37,7 +38,7 @@ const REAL_PROBES: ProcessProbes = {
   startTime: procStartTime,
   groupId: processGroupId,
   groupState: (pid) => realGroupState(pid),
-  kill: (pid, signal) => { process.kill(-pid, signal); },
+  kill: (pid, signal) => { killGroup(pid, signal); },
 };
 
 function resolveProbes(options: { probes?: Partial<ProcessProbes> }): ProcessProbes {
@@ -270,12 +271,13 @@ export async function settleForegroundRun(registryId: string, options: RegistryR
 
 // ── Killing ───────────────────────────────────────────────────────────────────
 
-/** Only ESRCH means dead. EPERM means "exists, not ours" — reported as unreachable, never as
- *  reaped. The lifecycle test helper's bare catch
+/** Only ESRCH means dead, plus EPERM on a verified zombie-only group (`killGroup`, macOS answers
+ *  EPERM for a group whose members are all unreaped zombies). Any other EPERM means "exists, not
+ *  ours" — reported as unreachable, never as reaped. The lifecycle test helper's bare catch
  *  (ts/tests/connectors/background-codex-lifecycle.test.ts:34-41) gets this wrong and must not
  *  be copied here (invariant 13). */
 function realGroupState(pid: number): "alive" | "gone" | "unknown" {
-  try { process.kill(-pid, 0); return "alive"; }
+  try { killGroup(pid, 0); return "alive"; }
   catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown";
   }
