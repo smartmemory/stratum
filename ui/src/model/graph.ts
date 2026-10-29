@@ -103,10 +103,12 @@ export interface Layout {
   height: number;
 }
 
-/** Left-to-right layered layout (dagre). Back-edges (`revise`) do not influence ranks. */
-export function layoutGraph(steps: StepSpec[], edges: Edge[]): Layout {
+/** Left-to-right layered layout (dagre). Back-edges (`revise`) do not influence ranks. `size` lets the builder lay out its larger nodes. */
+export function layoutGraph(steps: StepSpec[], edges: Edge[], size: { w: number; h: number; ranksep?: number } = { w: NODE_W, h: NODE_H }): Layout {
+  const NODE_W = size.w;
+  const NODE_H = size.h;
   const g = new dagre.graphlib.Graph({ multigraph: true });
-  g.setGraph({ rankdir: "LR", nodesep: 28, ranksep: 64, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: "LR", nodesep: 28, ranksep: size.ranksep ?? 64, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const step of steps) g.setNode(step.id, { width: NODE_W, height: NODE_H });
   for (const edge of edges) if (edge.kind !== "revise") g.setEdge(edge.from, edge.to, {}, edge.id);

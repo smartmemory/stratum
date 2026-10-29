@@ -7,6 +7,11 @@ export function DataClientProvider({ client, children }: { client: DataClient; c
   return <DataClientContext.Provider value={client}>{children}</DataClientContext.Provider>;
 }
 
+/** The provider's client, or null outside one (the builder works without a host, minus validate/plan). */
+export function useOptionalDataClient(): DataClient | null {
+  return useContext(DataClientContext);
+}
+
 export function useDataClient(): DataClient {
   const client = useContext(DataClientContext);
   if (!client) throw new Error("@stratum/ui: wrap screens in <DataClientProvider client={...}>");

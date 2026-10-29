@@ -1,4 +1,4 @@
-import type { DataClient, GateResolution, PendingGate, RunDetail, RunSummary } from "../src/data-client";
+import type { DataClient, GateResolution, PendingGate, PlanResult, RunDetail, RunSummary, SpecValidation } from "../src/data-client";
 
 /**
  * The standalone shell's DataClient: HTTP to ui/server (same origin). This is the only
@@ -13,6 +13,19 @@ export function createHttpClient(base = ""): DataClient {
     }
     return response.json() as Promise<T>;
   }
+  async function post<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => undefined);
+      throw new Error(payload?.error?.message ?? `${path}: HTTP ${response.status}`);
+    }
+    return response.json() as Promise<T>;
+  }
+
   return {
     listRuns: () => get<RunSummary[]>("/api/runs"),
     async getRun(runId) {
@@ -40,5 +53,7 @@ export function createHttpClient(base = ""): DataClient {
       };
       return () => source.close();
     },
+    validateSpec: (spec) => post<SpecValidation>("/api/validate", { spec }),
+    planFlow: (spec, input) => post<PlanResult>("/api/plan", { spec, input }),
   };
 }

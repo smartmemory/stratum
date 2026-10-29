@@ -8,11 +8,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../shims/ui';
-import { buildExport } from '../lib/flowSchema';
+import { buildExport } from '../lib/spec';
 
-export default function ExportDialog({ open, onOpenChange, flow }) {
+export default function ExportDialog({ open, onOpenChange, doc }) {
   const [copied, setCopied] = useState(false);
-  const json = useMemo(() => JSON.stringify(buildExport(flow), null, 2), [flow, open]);
+  const json = useMemo(() => JSON.stringify(buildExport(doc), null, 2), [doc, open]);
 
   const copy = async () => {
     await navigator.clipboard.writeText(json);
@@ -25,7 +25,7 @@ export default function ExportDialog({ open, onOpenChange, flow }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${flow.name || 'flow'}.json`;
+    a.download = `${doc.spec.flows.entry || 'flow'}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -36,10 +36,10 @@ export default function ExportDialog({ open, onOpenChange, flow }) {
         <DialogHeader>
           <DialogTitle className="font-mono text-[14px]">Export flow</DialogTitle>
           <DialogDescription className="text-[12px]">
-            Version 1 document — contracts plus the entry flow.
+            The whole version 1 document (contracts and every flow), exactly as the engine reads it.
           </DialogDescription>
         </DialogHeader>
-        <pre className="max-h-[52vh] overflow-auto rounded-md border border-border bg-background p-3 font-mono text-[11.5px] leading-relaxed">
+        <pre data-testid="export-json" className="max-h-[52vh] overflow-auto rounded-md border border-border bg-background p-3 font-mono text-[11.5px] leading-relaxed">
           {json}
         </pre>
         <div className="flex justify-end gap-2">

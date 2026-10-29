@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "contracts": {
+    "PhaseResult": {
+      "phase": "string",
+      "artifact": "string",
+      "outcome": "complete|skipped|failed",
+      "summary": "string",
+      "files_changed": "string[]?",
+      "commit_hash": "string?"
+    },
+    "TaskGraph": {
+      "tasks": "object[]"
+    },
+    "TaskResult": {
+      "outcome": "string",
+      "summary": "string",
+      "files_changed": "string[]?"
+    }
+  },
+  "flows": {
+    "entry": "gsd",
+    "gsd": {
+      "input": {
+        "route_mode": "string?",
+        "routing_start": "string?",
+        "routing_root": "string?",
+        "routing_plan_intent": "string?",
+        "routing_continuation": "string?",
+        "featureCode": "string",
+        "gateCommands": "string[]",
+        "pre_merge_gate": "string[]?"
+      },
+      "output": {
+        "from": "${ship_gsd.output}",
+        "contract": "PhaseResult"
+      },
+      "max_rounds": 10,
+      "steps": [
+        {
+          "id": "decompose_gsd",
+          "do": "Read docs/features/${input.featureCode}/blueprint.md including its Boundary\nMap. Decompose it into independent tasks.\n\nMUST checklist:\n- Every task must identify id, description, files_owned, files_read, and\n  depends_on.\n- Every task's files_owned MUST include every test file that task will create\n  or modify, because the implementer is required to write tests and may not\n  touch unowned paths.\n- A task that legitimately writes no test MUST say why in its description.\n- Reject file ownership conflicts: files_owned MUST remain pairwise disjoint\n  across tasks. Redo the decomposition if ownership overlaps.\n- Put the matching produces/consumes entries, verbatim Boundary Map slice,\n  upstream summaries, and required pre-merge commands\n  ${input.pre_merge_gate} into description.\n- Each slice maps to exactly one task and its File Plan is owned by that task.\nReturn {tasks}.\n",
+          "agent": "claude",
+          "out": "TaskGraph",
+          "ensure": [
+            {
+              "expr": "len(result.tasks) >= 1"
+            }
+          ],
+          "attempts": 2
+        },
+        {
+          "id": "execute",
+          "after": [
+            "decompose_gsd"
+          ],
+          "attempts": 2,
+          "fanout": {
+            "over": "${decompose_gsd.output.tasks}",
+            "steps": [
+              {
+                "do": "Implement the task described by ${item} using TDD. Honor its id, files_owned, files_read, depends_on, and description fields. Write the TaskResult JSON under .compose/gsd/${input.featureCode}/results/ using the task id as its filename, and include it in your diff. Return {outcome, summary, files_changed}.\n",
+                "agent": "claude",
+                "out": "TaskResult"
+              }
+            ],
+            "concurrency": 1,
+            "isolation": "worktree",
+            "require": "all",
+            "merge": "sequential",
+            "pre_merge": [
+              "true"
+            ],
+            "dispatch": "consumer"
+          }
+        },
+        {
+          "id": "execute_merge",
+          "after": [
+            "execute"
+          ],
+          "gate": {
+            "on_approve": "ship_gsd",
+            "on_revise": "execute",
+            "on_kill": null,
+            "max_rounds": 10
+          }
+        },
+        {
+          "id": "ship_gsd",
+          "do": "Final verification and ship for ${input.featureCode}. Run all gate commands ${input.gateCommands}; fix failures. Update ROADMAP.md and CHANGELOG.md, update CLAUDE.md only for a new convention, stage only GSD-produced files, and commit with message \"feat(COMP-GSD-2): per-task fresh-context dispatch\". Do not push. Return PhaseResult with files_changed and commit_hash.\n",
+          "agent": "claude",
+          "out": "PhaseResult",
+          "ensure": [
+            {
+              "expr": "result.outcome == 'complete'"
+            }
+          ],
+          "attempts": 2
+        }
+      ]
+    }
+  }
+}

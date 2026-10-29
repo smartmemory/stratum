@@ -14,5 +14,5 @@
     "types": ["vitest/globals", "node"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "shell/**/*.ts", "shell/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"],
-  "exclude": ["src/builder"]
+  "exclude": ["src/builder/**/*.js", "src/builder/**/*.jsx"]
 }

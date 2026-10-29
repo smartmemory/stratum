@@ -1,51 +1,49 @@
-import { NODE_H, NODE_W } from './flowSchema';
+import { deriveEdges, layoutGraph } from '../../model/graph';
+import { NODE_H, NODE_W } from './layout';
 
-const ROUTES = [
-  { key: 'on_approve', label: 'approve', color: '#10b981', bow: -34 },
-  { key: 'on_kill', label: 'kill', color: '#ef4444', bow: 44 },
-  { key: 'on_revise', label: 'revise', color: '#a78bfa', bow: 110, dashed: true },
-];
+// STRAT-UI-BUILDER-1: edges come from the run view's `deriveEdges` (one rule set for both
+// screens, mirroring the engine): `after`, inferred `${step.output}` data refs (drawn, NOT
+// written into `after`), `on_fail`, gate `on_approve` / `on_kill`, and `on_revise` as a
+// back-edge that is not part of the DAG (`ir/validate.ts:482-488`).
+export const EDGE_STYLE = {
+  after: { color: '#5b6067', marker: 'arrow-after' },
+  data: { color: '#38bdf8', marker: 'arrow-data', dashed: '2 4', label: 'data' },
+  approve: { color: '#10b981', marker: 'arrow-approve', label: 'approve', bow: -34 },
+  kill: { color: '#ef4444', marker: 'arrow-kill', label: 'kill', bow: 44 },
+  fail: { color: '#ef4444', marker: 'arrow-kill', dashed: '6 4', label: 'on_fail', bow: 60 },
+  revise: { color: '#a78bfa', marker: 'arrow-revise', dashed: '5 5', label: 'revise', bow: 110 },
+};
+
+export function flowEdges(steps = []) {
+  return deriveEdges(steps);
+}
+
+/** Auto positions (dagre, revise excluded from ranking) for steps without a stored position. */
+export function autoLayout(steps = []) {
+  return layoutGraph(steps, deriveEdges(steps), { w: NODE_W, h: NODE_H, ranksep: 92 }).nodes;
+}
 
 export function buildEdges(steps = [], layout = {}) {
-  const edges = [];
-  steps.forEach((step) => {
-    const to = layout[step.id];
-    if (!to) return;
-    (step.after || []).forEach((afterId) => {
-      const from = layout[afterId];
-      if (!from) return;
-      edges.push({
-        id: `after:${afterId}->${step.id}`,
-        fromId: afterId,
-        toId: step.id,
-        from,
-        to,
-        color: null,
-        direction: 'forward',
-        bow: 0,
-      });
-    });
-    if (step.kind === 'gate') {
-      ROUTES.forEach((route) => {
-        const targetId = step[route.key];
-        const targetPos = targetId && layout[targetId];
-        if (!targetPos) return;
-        edges.push({
-          id: `route:${step.id}:${route.label}`,
-          fromId: step.id,
-          toId: targetId,
-          from: to,
-          to: targetPos,
-          color: route.color,
-          label: route.label,
-          dashed: route.dashed,
-          direction: route.key === 'on_revise' ? 'back' : 'forward',
-          bow: route.bow,
-        });
-      });
-    }
+  return flowEdges(steps).flatMap((edge) => {
+    const from = layout[edge.from];
+    const to = layout[edge.to];
+    if (!from || !to) return [];
+    const style = EDGE_STYLE[edge.kind];
+    return [{
+      id: edge.id,
+      kind: edge.kind,
+      fromId: edge.from,
+      toId: edge.to,
+      from,
+      to,
+      color: edge.kind === 'after' ? null : style.color,
+      marker: style.marker,
+      label: style.label,
+      dashed: style.dashed,
+      direction: edge.kind === 'revise' ? 'back' : 'forward',
+      bow: style.bow || 0,
+    }];
   });
-  return edges;
 }
 
 export function edgePath(edge) {

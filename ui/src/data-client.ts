@@ -199,4 +199,31 @@ export interface DataClient {
    * A host whose client has no `subscribe` (Compose's may not) gets screens that poll instead.
    */
   subscribe?(runId: string, cb: (run: RunDetail | null) => void): () => void;
+  /**
+   * Builder (STRAT-UI-BUILDER-1): the engine's own `validateSpec()` (`ts/src/ir/validate.ts:348`)
+   * on a whole document, in the `stratum_validate` shape. Optional: a host without it shows
+   * validation as unavailable.
+   */
+  validateSpec?(spec: unknown): Promise<SpecValidation>;
+  /**
+   * Builder: a DRY `stratum_plan` (`engine.plan`, `ts/src/mcp/server.ts:305-312`) in a throwaway
+   * state dir with agent dispatch refused. Never starts or saves a run. Optional.
+   */
+  planFlow?(spec: unknown, input: unknown): Promise<PlanResult>;
 }
+
+/** One engine validation error (`ir/validate.ts` ValidationError); `path` is like `flows.<flow>.steps[<i>].gate.on_approve`. */
+export interface SpecValidationError {
+  code: string;
+  path: string;
+  message: string;
+}
+
+/** `stratum_validate` response shape (`ts/src/mcp/server.ts:300-303`). */
+export type SpecValidation = { status: "valid" } | { status: "invalid"; errors: SpecValidationError[] };
+
+/** Dry plan outcome: the engine's first plan response, a spec/input validation refusal, or another error. */
+export type PlanResult =
+  | { status: "planned"; response: unknown }
+  | { status: "invalid"; errors: SpecValidationError[] }
+  | { status: "error"; message: string };

@@ -6,6 +6,8 @@
 //   GET  /api/gates                        → PendingGate[]   (`stratum query gates` + run file)
 //   GET  /api/runs/:runId/live             → text/event-stream, `data: RunDetail | null` on every change
 //   POST /api/gates/:runId/:stepId/:action → GateResolution  (`stratum gate <action> ... --token`)
+//   POST /api/validate  {spec}             → SpecValidation  (engine validateSpec, `engine.mjs`)
+//   POST /api/plan      {spec, input}      → PlanResult      (DRY engine.plan in a throwaway dir)
 //
 // A plain (req, res) function, so Compose can mount it under Express if it wants to.
 import { execFile } from "node:child_process";
@@ -13,20 +15,28 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { createRunWatcher } from "./watch.mjs";
 import { detail, gateResolution, isRun, pendingGate, summarize } from "./project.mjs";
+import { createEngineBridge, engineFromDist } from "./engine.mjs";
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const STEP_ID = /^[a-z][a-z0-9_-]{0,127}$/;
 const ACTIONS = new Set(["approve", "reject", "revise"]);
 const MAX_BODY = 16 * 1024;
+/** Builder routes carry a whole spec (the largest real one in ~/.stratum/ts/flows is ~60 KB). */
+const MAX_SPEC_BODY = 2 * 1024 * 1024;
 const QUERY_TIMEOUT_MS = 15_000;
 const MUTATION_TIMEOUT_MS = 30_000;
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json", ".ico": "image/x-icon" };
 
 /**
- * @param {{ flowsDir: string, stratumBin: string, staticDir?: string, allowedHosts?: string[], watchIntervalMs?: number }} options
+ * @param {{ flowsDir: string, stratumBin: string, staticDir?: string, allowedHosts?: string[], watchIntervalMs?: number, engineDist?: string, loadEngine?: () => Promise<object>, planScratch?: string }} options
  *   allowedHosts: Host header values accepted (DNS-rebinding guard), e.g. ["127.0.0.1:19123"].
+ *   engineDist: the built engine (`ts/dist`) for /api/validate and /api/plan; absent = those routes 501.
+ *   loadEngine: instead of engineDist, a loader returning `engineModules(...)` (tests, or a host bundling the engine).
+ *   planScratch: parent dir for the dry plan's throwaway state (default os.tmpdir()).
  */
-export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts, watchIntervalMs }) {
+export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts, watchIntervalMs, engineDist, loadEngine, planScratch }) {
+  const engineLoader = loadEngine ?? (engineDist ? engineFromDist(engineDist) : undefined);
+  const engine = engineLoader ? createEngineBridge(engineLoader, { planScratch }) : undefined;
   /** mtime cache: file name → { mtimeMs, size, summary } */
   const cache = new Map();
 
@@ -165,6 +175,19 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts, w
         return stream(parts[2], req, res);
       }
       if (req.method === "GET" && parts.length === 2 && parts[1] === "gates") return send(200, await listGates());
+      if (req.method === "POST" && parts.length === 2 && (parts[1] === "validate" || parts[1] === "plan")) {
+        if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) return send(415, { error: { code: "CONTENT_TYPE", message: "application/json required" } });
+        if (!engine) return send(501, { error: { code: "NO_ENGINE", message: "server started without --engine-dist" } });
+        let raw = "";
+        for await (const chunk of req) {
+          raw += chunk;
+          if (raw.length > MAX_SPEC_BODY) return send(413, { error: { code: "TOO_LARGE", message: "body too large" } });
+        }
+        let body;
+        try { body = JSON.parse(raw); } catch { return send(400, { error: { code: "BAD_JSON", message: "invalid JSON" } }); }
+        if (!body || typeof body !== "object" || !("spec" in body)) return send(400, { error: { code: "BAD_REQUEST", message: "body needs a spec" } });
+        return send(200, parts[1] === "validate" ? await engine.validate(body.spec) : await engine.plan(body.spec, body.input));
+      }
       if (req.method === "POST" && parts.length === 5 && parts[1] === "gates") {
         const [, , runId, stepId, action] = parts;
         // JSON-only POST: a cross-site form cannot send it without a CORS preflight we never answer.

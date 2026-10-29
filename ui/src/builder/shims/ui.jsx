@@ -1,6 +1,6 @@
 // Minimal stand-ins for the shadcn/radix components the Base44 builder imported
 // (button, input, textarea, dialog, select). Same props, native elements, no radix.
-import React, { Children, isValidElement } from 'react';
+import React, { Children, isValidElement, useEffect } from 'react';
 import { cn } from './utils';
 
 const BUTTON = {
@@ -23,14 +23,20 @@ export const Button = React.forwardRef(function Button({ className, variant = 'd
 });
 
 export const Input = React.forwardRef(function Input({ className, ...props }, ref) {
-  return <input ref={ref} className={cn('flex h-9 w-full rounded-md border border-border bg-transparent px-3 py-1 text-sm', className)} {...props} />;
+  return <input ref={ref} className={cn('flex h-9 w-full rounded-md border border-border bg-transparent px-3 py-1 text-sm placeholder:text-muted-foreground/50', className)} {...props} />;
 });
 
 export const Textarea = React.forwardRef(function Textarea({ className, ...props }, ref) {
-  return <textarea ref={ref} className={cn('flex min-h-[60px] w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm', className)} {...props} />;
+  return <textarea ref={ref} className={cn('flex min-h-[60px] w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground/50', className)} {...props} />;
 });
 
 export function Dialog({ open, onOpenChange, children }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onOpenChange?.(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onOpenChange]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onOpenChange?.(false); }}>

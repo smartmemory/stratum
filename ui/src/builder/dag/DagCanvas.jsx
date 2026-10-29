@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { NODE_H, NODE_W } from '../lib/flowSchema';
+import { NODE_H, NODE_W } from '../lib/layout';
 import { buildEdges, canvasSize, edgeLabelPoint, edgePath } from '../lib/graph';
 import StepNode from './StepNode';
 
@@ -8,14 +8,10 @@ const MARKERS = [
   ['arrow-approve', '#10b981'],
   ['arrow-kill', '#ef4444'],
   ['arrow-revise', '#a78bfa'],
+  ['arrow-data', '#38bdf8'],
 ];
 
-const markerFor = (edge) => {
-  if (edge.label === 'approve') return 'arrow-approve';
-  if (edge.label === 'kill') return 'arrow-kill';
-  if (edge.label === 'revise') return 'arrow-revise';
-  return 'arrow-after';
-};
+const markerFor = (edge) => edge.marker || 'arrow-after';
 
 export default function DagCanvas({
   steps,
@@ -26,6 +22,7 @@ export default function DagCanvas({
   onMove,
   onConnect,
   statusMap,
+  stepErrors,
 }) {
   const canvasRef = useRef(null);
   const [drag, setDrag] = useState(null);
@@ -114,14 +111,14 @@ export default function DagCanvas({
               !selectedId || selectedId === edge.fromId || selectedId === edge.toId;
             const mid = edgeLabelPoint(edge);
             return (
-              <g key={edge.id} opacity={active ? 1 : 0.35}>
+              <g key={edge.id} data-edge={edge.id} opacity={active ? 1 : 0.35}>
                 <path
                   d={edgePath(edge)}
                   fill="none"
                   stroke={color}
                   strokeWidth={edge.color ? 1.5 : 1.3}
                   strokeOpacity={edge.color ? 0.9 : 0.7}
-                  strokeDasharray={edge.dashed ? '5 4' : undefined}
+                  strokeDasharray={edge.dashed || undefined}
                   markerEnd={`url(#${markerFor(edge)})`}
                 />
                 {edge.label && (
@@ -168,6 +165,7 @@ export default function DagCanvas({
               mode={mode}
               selected={selectedId === step.id}
               status={statusMap ? statusMap[step.id] : undefined}
+              errors={stepErrors ? stepErrors[step.id] : undefined}
               onSelect={onSelect}
               onDragStart={startDrag(step)}
               onPortStart={startPort(step)}

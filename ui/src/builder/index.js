@@ -1,5 +1,16 @@
-// Builder canvas slot (STRAT-UI-BUILDER-1 owns it). Ported from the Base44 "Stratum Studio"
-// app as-is: Tailwind classes, sample data, no DataClient yet. The host must compile
-// Tailwind over `src/builder/**` (the standalone shell does, see ui/tailwind.config.js).
+// Flow builder (STRAT-UI-BUILDER-1): a visual editor whose state is a real Stratum
+// specification (`lib/spec.ts`). Ported from the Base44 "Stratum Studio" canvas; Tailwind
+// classes, so the host compiles Tailwind over `src/builder/**` (the standalone shell does).
+// Validation and the dry plan come from the host's DataClient (`validateSpec`, `planFlow`).
 export { default as FlowBuilder } from './FlowBuilder';
-export { makeStarterFlow, validateFlow, buildExport, parseImport } from './lib/flowSchema';
+export {
+  KINDS,
+  KIND_FIELDS,
+  buildExport,
+  defaultStep,
+  emptySpec,
+  errorTarget,
+  parseImport,
+  pinErrors,
+  stepKind,
+} from './lib/spec';

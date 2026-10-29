@@ -1,6 +1,7 @@
 import React from 'react';
 import { cn } from '../shims/utils';
-import { KIND_META, NODE_H, stepSummary } from '../lib/flowSchema';
+import { NODE_H } from '../lib/layout';
+import { KIND_META, stepKind, stepSummary } from '../lib/spec';
 import { stepStatus } from '../lib/status';
 
 export default function StepNode({
@@ -9,21 +10,26 @@ export default function StepNode({
   selected,
   mode = 'edit',
   status,
+  errors,
   onDragStart,
   onSelect,
   onPortStart,
 }) {
-  const meta = KIND_META[step.kind] || KIND_META.do;
+  const kind = stepKind(step);
+  const meta = (kind && KIND_META[kind]) || { tone: '#ef4444' };
   const tone = status ? stepStatus(status) : null;
   const style = { left: pos.x, top: pos.y, height: NODE_H };
   if (mode === 'view' && tone) {
     style.borderColor = `${tone.color}59`;
     style.boxShadow = `inset 2px 0 0 ${tone.color}`;
   }
+  const errorCount = errors ? errors.length : 0;
 
   return (
     <div
       data-step-id={step.id}
+      data-kind={kind || 'invalid'}
+      data-error={errorCount ? errors.map((e) => e.code).join(' ') : undefined}
       onMouseDown={onDragStart}
       onClick={(e) => {
         e.stopPropagation();
@@ -33,11 +39,13 @@ export default function StepNode({
       className={cn(
         'group absolute w-[236px] select-none rounded-[10px] border bg-card px-3 py-2.5 transition-[border-color,box-shadow] duration-150',
         mode === 'edit' ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
-        selected
-          ? 'border-foreground/45 ring-1 ring-foreground/20'
-          : mode === 'edit'
-            ? 'border-border hover:border-foreground/30'
-            : 'border-border',
+        errorCount
+          ? 'border-destructive ring-2 ring-destructive/50'
+          : selected
+            ? 'border-foreground/45 ring-1 ring-foreground/20'
+            : mode === 'edit'
+              ? 'border-border hover:border-foreground/30'
+              : 'border-border',
       )}
     >
       {mode === 'edit' && (
@@ -51,8 +59,17 @@ export default function StepNode({
           className="font-mono text-[9.5px] uppercase tracking-[0.18em]"
           style={{ color: meta.tone }}
         >
-          {step.kind}
+          {kind || 'no kind'}
         </span>
+        {errorCount > 0 && (
+          <span
+            className="truncate rounded bg-destructive/15 px-1 font-mono text-[9px] text-destructive"
+            title={errors.map((e) => `${e.code} ${e.path}: ${e.message}`).join('\n')}
+          >
+            {errors[0].code}
+            {errorCount > 1 ? ` +${errorCount - 1}` : ''}
+          </span>
+        )}
         {mode === 'view' && tone && (
           <span
             className="flex items-center gap-1 font-mono text-[9px] lowercase"
@@ -65,7 +82,7 @@ export default function StepNode({
             {status}
           </span>
         )}
-        {mode === 'edit' && step.when && (
+        {mode === 'edit' && !errorCount && step.when && (
           <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
             when
           </span>
@@ -91,7 +108,7 @@ export default function StepNode({
           <span className="pointer-events-none absolute -left-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-border bg-background" />
           <span
             onMouseDown={onPortStart}
-            title="Drag to connect"
+            title="Drag to connect (adds an after edge)"
             className="absolute -right-[6px] top-1/2 h-3 w-3 -translate-y-1/2 cursor-crosshair rounded-full border border-border bg-background transition-colors group-hover:border-signal group-hover:bg-signal"
           />
         </>

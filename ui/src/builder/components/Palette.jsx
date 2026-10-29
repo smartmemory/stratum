@@ -1,5 +1,5 @@
 import React from 'react';
-import { KIND_META } from '../lib/flowSchema';
+import { KIND_META } from '../lib/spec';
 
 export default function Palette({ onAdd }) {
   return (
@@ -10,6 +10,8 @@ export default function Palette({ onAdd }) {
           key={kind}
           type="button"
           onClick={() => onAdd(kind)}
+          aria-label={`add ${kind} step`}
+          title={meta.blurb}
           className="group flex shrink-0 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/70 lg:w-full"
         >
           <span
@@ -23,7 +25,7 @@ export default function Palette({ onAdd }) {
         </button>
       ))}
       <div className="mt-auto hidden border-t border-border px-1.5 pt-3 text-[10.5px] leading-relaxed text-muted-foreground lg:block">
-        drag the right port onto another step to connect. press delete to remove the selected step.
+        drag the right port onto another step to add an after edge. a new step is placed after the selected one. press delete to remove the selected step.
       </div>
     </div>
   );

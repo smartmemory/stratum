@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../shims/ui';
-import { parseImport } from '../lib/flowSchema';
+import { parseImport } from '../lib/spec';
 
 export default function ImportDialog({ open, onOpenChange, onImport }) {
   const [text, setText] = useState('');
@@ -38,10 +38,11 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
         <DialogHeader>
           <DialogTitle className="font-mono text-[14px]">Import flow</DialogTitle>
           <DialogDescription className="text-[12px]">
-            Paste a version 1 flow document. Steps, contracts and edges are replaced.
+            Paste a version 1 document, or a run file from ~/.stratum/ts/flows (its spec is used). The current document is replaced.
           </DialogDescription>
         </DialogHeader>
         <Textarea
+          aria-label="import json"
           value={text}
           spellCheck={false}
           placeholder={'{\n  "version": 1,\n  "contracts": {},\n  "flows": { "entry": "…", "…": { "steps": [] } }\n}'}
