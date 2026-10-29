@@ -23,8 +23,17 @@ export interface Loaded<T> {
 /**
  * Load through the DataClient, optionally re-polling every `pollMs` (0 = off). Keeps the
  * last good data on a failed refresh so a flaky poll does not blank the screen.
+ *
+ * `subscribe` (pass it only while live) is tried first: when it returns an unsubscribe
+ * function, pushed values replace the data and polling stays off. When it is absent or
+ * returns undefined (the host's client has no `subscribe`), `pollMs` polls instead.
  */
-export function useLoad<T>(load: (client: DataClient) => Promise<T>, deps: unknown[], pollMs = 0): Loaded<T> {
+export function useLoad<T>(
+  load: (client: DataClient) => Promise<T>,
+  deps: unknown[],
+  pollMs = 0,
+  subscribe?: (client: DataClient, push: (value: T) => void) => (() => void) | undefined,
+): Loaded<T> {
   const client = useDataClient();
   const [data, setData] = useState<T | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -56,10 +65,19 @@ export function useLoad<T>(load: (client: DataClient) => Promise<T>, deps: unkno
   }, [run]);
 
   useEffect(() => {
+    if (subscribe) {
+      const off = subscribe(client, (value) => {
+        seq.current += 1; // a pushed value is newer than any load still in flight
+        setData(value);
+        setError(null);
+        setLoading(false);
+      });
+      if (off) return off;
+    }
     if (!pollMs) return undefined;
     const timer = setInterval(run, pollMs);
     return () => clearInterval(timer);
-  }, [run, pollMs]);
+  }, [client, run, pollMs, subscribe]);
 
   return { data, error, loading, reload: run };
 }

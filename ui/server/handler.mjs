@@ -4,12 +4,14 @@
 //   GET  /api/runs                         → RunSummary[] (newest first)
 //   GET  /api/runs/:runId                  → RunDetail | 404
 //   GET  /api/gates                        → PendingGate[]   (`stratum query gates` + run file)
+//   GET  /api/runs/:runId/live             → text/event-stream, `data: RunDetail | null` on every change
 //   POST /api/gates/:runId/:stepId/:action → GateResolution  (`stratum gate <action> ... --token`)
 //
 // A plain (req, res) function, so Compose can mount it under Express if it wants to.
 import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { createRunWatcher } from "./watch.mjs";
 import { detail, gateResolution, isRun, pendingGate, summarize } from "./project.mjs";
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -21,10 +23,10 @@ const MUTATION_TIMEOUT_MS = 30_000;
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json", ".ico": "image/x-icon" };
 
 /**
- * @param {{ flowsDir: string, stratumBin: string, staticDir?: string, allowedHosts?: string[] }} options
+ * @param {{ flowsDir: string, stratumBin: string, staticDir?: string, allowedHosts?: string[], watchIntervalMs?: number }} options
  *   allowedHosts: Host header values accepted (DNS-rebinding guard), e.g. ["127.0.0.1:19123"].
  */
-export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts }) {
+export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts, watchIntervalMs }) {
   /** mtime cache: file name → { mtimeMs, size, summary } */
   const cache = new Map();
 
@@ -37,6 +39,17 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts })
       throw error;
     }
   }
+
+  const watcher = createRunWatcher({
+    flowsDir,
+    loadDetail: async (runId) => {
+      const run = await loadRun(runId); // throws on a half-written file, so the watcher retries
+      return run ? detail(run) : null;
+    },
+    intervalMs: watchIntervalMs,
+  });
+  /** SSE streams are long-lived: cap them so a runaway client cannot hold unbounded sockets. */
+  const MAX_STREAMS = 32;
 
   async function listRuns() {
     let names;
@@ -115,7 +128,20 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts })
     }
   }
 
-  return async function handler(req, res) {
+  function stream(runId, req, res) {
+    if (watcher.stats().subscribers >= MAX_STREAMS) {
+      res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+      return res.end(JSON.stringify({ error: { code: "BUSY", message: "too many live streams" } }));
+    }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+    res.write(": live\n\n");
+    const off = watcher.subscribe(runId, (value) => {
+      if (!res.writableEnded) res.write(`data: ${JSON.stringify(value)}\n\n`);
+    });
+    res.on("close", off);
+  }
+
+  async function handler(req, res) {
     const send = (status, body) => {
       res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(JSON.stringify(body));
@@ -133,6 +159,10 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts })
         if (!RUN_ID.test(parts[2])) return send(400, { error: { code: "BAD_ID", message: "bad run id" } });
         const run = await loadRun(parts[2]);
         return run ? send(200, detail(run)) : send(404, { error: { code: "NOT_FOUND", message: `run ${parts[2]} not found` } });
+      }
+      if (req.method === "GET" && parts.length === 4 && parts[1] === "runs" && parts[3] === "live") {
+        if (!RUN_ID.test(parts[2])) return send(400, { error: { code: "BAD_ID", message: "bad run id" } });
+        return stream(parts[2], req, res);
       }
       if (req.method === "GET" && parts.length === 2 && parts[1] === "gates") return send(200, await listGates());
       if (req.method === "POST" && parts.length === 5 && parts[1] === "gates") {
@@ -155,5 +185,9 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts })
       process.stderr.write(`[stratum-ui] ${req.method} ${req.url}: ${error?.message ?? error}\n`);
       return send(error?.status ?? 500, { error: { code: "INTERNAL", message: String(error?.message ?? error) } });
     }
-  };
+  }
+  handler.watcherStats = () => watcher.stats();
+  /** Stop the watcher (and so its timer). Call on server shutdown. */
+  handler.close = () => watcher.close();
+  return handler;
 }

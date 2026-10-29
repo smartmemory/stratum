@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DataClientProvider, GatesInbox, RunDetail, RunsList, type DataClient } from "../src";
-import { fakeClient, fakeGate } from "./fixtures";
+import type { RunDetail as RunDetailData } from "../src/data-client";
+import { fakeClient, fakeDetail, fakeGate } from "./fixtures";
 
 // Proof that no screen fetches: any network call fails the test.
 const fetchSpy = vi.fn(() => { throw new Error("component called fetch"); });
@@ -37,7 +38,7 @@ describe("RunDetail", () => {
     // edges: data ref draft→critique, after critique→approve, revise approve→draft
     expect([...container.querySelectorAll("[data-edge]")].map((edge) => edge.getAttribute("data-edge")).sort())
       .toEqual(["after:critique->approve", "data:draft->critique", "revise:approve->draft"]);
-    expect(screen.getByTestId("step-drawer").getAttribute("aria-label")).toBe("step approve");
+    expect((await screen.findByTestId("step-drawer")).getAttribute("aria-label")).toBe("step approve"); // focus is set in an effect after the first paint
     fireEvent.click(container.querySelector('[data-step-id="critique"]')!);
     expect(screen.getByTestId("step-drawer").getAttribute("aria-label")).toBe("step critique");
     expect(screen.getAllByText("ensure failed").length).toBeGreaterThan(0);
@@ -107,5 +108,29 @@ describe("GatesInbox", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm reject" }));
     await screen.findByText(/conflict \(CONFLICT\): Flow is already complete/);
     expect(resolved[0]!.action).toBe("reject");
+  });
+});
+
+describe("RunDetail live updates", () => {
+  it("uses the client's subscribe when it has one, renders pushes, never polls, and unsubscribes on unmount", async () => {
+    let push: (run: RunDetailData | null) => void = () => {};
+    let unsubscribed = 0;
+    const { client, calls } = fakeClient({
+      subscribe(runId, cb) { push = cb; calls.push({ method: "subscribe", args: [runId] }); return () => { unsubscribed += 1; }; },
+    });
+    const view = mount(client, <RunDetail runId={fakeDetail.id} pollMs={30} />);
+    await screen.findByText(/waiting on gate/i);
+    await new Promise((done) => setTimeout(done, 120)); // several poll periods
+    expect(calls.filter((call) => call.method === "getRun")).toHaveLength(1);
+    act(() => push({ ...fakeDetail, displayStatus: "complete", status: "completed", waitingGates: 0, stepStates: { ...fakeDetail.stepStates, approve: { status: "succeeded", attempts: [] } } }));
+    await waitFor(() => expect(screen.queryByText(/waiting on gate/i)).toBeNull());
+    view.unmount();
+    expect(unsubscribed).toBe(1);
+  });
+
+  it("polls getRun on the interval when the client has no subscribe", async () => {
+    const { client, calls } = fakeClient();
+    mount(client, <RunDetail runId={fakeDetail.id} pollMs={30} />);
+    await waitFor(() => expect(calls.filter((call) => call.method === "getRun").length).toBeGreaterThanOrEqual(3));
   });
 });

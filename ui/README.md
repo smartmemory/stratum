@@ -20,6 +20,10 @@ Dev: start the server, then `STRATUM_UI_API_PORT=<server port> STRATUM_UI_DEV_PO
 
 The server binds 127.0.0.1 only. Gate buttons act on real runs: point `--flows-dir` at a scratch dir to try them.
 
+## Live updates
+
+`DataClient.subscribe?(runId, cb)` is optional. The standalone server serves it as server-sent events (`GET /api/runs/:id/live`) from one 1 s stat poll per process (`server/watch.mjs`): only subscribed run files are stat'ed, nothing is registered with the OS, and the timer is cleared on exit. A client without `subscribe` (Compose's may not have one) makes `RunDetail` poll every `pollMs` (5 s) instead.
+
 ## Test
 
 ```sh

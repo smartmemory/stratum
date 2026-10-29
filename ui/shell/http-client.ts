@@ -31,5 +31,14 @@ export function createHttpClient(base = ""): DataClient {
       const body = (await response.json().catch(() => undefined)) as GateResolution | undefined;
       return body && "ok" in body ? body : { ok: false, kind: "error", code: `HTTP_${response.status}`, message: "unexpected response" };
     },
+    // Server-sent events from /api/runs/:id/live. EventSource reconnects on its own and the server
+    // sends a fresh snapshot on every (re)connect, so a dropped stream heals without a reload.
+    subscribe(runId, cb) {
+      const source = new EventSource(`${base}/api/runs/${encodeURIComponent(runId)}/live`);
+      source.onmessage = (event) => {
+        try { cb(JSON.parse(event.data) as RunDetail | null); } catch { /* ignore a malformed frame */ }
+      };
+      return () => source.close();
+    },
   };
 }

@@ -192,4 +192,11 @@ export interface DataClient {
   listGates(): Promise<PendingGate[]>;
   /** Approve, reject (kill) or revise one waiting gate. Never throws for a refusal; returns ok:false. */
   resolveGate(request: ResolveGateRequest): Promise<GateResolution>;
+  /**
+   * OPTIONAL live updates for one run. `cb` gets the run's full detail whenever its file
+   * changes (and once right after subscribing, so a write between `getRun` and `subscribe`
+   * is not lost); `null` means the run file is gone. Returns an unsubscribe function.
+   * A host whose client has no `subscribe` (Compose's may not) gets screens that poll instead.
+   */
+  subscribe?(runId: string, cb: (run: RunDetail | null) => void): () => void;
 }

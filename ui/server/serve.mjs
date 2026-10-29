@@ -42,4 +42,11 @@ const server = createServer((req, res) => void handler(req, res));
 server.listen(port, host, () => {
   process.stdout.write(`stratum-ui listening on http://${host}:${port} (flows ${flowsDir})\n`);
 });
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(() => process.exit(0)));
+// Close the run watcher and any open live streams, then exit (stream sockets would hold server.close()).
+const shutdown = () => {
+  handler.close();
+  server.close(() => process.exit(0));
+  server.closeAllConnections();
+};
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, shutdown);
+process.on("exit", () => handler.close());

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLoad } from "../context";
+import type { DataClient, RunDetail as RunDetailData } from "../data-client";
 import { eventColor } from "../model/status";
 import { clockTime, money, preview, relativeTime } from "../model/timing";
 import { DagView } from "./DagView";
@@ -12,15 +13,21 @@ export interface RunDetailProps {
   onBack?: () => void;
   /** Host navigation to the gate inbox; shown on runs waiting on a gate. */
   onOpenGates?: () => void;
+  /** Poll interval when the host's DataClient has no `subscribe`. */
   pollMs?: number;
 }
 
 const FOCUS = ["waiting_gate", "running", "failed", "ready"];
 
-export function RunDetail({ runId, onBack, onOpenGates, pollMs = 3500 }: RunDetailProps) {
-  const [live, setLive] = useState(false);
+export function RunDetail({ runId, onBack, onOpenGates, pollMs = 5000 }: RunDetailProps) {
+  const [live, setLive] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
-  const { data: run, error, loading } = useLoad((client) => client.getRun(runId), [runId], live ? pollMs : 0);
+  // Live by default: pushed through `subscribe` when the client has one, else polled every pollMs.
+  const subscribe = useCallback(
+    (client: DataClient, push: (run: RunDetailData | null) => void) => (client.subscribe ? client.subscribe(runId, push) : undefined),
+    [runId],
+  );
+  const { data: run, error, loading } = useLoad((client) => client.getRun(runId), [runId], live ? pollMs : 0, live ? subscribe : undefined);
 
   // Keep the selection while it exists; else focus the most active step.
   useEffect(() => {
