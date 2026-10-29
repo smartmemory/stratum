@@ -1,0 +1,20 @@
+/* Standalone shell chrome + theme tokens (a host like Compose brings its own). */
+:root {
+  color-scheme: dark;
+  --background: 222 47% 7%;
+  --foreground: 210 40% 96%;
+  --card: 222 40% 10%;
+  --muted: 217 19% 15%;
+  --muted-foreground: 215 20% 62%;
+  --border: 215 14% 20%;
+  --accent: 217 91% 60%;
+}
+html, body, #root { height: 100%; margin: 0; background: hsl(var(--background)); }
+.shell { display: grid; grid-template-rows: auto 1fr; height: 100%; color: hsl(var(--foreground)); font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+.shell-nav { display: flex; align-items: center; gap: 4px; padding: 0 12px; height: 40px; border-bottom: 1px solid hsl(var(--border)); }
+.shell-brand { font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; margin-right: 14px; }
+.shell-tab { padding: 5px 10px; border-radius: 6px; color: hsl(var(--muted-foreground)); text-decoration: none; font-size: 13px; }
+.shell-tab:hover { color: hsl(var(--foreground)); }
+.shell-tab-on { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+.shell-main { min-height: 0; overflow: hidden; }
+.shell-main > .sui-root { height: 100%; }
