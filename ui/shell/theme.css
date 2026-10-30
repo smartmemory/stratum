@@ -1,4 +1,4 @@
-/* Base44 "Stratum Studio" theme (pulled 2026-10-30, STRAT-UI-APP-1). Tailwind is for the builder slot only; @stratum/ui screens use src/styles.css. */
+/* Base44 "Stratum Studio" theme (pulled 2026-10-30, STRAT-UI-APP-1). Tailwind is for the builder slot only; @smartmemory/stratum-ui screens use src/styles.css. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

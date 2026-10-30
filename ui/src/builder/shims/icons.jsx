@@ -1,4 +1,4 @@
-// Stand-ins for the lucide-react icons the Base44 builder used (no icon dependency in @stratum/ui).
+// Stand-ins for the lucide-react icons the Base44 builder used (no icon dependency in @smartmemory/stratum-ui).
 import React from 'react';
 
 const glyph = (char, label) => {

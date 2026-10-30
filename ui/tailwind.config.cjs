@@ -1,4 +1,4 @@
-// Tailwind for the standalone shell: compiles only the Base44 builder slot (src/builder). @stratum/ui screens use plain CSS.
+// Tailwind for the standalone shell: compiles only the Base44 builder slot (src/builder). @smartmemory/stratum-ui screens use plain CSS.
 /** @type {import('tailwindcss').Config} */
 module.exports = {
     darkMode: ["class"],

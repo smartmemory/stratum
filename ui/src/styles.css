@@ -1,5 +1,5 @@
 /*
- * @stratum/ui styles. Plain CSS, no runtime. Every colour comes from a custom property:
+ * @smartmemory/stratum-ui styles. Plain CSS, no runtime. Every colour comes from a custom property:
  *  - the host's shadcn-style HSL tokens (--background, --foreground, --card, --muted,
  *    --muted-foreground, --border, --accent, --destructive), which Compose already defines
  *    (compose src/index.css), with dark fallbacks when the host has none;

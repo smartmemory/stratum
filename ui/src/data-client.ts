@@ -1,5 +1,5 @@
 /**
- * DataClient: the ONE seam between @stratum/ui components and wherever run data lives.
+ * DataClient: the ONE seam between @smartmemory/stratum-ui components and wherever run data lives.
  *
  * Components never fetch. They read this interface from <DataClientProvider> and call its
  * async methods. Two implementations exist / are planned:

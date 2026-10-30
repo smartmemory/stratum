@@ -7,7 +7,7 @@
 // --flows-dir   run files (default $STRATUM_STATE_ROOT, else ~/.stratum/ts/flows). Read-only.
 // --stratum-bin the stratum CLI used for `query gates` and `gate` (default ../../ts/dist/cli/stratum.js;
 //               build it with `cd ts && npm run build`). A .js path runs under this node.
-// --static      a built shell (`npm run build` → ui/dist) to serve at /. Omit when using `vite` dev.
+// --static      a built shell (`npm run build:shell` → ui/dist-shell) to serve at /. Omit when using `vite` dev.
 // --engine-dist the built engine for the builder's validate / dry plan (default ../../ts/dist).
 // --plan-scratch parent dir for the dry plan's throwaway state dirs (default the OS temp dir).
 import { createServer } from "node:http";

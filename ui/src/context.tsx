@@ -14,7 +14,7 @@ export function useOptionalDataClient(): DataClient | null {
 
 export function useDataClient(): DataClient {
   const client = useContext(DataClientContext);
-  if (!client) throw new Error("@stratum/ui: wrap screens in <DataClientProvider client={...}>");
+  if (!client) throw new Error("@smartmemory/stratum-ui: wrap screens in <DataClientProvider client={...}>");
   return client;
 }
 

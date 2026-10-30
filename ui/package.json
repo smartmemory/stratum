@@ -1,25 +1,52 @@
 {
-  "name": "@stratum/ui",
+  "name": "@smartmemory/stratum-ui",
   "version": "0.1.0",
-  "private": true,
   "description": "Stratum run view and gate inbox as React components fed by an injected DataClient, plus a standalone shell and a read-only local server.",
   "license": "BUSL-1.1",
+  "author": "SmartMemory",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smartmemory/stratum.git",
+    "directory": "ui"
+  },
+  "homepage": "https://github.com/smartmemory/stratum/tree/main/ui#readme",
   "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
   "exports": {
-    ".": "./src/index.ts",
-    "./data-client": "./src/data-client.ts",
-    "./styles.css": "./src/styles.css",
-    "./builder": "./src/builder/index.js",
-    "./server": "./server/handler.mjs"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./data-client": {
+      "types": "./dist/data-client.d.ts",
+      "import": "./dist/data-client.js"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./builder": {
+      "types": "./dist/builder/index.d.ts",
+      "import": "./dist/builder.js"
+    },
+    "./server": "./server/handler.mjs",
+    "./package.json": "./package.json"
   },
   "files": [
-    "src",
-    "server"
+    "dist",
+    "!dist/**/*.map",
+    "server",
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "serve": "node server/serve.mjs",
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build -c vite.lib.config.ts && tsc -p tsconfig.build.json",
+    "build:shell": "vite build",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
