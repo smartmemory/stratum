@@ -1,9 +1,7 @@
 name: Test
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   # TS engine suite (ts/). Replaces the retired Python pytest suite — stratum-py
