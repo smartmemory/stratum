@@ -55,6 +55,10 @@ export interface RunSummary {
   startedAt: string | null;
   /** Last event's `at`. */
   updatedAt: string | null;
+  /** Same value as `updatedAt`; the time of the last run event (Stratum stores no heartbeat). */
+  lastEventAt: string | null;
+  /** Running, with no run event for more than 6 h (or no events at all). */
+  stale: boolean;
   spent: Spent;
   /** Steps waiting on a gate right now. */
   waitingGates: number;

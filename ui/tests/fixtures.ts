@@ -45,7 +45,7 @@ export function persistedRun(overrides: Record<string, unknown> = {}) {
 const summary: RunSummary = {
   id: "run-aaaa1111", flowName: "review", status: "running", displayStatus: "awaiting_gate",
   stepCount: 3, completedSteps: 2, currentStepId: "approve", round: 1,
-  startedAt: "2026-10-30T01:00:00Z", updatedAt: "2026-10-30T01:00:07Z", spent: { usd: 0.42 }, waitingGates: 1,
+  startedAt: "2026-10-30T01:00:00Z", updatedAt: "2026-10-30T01:00:07Z", lastEventAt: "2026-10-30T01:00:07Z", stale: false, spent: { usd: 0.42 }, waitingGates: 1,
 };
 
 export const fakeDetail: RunDetail = {

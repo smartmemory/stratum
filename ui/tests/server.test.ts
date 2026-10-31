@@ -40,6 +40,24 @@ describe("projection (server/project.mjs)", () => {
     expect(displayStatus(persistedRun({ status, failure, steps }))).toBe(expected);
   });
 
+  // name | run | now | expected stale
+  const T0 = Date.parse("2026-10-30T01:00:07Z");
+  const pending = { approve: { status: "pending", attempts: [] } };
+  const STALE_ROWS: Array<[string, unknown, number, boolean]> = [
+    ["running, event 1 h ago", persistedRun({ steps: pending }), T0 + 3600e3, false],
+    ["running, last event 7 h ago", persistedRun({ steps: pending }), T0 + 7 * 3600e3, true],
+    ["running, no events", persistedRun({ steps: pending, events: [] }), T0, true],
+    ["completed, old", persistedRun({ status: "completed" }), T0 + 40 * 86400e3, false],
+    ["awaiting gate, old", persistedRun(), T0 + 40 * 86400e3, false],
+  ];
+  for (const [name, run, now, expected] of STALE_ROWS) {
+    it(`stale: ${name}`, () => {
+      const row = summarize(run, now);
+      expect(row.stale).toBe(expected);
+      expect(row.lastEventAt).toBe(row.updatedAt);
+    });
+  }
+
   it("maps CLI gate rows and gate results", () => {
     const gate = pendingGate({ flow_id: "run-aaaa1111", flow_name: "review", step_id: "approve", on_approve: null, on_revise: "draft", on_kill: null, gate_token: "tok-1" }, persistedRun());
     expect(gate).toEqual({ runId: "run-aaaa1111", flowName: "review", stepId: "approve", gateToken: "tok-1", onApprove: null, onRevise: "draft", onKill: null, round: 1, maxRounds: 3, reviseEndsRun: false, waitingSince: "2026-10-30T01:00:07Z" });

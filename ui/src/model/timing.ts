@@ -53,6 +53,12 @@ export function relativeTime(iso: string | null | undefined, now = Date.now()): 
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/** Age for a stale run: whole days from 1 d up, else whole hours ("38 d", "7 h"). */
+export function staleAge(iso: string, now = Date.now()): string {
+  const hours = Math.floor((now - Date.parse(iso)) / 3600000);
+  return hours >= 24 ? `${Math.floor(hours / 24)} d` : `${Math.max(hours, 0)} h`;
+}
+
 export function clockTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);

@@ -53,10 +53,20 @@ function spent(budget) {
   return out;
 }
 
-export function summarize(run) {
+/**
+ * A "running" run with no run event for longer than this reads as stale in the UI. A pick forge-main may change.
+ * Stratum persists no heartbeat (the MCP progress ping is a notification, never stored), so the last run event is
+ * the only liveness signal on disk.
+ */
+export const STALE_AFTER_MS = 6 * 3600 * 1000;
+
+export function summarize(run, now = Date.now()) {
   const flow = flowOf(run);
   const events = Array.isArray(run.events) ? run.events : [];
   const states = Object.values(run.steps);
+  const lastEventAt = events[events.length - 1]?.at ?? null;
+  const lastEventMs = lastEventAt === null ? NaN : Date.parse(lastEventAt);
+  const stale = displayStatus(run) === "running" && (Number.isNaN(lastEventMs) || now - lastEventMs > STALE_AFTER_MS);
   return {
     id: run.id,
     flowName: run.flowName || run.id,
@@ -67,7 +77,9 @@ export function summarize(run) {
     currentStepId: currentStepId(run, flow),
     round: run.rounds ?? 0,
     startedAt: events[0]?.at ?? null,
-    updatedAt: events[events.length - 1]?.at ?? null,
+    updatedAt: lastEventAt,
+    lastEventAt,
+    stale,
     spent: spent(run.flowSpent),
     waitingGates: states.filter((step) => step?.status === "waiting_gate").length,
   };

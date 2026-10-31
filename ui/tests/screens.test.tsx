@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DataClientProvider, GatesInbox, RunDetail, RunsList, type DataClient } from "../src";
-import type { RunDetail as RunDetailData } from "../src/data-client";
+import type { RunDetail as RunDetailData, RunSummary } from "../src/data-client";
 import { fakeClient, fakeDetail, fakeGate } from "./fixtures";
 
 // Proof that no screen fetches: any network call fails the test.
@@ -15,7 +15,7 @@ describe("RunsList", () => {
   it("renders rows from listRuns, filters, and opens a run through the callback", async () => {
     const { client, calls } = fakeClient();
     const onOpenRun = vi.fn();
-    const { container } = mount(client, <RunsList onOpenRun={onOpenRun} />);
+    const { container } = mount(client, <RunsList onOpenRun={onOpenRun} now={Date.parse("2026-10-30T02:00:00Z")} />); // setup change: the default tab is time-based, so pin the clock to the fixtures
     await screen.findByText("review");
     expect(container.querySelectorAll("[data-run-id]")).toHaveLength(2);
     fireEvent.click(screen.getByRole("tab", { name: "awaiting gate" }));
@@ -23,6 +23,42 @@ describe("RunsList", () => {
     fireEvent.click(container.querySelector('[data-run-id="run-aaaa1111"]')!);
     expect(onOpenRun).toHaveBeenCalledWith("run-aaaa1111");
     expect(calls.map((call) => call.method)).toEqual(["listRuns"]);
+  });
+});
+
+describe("RunsList stale and recent filters", () => {
+  const NOW = Date.parse("2026-10-31T00:00:00Z");
+  const day = 86400e3;
+  const at = (ms: number) => new Date(ms).toISOString();
+  const runs = (base: RunSummary): RunSummary[] => [
+    { ...base, id: "run-fresh0001", flowName: "fresh", displayStatus: "running", stale: false, lastEventAt: at(NOW - 3600e3) },
+    { ...base, id: "run-stale0001", flowName: "abandoned", displayStatus: "running", stale: true, lastEventAt: at(NOW - 38 * day) },
+    { ...base, id: "run-done00001", flowName: "finished", displayStatus: "complete", stale: false, lastEventAt: at(NOW - 2 * day) },
+    { ...base, id: "run-olddone01", flowName: "ancient", displayStatus: "complete", stale: false, lastEventAt: at(NOW - 30 * day) },
+  ];
+  // tab label | run ids shown (the tab's count equals their number)
+  const TABS: Array<[string, string[]]> = [
+    ["active, last 7 d", ["run-fresh0001", "run-done00001"]],
+    ["stale", ["run-stale0001"]],
+    ["all", ["run-fresh0001", "run-stale0001", "run-done00001", "run-olddone01"]],
+  ];
+  it("opens on active, last 7 d, and each tab lists its runs with counts; stale rows read stale with the age", async () => {
+    const { client } = fakeClient();
+    const base = (await client.listRuns())[0];
+    const { container } = mount({ ...client, listRuns: async () => runs(base) }, <RunsList onOpenRun={vi.fn()} now={NOW} />);
+    await screen.findByText("fresh");
+    const ids = () => [...container.querySelectorAll("[data-run-id]")].map((node) => node.getAttribute("data-run-id"));
+    expect(screen.getByRole("tab", { name: "active, last 7 d" }).getAttribute("aria-selected")).toBe("true");
+    for (const [label, expected] of TABS) {
+      const tab = screen.getByRole("tab", { name: label });
+      fireEvent.click(tab);
+      expect(ids()).toEqual(expected);
+      expect(tab.textContent).toBe(`${label} ${expected.length}`);
+    }
+    const cell = container.querySelector('[data-run-id="run-stale0001"] [data-stale]')!;
+    expect(cell.textContent).toMatch(/^stale · no event since .+ \(38 d\)$/);
+    expect(cell.getAttribute("title")).toBe("No run event for more than 6 h. Stratum stores no heartbeat; this is the time of the last run event.");
+    expect(container.querySelector('[data-run-id="run-fresh0001"] [data-status="running"]')).not.toBeNull();
   });
 });
 
