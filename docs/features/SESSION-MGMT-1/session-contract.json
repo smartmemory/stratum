@@ -208,6 +208,7 @@
       "script_exit": {"0": "ok", "1": "registry-refused"},
       "script_output": "json-contract.json `list` with --diagnostics: {rows, bad_count, diagnostics}",
       "data": "{rows, bad_count, diagnostics}: bad_count > 0 is passed through, never hidden",
+      "row_vendor": "jobs rows accept claude|codex|runner (jobs.py:59 REMOTE-JOB-CORE-1: a runner is a gate job on a remote host, shown, never billed, never a fleet slot). Launch, pick and admit vendors stay exactly claude|codex: a runner is never picked, admitted or launched.",
       "timeout_s": 30,
       "side_effects": "none"
     },

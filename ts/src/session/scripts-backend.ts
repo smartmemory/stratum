@@ -267,9 +267,11 @@ function pickValidator(input: PickInput): Validator {
 }
 
 /** The registry fields shared by a list row and the stored add event (claude/scripts/json-contract.json `list`, jobs.py:296-312). */
+/** Jobs-row vendors: the launch vendors plus `runner` (a remote gate job, shown and never billed; jobs.py:59 REMOTE-JOB-CORE-1). Launch, pick and admit stay on VENDORS. */
+const JOB_VENDORS = [...VENDORS, "runner"] as const;
 const JOB_OPTIONAL_FIELDS: FieldTable = [
   ["pid", isPosInt, "a positive integer"], ["log", isString, "a string"], ["work_kind", (v) => isOneOf(WORK_KINDS, v), `one of ${WORK_KINDS.join(", ")}`],
-  ["vendor", (v) => isOneOf(VENDORS, v), `one of ${VENDORS.join(", ")}`], ["model", isString, "a string"], ["account", isString, "a string"],
+  ["vendor", (v) => isOneOf(JOB_VENDORS, v), `one of ${JOB_VENDORS.join(", ")}`], ["model", isString, "a string"], ["account", isString, "a string"],
   ["for_id", isString, "a string"], ["session_id", isString, "a string"],
   ["done_ts", isFiniteNumber, "a finite number"], ["outcome", (v) => isOneOf(JOB_OUTCOMES, v), `one of ${JOB_OUTCOMES.join(", ")}`],
   ["rounds", isNonNegInt, "a non-negative integer"],

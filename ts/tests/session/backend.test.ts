@@ -324,6 +324,7 @@ const SHAPE_ROWS: ShapeRow[] = [
   { name: "jobs: diagnostic affects item missing id (U1-FU3)", op: "jobs", doc: edit(GOOD_JOBS, without("diagnostics", "affects", "id")) },
   { name: "jobs: row work_kind outside the enum (U1-FU3 repro: nope)", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "work_kind"], "nope")) },
   { name: "jobs: row vendor outside the enum", op: "jobs", doc: edit(GOOD_JOBS, setAt(["rows", "vendor"], "gemini")) },
+  { name: "pick: choice vendor runner (a runner is never picked)", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "vendor"], "runner")), choiceShape: true },
   // jobs register: the stored add event
   ...ADD_KEYS.map((k): ShapeRow => ({ name: `register: missing ${k}`, op: "register", doc: edit(GOOD_ADD, without(k)) })),
   { name: "register: pid is a string", op: "register", doc: edit(GOOD_ADD, setAt(["pid"], "1")) },
@@ -342,6 +343,8 @@ const SHAPE_OK_ROWS: ShapeRow[] = [
     doc: edit(GOOD_JOBS, (c) => { c.rows = [{ ...GOOD_ROW, status: "done", pid: 7, log: "/l", work_kind: "author", vendor: "codex", model: "m", account: "a", for_id: "f", session_id: "s", done_ts: 2, outcome: "passed", rounds: 1 }]; }) },
   { name: "register: the bare add event", op: "register", doc: GOOD_ADD },
   { name: "pick: choice vendor codex", op: "pick", doc: edit(GOOD_PICK, setAt(["choice", "vendor"], "codex")) },
+  { name: "jobs: row vendor runner", op: "jobs", doc: edit(GOOD_JOBS, (c) => { c.rows = [{ ...GOOD_ROW, vendor: "runner" }]; }) },
+  { name: "jobs: row vendor claude", op: "jobs", doc: edit(GOOD_JOBS, (c) => { c.rows = [{ ...GOOD_ROW, vendor: "claude" }]; }) },
   { name: "jobs: every work_kind member", op: "jobs", doc: edit(GOOD_JOBS, (c) => { c.rows = WORK_KINDS.map((work_kind, i) => ({ ...GOOD_ROW, id: `${TOKEN}-wk${i}`, work_kind })); }) },
   { name: "register: work_kind land", op: "register", doc: edit(GOOD_ADD, (c) => { c.work_kind = "land"; }) },
 ];
@@ -396,6 +399,16 @@ extra = {"OTHER": "x"} if os.environ.get("U1_EXTRA") else {}
 print(json.dumps({"admitted": True, "code": None, "reason": "stdin=%d argv=%s leaked=%s" % (len(data), json.dumps(sys.argv[1:]), ",".join(leaked)),
                   "engine": "claude", "account": {"id": "seat2", "vendor": "claude", "label": "seat2", "config_dir_name": ".claude-seat2"},
                   "env": dict({"CLAUDE_CONFIG_DIR": home}, **extra), "checks": [], "launch_gate_label": None}))`);
+
+describe("runner is a jobs-row vendor only: pick and admit inputs refuse it", () => {
+  it("pick authorVendor runner and admit engine runner are usage refusals", async () => {
+    const fx = fixture({ scripts: OPS_SCRIPTS });
+    const b = backend(fx);
+    const pick = await b.pick({ kind: "author", authorVendor: "runner" as never });
+    const admit = await b.admit({ engine: "runner" as never, label: "probe", model: "sonnet" }, { childEnv: {} });
+    expect([code(pick), code(admit)]).toEqual(["usage", "usage"]);
+  });
+});
 
 describe("exec boundary", () => {
   it("argv only: a name with spaces and a leading '-' reaches the script verbatim, one argv element", async () => {
