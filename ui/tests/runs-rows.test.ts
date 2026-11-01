@@ -69,6 +69,13 @@ describe("run row labels, stale rule and expiry", () => {
     });
   }
 
+  it("an expiry cancel does not count as activity", () => {
+    const run = persistedRun({ status: "cancelled", steps: pending, events: [...events(31 * DAY), { at: at(0), type: "flow_cancelled", detail: { by: "fg", reason: "expired: no event since 2026-09-30" } }] });
+    expect(summarize(run, NOW)).toMatchObject({ lastEventAt: at(31 * DAY), updatedAt: at(31 * DAY), displayStatus: "cancelled" });
+    const manual = persistedRun({ status: "cancelled", steps: pending, events: [...events(31 * DAY), { at: at(0), type: "flow_cancelled", detail: { by: "fg" } }] });
+    expect(summarize(manual, NOW).lastEventAt).toBe(at(0));
+  });
+
   it("expiry reason names the last event date", () => {
     const run = persistedRun({ id: "old", steps: pending, events: events(31 * DAY) });
     expect(expiryCandidates([run], NOW)).toEqual([{ id: "old", lastEventAt: at(31 * DAY), reason: `expired: no event since ${at(31 * DAY).slice(0, 10)}` }]);

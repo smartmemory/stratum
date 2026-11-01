@@ -94,11 +94,15 @@ export function runLabel(run) {
   return { text: run.flowName || run.id, source: "flowName" };
 }
 
+/** The `flow_cancelled` event `expire.mjs` writes (reason `expired: ...`): housekeeping, not run activity. */
+const isExpiryCancel = (event) => event?.type === "flow_cancelled" && typeof event.detail?.reason === "string" && event.detail.reason.startsWith("expired:");
+
 export function summarize(run, now = Date.now()) {
   const flow = flowOf(run);
   const events = Array.isArray(run.events) ? run.events : [];
   const states = Object.values(run.steps);
-  const lastEventAt = events[events.length - 1]?.at ?? null;
+  // Last run event, except an expiry cancel: expiring a dead run must not make it read as active in the last 7 d.
+  const lastEventAt = (isExpiryCancel(events[events.length - 1]) ? events[events.length - 2] : events[events.length - 1])?.at ?? null;
   const lastEventMs = lastEventAt === null ? NaN : Date.parse(lastEventAt);
   const display = displayStatus(run);
   const live = display === "running" || display === "awaiting_gate";
