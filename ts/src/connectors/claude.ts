@@ -31,6 +31,15 @@ export interface ClaudeConnectorOptions {
   disallowedTools?: string[];
   thinking?: Record<string, unknown>;
   effort?: string;
+  /** Run with none of the host's Claude setup and no tools: no settings files (so no
+   *  CLAUDE.md, rules, hooks, output style, plugins or permission rules), no MCP server,
+   *  `systemPrompt` in place of the Claude Code preset, and every tool call denied.
+   *  Measured without it (COMP-PIPE-EDIT-CHAT-PANE-1 M1): a 1.6K-token zero-tool prompt
+   *  reached the model as 113-141K tokens, because `allowedTools: []` empties only the
+   *  built-in tool list. Foreground only; `allowedTools`, when given, must be empty. */
+  isolated?: boolean;
+  /** Plain system prompt for an isolated run. Required with `isolated`, refused without it. */
+  systemPrompt?: string;
   signal?: AbortSignal;
   /** Opt in to POSIX process-group ownership. Set ONLY by the cancellation
    * contract (an MCP `cancellationId`). `signal` alone must not imply it: MCP
@@ -53,6 +62,11 @@ export interface ClaudeConnectorOptions {
 const defaultQuery: QueryFunction = (params) => sdkQuery(params as Parameters<typeof sdkQuery>[0]);
 const SENSITIVE_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE", ...SMARTMEMORY_SCRUB_VARS] as const;
 
+/** Env that loads host Claude setup past the SDK options: Claude Code reads plugin dirs from
+ *  it, so `plugins: []` alone left an inherited inline plugin loaded (measured 2026-11-02 on
+ *  an isolated run from inside a Claude session: init listed it; unset, it was gone). */
+const ISOLATION_SCRUB_ENV_VARS = ["CLAUDE_CODE_PLUGIN_DIRS"] as const;
+
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Single validator for caller-supplied session identity, shared by every entry point
@@ -64,6 +78,49 @@ export function validateClaudeSessionIdentity(sessionId: unknown, indexLabel: un
   if (indexLabel != null && (typeof indexLabel !== "string" || !indexLabel.trim())) {
     throw new TypeError("Claude indexLabel must be a non-empty label");
   }
+}
+
+/** Single validator for the isolation pair, shared by the connector and runAgent so a bad
+ *  combination is refused before any work starts and never silently degrades to a run
+ *  that loads the host's setup. */
+export function validateClaudeIsolation(options: { isolated?: unknown; systemPrompt?: unknown; allowedTools?: unknown }): void {
+  if (options.isolated !== undefined && typeof options.isolated !== "boolean") {
+    throw new TypeError("Claude isolated must be a boolean");
+  }
+  if (options.isolated !== true) {
+    if (options.systemPrompt !== undefined) {
+      throw new TypeError("Claude systemPrompt is only accepted with isolated: true; a non-isolated run keeps the Claude Code preset");
+    }
+    return;
+  }
+  if (typeof options.systemPrompt !== "string" || !options.systemPrompt.trim()) {
+    throw new TypeError("an isolated Claude run needs a non-empty systemPrompt");
+  }
+  if (options.allowedTools !== undefined && (!Array.isArray(options.allowedTools) || options.allowedTools.length > 0)) {
+    throw new TypeError("an isolated Claude run has no tools; omit allowedTools or pass []");
+  }
+}
+
+/** SDK options that replace the host-loading defaults for an isolated run. Exported so the
+ *  test can pin the exact set. */
+export function isolatedSdkOptions(systemPrompt: string): Record<string, unknown> {
+  return {
+    // [] = no user, project or local settings: no CLAUDE.md, rules, hooks, output style,
+    // enabled plugins, MCP servers or allow rules (sdk.d.ts `settingSources`).
+    settingSources: [],
+    // Only `mcpServers` counts, and it is empty: no .mcp.json, user, plugin or claude.ai server.
+    strictMcpConfig: true,
+    mcpServers: {},
+    systemPrompt,
+    hooks: {},
+    plugins: [],
+    skills: [],
+    // No built-in tool is offered (and so no ToolSearch), and anything the model still tries
+    // is denied without a prompt: with no settings loaded there is no allow rule to match.
+    tools: [],
+    permissionMode: "dontAsk",
+    permissionPrompts: "none",
+  };
 }
 
 export class ClaudeConnector {
@@ -80,6 +137,7 @@ export class ClaudeConnector {
   async run(prompt: string): Promise<ConnectorResult> {
     this.options.signal?.throwIfAborted();
     validateClaudeSessionIdentity(this.options.sessionId, this.options.indexLabel);
+    validateClaudeIsolation(this.options);
     const sessionId = this.options.sessionId ?? randomUUID();
     const indexLabel = this.options.indexLabel ?? `stratum-claude-${sessionId.slice(0, 8)}`;
     const controller = new AbortController();
@@ -105,6 +163,7 @@ export class ClaudeConnector {
     try {
       const env = { ...(this.options.env ?? process.env) };
       for (const key of SENSITIVE_ENV_VARS) delete env[key];
+      if (this.options.isolated === true) for (const key of ISOLATION_SCRUB_ENV_VARS) delete env[key];
       const sdkOptions: Record<string, unknown> = {
         sessionId,
         cwd: this.options.cwd ?? process.cwd(),
@@ -141,7 +200,10 @@ export class ClaudeConnector {
             on: child.on.bind(child), once: child.once.bind(child), off: child.off.bind(child) };
         } } : {}),
       };
-      if (this.options.allowedTools !== undefined) {
+      if (this.options.isolated === true) {
+        Object.assign(sdkOptions, isolatedSdkOptions(this.options.systemPrompt!));
+        if (this.options.disallowedTools !== undefined) sdkOptions.disallowedTools = this.options.disallowedTools;
+      } else if (this.options.allowedTools !== undefined) {
         // MCP schema deferral requires ToolSearch; without it every schema is inlined on the
         // post-connect turn (2026-09-16: compose/docs/features/COMP-MODEL-ROUTE-1/evidence/).
         const toolSearchDisallowed = this.options.disallowedTools?.includes("ToolSearch") === true;

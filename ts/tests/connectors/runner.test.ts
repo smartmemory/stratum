@@ -113,6 +113,22 @@ describe("provider settings are enforced at dispatch", () => {
     await runAgent({ agent: "claude", model: "custom-claude-alias", prompt: "p", thinking: { type: "adaptive" }, effort: "high", allowedTools: ["Read"], disallowedTools: ["Write"] }, { claudeQuery: query });
     expect(received).toMatchObject({ model: "custom-claude-alias", thinking: { type: "adaptive" }, effort: "high", tools: ["Read", "ToolSearch"], disallowedTools: ["Write"] });
   });
+  it("forwards Claude isolation to the SDK and refuses it where nothing would enforce it", async () => {
+    const indexDir = await mkdtemp(join(tmpdir(), "runner-isolated-"));
+    try {
+      let received: Record<string, unknown> | undefined;
+      const query = vi.fn<QueryFunction>(async function* ({ options }) { received = options; yield { type: "result", subtype: "success", result: "ok" }; });
+      await runAgent({ agent: "claude", prompt: "p", isolated: true, systemPrompt: "sys", allowedTools: [], env: { DETACH_CLAUDE_INDEX_DIR: indexDir } }, { claudeQuery: query });
+      expect(received).toMatchObject({ settingSources: [], strictMcpConfig: true, mcpServers: {}, systemPrompt: "sys", hooks: {}, tools: [], permissionMode: "dontAsk" });
+      query.mockClear();
+      await expect(runAgent({ agent: "claude", prompt: "p", isolated: true, systemPrompt: "sys", background: true }, { claudeQuery: query })).rejects.toThrow("foreground-only");
+      await expect(runAgent({ agent: "claude", prompt: "p", isolated: true }, { claudeQuery: query })).rejects.toThrow("non-empty systemPrompt");
+      await expect(runAgent({ agent: "claude", prompt: "p", systemPrompt: "sys" }, { claudeQuery: query })).rejects.toThrow("only accepted with isolated");
+      await expect(runAgent({ agent: "codex", prompt: "p", isolated: true })).rejects.toThrow("Codex does not support Claude isolated");
+      await expect(runAgent({ agent: "devin", prompt: "p", systemPrompt: "sys" })).rejects.toThrow("Devin does not support Claude isolated");
+      expect(query).not.toHaveBeenCalled();
+    } finally { await rm(indexDir, { recursive: true, force: true }); }
+  });
   it("rejects unsupported provider options before execution", async () => {
     await expect(runAgent({ agent: "codex", prompt: "p", allowedTools: ["Read"] })).rejects.toThrow("does not support");
     await expect(runAgent({ agent: "codex", prompt: "p", thinking: { type: "adaptive" } })).rejects.toThrow("does not support");

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { normalizePeerLabel } from "./peer-registry.js";
 import type { AgentType, CodexSandboxMode, ConnectorEventHandler, ConnectorResult } from "./base.js";
 import { startBackgroundRun } from "./background.js";
-import { ClaudeConnector, validateClaudeSessionIdentity, type QueryFunction } from "./claude.js";
+import { ClaudeConnector, validateClaudeIsolation, validateClaudeSessionIdentity, type QueryFunction } from "./claude.js";
 import { CodexConnector, type SpawnProcess } from "./codex.js";
 import { DevinConnector } from "./devin.js";
 import { assertDevinSandboxAllowed, resolveDevinModel } from "./devin-model.js";
@@ -44,6 +44,11 @@ export interface AgentRunOptions {
   env?: NodeJS.ProcessEnv;
   allowedTools?: string[];
   disallowedTools?: string[];
+  /** Claude only, foreground only: run with none of the host's Claude setup and no tools
+   *  (ClaudeConnectorOptions.isolated). */
+  isolated?: boolean;
+  /** Claude only: the plain system prompt an isolated run requires. */
+  systemPrompt?: string;
   /** Foreground connector narration; omitted for background runs. */
   onEvent?: ConnectorEventHandler;
 }
@@ -91,6 +96,11 @@ export async function runAgent(
   options.signal?.throwIfAborted();
   if (options.agent === "claude") validateClaudeSessionIdentity(options.sessionId, options.indexLabel);
   validateAgentSettings(options);
+  // The background wrapper builds a CLI argv that carries none of the isolation options,
+  // so accepting the pair there would advertise a guarantee nothing keeps.
+  if (options.background === true && (options.isolated !== undefined || options.systemPrompt !== undefined)) {
+    throw new Error("isolated/systemPrompt are foreground-only; omit background or the isolation options");
+  }
   const cwd = options.cwd ?? process.cwd();
   // Sandbox-capable agents resolve stratum.toml/env policy here (D11); claude
   // has no sandbox knobs to resolve.
@@ -197,6 +207,8 @@ export async function runAgent(
         ...(options.signal !== undefined ? { signal: options.signal } : {}),
         ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
         ...(options.disallowedTools !== undefined ? { disallowedTools: options.disallowedTools } : {}),
+        ...(options.isolated !== undefined ? { isolated: options.isolated } : {}),
+        ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
         ...(options.onSpawn !== undefined ? { onSpawn: options.onSpawn } : {}),
         ...(boundaries.claudeQuery !== undefined ? { query: boundaries.claudeQuery } : {}),
@@ -254,11 +266,14 @@ function claudeBackgroundSettings(
 }
 
 /** Reject settings that would otherwise silently disappear at a provider boundary. */
-export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "model" | "effort" | "thinking" | "allowedTools" | "disallowedTools" | "networkAccess" | "writableRoots" | "approvalPolicy">): void {
+export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "model" | "effort" | "thinking" | "allowedTools" | "disallowedTools" | "isolated" | "systemPrompt" | "networkAccess" | "writableRoots" | "approvalPolicy">): void {
   switch (options.agent) {
     case "codex": {
       if (options.thinking !== undefined || options.allowedTools !== undefined || options.disallowedTools !== undefined) {
         throw new Error("Codex does not support Claude thinking/tool filters; select a Codex sandboxMode instead");
+      }
+      if (options.isolated !== undefined || options.systemPrompt !== undefined) {
+        throw new Error("Codex does not support Claude isolated/systemPrompt");
       }
       if (options.effort !== undefined && !CODEX_REASONING_EFFORTS.includes(options.effort)) {
         throw new Error(`unsupported Codex reasoning effort ${JSON.stringify(options.effort)}`);
@@ -269,6 +284,9 @@ export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "
       // Same rejection codex gives for Claude-only settings, naming devin (D1).
       if (options.thinking !== undefined || options.allowedTools !== undefined || options.disallowedTools !== undefined) {
         throw new Error("Devin does not support Claude thinking/tool filters; select a Devin sandboxMode instead");
+      }
+      if (options.isolated !== undefined || options.systemPrompt !== undefined) {
+        throw new Error("Devin does not support Claude isolated/systemPrompt");
       }
       // approvalPolicy is a codex approval concept; devin's is enforced (D11).
       if (options.approvalPolicy !== undefined) {
@@ -297,6 +315,7 @@ export function validateAgentSettings(options: Pick<AgentRunOptions, "agent" | "
           throw new Error("invalid Claude thinking configuration");
         }
       }
+      validateClaudeIsolation(options);
       return;
     }
     default: {

@@ -429,6 +429,10 @@ export function createToolDispatcher(dependencies: McpDependencies = {}): ToolDi
             ...((controller?.signal ?? context.signal) !== undefined ? { signal: (controller?.signal ?? context.signal)! } : {}),
             ...(request.thinking !== undefined ? { thinking: record(request, "thinking") } : {}),
             ...(request.effort !== undefined ? { effort: string(request, "effort") } : {}),
+            // Presence-based, like sandboxMode: isolated:false or an empty systemPrompt must
+            // reach validateClaudeIsolation and be judged there, not be dropped here.
+            ...(request.isolated !== undefined ? { isolated: request.isolated as boolean } : {}),
+            ...(request.systemPrompt !== undefined ? { systemPrompt: string(request, "systemPrompt") } : {}),
           });
           unlink?.(); // Provider finished; a late disconnect cannot cancel a completed run.
           // R3-8: the registry must be durable BEFORE this run counts as successful. A

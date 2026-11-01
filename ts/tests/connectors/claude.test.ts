@@ -217,6 +217,79 @@ describe("ClaudeConnector", () => {
       .resolves.toEqual({ type: "preset", preset: "claude_code" });
   });
 
+  describe("isolated runs (COMP-PIPE-EDIT-CHAT-PANE-1 M1)", () => {
+    async function capturedOptions(options: ConstructorParameters<typeof ClaudeConnector>[0]): Promise<Record<string, unknown>> {
+      const query = vi.fn<QueryFunction>(() => messages());
+      await new ClaudeConnector({ ...options, query }).run("test");
+      expect(query).toHaveBeenCalledTimes(1);
+      return query.mock.calls[0]![0].options!;
+    }
+    const BASE_KEYS = ["abortController", "cwd", "env", "model", "permissionMode", "sessionId", "tools"];
+    const ISOLATION_KEYS = ["hooks", "mcpServers", "permissionPrompts", "plugins", "settingSources", "skills", "strictMcpConfig", "systemPrompt"];
+
+    it("passes exactly the isolation options: no settings, no MCP, plain system prompt, no hooks, no tools, deny all", async () => {
+      // The pipe-chat's real call shape: zero tools, ToolSearch disallowed.
+      const sdk = await capturedOptions({ isolated: true, systemPrompt: "You are a spec assistant.", allowedTools: [], disallowedTools: ["ToolSearch"] });
+      expect(Object.keys(sdk).sort()).toEqual([...BASE_KEYS, ...ISOLATION_KEYS, "disallowedTools"].sort());
+      expect({
+        settingSources: sdk.settingSources, strictMcpConfig: sdk.strictMcpConfig, mcpServers: sdk.mcpServers,
+        systemPrompt: sdk.systemPrompt, hooks: sdk.hooks, plugins: sdk.plugins, skills: sdk.skills,
+        tools: sdk.tools, permissionMode: sdk.permissionMode, permissionPrompts: sdk.permissionPrompts,
+        disallowedTools: sdk.disallowedTools,
+      }).toEqual({
+        settingSources: [], strictMcpConfig: true, mcpServers: {},
+        systemPrompt: "You are a spec assistant.", hooks: {}, plugins: [], skills: [],
+        tools: [], permissionMode: "dontAsk", permissionPrompts: "none",
+        disallowedTools: ["ToolSearch"],
+      });
+    });
+
+    it("an isolated run drops inherited plugin dirs from the SDK env; a default run keeps them", async () => {
+      const env = { HOME: "/home/x", CLAUDE_CODE_PLUGIN_DIRS: "/plugins/inline", KEEP_ME: "1" };
+      const isolated = await capturedOptions({ isolated: true, systemPrompt: "s", env });
+      expect(isolated.env).toMatchObject({ HOME: "/home/x", KEEP_ME: "1" });
+      expect(isolated.env).not.toHaveProperty("CLAUDE_CODE_PLUGIN_DIRS");
+      const plain = await capturedOptions({ env });
+      expect(plain.env).toHaveProperty("CLAUDE_CODE_PLUGIN_DIRS", "/plugins/inline");
+      expect(env).toHaveProperty("CLAUDE_CODE_PLUGIN_DIRS", "/plugins/inline");
+    });
+
+    it("isolated with allowedTools omitted still offers no tool and no ToolSearch", async () => {
+      const sdk = await capturedOptions({ isolated: true, systemPrompt: "s" });
+      expect(Object.keys(sdk).sort()).toEqual([...BASE_KEYS, ...ISOLATION_KEYS].sort());
+      expect(sdk.tools).toEqual([]);
+    });
+
+    it.each([
+      ["omitted", {}],
+      ["isolated: false", { isolated: false }],
+    ])("default behaviour is unchanged when isolation is %s", async (_label, extra) => {
+      const sdk = await capturedOptions({ ...extra, allowedTools: [], disallowedTools: ["ToolSearch"] });
+      expect(Object.keys(sdk).sort()).toEqual([...BASE_KEYS, "disallowedTools"].sort());
+      expect(sdk.permissionMode).toBe("acceptEdits");
+      expect(sdk.tools).toEqual([]);
+      const preset = await capturedOptions({ ...extra });
+      expect(Object.keys(preset).sort()).toEqual(BASE_KEYS);
+      expect(preset.tools).toEqual({ type: "preset", preset: "claude_code" });
+      expect(preset.permissionMode).toBe("acceptEdits");
+    });
+
+    it.each([
+      ["isolated without systemPrompt", { isolated: true }, /non-empty systemPrompt/],
+      ["isolated with a blank systemPrompt", { isolated: true, systemPrompt: "  " }, /non-empty systemPrompt/],
+      ["systemPrompt without isolated", { systemPrompt: "s" }, /only accepted with isolated: true/],
+      ["systemPrompt with isolated: false", { isolated: false, systemPrompt: "s" }, /only accepted with isolated: true/],
+      ["isolated with a tool allowed", { isolated: true, systemPrompt: "s", allowedTools: ["Read"] }, /has no tools/],
+      ["isolated as a string", { isolated: "true", systemPrompt: "s" }, /must be a boolean/],
+    ])("refuses %s before dispatch", async (_label, options, message) => {
+      const query = vi.fn<QueryFunction>(() => messages());
+      const failure = await new ClaudeConnector({ ...(options as object), query }).run("test").catch(error => error);
+      expect(failure).toBeInstanceOf(TypeError);
+      expect(String(failure.message)).toMatch(message);
+      expect(query).not.toHaveBeenCalled();
+    });
+  });
+
   it("maps live assistant, tool, result, and usage messages to connector events", async () => {
     const query: QueryFunction = async function* () {
       yield {

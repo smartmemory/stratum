@@ -1,5 +1,5 @@
 {
-  "surface": 25,
+  "surface": 26,
   "shapeLanguage": "Same shape language as events.json. Each tool declares its request shape and one response shape per status variant; a response's status field is implicit. Undeclared keys are contract violations.",
   "errors": {
     "consumer_dispatch_bg_unsupported": {
@@ -1105,6 +1105,8 @@
         },
         "thinking?": "object",
         "effort?": "string",
+        "isolated?": "boolean",
+        "systemPrompt?": "string",
         "cancellationId?": "string",
         "flow?": {
           "runId": "string",

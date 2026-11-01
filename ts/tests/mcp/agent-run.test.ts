@@ -364,6 +364,42 @@ describe("stratum_agent_run MCP surface — agent-run.test.ts (T7d)", () => {
       expect(capturedSdkOptions!).not.toHaveProperty("allowedTools");
     } finally { await pair.close(); }
   });
+
+  it("10. isolated + systemPrompt reach the SDK as the isolation options end-to-end", async () => {
+    let capturedSdkOptions: Record<string, unknown> | undefined;
+    const indexDir = await mkdtemp(join(tmpdir(), "agent-run-isolated-"));
+    const pair = await connected({
+      runAgent: (options: AgentRunOptions) =>
+        runAgent({ ...options, env: { DETACH_CLAUDE_INDEX_DIR: indexDir } }, {
+          claudeQuery: async function* ({ options: sdkOpts }) { capturedSdkOptions = sdkOpts as Record<string, unknown>; },
+        }),
+    });
+    try {
+      await pair.client.callTool({
+        name: "stratum_agent_run",
+        arguments: { agent: "claude", isolated: true, systemPrompt: "sys", allowedTools: [], disallowedTools: ["ToolSearch"], prompt: "p", cwd: "/tmp" },
+      });
+      expect(capturedSdkOptions).toMatchObject({
+        settingSources: [], strictMcpConfig: true, mcpServers: {}, systemPrompt: "sys", hooks: {}, plugins: [], skills: [],
+        tools: [], permissionMode: "dontAsk", permissionPrompts: "none", disallowedTools: ["ToolSearch"],
+      });
+    } finally { await pair.close(); await rm(indexDir, { recursive: true, force: true }); }
+  });
+
+  it("11. a non-boolean isolated is refused by the contract before agentRun", async () => {
+    let agentRunCalled = false;
+    const pair = await connected({
+      runAgent: async () => { agentRunCalled = true; return { text: "stub", usage: { usd: 0, tokens: 0, ms: 0 }, telemetry: { durationMs: 0, model: "stub" } }; },
+    });
+    try {
+      await expect(pair.client.callTool({
+        name: "stratum_agent_run",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        arguments: { agent: "claude", isolated: "yes" as any, systemPrompt: "sys", prompt: "p", cwd: "/tmp" },
+      })).rejects.toThrow(McpError);
+      expect(agentRunCalled).toBe(false);
+    } finally { await pair.close(); }
+  });
 });
 
 
