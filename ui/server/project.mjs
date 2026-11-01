@@ -54,11 +54,45 @@ function spent(budget) {
 }
 
 /**
- * A "running" run with no run event for longer than this reads as stale in the UI. A pick forge-main may change.
- * Stratum persists no heartbeat (the MCP progress ping is a notification, never stored), so the last run event is
- * the only liveness signal on disk.
+ * A live run (running or awaiting a gate) with no run event for longer than this reads as stale in the UI. A pick
+ * forge-main may change. Stratum persists no heartbeat (the MCP progress ping is a notification, never stored), so
+ * the last run event is the only liveness signal on disk.
  */
-export const STALE_AFTER_MS = 6 * 3600 * 1000;
+export const STALE_AFTER_MS = 7 * 24 * 3600 * 1000;
+
+/** A RUNNING run (never an awaiting-gate one) with no event for longer than this is expired by `expire.mjs`. */
+export const EXPIRE_AFTER_MS = 30 * 24 * 3600 * 1000;
+
+/**
+ * Stored `run.input` fields that say what a run is for, best first (all strings authored by whoever planned the run:
+ * `input.description` on build/compose runs, `input.goal` / `input.task` on gsd and bug_fix runs).
+ */
+const LABEL_FIELDS = ["description", "goal", "task", "intent", "note", "slice", "feature", "scope"];
+const LABEL_MAX = 100;
+
+const clean = (value, max = LABEL_MAX) => {
+  if (typeof value !== "string") return "";
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+};
+
+/**
+ * Line one of a run row, from the run's own stored data: the first non-empty `input` field of LABEL_FIELDS, else
+ * `input.featureCode`, else the first step id of the flow, else the flow name. Returns the text and where it came from.
+ * @param {any} run
+ */
+export function runLabel(run) {
+  const input = run.input && typeof run.input === "object" ? run.input : {};
+  for (const field of LABEL_FIELDS) {
+    const text = clean(input[field]);
+    if (text) return { text, source: `input.${field}` };
+  }
+  const code = clean(input.featureCode);
+  if (code) return { text: code, source: "input.featureCode" };
+  const first = flowOf(run)?.steps[0]?.id;
+  if (typeof first === "string" && first) return { text: first, source: "flow.steps[0].id" };
+  return { text: run.flowName || run.id, source: "flowName" };
+}
 
 export function summarize(run, now = Date.now()) {
   const flow = flowOf(run);
@@ -66,12 +100,16 @@ export function summarize(run, now = Date.now()) {
   const states = Object.values(run.steps);
   const lastEventAt = events[events.length - 1]?.at ?? null;
   const lastEventMs = lastEventAt === null ? NaN : Date.parse(lastEventAt);
-  const stale = displayStatus(run) === "running" && (Number.isNaN(lastEventMs) || now - lastEventMs > STALE_AFTER_MS);
+  const display = displayStatus(run);
+  const live = display === "running" || display === "awaiting_gate";
+  const stale = live && (Number.isNaN(lastEventMs) || now - lastEventMs > STALE_AFTER_MS);
   return {
     id: run.id,
+    label: runLabel(run).text,
+    featureCode: clean(run.input?.featureCode) || null,
     flowName: run.flowName || run.id,
     status: run.status,
-    displayStatus: displayStatus(run),
+    displayStatus: display,
     stepCount: flow?.steps.length ?? 0,
     completedSteps: states.filter((step) => step?.status === "succeeded" || step?.status === "skipped").length,
     currentStepId: currentStepId(run, flow),
@@ -83,6 +121,52 @@ export function summarize(run, now = Date.now()) {
     spent: spent(run.flowSpent),
     waitingGates: states.filter((step) => step?.status === "waiting_gate").length,
   };
+}
+
+/**
+ * Makes line one unique across a list: rows whose label repeats get the next distinguishing field appended, only as
+ * far as needed: feature code, then start date, then start time, then the short id. Returns new rows (the input,
+ * which the handler caches, is not touched).
+ * @param {Array<ReturnType<typeof summarize>>} rows
+ */
+export function disambiguate(rows) {
+  const steps = [
+    (row) => (row.featureCode && !row.label.includes(row.featureCode) ? row.featureCode : ""),
+    (row) => (row.startedAt ? row.startedAt.slice(0, 10) : ""),
+    (row) => (row.startedAt ? row.startedAt.slice(11, 16) : ""),
+    (row) => row.id.slice(0, 8),
+  ];
+  let out = rows.map((row) => ({ ...row }));
+  for (const step of steps) {
+    const seen = new Map();
+    for (const row of out) seen.set(row.label, (seen.get(row.label) ?? 0) + 1);
+    if ([...seen.values()].every((count) => count === 1)) break;
+    out = out.map((row) => {
+      if (seen.get(row.label) === 1) return row;
+      const extra = step(row);
+      return extra ? { ...row, label: `${row.label} · ${extra}` } : row;
+    });
+  }
+  return out;
+}
+
+/**
+ * Runs `expire.mjs` cancels: display status "running" only (an awaiting-gate run is never selected, the owner may
+ * still answer it) and a last event more than EXPIRE_AFTER_MS ago. A running run with no dated event is skipped.
+ * @param {any[]} runs persisted run documents
+ * @returns {Array<{ id: string, lastEventAt: string, reason: string }>}
+ */
+export function expiryCandidates(runs, now = Date.now(), afterMs = EXPIRE_AFTER_MS) {
+  const out = [];
+  for (const run of runs) {
+    if (displayStatus(run) !== "running") continue;
+    const events = Array.isArray(run.events) ? run.events : [];
+    const at = events[events.length - 1]?.at;
+    const ms = typeof at === "string" ? Date.parse(at) : NaN;
+    if (Number.isNaN(ms) || now - ms <= afterMs) continue;
+    out.push({ id: run.id, lastEventAt: at, reason: `expired: no event since ${at.slice(0, 10)}` });
+  }
+  return out;
 }
 
 function failure(value) {

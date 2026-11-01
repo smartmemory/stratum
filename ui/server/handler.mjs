@@ -14,7 +14,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { createRunWatcher } from "./watch.mjs";
-import { detail, gateResolution, isRun, pendingGate, summarize } from "./project.mjs";
+import { detail, disambiguate, gateResolution, isRun, pendingGate, summarize } from "./project.mjs";
 import { createEngineBridge, engineFromDist } from "./engine.mjs";
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -84,7 +84,7 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts, w
         return null; // unreadable or half-written file: skip, like `stratum query flows`
       }
     }));
-    return rows.filter(Boolean).sort((a, b) => String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? "")));
+    return disambiguate(rows.filter(Boolean)).sort((a, b) => String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? "")));
   }
 
   function runCli(args, timeout) {

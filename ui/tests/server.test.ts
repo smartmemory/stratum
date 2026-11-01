@@ -45,10 +45,14 @@ describe("projection (server/project.mjs)", () => {
   const pending = { approve: { status: "pending", attempts: [] } };
   const STALE_ROWS: Array<[string, unknown, number, boolean]> = [
     ["running, event 1 h ago", persistedRun({ steps: pending }), T0 + 3600e3, false],
-    ["running, last event 7 h ago", persistedRun({ steps: pending }), T0 + 7 * 3600e3, true],
+    ["running, last event 7 h ago", persistedRun({ steps: pending }), T0 + 7 * 3600e3, false],
+    ["running, last event 6 d ago", persistedRun({ steps: pending }), T0 + 6 * 86400e3, false],
+    ["running, last event 8 d ago", persistedRun({ steps: pending }), T0 + 8 * 86400e3, true],
     ["running, no events", persistedRun({ steps: pending, events: [] }), T0, true],
     ["completed, old", persistedRun({ status: "completed" }), T0 + 40 * 86400e3, false],
-    ["awaiting gate, old", persistedRun(), T0 + 40 * 86400e3, false],
+    ["awaiting gate, 6 d", persistedRun(), T0 + 6 * 86400e3, false],
+    ["awaiting gate, 8 d", persistedRun(), T0 + 8 * 86400e3, true],
+    ["awaiting gate, 40 d", persistedRun(), T0 + 40 * 86400e3, true],
   ];
   for (const [name, run, now, expected] of STALE_ROWS) {
     it(`stale: ${name}`, () => {

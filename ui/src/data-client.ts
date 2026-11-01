@@ -43,6 +43,10 @@ export interface FailureInfo {
 /** One row of the runs list. */
 export interface RunSummary {
   id: string;
+  /** Line one of the row: what the run is for, from its stored input (`runLabel` in server/project.mjs), made unique across the list. */
+  label: string;
+  /** `input.featureCode` when the run carries one. */
+  featureCode: string | null;
   flowName: string;
   status: RunStatus;
   displayStatus: DisplayStatus;
@@ -57,7 +61,7 @@ export interface RunSummary {
   updatedAt: string | null;
   /** Same value as `updatedAt`; the time of the last run event (Stratum stores no heartbeat). */
   lastEventAt: string | null;
-  /** Running, with no run event for more than 6 h (or no events at all). */
+  /** Running or awaiting a gate, with no run event for more than 7 d (or no events at all). */
   stale: boolean;
   spent: Spent;
   /** Steps waiting on a gate right now. */

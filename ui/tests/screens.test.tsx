@@ -16,7 +16,7 @@ describe("RunsList", () => {
     const { client, calls } = fakeClient();
     const onOpenRun = vi.fn();
     const { container } = mount(client, <RunsList onOpenRun={onOpenRun} now={Date.parse("2026-10-30T02:00:00Z")} />); // setup change: the default tab is time-based, so pin the clock to the fixtures
-    await screen.findByText("review");
+    await screen.findByText("review the draft");
     expect(container.querySelectorAll("[data-run-id]")).toHaveLength(2);
     fireEvent.click(screen.getByRole("tab", { name: "awaiting gate" }));
     expect(container.querySelectorAll("[data-run-id]")).toHaveLength(1);
@@ -30,17 +30,19 @@ describe("RunsList stale and recent filters", () => {
   const NOW = Date.parse("2026-10-31T00:00:00Z");
   const day = 86400e3;
   const at = (ms: number) => new Date(ms).toISOString();
-  const runs = (base: RunSummary): RunSummary[] => [
-    { ...base, id: "run-fresh0001", flowName: "fresh", displayStatus: "running", stale: false, lastEventAt: at(NOW - 3600e3) },
-    { ...base, id: "run-stale0001", flowName: "abandoned", displayStatus: "running", stale: true, lastEventAt: at(NOW - 38 * day) },
-    { ...base, id: "run-done00001", flowName: "finished", displayStatus: "complete", stale: false, lastEventAt: at(NOW - 2 * day) },
-    { ...base, id: "run-olddone01", flowName: "ancient", displayStatus: "complete", stale: false, lastEventAt: at(NOW - 30 * day) },
-  ];
+  const runs = (first: RunSummary): RunSummary[] => { const base = { ...first, waitingGates: 0 }; return [
+    { ...base, id: "run-fresh0001", label: "fresh", flowName: "gsd", displayStatus: "running", stale: false, lastEventAt: at(NOW - 3600e3) },
+    { ...base, id: "run-stale0001", label: "abandoned", flowName: "gsd", displayStatus: "running", stale: true, lastEventAt: at(NOW - 38 * day) },
+    { ...base, id: "run-done00001", label: "finished", flowName: "gsd", displayStatus: "complete", stale: false, lastEventAt: at(NOW - 2 * day) },
+    { ...base, id: "run-olddone01", label: "ancient", flowName: "gsd", displayStatus: "complete", stale: false, lastEventAt: at(NOW - 30 * day) },
+    { ...base, id: "run-gated0001", label: "old gate", flowName: "gsd", displayStatus: "awaiting_gate", waitingGates: 1, stale: true, lastEventAt: at(NOW - 77 * day) },
+  ]; };
   // tab label | run ids shown (the tab's count equals their number)
   const TABS: Array<[string, string[]]> = [
     ["active, last 7 d", ["run-fresh0001", "run-done00001"]],
-    ["stale", ["run-stale0001"]],
-    ["all", ["run-fresh0001", "run-stale0001", "run-done00001", "run-olddone01"]],
+    ["stale", ["run-stale0001", "run-gated0001"]],
+    ["awaiting gate", ["run-gated0001"]],
+    ["all", ["run-fresh0001", "run-stale0001", "run-done00001", "run-olddone01", "run-gated0001"]],
   ];
   it("opens on active, last 7 d, and each tab lists its runs with counts; stale rows read stale with the age", async () => {
     const { client } = fakeClient();
@@ -57,7 +59,11 @@ describe("RunsList stale and recent filters", () => {
     }
     const cell = container.querySelector('[data-run-id="run-stale0001"] [data-stale]')!;
     expect(cell.textContent).toMatch(/^stale · no event since .+ \(38 d\)$/);
-    expect(cell.getAttribute("title")).toBe("No run event for more than 6 h. Stratum stores no heartbeat; this is the time of the last run event.");
+    const gatedCell = container.querySelector('[data-run-id="run-gated0001"] [data-stale]')!;
+    expect(gatedCell.textContent).toMatch(/^stale · awaiting gate · no event since .+ \(77 d\)$/);
+    expect(container.querySelector('[data-run-id="run-stale0001"] [data-label]')!.textContent).toBe("abandoned");
+    expect(container.querySelector('[data-run-id="run-stale0001"] .sui-runs-sub')!.textContent).toMatch(/^gsd · .*run-stal$/);
+    expect(cell.getAttribute("title")).toBe("No run event for more than 7 d. Stratum stores no heartbeat; this is the time of the last run event.");
     expect(container.querySelector('[data-run-id="run-fresh0001"] [data-status="running"]')).not.toBeNull();
   });
 });

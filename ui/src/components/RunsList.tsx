@@ -15,7 +15,7 @@ export interface RunsListProps {
 }
 
 const RECENT_MS = 7 * 24 * 3600 * 1000;
-const STALE_HOVER = "No run event for more than 6 h. Stratum stores no heartbeat; this is the time of the last run event.";
+const STALE_HOVER = "No run event for more than 7 d. Stratum stores no heartbeat; this is the time of the last run event.";
 
 const isLive = (run: RunSummary) => run.displayStatus === "running" || run.displayStatus === "awaiting_gate";
 
@@ -44,7 +44,9 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
   const shown = useMemo(() => {
     const match = FILTERS.find((entry) => entry.key === filter)?.match ?? (() => true);
     const q = query.trim().toLowerCase();
-    return (runs ?? []).filter((run) => match(run, now) && (!q || run.id.includes(q) || run.flowName.toLowerCase().includes(q)));
+    return (runs ?? []).filter(
+      (run) => match(run, now) && (!q || run.id.includes(q) || run.flowName.toLowerCase().includes(q) || run.label.toLowerCase().includes(q)),
+    );
   }, [runs, filter, query, now]);
 
   const counts = useMemo(
@@ -74,7 +76,7 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
         </div>
         <input
           className="sui-input sui-search"
-          placeholder="flow or run id"
+          placeholder="label, flow or run id"
           aria-label="search runs"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -85,7 +87,6 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
 
       <div className="sui-runs-head sui-runs-grid">
         <span className="sui-micro">run</span>
-        <span className="sui-micro">flow</span>
         <span className="sui-micro">status</span>
         <span className="sui-micro">progress</span>
         <span className="sui-micro sui-right">spent</span>
@@ -102,15 +103,19 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
           const pct = run.stepCount ? Math.round((run.completedSteps / run.stepCount) * 100) : 0;
           return (
             <button key={run.id} type="button" className="sui-runs-row sui-runs-grid" onClick={() => onOpenRun(run.id)} data-run-id={run.id}>
-              <span className="sui-mono" title={run.id}>{run.id.slice(0, 8)}</span>
-              <span className="sui-ellipsis">
-                {run.flowName}
-                {run.currentStepId && <span className="sui-muted sui-mono"> · {run.currentStepId}</span>}
+              <span className="sui-runs-name" title={run.label}>
+                <span className="sui-ellipsis sui-runs-label" data-label>{run.label}</span>
+                <span className="sui-ellipsis sui-muted sui-mono sui-runs-sub" title={run.id}>
+                  {run.flowName}
+                  {run.currentStepId && ` · ${run.currentStepId}`}
+                  {` · ${run.id.slice(0, 8)}`}
+                </span>
               </span>
               <span>
                 {run.stale ? (
                   <span className="sui-stale sui-mono" style={{ color: runTone("running").color }} title={STALE_HOVER} data-stale="true">
-                    {run.lastEventAt ? `stale · no event since ${new Date(run.lastEventAt).toLocaleDateString([], { month: "short", day: "numeric" })} (${staleAge(run.lastEventAt, now)})` : "stale · no events recorded"}
+                    {run.waitingGates > 0 ? "stale · awaiting gate · " : "stale · "}
+                    {run.lastEventAt ? `no event since ${new Date(run.lastEventAt).toLocaleDateString([], { month: "short", day: "numeric" })} (${staleAge(run.lastEventAt, now)})` : "no events recorded"}
                   </span>
                 ) : (
                   <StatusPill status={run.displayStatus} />

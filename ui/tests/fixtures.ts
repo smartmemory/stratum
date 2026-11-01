@@ -43,7 +43,7 @@ export function persistedRun(overrides: Record<string, unknown> = {}) {
 }
 
 const summary: RunSummary = {
-  id: "run-aaaa1111", flowName: "review", status: "running", displayStatus: "awaiting_gate",
+  id: "run-aaaa1111", label: "review the draft", featureCode: null, flowName: "review", status: "running", displayStatus: "awaiting_gate",
   stepCount: 3, completedSteps: 2, currentStepId: "approve", round: 1,
   startedAt: "2026-10-30T01:00:00Z", updatedAt: "2026-10-30T01:00:07Z", lastEventAt: "2026-10-30T01:00:07Z", stale: false, spent: { usd: 0.42 }, waitingGates: 1,
 };
@@ -77,7 +77,7 @@ export function fakeClient(overrides: Partial<DataClient> = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const resolved: ResolveGateRequest[] = [];
   const client: DataClient = {
-    async listRuns() { calls.push({ method: "listRuns", args: [] }); return [summary, { ...summary, id: "run-bbbb2222", flowName: "build", displayStatus: "failed", status: "failed", waitingGates: 0, currentStepId: null }]; },
+    async listRuns() { calls.push({ method: "listRuns", args: [] }); return [summary, { ...summary, id: "run-bbbb2222", label: "build the thing", flowName: "build", displayStatus: "failed", status: "failed", waitingGates: 0, currentStepId: null }]; },
     async getRun(runId) { calls.push({ method: "getRun", args: [runId] }); return runId === fakeDetail.id ? fakeDetail : null; },
     async listGates() { calls.push({ method: "listGates", args: [] }); return [fakeGate]; },
     async resolveGate(request): Promise<GateResolution> {

@@ -76,7 +76,10 @@
 @media (prefers-reduced-motion: reduce) { .sui-pulse, .sui-spinner { animation: none; } }
 
 /* runs list */
-.sui-runs-grid { display: grid; grid-template-columns: 88px minmax(0, 1fr) 140px 150px 70px 80px; gap: 12px; align-items: center; }
+.sui-runs-name { display: flex; flex-direction: column; min-width: 0; gap: 2px; text-align: left; }
+.sui-runs-label { font-weight: 500; }
+.sui-runs-sub { font-size: 11px; }
+.sui-runs-grid { display: grid; grid-template-columns: minmax(0, 1fr) 190px 150px 70px 80px; gap: 12px; align-items: center; }
 .sui-runs-head { padding: 6px 16px; border-bottom: 1px solid var(--sui-border); }
 .sui-runs-row { width: 100%; padding: 9px 16px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--sui-border) 60%, transparent); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .sui-runs-row:hover { background: color-mix(in srgb, var(--sui-muted-bg) 60%, transparent); }
