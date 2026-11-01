@@ -62,10 +62,33 @@ export interface ClaudeConnectorOptions {
 const defaultQuery: QueryFunction = (params) => sdkQuery(params as Parameters<typeof sdkQuery>[0]);
 const SENSITIVE_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_API_KEY", "CLAUDECODE", ...SMARTMEMORY_SCRUB_VARS] as const;
 
-/** Env that loads host Claude setup past the SDK options: Claude Code reads plugin dirs from
- *  it, so `plugins: []` alone left an inherited inline plugin loaded (measured 2026-11-02 on
- *  an isolated run from inside a Claude session: init listed it; unset, it was gone). */
-const ISOLATION_SCRUB_ENV_VARS = ["CLAUDE_CODE_PLUGIN_DIRS"] as const;
+/** An isolated run drops every inherited launcher variable in these families. Claude Code reads
+ *  host setup from them past the SDK options: plugin dirs (`CLAUDE_CODE_PLUGIN_DIRS`, measured
+ *  2026-11-02: init listed an inherited inline plugin) and a background parent's permission
+ *  rules and addDirs (`CLAUDE_CODE_SESSION_KIND=bg` + `CLAUDE_BG_SESSION_PERMISSION_RULES`).
+ *  A denylist of names misses the next channel, so the family goes and an allowlist stays. */
+const ISOLATION_DROP_PREFIXES = ["CLAUDE_CODE_", "CLAUDE_BG_", "CLAUDE_SESSION_"] as const;
+
+/** Names in the dropped families an isolated run still needs: seat login (OAuth), the entrypoint
+ *  tag the SDK itself sets, and TLS/client-cert settings a proxied host cannot connect without. */
+export const ISOLATION_KEEP_ENV_VARS: ReadonlySet<string> = new Set([
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+  "CLAUDE_CODE_OAUTH_SCOPES",
+  "CLAUDE_CODE_OAUTH_CLIENT_ID",
+  "CLAUDE_CODE_CERT_STORE",
+  "CLAUDE_CODE_CLIENT_CERT",
+  "CLAUDE_CODE_CLIENT_KEY",
+  "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
+]);
+
+/** Delete from `env` every host-setup variable an isolated run must not inherit. */
+export function scrubIsolationEnv(env: Record<string, string | undefined>): void {
+  for (const key of Object.keys(env)) {
+    if (ISOLATION_DROP_PREFIXES.some((p) => key.startsWith(p)) && !ISOLATION_KEEP_ENV_VARS.has(key)) delete env[key];
+  }
+}
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -163,7 +186,7 @@ export class ClaudeConnector {
     try {
       const env = { ...(this.options.env ?? process.env) };
       for (const key of SENSITIVE_ENV_VARS) delete env[key];
-      if (this.options.isolated === true) for (const key of ISOLATION_SCRUB_ENV_VARS) delete env[key];
+      if (this.options.isolated === true) scrubIsolationEnv(env);
       const sdkOptions: Record<string, unknown> = {
         sessionId,
         cwd: this.options.cwd ?? process.cwd(),

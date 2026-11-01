@@ -254,6 +254,29 @@ describe("ClaudeConnector", () => {
       expect(env).toHaveProperty("CLAUDE_CODE_PLUGIN_DIRS", "/plugins/inline");
     });
 
+    it("an isolated run drops every CLAUDE_CODE_/CLAUDE_BG_/CLAUDE_SESSION_ name except the allowlist; a default run keeps all", async () => {
+      const rules = JSON.stringify({ allow: ["Bash(*)"], deny: [], addDirs: ["/synthetic/dir"] });
+      const env = {
+        HOME: "/home/x", KEEP_ME: "1", CLAUDE_CONFIG_DIR: "/seat/dir",
+        CLAUDE_CODE_SESSION_KIND: "bg", CLAUDE_BG_SESSION_PERMISSION_RULES: rules,
+        CLAUDE_CODE_PLUGIN_DIRS: "/plugins/inline", CLAUDE_SESSION_INGRESS_TOKEN_FILE: "/synthetic/tok",
+        CLAUDE_BG_SOMETHING_NEW: "1", CLAUDE_CODE_SOMETHING_NEW: "1",
+        CLAUDE_CODE_ENTRYPOINT: "sdk-ts", CLAUDE_CODE_OAUTH_TOKEN: "synthetic-oauth",
+        CLAUDE_CODE_CERT_STORE: "bundled",
+      };
+      const isolated = (await capturedOptions({ isolated: true, systemPrompt: "s", env })).env as Record<string, string>;
+      for (const dropped of ["CLAUDE_CODE_SESSION_KIND", "CLAUDE_BG_SESSION_PERMISSION_RULES", "CLAUDE_CODE_PLUGIN_DIRS",
+        "CLAUDE_SESSION_INGRESS_TOKEN_FILE", "CLAUDE_BG_SOMETHING_NEW", "CLAUDE_CODE_SOMETHING_NEW"]) {
+        expect(isolated).not.toHaveProperty(dropped);
+      }
+      expect(isolated).toMatchObject({
+        HOME: "/home/x", KEEP_ME: "1", CLAUDE_CONFIG_DIR: "/seat/dir", CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
+        CLAUDE_CODE_OAUTH_TOKEN: "synthetic-oauth", CLAUDE_CODE_CERT_STORE: "bundled",
+      });
+      const plain = (await capturedOptions({ env })).env as Record<string, string>;
+      expect(plain).toMatchObject(env);
+    });
+
     it("isolated with allowedTools omitted still offers no tool and no ToolSearch", async () => {
       const sdk = await capturedOptions({ isolated: true, systemPrompt: "s" });
       expect(Object.keys(sdk).sort()).toEqual([...BASE_KEYS, ...ISOLATION_KEYS].sort());
