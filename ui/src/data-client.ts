@@ -218,7 +218,36 @@ export interface DataClient {
    * state dir with agent dispatch refused. Never starts or saves a run. Optional.
    */
   planFlow?(spec: unknown, input: unknown): Promise<PlanResult>;
+  /**
+   * Builder (COMP-SUBAPP-STRAT-AUTHOR-1): the specs the host can reopen, by name. The host
+   * decides where they live (Compose: `<workspace>/pipelines/<name>.stratum.yaml`) and lists
+   * only files its builder wrote. Optional: a host without it offers no Open.
+   */
+  listSpecs?(): Promise<SavedSpecSummary[]>;
+  /** Builder: one saved spec as the document `onChange` produced, or null when no such name. Optional. */
+  readSpec?(name: string): Promise<unknown | null>;
+  /**
+   * Builder: save a spec under `name`. The host validates it with the engine first and
+   * never overwrites a file its builder did not write. Never throws for a refusal; returns
+   * ok:false with the host's reason (bad name, not ours, invalid spec). Optional: a host
+   * without it shows no Save.
+   */
+  saveSpec?(name: string, spec: unknown): Promise<SaveSpecResult>;
 }
+
+/** One reopenable spec (`listSpecs`). `updatedAt` is ISO-8601. */
+export interface SavedSpecSummary {
+  name: string;
+  updatedAt: string;
+}
+
+/**
+ * `saveSpec` outcome. `code` is the host's refusal: `BAD_NAME`, `NOT_BUILDER_FILE` (an existing
+ * file the builder did not write), `INVALID` (engine validation failed, `errors` set), or another.
+ */
+export type SaveSpecResult =
+  | { ok: true; name: string; created: boolean }
+  | { ok: false; code: string; message: string; errors?: SpecValidationError[] };
 
 /** One engine validation error (`ir/validate.ts` ValidationError); `path` is like `flows.<flow>.steps[<i>].gate.on_approve`. */
 export interface SpecValidationError {
