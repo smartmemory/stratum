@@ -230,6 +230,16 @@ describe("shell hash routes", () => {
     expect((await screen.findByTestId("step-drawer")).getAttribute("aria-label")).toBe("step critique");
   });
 
+  it("a quick Back right after a click still restores the earlier step (the two hashchange events coalesce)", async () => {
+    window.location.hash = "#/runs/run-aaaa1111/draft";
+    const view = shell();
+    await screen.findByTestId("step-drawer");
+    fireEvent.click(view.container.querySelector('[data-step-id="critique"]')!);
+    act(() => { window.history.back(); }); // before the shell's hashchange for the click has run
+    await waitFor(() => expect(hashNow()).toBe("#/runs/run-aaaa1111/draft"));
+    await waitFor(() => expect(screen.getByTestId("step-drawer").getAttribute("aria-label")).toBe("step draft"));
+  });
+
   it("runs filter: the tab is in the hash, a reload keeps it, the default leaves it out", async () => {
     window.location.hash = "#/runs?filter=gates";
     const view = shell();

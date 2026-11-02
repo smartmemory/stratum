@@ -39,17 +39,22 @@ export function pathFor(target: NavTarget): string | null {
   }
 }
 
-const go = (path: string) => { window.location.hash = path; };
-const nav: Nav = {
-  href: (target) => { const path = pathFor(target); return path ? `#${path}` : null; },
-  open: (target) => { const path = pathFor(target); if (path) go(path); },
-  has: (target) => pathFor(target) !== null,
-};
 const BuilderSlot = lazy(() => import("./BuilderSlot"));
 
 export function App({ client }: { client: DataClient }) {
   const [route, setRoute] = useState<Route>(() => parse(window.location.hash));
   const [waiting, setWaiting] = useState<number | null>(null);
+  // Navigating updates the route state itself, not only the hash: a quick Back after a click can coalesce the two
+  // hashchange events, and a screen that never saw the middle route would keep its local selection.
+  const go = useCallback((path: string) => {
+    window.location.hash = path;
+    setRoute(parse(window.location.hash));
+  }, []);
+  const nav = useMemo<Nav>(() => ({
+    href: (target) => { const path = pathFor(target); return path ? `#${path}` : null; },
+    open: (target) => { const path = pathFor(target); if (path) go(path); },
+    has: (target) => pathFor(target) !== null,
+  }), [go]);
   useEffect(() => {
     const onHash = () => setRoute(parse(window.location.hash));
     window.addEventListener("hashchange", onHash);
@@ -65,7 +70,7 @@ export function App({ client }: { client: DataClient }) {
   }, [refresh, route.view]);
 
   const tab = route.view === "run" ? "runs" : route.view;
-  const openRun = useMemo(() => (id: string, stepId?: string) => go(pathFor({ kind: "run", id, stepId })!), []);
+  const openRun = useMemo(() => (id: string, stepId?: string) => go(pathFor({ kind: "run", id, stepId })!), [go]);
   return (
     <DataClientProvider client={client}>
       <NavProvider nav={nav}>
