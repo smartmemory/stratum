@@ -1,10 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { DataClient } from "./data-client";
+import type { DataClient, SubappHost } from "./data-client";
 
 const DataClientContext = createContext<DataClient | null>(null);
+const HostContext = createContext<SubappHost | null>(null);
 
-export function DataClientProvider({ client, children }: { client: DataClient; children: ReactNode }) {
-  return <DataClientContext.Provider value={client}>{children}</DataClientContext.Provider>;
+/** `host` (optional) is what a host app mounting these screens knows: its selection, auth and attention sink (Compose's `contracts/subapp-host.schema.json`). The standalone shell passes none. */
+export function DataClientProvider({ client, host, children }: { client: DataClient; host?: SubappHost | null; children: ReactNode }) {
+  return (
+    <DataClientContext.Provider value={client}>
+      <HostContext.Provider value={host ?? null}>{children}</HostContext.Provider>
+    </DataClientContext.Provider>
+  );
+}
+
+/** The provider's host, or null when the screens run standalone. */
+export function useHost(): SubappHost | null {
+  return useContext(HostContext);
 }
 
 /** The provider's client, or null outside one (the builder works without a host, minus validate/plan). */

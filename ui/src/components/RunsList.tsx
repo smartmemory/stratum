@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { RunSummary } from "../data-client";
-import { useLoad } from "../context";
+import { useHost, useLoad } from "../context";
 import { runTone } from "../model/status";
 import { money, relativeTime, staleAge } from "../model/timing";
 import { Empty, ErrorLine, LiveToggle, Spinner, StatusPill } from "./bits";
@@ -37,7 +37,10 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
   const [live, setLive] = useState(false);
   const [filter, setFilter] = useState("recent");
   const [query, setQuery] = useState("");
-  const { data: runs, error } = useLoad((client) => client.listRuns(), [], live ? pollMs : 0);
+  const { data: loaded, error } = useLoad((client) => client.listRuns(), [], live ? pollMs : 0);
+  // COMP-SUBAPP-HOST-1: a host's selected feature narrows the list before any other filter; no host, every run.
+  const feature = useHost()?.selection?.featureCode || null;
+  const runs = useMemo(() => (feature && loaded ? loaded.filter((run) => run.featureCode === feature) : loaded), [loaded, feature]);
 
   const now = nowProp ?? Date.now();
 
@@ -95,7 +98,7 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
 
       {!runs && !error && <Spinner />}
       {runs && shown.length === 0 && (
-        <Empty title="no runs">{runs.length ? "Nothing matches this filter." : "Runs appear here once the engine plans a flow."}</Empty>
+        <Empty title="no runs">{runs.length ? "Nothing matches this filter." : feature ? `No run carries ${feature}.` : "Runs appear here once the engine plans a flow."}</Empty>
       )}
 
       <div className="sui-scroll">

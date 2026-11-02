@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **COMP-SUBAPP-HOST-1:** `@smartmemory/stratum-ui` `DataClientProvider` takes an optional `host` (Compose's `contracts/subapp-host.schema.json`: selection, auth, attention sink; type `SubappHost` in `ui/src/data-client.ts`), read with the new `useHost()` export. `RunsList` narrows to `host.selection.featureCode` when one is set, and its empty state then says "No run carries <feature>." No host, or an empty selection, shows every run, so the standalone shell is unchanged. Additive: `CONTRACT_VERSION` stays 1. Pinned by `ui/tests/host.test.tsx:36` (vitest 13/13 over host + screens, `tsc --noEmit` clean).
+
 - **Removed `app/`:** a stale copy of the Compose app (package name `compose`, page title "Compose", 198 files) left over from before Compose moved to its own repo. The 2026-03-04 packaging plan listed its removal (Phase 4); nothing in CI, scripts or package manifests referenced it. Compose's own repo is canonical; Compose design history stays in `docs/app/`.
 
 - **COMP-SUBAPP-STRAT-AUTHOR-1:** `@smartmemory/stratum-ui` `DataClient` gains three OPTIONAL builder methods, `listSpecs()`, `readSpec(name)` and `saveSpec(name, spec)` (`ui/src/data-client.ts`), with `SavedSpecSummary` and `SaveSpecResult` (a refusal returns `ok:false` with the host's `code`, never throws). The host owns where specs live and its Save/Open controls; `FlowBuilder` is unchanged and the standalone shell, which implements none of them, is unchanged. `CONTRACT_VERSION` stays 1: the file bumps it only "on any breaking change" (same as `subscribe`, `validateSpec`, `planFlow`). Pinned by `ui/tests/data-client-specs.test.ts:9` (vitest 6/6 over data-client-specs + builder, `tsc --noEmit` clean).

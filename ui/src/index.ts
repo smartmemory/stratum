@@ -1,6 +1,6 @@
 // @smartmemory/stratum-ui public surface. Import "@smartmemory/stratum-ui/styles.css" once in the host.
 export * from "./data-client";
-export { DataClientProvider, useDataClient, useOptionalDataClient, useLoad } from "./context";
+export { DataClientProvider, useDataClient, useOptionalDataClient, useLoad, useHost } from "./context";
 export { RunsList, type RunsListProps } from "./components/RunsList";
 export { RunDetail, type RunDetailProps } from "./components/RunDetail";
 export { DagView, type DagViewProps } from "./components/DagView";

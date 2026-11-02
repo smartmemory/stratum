@@ -264,3 +264,14 @@ export type PlanResult =
   | { status: "planned"; response: unknown }
   | { status: "invalid"; errors: SpecValidationError[] }
   | { status: "error"; message: string };
+
+/**
+ * COMP-SUBAPP-HOST-1: what a host app mounting these screens passes to `<DataClientProvider host>` (Compose's
+ * `contracts/subapp-host.schema.json`). Every field is optional; with no host the screens show everything.
+ * `RunsList` narrows to `selection.featureCode`.
+ */
+export interface SubappHost {
+  selection?: { featureCode?: string; lane?: string; unit?: string };
+  auth?: { mode?: string; credentials?: "data-client" };
+  attention?: (source: string, rows: unknown[]) => void;
+}
