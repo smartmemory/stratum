@@ -43,6 +43,7 @@ const go = (path: string) => { window.location.hash = path; };
 const nav: Nav = {
   href: (target) => { const path = pathFor(target); return path ? `#${path}` : null; },
   open: (target) => { const path = pathFor(target); if (path) go(path); },
+  has: (target) => pathFor(target) !== null,
 };
 const BuilderSlot = lazy(() => import("./BuilderSlot"));
 

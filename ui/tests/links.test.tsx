@@ -257,6 +257,13 @@ describe("shell hash routes", () => {
     await waitFor(() => expect(hashNow()).toBe("#/gates"));
   });
 
+  it("a feature has no page in the shell, so its chip is text, not a dead button", async () => {
+    window.location.hash = "#/runs";
+    shell({ listRuns: withFeature().listRuns });
+    const chip = await screen.findByTitle("feature FEAT-1");
+    expect(chip.tagName).toBe("SPAN");
+  });
+
   it("nav: the brand is a link home, the gates tab counts and aria-current marks the tab", async () => {
     window.location.hash = "#/gates";
     shell();

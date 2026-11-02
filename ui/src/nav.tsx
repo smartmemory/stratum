@@ -19,6 +19,8 @@ export interface Nav {
   href?: (target: NavTarget) => string | null;
   /** In-app navigation for a target, used when the component has no callback of its own. */
   open?: (target: NavTarget) => void;
+  /** False when the host has no page for a target (the standalone shell has no feature page); the link then stays text. Absent: every target is openable. */
+  has?: (target: NavTarget) => boolean;
 }
 
 const NavContext = createContext<Nav | null>(null);
@@ -37,7 +39,7 @@ const plainClick = (event: MouseEvent) => event.button === 0 && !event.metaKey &
 export function EntityLink({ target, onOpen, className = "sui-link", title, children }: { target: NavTarget; onOpen?: () => void; className?: string; title?: string; children: ReactNode }) {
   const nav = useNav();
   const href = nav?.href?.(target) ?? null;
-  const open = onOpen ?? (nav?.open ? () => nav.open?.(target) : undefined);
+  const open = onOpen ?? (nav?.open && nav.has?.(target) !== false ? () => nav.open?.(target) : undefined);
   if (href) {
     return (
       <a
