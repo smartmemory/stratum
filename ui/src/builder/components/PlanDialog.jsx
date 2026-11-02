@@ -8,7 +8,19 @@ import { buildExport, sampleInput } from '../lib/spec';
  * throwaway state directory with agent dispatch refused, and returns the first response.
  * Nothing is dispatched or saved. There is deliberately no "run" button anywhere.
  */
-export default function PlanDialog({ open, onOpenChange, doc, planFlow }) {
+/** Every step id of this flow the result names, in first-seen order (values only: the result's keys are engine words). */
+function namedSteps(value, ids, out = []) {
+  if (typeof value === 'string') {
+    if (ids.includes(value) && !out.includes(value)) out.push(value);
+  } else if (Array.isArray(value)) {
+    value.forEach((entry) => namedSteps(entry, ids, out));
+  } else if (value && typeof value === 'object') {
+    Object.values(value).forEach((entry) => namedSteps(entry, ids, out));
+  }
+  return out;
+}
+
+export default function PlanDialog({ open, onOpenChange, doc, planFlow, stepIds = [], onPickStep }) {
   const [input, setInput] = useState('{}');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -64,6 +76,24 @@ export default function PlanDialog({ open, onOpenChange, doc, planFlow }) {
           >
             {JSON.stringify(result, null, 2)}
           </pre>
+        )}
+        {result && onPickStep && namedSteps(result, stepIds).length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="plan-steps">
+            <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground">steps in this plan</span>
+            {namedSteps(result, stepIds).map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => {
+                  onPickStep(id);
+                  onOpenChange(false);
+                }}
+                className="rounded border border-border px-1.5 py-0.5 font-mono text-[11px] hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
+              >
+                {id}
+              </button>
+            ))}
+          </div>
         )}
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>

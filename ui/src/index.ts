@@ -10,3 +10,4 @@ export { StatusPill, LiveToggle } from "./components/bits";
 export { deriveEdges, dataRefs, layoutGraph, type Edge, type EdgeKind } from "./model/graph";
 export { STEP_TONES, RUN_TONES, KIND_TONES, stepTone, runTone, kindTone, type Tone } from "./model/status";
 export { stepTiming, type StepTiming } from "./model/timing";
+export { NavProvider, useNav, EntityLink, CopyText, type Nav, type NavTarget } from "./nav";

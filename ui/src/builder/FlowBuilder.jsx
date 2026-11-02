@@ -39,18 +39,19 @@ function initialDoc(initialSpec) {
  * Visual editor for a Stratum specification (STRAT-UI-BUILDER-1). Ported from the Base44
  * "Stratum Studio" canvas; the state is the real engine document (`lib/spec.ts`).
  *
- * Props: `initialSpec` (a v1 document or a run file), `onChange(spec)` (the exported
+ * Props: `initialSpec` (a v1 document or a run file), `initialStepId` (selected on open), `onChange(spec)` (the exported
  * document after each edit). Validation and the dry plan go through the host's DataClient
  * (`validateSpec`, `planFlow`); without them those buttons are disabled, never faked.
  */
-export default function FlowBuilder({ initialSpec, onChange } = {}) {
+export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {}) {
   const client = useOptionalDataClient();
   const canValidate = Boolean(client && client.validateSpec);
   const canPlan = Boolean(client && client.planFlow);
 
   const [doc, setDoc] = useState(() => initialDoc(initialSpec));
   const [layouts, setLayouts] = useState({});
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(initialStepId ?? null);
+  const [selectedEdge, setSelectedEdge] = useState(null); // { id, fromId, toId } of a chosen `after` edge
   const [validation, setValidation] = useState(null); // { result, spec } of the last validateSpec call
   const [autoValidate, setAutoValidate] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -64,7 +65,8 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
     if (initialSpec) {
       setDoc(parseImport(initialSpec));
       setLayouts({});
-      setSelectedId(null);
+      setSelectedId(initialStepId ?? null);
+      setSelectedEdge(null);
       setValidation(null);
     }
   }, [initialSpec]);
@@ -154,19 +156,42 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
     setSelectedId(nextId);
   };
 
+  // An `after` edge disconnects by removing the dependency from its target step.
+  const deleteEdge = useCallback((edge) => {
+    if (!edge) return;
+    change((d) => {
+      const target = getFlow(d).steps.find((s) => s.id === edge.toId);
+      return target ? setAfter(d, edge.toId, (target.after || []).filter((id) => id !== edge.fromId)) : d;
+    });
+    setSelectedEdge(null);
+  }, [change]);
+
+  // Choosing an edge: an `after` edge is selected (Delete removes it); a route or data edge lives in a step
+  // field, so choosing it selects the step that owns the field and the panel shows it.
+  const chooseEdge = (edge) => {
+    if (edge.kind === 'after') {
+      setSelectedEdge({ id: edge.id, fromId: edge.fromId, toId: edge.toId });
+      setSelectedId(null);
+    } else {
+      setSelectedEdge(null);
+      setSelectedId(edge.fromId);
+    }
+  };
+
   useEffect(() => {
-    if (!selectedId) return undefined;
+    if (!selectedId && !selectedEdge) return undefined;
     const onKey = (e) => {
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const el = document.activeElement;
       const tag = el && el.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el && el.isContentEditable)) return;
       e.preventDefault();
-      deleteStep(selectedId);
+      if (selectedEdge) deleteEdge(selectedEdge);
+      else deleteStep(selectedId);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, deleteStep]);
+  }, [selectedId, selectedEdge, deleteStep, deleteEdge]);
 
   // ---------------------------------------------------------------- validation pins
   const result = validation ? validation.result : null;
@@ -180,9 +205,21 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
   );
   const stepErrors = pinned.steps[doc.flowName] || {};
 
+  // A validation row with no step to point at (a flow-level error) selects the flow settings.
   const pick = (target) => {
+    setSelectedEdge(null);
+    if (!target) {
+      setSelectedId(null);
+      return;
+    }
     if (target.flowName !== doc.flowName) setDoc((d) => ({ ...d, flowName: target.flowName }));
     setSelectedId(target.stepId);
+  };
+
+  const switchFlow = (name) => {
+    setDoc((d) => ({ ...d, flowName: name }));
+    setSelectedId(null);
+    setSelectedEdge(null);
   };
 
   const selected = steps.find((s) => s.id === selectedId) || null;
@@ -203,6 +240,7 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
         onPlan={() => setShowPlan(true)}
         onExport={() => setShowExport(true)}
         onImport={() => setShowImport(true)}
+        onSwitchFlow={switchFlow}
         onNew={() => {
           change(() => ({ spec: emptySpec(), flowName: 'main' }));
           setLayouts({});
@@ -222,7 +260,12 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
             mode="edit"
             selectedId={selectedId}
             stepErrors={stepErrors}
-            onSelect={setSelectedId}
+            onSelect={(id) => {
+              setSelectedEdge(null);
+              setSelectedId(id);
+            }}
+            selectedEdgeId={selectedEdge ? selectedEdge.id : null}
+            onSelectEdge={chooseEdge}
             onMove={moveStep}
             onConnect={connect}
           />
@@ -237,10 +280,8 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
           onReplaceStep={(next) => change((d) => updateStep(d, selectedId, () => next))}
           onUpdateFlow={(patch) => change((d) => updateFlow(d, patch))}
           onUpdateSpec={(patch) => change((d) => updateSpec(d, patch))}
-          onSwitchFlow={(name) => {
-            setDoc((d) => ({ ...d, flowName: name }));
-            setSelectedId(null);
-          }}
+          onSwitchFlow={switchFlow}
+          onSelectStep={setSelectedId}
           onDelete={() => deleteStep(selectedId)}
           onRename={renameStep}
         />
@@ -257,7 +298,7 @@ export default function FlowBuilder({ initialSpec, onChange } = {}) {
           setValidation(null);
         }}
       />
-      {canPlan && <PlanDialog open={showPlan} onOpenChange={setShowPlan} doc={doc} planFlow={(spec, input) => client.planFlow(spec, input)} />}
+      {canPlan && <PlanDialog open={showPlan} onOpenChange={setShowPlan} doc={doc} planFlow={(spec, input) => client.planFlow(spec, input)} stepIds={steps.map((s) => s.id)} onPickStep={setSelectedId} />}
     </div>
   );
 }

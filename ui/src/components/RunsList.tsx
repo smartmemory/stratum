@@ -1,13 +1,25 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type KeyboardEvent } from "react";
 import type { RunSummary } from "../data-client";
 import { useHost, useLoad } from "../context";
 import { runTone } from "../model/status";
 import { money, relativeTime, staleAge } from "../model/timing";
+import { CopyText, EntityLink } from "../nav";
 import { Empty, ErrorLine, LiveToggle, Spinner, StatusPill } from "./bits";
 
 export interface RunsListProps {
-  /** Navigation is the host's: called with the run id when a row is opened. */
-  onOpenRun: (runId: string) => void;
+  /** Navigation is the host's: called with the run id when a row is opened, and with the current step too when that step is clicked. */
+  onOpenRun: (runId: string, stepId?: string) => void;
+  /** Optional links (STRAT-UI-LINKS-1): without a callback (or a NavProvider URL) the item stays plain text. */
+  onOpenFeature?: (featureCode: string) => void;
+  /** The flow of a run, in the builder. */
+  onOpenFlow?: (runId: string) => void;
+  /** The Gates inbox, narrowed to a run when given. */
+  onOpenGates?: (runId?: string) => void;
+  /** The builder, empty (the empty state's "create a flow"). */
+  onOpenBuilder?: () => void;
+  /** The active filter tab, when the host keeps it (the shell puts it in the URL). Absent: the list keeps its own. */
+  filter?: string;
+  onFilterChange?: (filter: string) => void;
   /** Auto-refresh interval while "live" is on. */
   pollMs?: number;
   /** Clock for the stale and "last 7 d" rules; tests pin it. */
@@ -33,9 +45,14 @@ const FILTERS: Array<{ key: string; label: string; match: (run: RunSummary, now:
   { key: "complete", label: "complete", match: (run) => run.displayStatus === "complete" },
 ];
 
-export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListProps) {
+export function RunsList({ onOpenRun, onOpenFeature, onOpenFlow, onOpenGates, onOpenBuilder, filter: filterProp, onFilterChange, pollMs = 4000, now: nowProp }: RunsListProps) {
   const [live, setLive] = useState(false);
-  const [filter, setFilter] = useState("recent");
+  const [localFilter, setLocalFilter] = useState("recent");
+  const filter = filterProp ?? localFilter;
+  const setFilter = (key: string) => {
+    setLocalFilter(key);
+    onFilterChange?.(key);
+  };
   const [query, setQuery] = useState("");
   const { data: loaded, error } = useLoad((client) => client.listRuns(), [], live ? pollMs : 0);
   // COMP-SUBAPP-HOST-1: a host's selected feature narrows the list before any other filter; no host, every run.
@@ -51,6 +68,20 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
       (run) => match(run, now) && (!q || run.id.includes(q) || run.flowName.toLowerCase().includes(q) || run.label.toLowerCase().includes(q)),
     );
   }, [runs, filter, query, now]);
+
+  const waitingTotal = useMemo(() => (runs ?? []).reduce((sum, run) => sum + run.waitingGates, 0), [runs]);
+
+  // Arrow keys move between rows' open links (a roving focus without a tabindex per row).
+  const onRowKeys = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const links = [...event.currentTarget.querySelectorAll<HTMLElement>(".sui-runs-open")];
+    const at = links.indexOf(document.activeElement as HTMLElement);
+    const next = links[at + (event.key === "ArrowDown" ? 1 : -1)];
+    if (at >= 0 && next) {
+      event.preventDefault();
+      next.focus();
+    }
+  };
 
   const counts = useMemo(
     () => Object.fromEntries(FILTERS.map((entry) => [entry.key, (runs ?? []).filter((run) => entry.match(run, now)).length])),
@@ -84,6 +115,9 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+        {waitingTotal > 0 && (
+          <EntityLink target={{ kind: "gates" }} onOpen={onOpenGates ? () => onOpenGates() : undefined}>{waitingTotal} waiting in Gates</EntityLink>
+        )}
         <div className="sui-push"><LiveToggle live={live} onChange={setLive} /></div>
       </div>
       <ErrorLine error={error} />
@@ -98,20 +132,37 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
 
       {!runs && !error && <Spinner />}
       {runs && shown.length === 0 && (
-        <Empty title="no runs">{runs.length ? "Nothing matches this filter." : feature ? `No run carries ${feature}.` : "Runs appear here once the engine plans a flow."}</Empty>
+        <Empty title="no runs">{runs.length ? "Nothing matches this filter." : feature ? `No run carries ${feature}.` : "Runs appear here once the engine plans a flow."}
+          {!runs.length && !feature && <> <EntityLink target={{ kind: "builder" }} onOpen={onOpenBuilder}>Open the builder</EntityLink> to write one.</>}
+        </Empty>
       )}
 
-      <div className="sui-scroll">
+      <div className="sui-scroll" onKeyDown={onRowKeys}>
         {shown.map((run) => {
           const pct = run.stepCount ? Math.round((run.completedSteps / run.stepCount) * 100) : 0;
           return (
-            <button key={run.id} type="button" className="sui-runs-row sui-runs-grid" onClick={() => onOpenRun(run.id)} data-run-id={run.id}>
+            <div key={run.id} className="sui-runs-row sui-runs-grid" onClick={() => onOpenRun(run.id)} data-run-id={run.id}>
               <span className="sui-runs-name" title={run.label}>
-                <span className="sui-ellipsis sui-runs-label" data-label>{run.label}</span>
+                <span className="sui-runs-first">
+                  <EntityLink className="sui-link sui-runs-open sui-ellipsis sui-runs-label" target={{ kind: "run", id: run.id }} onOpen={() => onOpenRun(run.id)}>
+                    <span data-label>{run.label}</span>
+                  </EntityLink>
+                  {run.featureCode && (
+                    <EntityLink className="sui-link sui-chip" target={{ kind: "feature", code: run.featureCode }} onOpen={onOpenFeature ? () => onOpenFeature(run.featureCode!) : undefined} title={`feature ${run.featureCode}`}>
+                      {run.featureCode}
+                    </EntityLink>
+                  )}
+                </span>
                 <span className="sui-ellipsis sui-muted sui-mono sui-runs-sub" title={run.id}>
-                  {run.flowName}
-                  {run.currentStepId && ` · ${run.currentStepId}`}
-                  {` · ${run.id.slice(0, 8)}`}
+                  <EntityLink target={{ kind: "flow", runId: run.id }} onOpen={onOpenFlow ? () => onOpenFlow(run.id) : undefined} title="open this flow in the builder">{run.flowName}</EntityLink>
+                  {run.currentStepId && (
+                    <>
+                      {" · "}
+                      <EntityLink target={{ kind: "run", id: run.id, stepId: run.currentStepId }} onOpen={() => onOpenRun(run.id, run.currentStepId!)} title={`open the run at ${run.currentStepId}`}>{run.currentStepId}</EntityLink>
+                    </>
+                  )}
+                  {" · "}
+                  <CopyText value={run.id}>{run.id.slice(0, 8)}</CopyText>
                 </span>
               </span>
               <span>
@@ -123,6 +174,14 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
                 ) : (
                   <StatusPill status={run.displayStatus} />
                 )}
+                {run.waitingGates > 0 && (
+                  <>
+                    {" "}
+                    <EntityLink target={{ kind: "gates", runId: run.id }} onOpen={onOpenGates ? () => onOpenGates(run.id) : undefined} title="open this run's gates">
+                      {run.waitingGates} gate{run.waitingGates === 1 ? "" : "s"}
+                    </EntityLink>
+                  </>
+                )}
               </span>
               <span className="sui-progress" title={`${run.completedSteps}/${run.stepCount} steps`}>
                 <span className="sui-progress-track"><span className="sui-progress-fill" style={{ width: `${pct}%` }} /></span>
@@ -130,7 +189,7 @@ export function RunsList({ onOpenRun, pollMs = 4000, now: nowProp }: RunsListPro
               </span>
               <span className="sui-mono sui-right">{money(run.spent.usd)}</span>
               <span className="sui-mono sui-muted sui-right" title={run.startedAt ?? ""}>{relativeTime(run.startedAt)}</span>
-            </button>
+            </div>
           );
         })}
       </div>

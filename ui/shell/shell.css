@@ -18,3 +18,7 @@ html, body, #root { height: 100%; margin: 0; background: hsl(var(--background));
 .shell-tab-on { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
 .shell-main { min-height: 0; overflow: hidden; }
 .shell-main > .sui-root { height: 100%; }
+.shell-brand { color: hsl(var(--foreground)); text-decoration: none; }
+.shell-brand:hover { color: hsl(var(--accent)); }
+.shell-count { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: hsl(var(--accent)); color: #fff; font-size: 11px; }
+.shell-brand:focus-visible, .shell-tab:focus-visible { outline: 2px solid hsl(var(--accent)); outline-offset: 1px; }

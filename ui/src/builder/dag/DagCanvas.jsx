@@ -23,6 +23,8 @@ export default function DagCanvas({
   onConnect,
   statusMap,
   stepErrors,
+  selectedEdgeId,
+  onSelectEdge,
 }) {
   const canvasRef = useRef(null);
   const [drag, setDrag] = useState(null);
@@ -110,13 +112,45 @@ export default function DagCanvas({
             const active =
               !selectedId || selectedId === edge.fromId || selectedId === edge.toId;
             const mid = edgeLabelPoint(edge);
+            const chosen = selectedEdgeId === edge.id;
+            const what = `${edge.kind === 'fail' ? 'on_fail' : edge.kind} edge ${edge.fromId} to ${edge.toId}`;
+            const pickEdge = (e) => {
+              e.stopPropagation();
+              onSelectEdge?.(edge);
+            };
             return (
-              <g key={edge.id} data-edge={edge.id} opacity={active ? 1 : 0.35}>
+              <g
+                key={edge.id}
+                data-edge={edge.id}
+                data-selected={chosen || undefined}
+                opacity={active || chosen ? 1 : 0.35}
+                className="builder-edge"
+                tabIndex={onSelectEdge ? 0 : undefined}
+                role={onSelectEdge ? 'button' : undefined}
+                aria-label={onSelectEdge ? what : undefined}
+                aria-pressed={onSelectEdge ? chosen : undefined}
+                style={onSelectEdge ? { pointerEvents: 'stroke', cursor: 'pointer' } : undefined}
+                onClick={onSelectEdge ? pickEdge : undefined}
+                onKeyDown={
+                  onSelectEdge
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          pickEdge(e);
+                        }
+                      }
+                    : undefined
+                }
+              >
+                <title>{what}</title>
+                {onSelectEdge && (
+                  <path d={edgePath(edge)} fill="none" stroke="transparent" strokeWidth={14} style={{ pointerEvents: 'stroke' }} />
+                )}
                 <path
                   d={edgePath(edge)}
                   fill="none"
-                  stroke={color}
-                  strokeWidth={edge.color ? 1.5 : 1.3}
+                  stroke={chosen ? '#f8fafc' : color}
+                  strokeWidth={chosen ? 2.6 : edge.color ? 1.5 : 1.3}
                   strokeOpacity={edge.color ? 0.9 : 0.7}
                   strokeDasharray={edge.dashed || undefined}
                   markerEnd={`url(#${markerFor(edge)})`}
@@ -167,6 +201,10 @@ export default function DagCanvas({
               status={statusMap ? statusMap[step.id] : undefined}
               errors={stepErrors ? stepErrors[step.id] : undefined}
               onSelect={onSelect}
+              onNudge={(id, dx, dy) => {
+                const p = layout[id];
+                if (p) onMove(id, Math.max(0, p.x + dx), Math.max(0, p.y + dy));
+              }}
               onDragStart={startDrag(step)}
               onPortStart={startPort(step)}
             />

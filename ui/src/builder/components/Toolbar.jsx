@@ -4,13 +4,26 @@ import { Button } from '../shims/ui';
 import { cn } from '../shims/utils';
 
 /** No run control here by design (COMPOSE-UI-INTEGRATION-1): "Dry plan" only. */
-export default function Toolbar({ doc, stepCount, validation, busy, canValidate, canPlan, onValidate, onPlan, onExport, onImport, onNew }) {
+export default function Toolbar({ doc, stepCount, validation, busy, canValidate, canPlan, onValidate, onPlan, onExport, onImport, onNew, onSwitchFlow }) {
+  const flowNames = Object.keys(doc.spec.flows).filter((name) => name !== 'entry');
   const errorCount = validation && validation.status === 'invalid' ? validation.errors.length : 0;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-card/40 px-3 py-2">
       <div className="flex items-baseline gap-2">
         <span className="micro">flow</span>
-        <span className="font-mono text-[13px]" data-testid="flow-name">{doc.flowName}</span>
+        {flowNames.length > 1 && onSwitchFlow ? (
+          <select
+            aria-label="switch flow"
+            data-testid="flow-name"
+            value={doc.flowName}
+            onChange={(e) => onSwitchFlow(e.target.value)}
+            className="rounded border border-border bg-transparent px-1 font-mono text-[13px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
+          >
+            {flowNames.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+        ) : (
+          <span className="font-mono text-[13px]" data-testid="flow-name">{doc.flowName}</span>
+        )}
         {doc.spec.flows.entry === doc.flowName && (
           <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-muted-foreground">entry</span>
         )}

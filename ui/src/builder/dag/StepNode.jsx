@@ -14,6 +14,7 @@ export default function StepNode({
   onDragStart,
   onSelect,
   onPortStart,
+  onNudge,
 }) {
   const kind = stepKind(step);
   const meta = (kind && KIND_META[kind]) || { tone: '#ef4444' };
@@ -35,6 +36,21 @@ export default function StepNode({
         e.stopPropagation();
         onSelect?.(step.id);
       }}
+      tabIndex={0}
+      role="button"
+      aria-label={`step ${step.id}${errorCount ? `, ${errorCount} error${errorCount > 1 ? 's' : ''}` : ''}${selected ? ', selected' : ''}`}
+      aria-pressed={Boolean(selected)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect?.(step.id);
+        } else if (mode === 'edit' && e.key.startsWith('Arrow') && onNudge) {
+          e.preventDefault();
+          const d = e.shiftKey ? 40 : 10;
+          onNudge(step.id, e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0, e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0);
+        }
+      }}
       style={style}
       className={cn(
         'group absolute w-[236px] select-none rounded-[10px] border bg-card px-3 py-2.5 transition-[border-color,box-shadow] duration-150',
@@ -44,7 +60,7 @@ export default function StepNode({
           : selected
             ? 'border-foreground/45 ring-1 ring-foreground/20'
             : mode === 'edit'
-              ? 'border-border hover:border-foreground/30'
+              ? 'border-border hover:border-foreground/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal'
               : 'border-border',
       )}
     >
@@ -63,8 +79,23 @@ export default function StepNode({
         </span>
         {errorCount > 0 && (
           <span
-            className="truncate rounded bg-destructive/15 px-1 font-mono text-[9px] text-destructive"
+            role="button"
+            tabIndex={0}
+            data-error-badge
+            className="cursor-pointer truncate rounded bg-destructive/15 px-1 font-mono text-[9px] text-destructive hover:bg-destructive/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
             title={errors.map((e) => `${e.code} ${e.path}: ${e.message}`).join('\n')}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect?.(step.id);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onSelect?.(step.id);
+              }
+            }}
           >
             {errors[0].code}
             {errorCount > 1 ? ` +${errorCount - 1}` : ''}
@@ -96,7 +127,37 @@ export default function StepNode({
 
       <div className="mt-1.5 flex items-center justify-between gap-2 font-mono text-[9.5px] text-muted-foreground/80">
         <span className="truncate">
-          {step.after?.length ? `after ${step.after.join(', ')}` : 'root'}
+          {step.after?.length ? (
+            <>
+              after{' '}
+              {step.after.map((id, i) => (
+                <span key={id}>
+                  {i > 0 && ', '}
+                  <span
+                    role="link"
+                    tabIndex={0}
+                    data-after-link={id}
+                    title={`select ${id}`}
+                    className="cursor-pointer underline-offset-2 hover:text-foreground hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect?.(id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onSelect?.(id);
+                      }
+                    }}
+                  >
+                    {id}
+                  </span>
+                </span>
+              ))}
+            </>
+          ) : 'root'}
         </span>
         {mode === 'edit' && (
           <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">drag ⇢</span>

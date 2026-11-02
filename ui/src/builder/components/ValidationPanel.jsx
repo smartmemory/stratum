@@ -50,8 +50,17 @@ export default function ValidationPanel({ result, targets, onPick, onClose }) {
               return (
                 <tr
                   key={`${err.code}-${i}`}
-                  className={`border-t border-border/60 ${target ? 'cursor-pointer hover:bg-muted/40' : ''}`}
-                  onClick={() => target && onPick(target)}
+                  className="cursor-pointer border-t border-border/60 hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${err.code} ${err.path}: ${target ? `select ${target.flowName}/${target.stepId}` : 'select flow settings'}`}
+                  onClick={() => onPick(target || null)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onPick(target || null);
+                    }
+                  }}
                 >
                   <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[11px] text-destructive">{err.code}</td>
                   <td className="whitespace-nowrap px-3 py-1.5 font-mono text-[11px]">

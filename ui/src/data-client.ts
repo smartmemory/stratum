@@ -224,6 +224,11 @@ export interface DataClient {
    * only files its builder wrote. Optional: a host without it offers no Open.
    */
   listSpecs?(): Promise<SavedSpecSummary[]>;
+  /**
+   * Builder (STRAT-UI-LINKS-1): the spec a run was planned from (the run file's `spec`), so a run can be
+   * opened in the builder. Read-only; null when no such run. Optional: a host without it offers no "edit this flow".
+   */
+  getRunSpec?(runId: string): Promise<unknown | null>;
   /** Builder: one saved spec as the document `onChange` produced, or null when no such name. Optional. */
   readSpec?(name: string): Promise<unknown | null>;
   /**

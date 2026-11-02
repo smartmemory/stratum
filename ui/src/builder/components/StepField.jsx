@@ -45,7 +45,24 @@ function Options({ value, label, options, allowBlank, blankLabel = '—', onPick
  * ['gate', 'on_approve']). `onChange(path, value)` receives the value to store, where
  * `undefined` means "remove the key" (see `fieldValue`).
  */
-export default function StepField({ def, step, stepIds, contracts, flows, onChange }) {
+function GoTo({ label, onGo, children }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="min-w-0 flex-1">{children}</div>
+      <button
+        type="button"
+        onClick={onGo}
+        aria-label={label}
+        title={label}
+        className="shrink-0 rounded border border-border px-1.5 py-1 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal"
+      >
+        go to
+      </button>
+    </div>
+  );
+}
+
+export default function StepField({ def, step, stepIds, contracts, flows, onChange, onGoStep, onGoFlow }) {
   const value = getAt(step, def.path);
   const label = `field ${def.path.join('.')}`;
   const commit = (raw) => onChange(def.path, fieldValue(def, raw));
@@ -85,8 +102,8 @@ export default function StepField({ def, step, stepIds, contracts, flows, onChan
       );
     case 'enum':
       return <Options value={value} label={label} options={def.options} allowBlank={def.empty !== 'string'} blankLabel="(unset)" onPick={commit} />;
-    case 'target':
-      return (
+    case 'target': {
+      const picker = (
         <Options
           value={value}
           label={label}
@@ -96,10 +113,18 @@ export default function StepField({ def, step, stepIds, contracts, flows, onChan
           onPick={commit}
         />
       );
+      return value && onGoStep && stepIds.includes(String(value))
+        ? <GoTo label={`go to step ${value}`} onGo={() => onGoStep(String(value))}>{picker}</GoTo>
+        : picker;
+    }
     case 'contract':
       return <Options value={value} label={label} options={contracts} allowBlank blankLabel="(none)" onPick={commit} />;
-    case 'flow':
-      return <Options value={value} label={label} options={flows} allowBlank blankLabel="(pick a flow)" onPick={commit} />;
+    case 'flow': {
+      const picker = <Options value={value} label={label} options={flows} allowBlank blankLabel="(pick a flow)" onPick={commit} />;
+      return value && onGoFlow && flows.includes(String(value))
+        ? <GoTo label={`go to flow ${value}`} onGo={() => onGoFlow(String(value))}>{picker}</GoTo>
+        : picker;
+    }
     case 'require':
     case 'text':
     default:

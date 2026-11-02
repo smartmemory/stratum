@@ -3,6 +3,7 @@
 //
 //   GET  /api/runs                         → RunSummary[] (newest first)
 //   GET  /api/runs/:runId                  → RunDetail | 404
+//   GET  /api/runs/:runId/spec             → the run file's `spec` (read-only; the builder opens it) | 404
 //   GET  /api/gates                        → PendingGate[]   (`stratum query gates` + run file)
 //   GET  /api/runs/:runId/live             → text/event-stream, `data: RunDetail | null` on every change
 //   POST /api/gates/:runId/:stepId/:action → GateResolution  (`stratum gate <action> ... --token`)
@@ -169,6 +170,11 @@ export function createHandler({ flowsDir, stratumBin, staticDir, allowedHosts, w
         if (!RUN_ID.test(parts[2])) return send(400, { error: { code: "BAD_ID", message: "bad run id" } });
         const run = await loadRun(parts[2]);
         return run ? send(200, detail(run)) : send(404, { error: { code: "NOT_FOUND", message: `run ${parts[2]} not found` } });
+      }
+      if (req.method === "GET" && parts.length === 4 && parts[1] === "runs" && parts[3] === "spec") {
+        if (!RUN_ID.test(parts[2])) return send(400, { error: { code: "BAD_ID", message: "bad run id" } });
+        const run = await loadRun(parts[2]);
+        return run ? send(200, run.spec) : send(404, { error: { code: "NOT_FOUND", message: `run ${parts[2]} not found` } });
       }
       if (req.method === "GET" && parts.length === 4 && parts[1] === "runs" && parts[3] === "live") {
         if (!RUN_ID.test(parts[2])) return send(400, { error: { code: "BAD_ID", message: "bad run id" } });

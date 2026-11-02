@@ -54,6 +54,7 @@ export default function PropertiesPanel({
   onUpdateFlow,
   onUpdateSpec,
   onSwitchFlow,
+  onSelectStep,
   onDelete,
   onRename,
 }) {
@@ -157,6 +158,8 @@ export default function PropertiesPanel({
                   contracts={contracts}
                   flows={flows}
                   onChange={onSetField}
+                  onGoStep={onSelectStep}
+                  onGoFlow={onSwitchFlow}
                 />
               </div>
             ))}

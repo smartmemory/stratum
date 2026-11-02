@@ -34,6 +34,12 @@ export function createHttpClient(base = ""): DataClient {
       if (!response.ok) throw new Error(`run ${runId}: HTTP ${response.status}`);
       return response.json() as Promise<RunDetail>;
     },
+    async getRunSpec(runId) {
+      const response = await fetch(`${base}/api/runs/${encodeURIComponent(runId)}/spec`, { headers: { accept: "application/json" } });
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`run ${runId} spec: HTTP ${response.status}`);
+      return response.json();
+    },
     listGates: () => get<PendingGate[]>("/api/gates"),
     async resolveGate({ runId, stepId, action, note, gateToken }) {
       const response = await fetch(`${base}/api/gates/${encodeURIComponent(runId)}/${encodeURIComponent(stepId)}/${action}`, {

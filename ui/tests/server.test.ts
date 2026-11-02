@@ -109,6 +109,14 @@ describe("HTTP handler (server/handler.mjs)", () => {
     expect((await (await fetch(`${base}/api/runs/run-aaaa1111`)).json()).steps).toHaveLength(3);
     expect((await fetch(`${base}/api/runs/nope`)).status).toBe(404);
     expect((await fetch(`${base}/api/runs/..%2Fetc`)).status).toBe(400);
+    // STRAT-UI-LINKS-1: the run's own spec, for "edit this flow" (read-only; no token, receipt or state in it)
+    const spec = await (await fetch(`${base}/api/runs/run-aaaa1111/spec`)).json();
+    expect(spec.version).toBe(1);
+    expect(spec.flows.review.steps.map((step: { id: string }) => step.id)).toEqual(["draft", "critique", "approve"]);
+    expect(JSON.stringify(spec)).not.toContain("tok-1");
+    expect((await fetch(`${base}/api/runs/nope/spec`)).status).toBe(404);
+    expect((await fetch(`${base}/api/runs/..%2Fetc/spec`)).status).toBe(400);
+    expect((await fetch(`${base}/api/runs/run-aaaa1111/spec`, { method: "POST" })).status).toBeGreaterThanOrEqual(400);
   });
 
   it("refuses gate posts that are not JSON or lack a token, before touching the CLI", async () => {

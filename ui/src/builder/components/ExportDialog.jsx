@@ -12,12 +12,19 @@ import { buildExport } from '../lib/spec';
 
 export default function ExportDialog({ open, onOpenChange, doc }) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(null);
   const json = useMemo(() => JSON.stringify(buildExport(doc), null, 2), [doc, open]);
 
   const copy = async () => {
-    await navigator.clipboard.writeText(json);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopyError(null);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch (error) {
+      // The browser can refuse the clipboard (insecure origin, no permission): say so, and the JSON above stays selectable.
+      setCopyError(`Copy was blocked by the browser (${error instanceof Error ? error.message : 'no clipboard access'}). Select the JSON above and copy it by hand, or use Download.`);
+    }
   };
 
   const download = () => {
@@ -42,6 +49,7 @@ export default function ExportDialog({ open, onOpenChange, doc }) {
         <pre data-testid="export-json" className="max-h-[52vh] overflow-auto rounded-md border border-border bg-background p-3 font-mono text-[11.5px] leading-relaxed">
           {json}
         </pre>
+        {copyError && <div role="alert" className="font-mono text-[11px] text-destructive">{copyError}</div>}
         <div className="flex justify-end gap-2">
           <Button variant="outline" size="sm" className="gap-1.5" onClick={download}>
             <Download className="h-3.5 w-3.5" /> Download
