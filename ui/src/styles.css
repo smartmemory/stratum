@@ -182,3 +182,5 @@ a.sui-chip:hover, button.sui-chip:hover { color: var(--sui-fg); border-color: va
 .sui-item-detail { padding: 0 0 4px; }
 .sui-actions-end { justify-content: flex-end; }
 .sui-results .sui-link { margin-left: 6px; }
+.sui-btn { white-space: nowrap; }
+.sui-drawer-head { flex-wrap: wrap; }
