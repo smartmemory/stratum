@@ -1,8 +1,0 @@
-node_modules/
-dist/
-data/
-package-lock.json
-.forge/
-*.png
-*.jpg
-.playwright-mcp/

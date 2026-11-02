@@ -205,11 +205,11 @@ A vanilla-js example requires web components, which is deferred (see Open Questi
 
 ### Phase 4 — compose: separate repo
 - [ ] Create new `compose` repository
-- [ ] Move `stratum/app/` contents → compose repo
+- [x] Move `stratum/app/` contents → compose repo (compose is its own repo)
 - [ ] Add `@stratum/ui` as dependency, replace stratum-ui panel code with `<RunDetail>` / `<GateQueue>` components
 - [ ] Write `compose install` CLI command (registers compose-mcp in `.mcp.json`)
 - [ ] Update stratum CLAUDE.md and ROADMAP.md to reference compose as external project
-- [ ] Archive `stratum/app/` (or remove)
+- [x] Archive `stratum/app/` (or remove): removed 2026-11-02 (stale Compose copy; compose repo is canonical)
 - [ ] Add compose link to stratum README
 
 ### Phase 5 — stratum/examples/

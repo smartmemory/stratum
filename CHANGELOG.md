@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Removed `app/`:** a stale copy of the Compose app (package name `compose`, page title "Compose", 198 files) left over from before Compose moved to its own repo. The 2026-03-04 packaging plan listed its removal (Phase 4); nothing in CI, scripts or package manifests referenced it. Compose's own repo is canonical; Compose design history stays in `docs/app/`.
+
 - **COMP-SUBAPP-STRAT-AUTHOR-1:** `@smartmemory/stratum-ui` `DataClient` gains three OPTIONAL builder methods, `listSpecs()`, `readSpec(name)` and `saveSpec(name, spec)` (`ui/src/data-client.ts`), with `SavedSpecSummary` and `SaveSpecResult` (a refusal returns `ok:false` with the host's `code`, never throws). The host owns where specs live and its Save/Open controls; `FlowBuilder` is unchanged and the standalone shell, which implements none of them, is unchanged. `CONTRACT_VERSION` stays 1: the file bumps it only "on any breaking change" (same as `subscribe`, `validateSpec`, `planFlow`). Pinned by `ui/tests/data-client-specs.test.ts:9` (vitest 6/6 over data-client-specs + builder, `tsc --noEmit` clean).
 
 - **COMP-PIPE-EDIT-CHAT-PANE-1 F6b: an isolated Claude run drops every inherited `CLAUDE_CODE_*`, `CLAUDE_BG_*` and `CLAUDE_SESSION_*` variable except a named allowlist (`ISOLATION_KEEP_ENV_VARS`: entrypoint, OAuth login, TLS/client-cert).** F6 deleted only `CLAUDE_CODE_PLUGIN_DIRS`, so a background launcher's `CLAUDE_CODE_SESSION_KIND=bg` and `CLAUDE_BG_SESSION_PERMISSION_RULES` still imported the parent's allow/deny rules and addDirs (review L1). Non-isolated runs keep today's env exactly.
