@@ -88,7 +88,7 @@ export function App({ client }: { client: DataClient }) {
             {route.view === "runs" && (
               <RunsList
                 onOpenRun={openRun}
-                filter={route.filter}
+                filter={route.filter ?? "recent"}
                 onFilterChange={(filter) => go(pathFor({ kind: "runs", filter: filter === "recent" ? undefined : filter })!)}
                 onOpenGates={(runId) => go(pathFor({ kind: "gates", runId })!)}
                 onOpenFlow={(runId) => go(pathFor({ kind: "flow", runId })!)}

@@ -20,7 +20,7 @@ export interface RunDetailProps {
   onOpenFeature?: (featureCode: string) => void;
   /** Host navigation to the runs list; the not-found state's way back when `onBack` is absent. */
   onOpenRuns?: () => void;
-  /** The selected step, when the host keeps it (the shell puts it in the URL). Absent: the screen keeps its own. */
+  /** The selected step, when the host keeps it (the shell puts it in the URL). Absent: the screen keeps its own. A host passing it must echo `onSelectStep` into it synchronously, else a run push snaps the selection back to the host's value; an explicit null means "no step" (closed), not "pick one for me". */
   stepId?: string | null;
   /** Called when the user selects a step (graph, drawer links, events, banner). null = the drawer closed. */
   onSelectStep?: (stepId: string | null) => void;
@@ -34,11 +34,15 @@ export function RunDetail({ runId, onBack, onOpenGates, onOpenFlow, onOpenFeatur
   const [live, setLive] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [eventType, setEventType] = useState("");
+  // The user closed the drawer: it stays closed (host null echo or not) until a step is chosen or the run changes.
+  const closed = useRef(false);
   const select = (id: string | null) => {
+    closed.current = id === null;
     setSelected(id);
     onSelectStep?.(id);
   };
   const lastStepId = useRef<string | null | undefined>(stepId);
+  const lastRunId = useRef(runId);
   // Live by default: pushed through `subscribe` when the client has one, else polled every pollMs.
   const subscribe = useCallback(
     (client: DataClient, push: (run: RunDetailData | null) => void) => (client.subscribe ? client.subscribe(runId, push) : undefined),
@@ -49,11 +53,14 @@ export function RunDetail({ runId, onBack, onOpenGates, onOpenFlow, onOpenFeatur
   // Keep the selection while it exists; else focus the most active step.
   useEffect(() => {
     if (!run) return;
+    if (lastRunId.current !== runId) { lastRunId.current = runId; closed.current = false; }
     // A step the host names wins (deep link, Back); when the host's step changes, a stale local pick is dropped.
     const hostChanged = lastStepId.current !== stepId;
     lastStepId.current = stepId;
+    if (stepId && run.steps.some((step) => step.id === stepId)) closed.current = false;
     setSelected((prev) => {
       if (stepId && run.steps.some((step) => step.id === stepId)) return stepId;
+      if (closed.current) return null;
       if (!hostChanged && prev && run.steps.some((step) => step.id === prev)) return prev;
       for (const status of FOCUS) {
         const hit = run.steps.find((step) => run.stepStates[step.id]?.status === status);
@@ -61,7 +68,7 @@ export function RunDetail({ runId, onBack, onOpenGates, onOpenFlow, onOpenFeatur
       }
       return run.steps[0]?.id ?? null;
     });
-  }, [run, stepId]);
+  }, [run, stepId, runId]);
 
   if (run === null && !loading) {
     return (
@@ -107,7 +114,7 @@ export function RunDetail({ runId, onBack, onOpenGates, onOpenFlow, onOpenFeatur
             <span key={gate.id}>{index > 0 && ", "}<StepLink runId={run.id} stepId={gate.id} onSelect={select} /></span>
           ))}
           <span className="sui-push">
-            <EntityLink className="sui-btn sui-btn-ghost" target={{ kind: "gates", runId: run.id, stepId: waiting[0]?.id }} onOpen={onOpenGates ? () => onOpenGates(run.id, waiting.length === 1 ? waiting[0]!.id : undefined) : undefined}>open gates</EntityLink>
+            <EntityLink className="sui-btn sui-btn-ghost" hideWithoutTarget target={{ kind: "gates", runId: run.id, stepId: waiting[0]?.id }} onOpen={onOpenGates ? () => onOpenGates(run.id, waiting.length === 1 ? waiting[0]!.id : undefined) : undefined}>open gates</EntityLink>
           </span>
         </div>
       )}

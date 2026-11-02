@@ -35,8 +35,8 @@ export function useNav(): Nav | null {
 
 const plainClick = (event: MouseEvent) => event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 
-/** A real link when the host has a URL for the target, a button when only a callback exists, text when neither. */
-export function EntityLink({ target, onOpen, className = "sui-link", title, children }: { target: NavTarget; onOpen?: () => void; className?: string; title?: string; children: ReactNode }) {
+/** A real link when the host has a URL for the target, a button when only a callback exists, text when neither (nothing at all with `hideWithoutTarget`, for action controls that read wrong as text). */
+export function EntityLink({ target, onOpen, className = "sui-link", title, hideWithoutTarget, children }: { target: NavTarget; onOpen?: () => void; className?: string; title?: string; hideWithoutTarget?: boolean; children: ReactNode }) {
   const nav = useNav();
   const href = nav?.href?.(target) ?? null;
   const open = onOpen ?? (nav?.open && nav.has?.(target) !== false ? () => nav.open?.(target) : undefined);
@@ -72,6 +72,7 @@ export function EntityLink({ target, onOpen, className = "sui-link", title, chil
       </button>
     );
   }
+  if (hideWithoutTarget) return null;
   return <span className={className === "sui-link" ? undefined : className} title={title}>{children}</span>;
 }
 

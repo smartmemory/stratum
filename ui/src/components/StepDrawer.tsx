@@ -48,9 +48,9 @@ export function StepDrawer({ step, state, events, onClose, runId, onSelectStep, 
         <span className="sui-mono sui-strong">{step.id}</span>
         <StatusPill status={state?.status ?? "pending"} kind="step" />
         {state?.status === "waiting_gate" && (
-          <EntityLink className="sui-btn sui-btn-ghost" target={{ kind: "gates", runId, stepId: step.id }} onOpen={onOpenGates ? () => onOpenGates(runId, step.id) : undefined}>open in Gates</EntityLink>
+          <EntityLink className="sui-btn sui-btn-ghost" hideWithoutTarget target={{ kind: "gates", runId, stepId: step.id }} onOpen={onOpenGates ? () => onOpenGates(runId, step.id) : undefined}>open in Gates</EntityLink>
         )}
-        <EntityLink target={{ kind: "flow", runId, stepId: step.id }} onOpen={onOpenFlow ? () => onOpenFlow(step.id) : undefined} title="open this step in the builder">builder</EntityLink>
+        <EntityLink hideWithoutTarget target={{ kind: "flow", runId, stepId: step.id }} onOpen={onOpenFlow ? () => onOpenFlow(step.id) : undefined} title="open this step in the builder">builder</EntityLink>
         {onClose && <button type="button" className="sui-btn sui-btn-ghost sui-push" onClick={onClose} aria-label="close step">×</button>}
       </header>
 

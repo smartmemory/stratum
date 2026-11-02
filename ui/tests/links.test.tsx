@@ -399,3 +399,60 @@ describe("builder keyboard and links", () => {
     await waitFor(() => expect(nodeOf(container, "brainstorm").getAttribute("aria-pressed")).toBe("true"));
   });
 });
+
+describe("SUBAPP-UI-LINKS-FU-1", () => {
+  const label = () => screen.getByTestId("step-drawer").getAttribute("aria-label");
+  /** A client whose `subscribe` hands the test the push function (a run changing on the engine). */
+  const pushing = () => {
+    let push: ((run: typeof fakeDetail | null) => void) | undefined;
+    const client: DataClient = { ...fakeClient().client, subscribe: (_id, cb) => { push = cb as never; return () => undefined; } };
+    return { client, push: () => act(() => { push!({ ...fakeDetail }); }) };
+  };
+
+  it("shell: close at #/runs/<id>/<step> closes the drawer for good, the URL names no step, a run push keeps it closed", async () => {
+    window.location.hash = "#/runs/run-aaaa1111/draft";
+    const { client, push } = pushing();
+    render(<App client={client} />);
+    await screen.findByTestId("step-drawer");
+    fireEvent.click(screen.getByRole("button", { name: "close step" }));
+    await waitFor(() => expect(hashNow()).toBe("#/runs/run-aaaa1111"));
+    await waitFor(() => expect(screen.queryByTestId("step-drawer")).toBeNull());
+    push();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(screen.queryByTestId("step-drawer")).toBeNull();
+    // choosing a step opens it again
+    fireEvent.click(document.querySelector('[data-step-id="critique"]')!);
+    await waitFor(() => expect(label()).toBe("step critique"));
+  });
+
+  it("uncontrolled RunDetail: close stays closed across a run push (the e1ca769 behaviour)", async () => {
+    const { client, push } = pushing();
+    mount(client, <RunDetail runId="run-aaaa1111" />);
+    await screen.findByTestId("step-drawer");
+    fireEvent.click(screen.getByRole("button", { name: "close step" }));
+    expect(screen.queryByTestId("step-drawer")).toBeNull();
+    push();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(screen.queryByTestId("step-drawer")).toBeNull();
+  });
+
+  it("Back to the default #/runs shows the default filter", async () => {
+    window.location.hash = "#/runs";
+    render(<App client={fakeClient().client} />);
+    fireEvent.click(await screen.findByRole("tab", { name: "awaiting gate" }));
+    await waitFor(() => expect(hashNow()).toBe("#/runs?filter=gates"));
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(hashNow()).toBe("#/runs"));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "active, last 7 d" }).getAttribute("aria-selected")).toBe("true"));
+  });
+
+  it("RunDetail with no host and no nav renders no open-gates, open-in-Gates or builder control", async () => {
+    mount(fakeClient().client, <RunDetail runId="run-aaaa1111" />);
+    const drawer = await screen.findByTestId("step-drawer");
+    expect(screen.getByText(/Waiting on gate/)).toBeTruthy();
+    expect(screen.queryByText("open gates")).toBeNull();
+    expect(screen.queryByText("open in Gates")).toBeNull();
+    expect(within(drawer).queryByText("builder")).toBeNull();
+  });
+});
+
