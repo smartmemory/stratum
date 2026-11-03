@@ -298,6 +298,28 @@ describe("shell hash routes", () => {
     expect(screen.getByRole("link", { name: "approve" }).getAttribute("href")).toBe("#/runs/run-aaaa1111/approve");
   });
 
+  it("builder: a new step= on the same run moves the selection, Back restores it, and edits are kept (FLUSH-1 M1)", async () => {
+    const getRunSpec = vi.fn(async () => run.spec);
+    window.location.hash = "#/builder?run=run-aaaa1111&step=draft";
+    shell({ getRunSpec });
+    const builder = await screen.findByTestId("flow-builder");
+    const pressed = (id: string) => screen.getByTestId("flow-builder").querySelector(`[data-step-id="${id}"]`)!.getAttribute("aria-pressed");
+    const count = () => screen.getByTestId("flow-builder").querySelectorAll("[data-step-id]").length;
+    expect(pressed("draft")).toBe("true");
+    fireEvent.click(within(builder).getByRole("button", { name: "add do step" })); // an unsaved edit
+    expect(count()).toBe(4);
+    act(() => { window.location.hash = "#/builder?run=run-aaaa1111&step=critique"; });
+    await waitFor(() => expect(pressed("critique")).toBe("true"));
+    expect(pressed("draft")).not.toBe("true");
+    expect(count()).toBe(4);
+    act(() => { window.history.back(); });
+    await waitFor(() => expect(hashNow()).toBe("#/builder?run=run-aaaa1111&step=draft"));
+    await waitFor(() => expect(pressed("draft")).toBe("true"));
+    expect(pressed("critique")).not.toBe("true");
+    expect(count()).toBe(4);
+    expect(getRunSpec).toHaveBeenCalledTimes(1);
+  });
+
   it("builder says so when the host cannot serve a run's spec", async () => {
     window.location.hash = "#/builder?run=run-aaaa1111";
     shell();
@@ -336,6 +358,31 @@ describe("builder keyboard and links", () => {
     expect(nodeOf(container, "brainstorm").textContent).toContain("root");
     fireEvent.keyDown(container.querySelector('[data-edge="approve:review_gate->roadmap"]')!, { key: "Enter" });
     expect(nodeOf(container, "review_gate").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a data edge selects the step that holds the reference (its consumer); a route edge keeps its source (FLUSH-1 M2)", () => {
+    const { container } = render(<FlowBuilder initialSpec={persistedRun().spec} />);
+    fireEvent.click(container.querySelector('[data-edge="data:draft->critique"]')!);
+    expect(nodeOf(container, "critique").getAttribute("aria-pressed")).toBe("true");
+    expect(nodeOf(container, "draft").getAttribute("aria-pressed")).not.toBe("true");
+    expect((screen.getByLabelText("field id") as HTMLInputElement).value).toBe("critique");
+    fireEvent.click(container.querySelector('[data-edge="revise:approve->draft"]')!);
+    expect(nodeOf(container, "approve").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("adding a step after choosing an edge selects only the new step, so Delete removes it and not the edge (FLUSH-1 M3)", () => {
+    const { container } = render(<FlowBuilder initialSpec={persistedRun().spec} />);
+    const edge = () => container.querySelector('[data-edge="after:critique->approve"]');
+    fireEvent.click(edge()!);
+    expect(edge()!.getAttribute("data-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "add do step" }));
+    const added = [...container.querySelectorAll("[data-step-id]")].find((node) => !["draft", "critique", "approve"].includes(node.getAttribute("data-step-id")!)) as HTMLElement;
+    expect(added.getAttribute("aria-pressed")).toBe("true");
+    expect(edge()!.getAttribute("data-selected")).not.toBe("true");
+    fireEvent.keyDown(added, { key: "Delete" });
+    expect(container.querySelectorAll("[data-step-id]")).toHaveLength(3);
+    expect(edge()).not.toBeNull();
+    expect(nodeOf(container, "approve").textContent).not.toContain("root");
   });
 
   it("a node's after ids select that step; the error badge selects its step", async () => {

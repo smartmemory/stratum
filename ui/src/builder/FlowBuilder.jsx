@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import Palette from './components/Palette';
 import Toolbar from './components/Toolbar';
 import PropertiesPanel from './components/PropertiesPanel';
@@ -39,16 +39,36 @@ function initialDoc(initialSpec) {
  * Visual editor for a Stratum specification (STRAT-UI-BUILDER-1). Ported from the Base44
  * "Stratum Studio" canvas; the state is the real engine document (`lib/spec.ts`).
  *
- * Props: `initialSpec` (a v1 document or a run file), `initialStepId` (selected on open), `onChange(spec)` (the exported
- * document after each edit). Validation and the dry plan go through the host's DataClient
- * (`validateSpec`, `planFlow`); without them those buttons are disabled, never faked.
+ * Props: `initialSpec` (a v1 document or a run file), `initialStepId` (selected on open, and again whenever it
+ * changes, so a host's `step=` link or Back moves the selection without dropping edits), `onChange(spec)` (the
+ * exported document, 400 ms after the last edit; the timer restarts on every edit). Validation and the dry plan go
+ * through the host's DataClient (`validateSpec`, `planFlow`); without them those buttons are disabled, never faked.
+ *
+ * Ref handle (STRAT-FLOWBUILDER-FLUSH-1), for a host Save that must not guess at the `onChange` timer:
+ * `getDocument()` returns the exported document as of now, synchronously, with every committed edit in it (the
+ * builder keeps the latest document in a ref written in the same tick as the edit, not after a render). It calls
+ * `flush()` first. `flush()` commits a field being typed in (step id, list, JSON) by blurring it, the same path as
+ * the user leaving the field, so a Save from a keyboard shortcut with the caret still in a field keeps that text.
+ * A field whose draft is invalid JSON stays uncommitted and keeps its "invalid JSON" note. `onChange` is unchanged.
+ *
+ * @typedef {{ getDocument: () => Record<string, unknown>, flush: () => void }} FlowBuilderHandle
+ * @type {React.ForwardRefExoticComponent<{ initialSpec?: unknown, initialStepId?: string | null, onChange?: (spec: Record<string, unknown>) => void } & React.RefAttributes<FlowBuilderHandle>>}
  */
-export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {}) {
+const FlowBuilder = forwardRef(function FlowBuilder({ initialSpec, initialStepId, onChange }, ref) {
   const client = useOptionalDataClient();
   const canValidate = Boolean(client && client.validateSpec);
   const canPlan = Boolean(client && client.planFlow);
 
-  const [doc, setDoc] = useState(() => initialDoc(initialSpec));
+  const [doc, setDocState] = useState(() => initialDoc(initialSpec));
+  // The committed document as of now. Every write goes through `setDoc`, which updates this ref before React
+  // re-renders, so `getDocument()` right after an edit (even inside the same event) already sees it.
+  const docRef = useRef(doc);
+  const setDoc = useCallback((next) => {
+    const value = typeof next === 'function' ? next(docRef.current) : next;
+    docRef.current = value;
+    setDocState(value);
+  }, []);
+  const rootRef = useRef(null);
   const [layouts, setLayouts] = useState({});
   const [selectedId, setSelectedId] = useState(initialStepId ?? null);
   const [selectedEdge, setSelectedEdge] = useState(null); // { id, fromId, toId } of a chosen `after` edge
@@ -61,23 +81,47 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
   const [revision, setRevision] = useState(0);
   const seq = useRef(0);
 
+  // The one way to select a step: it clears a chosen edge, so Delete removes what is visibly selected.
+  const selectStep = useCallback((id) => {
+    setSelectedEdge(null);
+    setSelectedId(id ?? null);
+  }, []);
+
   useEffect(() => {
     if (initialSpec) {
       setDoc(parseImport(initialSpec));
       setLayouts({});
-      setSelectedId(initialStepId ?? null);
-      setSelectedEdge(null);
+      selectStep(initialStepId);
       setValidation(null);
     }
   }, [initialSpec]);
+
+  // A new `initialStepId` on the same spec (the host's `step=` changed, or Back) moves the selection; edits stay.
+  useEffect(() => {
+    selectStep(initialStepId);
+  }, [initialStepId]);
 
   const flow = getFlow(doc);
   const steps = flow.steps || [];
 
   const change = useCallback((updater) => {
-    setDoc((prev) => updater(prev));
+    setDoc(updater);
     setRevision((r) => r + 1);
+  }, [setDoc]);
+
+  const flush = useCallback(() => {
+    const el = typeof document === 'undefined' ? null : document.activeElement;
+    if (!el || !rootRef.current || !rootRef.current.contains(el)) return;
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') el.blur();
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    flush,
+    getDocument: () => {
+      flush();
+      return buildExport(docRef.current);
+    },
+  }), [flush]);
 
   const validate = useCallback(async (current) => {
     if (!client || !client.validateSpec) return;
@@ -122,11 +166,11 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
   // ---------------------------------------------------------------- edits
   const addStep = (kind) => {
     const anchor = selectedId && steps.some((s) => s.id === selectedId) ? selectedId : null;
-    const { doc: next, id } = addStepTo(doc, kind, anchor ? [anchor] : []);
+    const { doc: next, id } = addStepTo(docRef.current, kind, anchor ? [anchor] : []);
     const from = anchor ? layout[anchor] : steps.length ? layout[steps[steps.length - 1].id] : null;
     place(id, from ? { x: from.x + NODE_W + 92, y: from.y } : { x: 56, y: 56 });
     change(() => next);
-    setSelectedId(id);
+    selectStep(id);
   };
 
   const moveStep = useCallback((id, x, y) => {
@@ -138,12 +182,12 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
   const deleteStep = useCallback((id) => {
     if (!id) return;
     change((d) => deleteStepFrom(d, id));
-    setSelectedId(null);
-  }, [change]);
+    selectStep(null);
+  }, [change, selectStep]);
 
   const renameStep = (rawId) => {
     const nextId = String(rawId).trim();
-    if (!nextId || !selectedId || steps.some((s) => s.id === nextId)) return;
+    if (!nextId || !selectedId || (getFlow(docRef.current).steps || []).some((s) => s.id === nextId)) return;
     change((d) => renameStepIn(d, selectedId, nextId));
     setLayouts((all) => {
       const current = { ...layout, ...(all[doc.flowName] || {}) };
@@ -153,7 +197,7 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
       }
       return { ...all, [doc.flowName]: current };
     });
-    setSelectedId(nextId);
+    selectStep(nextId);
   };
 
   // An `after` edge disconnects by removing the dependency from its target step.
@@ -167,14 +211,15 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
   }, [change]);
 
   // Choosing an edge: an `after` edge is selected (Delete removes it); a route or data edge lives in a step
-  // field, so choosing it selects the step that owns the field and the panel shows it.
+  // field, so choosing it selects the step that owns the field and the panel shows it. A route (approve, kill,
+  // on_fail, revise) is a field of its source step; a data edge is the consumer's `${producer.output}` reference,
+  // so it selects the consumer (`toId`), not the producer.
   const chooseEdge = (edge) => {
     if (edge.kind === 'after') {
       setSelectedEdge({ id: edge.id, fromId: edge.fromId, toId: edge.toId });
       setSelectedId(null);
     } else {
-      setSelectedEdge(null);
-      setSelectedId(edge.fromId);
+      selectStep(edge.kind === 'data' ? edge.toId : edge.fromId);
     }
   };
 
@@ -207,25 +252,23 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
 
   // A validation row with no step to point at (a flow-level error) selects the flow settings.
   const pick = (target) => {
-    setSelectedEdge(null);
     if (!target) {
-      setSelectedId(null);
+      selectStep(null);
       return;
     }
     if (target.flowName !== doc.flowName) setDoc((d) => ({ ...d, flowName: target.flowName }));
-    setSelectedId(target.stepId);
+    selectStep(target.stepId);
   };
 
   const switchFlow = (name) => {
     setDoc((d) => ({ ...d, flowName: name }));
-    setSelectedId(null);
-    setSelectedEdge(null);
+    selectStep(null);
   };
 
   const selected = steps.find((s) => s.id === selectedId) || null;
 
   return (
-    <div className="flex h-[calc(100dvh-49px)] flex-col overflow-y-auto md:h-full md:overflow-hidden" data-testid="flow-builder">
+    <div ref={rootRef} className="flex h-[calc(100dvh-49px)] flex-col overflow-y-auto md:h-full md:overflow-hidden" data-testid="flow-builder">
       <Toolbar
         doc={doc}
         stepCount={steps.length}
@@ -244,7 +287,7 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
         onNew={() => {
           change(() => ({ spec: emptySpec(), flowName: 'main' }));
           setLayouts({});
-          setSelectedId(null);
+          selectStep(null);
           setValidation(null);
         }}
       />
@@ -260,10 +303,7 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
             mode="edit"
             selectedId={selectedId}
             stepErrors={stepErrors}
-            onSelect={(id) => {
-              setSelectedEdge(null);
-              setSelectedId(id);
-            }}
+            onSelect={selectStep}
             selectedEdgeId={selectedEdge ? selectedEdge.id : null}
             onSelectEdge={chooseEdge}
             onMove={moveStep}
@@ -281,7 +321,7 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
           onUpdateFlow={(patch) => change((d) => updateFlow(d, patch))}
           onUpdateSpec={(patch) => change((d) => updateSpec(d, patch))}
           onSwitchFlow={switchFlow}
-          onSelectStep={setSelectedId}
+          onSelectStep={selectStep}
           onDelete={() => deleteStep(selectedId)}
           onRename={renameStep}
         />
@@ -294,11 +334,13 @@ export default function FlowBuilder({ initialSpec, initialStepId, onChange } = {
         onImport={(parsed) => {
           change(() => parsed);
           setLayouts({});
-          setSelectedId(null);
+          selectStep(null);
           setValidation(null);
         }}
       />
-      {canPlan && <PlanDialog open={showPlan} onOpenChange={setShowPlan} doc={doc} planFlow={(spec, input) => client.planFlow(spec, input)} stepIds={steps.map((s) => s.id)} onPickStep={setSelectedId} />}
+      {canPlan && <PlanDialog open={showPlan} onOpenChange={setShowPlan} doc={doc} planFlow={(spec, input) => client.planFlow(spec, input)} stepIds={steps.map((s) => s.id)} onPickStep={selectStep} />}
     </div>
   );
-}
+});
+
+export default FlowBuilder;
