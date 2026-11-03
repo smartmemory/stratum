@@ -139,6 +139,7 @@ export function disambiguate(rows) {
     (row) => (row.startedAt ? row.startedAt.slice(0, 10) : ""),
     (row) => (row.startedAt ? row.startedAt.slice(11, 16) : ""),
     (row) => row.id.slice(0, 8),
+    (row) => row.id,
   ];
   let out = rows.map((row) => ({ ...row }));
   for (const step of steps) {
@@ -161,6 +162,7 @@ export function disambiguate(rows) {
  * @returns {Array<{ id: string, lastEventAt: string, reason: string }>}
  */
 export function expiryCandidates(runs, now = Date.now(), afterMs = EXPIRE_AFTER_MS) {
+  if (!Number.isFinite(afterMs) || afterMs <= 0) throw new RangeError(`expiryCandidates: afterMs must be a finite number above 0 (got ${afterMs})`);
   const out = [];
   for (const run of runs) {
     if (displayStatus(run) !== "running") continue;

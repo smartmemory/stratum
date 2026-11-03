@@ -20,13 +20,20 @@ const flowsDir = resolve(flag("--flows-dir") ?? process.env.STRATUM_STATE_ROOT ?
 const engineDist = resolve(flag("--engine-dist") ?? join(here, "..", "..", "ts", "dist"));
 const days = Number(flag("--days") ?? 30);
 const apply = args.includes("--apply");
+// Number("oops") is NaN and every comparison with NaN is false, which would read every run as old: refuse first.
+if (!Number.isFinite(days) || days < 1) {
+  console.error(`expire.mjs: --days must be a number of at least 1 (got ${JSON.stringify(flag("--days"))}); nothing selected`);
+  process.exit(2);
+}
+
+const files = new Map(); // run id -> file name, for the re-read right before each cancel
 
 async function loadRuns() {
   const runs = [];
   for (const name of (await readdir(flowsDir)).filter((n) => n.endsWith(".json"))) {
     try {
       const run = JSON.parse(await readFile(join(flowsDir, name), "utf8"));
-      if (isRun(run)) runs.push(run);
+      if (isRun(run)) { runs.push(run); files.set(run.id, name); }
     } catch { /* half-written or unreadable: skipped, like the list endpoint */ }
   }
   return runs;
@@ -46,9 +53,18 @@ if (apply) {
   ]);
   const engine = new StratumEngine({ stateRoot: flowsDir, evaluator: createEvaluator(), evaluateRunner: createEvaluateRunner() });
   let cancelled = 0;
+  let skipped = 0;
   const failures = [];
   for (const { id, reason } of candidates) {
     try {
+      // The run may have moved since selection (a gate opened, a step wrote an event): re-read and apply the same rule.
+      // A small window between this read and the cancel remains: the engine's cancel path takes no precondition.
+      const fresh = JSON.parse(await readFile(join(flowsDir, files.get(id)), "utf8"));
+      if (!isRun(fresh) || fresh.status !== "running" || expiryCandidates([fresh], Date.now(), days * 24 * 3600 * 1000).length !== 1) {
+        skipped += 1;
+        console.log(JSON.stringify({ id, skipped: "changed since selection" }));
+        continue;
+      }
       const ack = await cancelFlow(engine, id, { reason });
       if (ack.status === "cancelled") cancelled += 1; else failures.push({ id, status: ack.status, detail: ack.reason });
     } catch (error) {
@@ -56,6 +72,6 @@ if (apply) {
     }
   }
   const after = await loadRuns();
-  console.log(JSON.stringify({ cancelled, failures, after: byStatus(after), total: after.length }));
+  console.log(JSON.stringify({ cancelled, "skipped (changed since selection)": skipped, failures, after: byStatus(after), total: after.length }));
   process.exit(failures.length ? 1 : 0);
 }
