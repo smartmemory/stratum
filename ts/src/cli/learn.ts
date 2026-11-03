@@ -269,7 +269,9 @@ async function egressCommand(args: string[]): Promise<number> {
     // F3: `lockedSave` is now lease-aware and refuses a cancelled run, so a CLI egress can no
     // longer revert a live driver's receipts or rewrite a settled record. Reads go through
     // `lockedRead`, which takes the same lock and saves nothing.
-    withReceiptUpdate: (id, update) => lockedSave(store, id, update),
+    // STRATUM-SM-EGRESS-ON-1 phase B2: `egressOnly` writes receipt egress state on a cancelled
+    // run too (its POSTs already went out) and refuses any other change to the record.
+    withReceiptUpdate: (id, update) => lockedSave(store, id, update, { egressOnly: true }),
     withReceiptRead: (id, read) => lockedRead(store, id, read),
   });
 

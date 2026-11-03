@@ -493,7 +493,7 @@ export async function lockedSave<T>(
   store: Pick<StateStore, "root" | "load" | "save">,
   runId: string,
   mutate: (run: PersistedRun) => T | Promise<T>,
-  options: RunLockOptions = {},
+  options: RunLockOptions & { egressOnly?: boolean } = {},
 ): Promise<T> {
   const release = await acquireRunLock(store.root, runId, options);
   try {
@@ -504,8 +504,24 @@ export async function lockedSave<T>(
     // once (invariant 4b), by the settle and nothing else.
     await assertNoForeignDriverLease(store.root, runId, options);
     const run = await store.load(runId);
-    assertNotCancelled(run, runId);
+    // STRATUM-SM-EGRESS-ON-1 phase B2: a cancelled run's receipts still owe the service their
+    // egress state (sent/dead). `egressOnly` lets that one write through the cancelled guard
+    // and refuses the update if it touched anything but the receipts' egress fields, so the
+    // record otherwise stays immutable (invariant 4b).
+    if (options.egressOnly !== true) {
+      assertNotCancelled(run, runId);
+      const result = await mutate(run);
+      await store.save(run);
+      return result;
+    }
+    const before = withoutEgressState(run);
     const result = await mutate(run);
+    if (withoutEgressState(run) !== before) {
+      throw Object.assign(
+        new Error(`run ${runId}: an egress-only update may change receipt egress state and nothing else`),
+        { code: "EGRESS_UPDATE_TOUCHED_RECORD" },
+      );
+    }
     await store.save(run);
     return result;
   } finally {
@@ -533,6 +549,12 @@ export async function lockedRead<T>(
   } finally {
     await release();
   }
+}
+
+/** The run record serialized with every receipt's `egress`/`egressStatus` removed. */
+function withoutEgressState(run: PersistedRun): string {
+  const receipts = (run.receipts ?? []).map(({ egress: _egress, egressStatus: _status, ...rest }) => rest);
+  return JSON.stringify({ ...run, receipts });
 }
 
 function assertNotCancelled(run: PersistedRun, runId: string): void {

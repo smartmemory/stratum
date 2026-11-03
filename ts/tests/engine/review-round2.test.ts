@@ -352,3 +352,31 @@ const fanoutSpec = {
     ],
   } },
 };
+
+describe("STRATUM-SM-EGRESS-ON-1 B2 — egress state is writable on a cancelled run, nothing else is", () => {
+  it("lets egressOnly change receipt egress on a cancelled run and refuses any other change", async () => {
+    const stateRoot = await tempRoot("stratum-b2-");
+    const store = new StateStore(stateRoot);
+    const runId = await plannedRun(stateRoot);
+    const run = await store.load(runId);
+    run.status = "cancelled";
+    run.receipts = [{ seq: 1, egress: "pending" }] as unknown as NonNullable<typeof run.receipts>;
+    await store.save(run);
+
+    // the default path still refuses a cancelled run
+    await expect(lockedSave(store, runId, (r) => { r.flowName = "x"; }))
+      .rejects.toMatchObject({ code: "PERSIST_ON_CANCELLED_RUN" });
+
+    // egress state goes through
+    await lockedSave(store, runId, (r) => { r.receipts![0]!.egress = "sent"; }, { egressOnly: true });
+    expect((await store.load(runId)).receipts![0]!.egress).toBe("sent");
+
+    // anything else on the record is refused and not written
+    const flowName = (await store.load(runId)).flowName;
+    await expect(lockedSave(store, runId, (r) => { r.flowName = "x"; r.receipts![0]!.egress = "dead"; }, { egressOnly: true }))
+      .rejects.toMatchObject({ code: "EGRESS_UPDATE_TOUCHED_RECORD" });
+    const after = await store.load(runId);
+    expect(after.flowName).toBe(flowName);
+    expect(after.receipts![0]!.egress).toBe("sent");
+  });
+});
