@@ -1142,6 +1142,20 @@ the SmartMemory service environment before enabling delivery:
 SMARTMEMORY_EXTRA_MEMORY_TYPES=stratum_usage_debit:append:false,stratum_step_reset:append:false,stratum_checkpoint_reverted:append:false
 ```
 
+A service in strict memory-type mode answers an unregistered type with HTTP 400, and egress
+dead-letters a receipt on 400/401/403/404/422. After fixing the cause, `retry-dead --run <id>`
+puts those receipts back in the queue.
+
+The key needs only `write:memories`, bound to the workspace (`team_id` at mint). That one
+scope covers every route Stratum calls: `POST /memory/add` (drain), `POST /memory/search`
+(`verify`: the service gates an API key by HTTP method, so this read also needs `write`) and
+`POST /memory/policy/events` (the policy client, which reads the same URL, key and workspace
+names). Keep the key value out of any git-tracked `.mcp.json` (this repo's is tracked). Load
+it into the server's environment from a sealed file instead.
+
+`drain` prints `SmartMemory egress drain complete` and exits 0 even when egress is disabled, so
+check the pending receipt count after a drain rather than the message.
+
 Delivery is at least once. Every row carries a stable `metadata.receipt_id` of
 `<run_id>:<sequence>`; consumers must deduplicate on that value because a lost success
 response can cause a retry to create a second SmartMemory item.
