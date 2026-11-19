@@ -45,7 +45,7 @@ export function RunDetail({ runId, onBack, onOpenGates, onOpenFlow, onOpenFeatur
   const lastRunId = useRef(runId);
   // Live by default: pushed through `subscribe` when the client has one, else polled every pollMs.
   const subscribe = useCallback(
-    (client: DataClient, push: (run: RunDetailData | null) => void) => (client.subscribe ? client.subscribe(runId, push) : undefined),
+    (client: DataClient, push: (run: RunDetailData | null) => void, onError: (message: string) => void) => client.subscribe?.(runId, push, onError),
     [runId],
   );
   const { data: run, error, loading } = useLoad((client) => client.getRun(runId), [runId], live ? pollMs : 0, live ? subscribe : undefined);

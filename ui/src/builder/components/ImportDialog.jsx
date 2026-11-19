@@ -52,7 +52,7 @@ export default function ImportDialog({ open, onOpenChange, onImport }) {
           }}
           className="min-h-[240px] font-mono text-[11.5px] leading-relaxed"
         />
-        {error && <div className="font-mono text-[11px] text-destructive">{error}</div>}
+        {error && <div role="alert" className="font-mono text-[11px] text-destructive">{error}</div>}
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
             Cancel

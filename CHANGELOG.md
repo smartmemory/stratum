@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **OPS-UI-WIRING-AUDIT-1:** Run Detail shows a warning when the live connection drops. Standalone Gates marks revision notes as Coming soon and keeps the revision decision available. Builder shows inline errors for malformed Step JSON and invalid `after` values on import, preserving the current document.
+
 ## [0.7.4] - 2026-11-24
 
 - **Release: npm catches up with the source.** `@smartmemory/stratum` 0.7.4 and `@smartmemory/stratum-ui` 0.1.1 publish everything listed below. A new Compose user installing from npm got Stratum 0.7.3, which has no `models` command (`compose build --dry-run` failed to load the model catalog), and `stratum-ui` 0.1.0, which has no `NavProvider` export (`compose start` served a blank page). Both are patch numbers on purpose: Compose 0.7.2 already asks for `^0.7.3` and `^0.1.0`, so a fresh install of the published Compose picks these up with no Compose release, and every addition below is optional and backwards compatible. The notes below that call for a minor bump (the MCP `isolated` field, the `FlowBuilder` ref) are additive, so they ride this patch. The next breaking surface change still takes a minor, with Compose moving to the same minor.

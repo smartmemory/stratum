@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Trash2 } from '../shims/icons';
 import { Input } from '../shims/ui';
-import { KIND_FIELDS, KIND_META, stepKind } from '../lib/spec';
+import { assertStepJson, KIND_FIELDS, KIND_META, stepKind } from '../lib/spec';
 import StepField from './StepField';
 import FlowSettings from './FlowSettings';
 import JsonArea from './JsonArea';
@@ -175,7 +175,8 @@ export default function PropertiesPanel({
                   value={step}
                   minHeight="min-h-[160px]"
                   onCommit={(next) => {
-                    if (next && typeof next === 'object' && !Array.isArray(next)) onReplaceStep({ ...next, id: step.id });
+                    assertStepJson(next, 'Step JSON');
+                    onReplaceStep({ ...next, id: step.id });
                   }}
                 />
               </div>

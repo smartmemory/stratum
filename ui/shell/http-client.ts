@@ -41,6 +41,8 @@ export function createHttpClient(base = ""): DataClient {
       return response.json();
     },
     listGates: () => get<PendingGate[]>("/api/gates"),
+    // The standalone server forwards --note, but the v1 CLI discards it.
+    supportsRevisionNotes: false,
     async resolveGate({ runId, stepId, action, note, gateToken }) {
       const response = await fetch(`${base}/api/gates/${encodeURIComponent(runId)}/${encodeURIComponent(stepId)}/${action}`, {
         method: "POST",
@@ -50,12 +52,19 @@ export function createHttpClient(base = ""): DataClient {
       const body = (await response.json().catch(() => undefined)) as GateResolution | undefined;
       return body && "ok" in body ? body : { ok: false, kind: "error", code: `HTTP_${response.status}`, message: "unexpected response" };
     },
-    // Server-sent events from /api/runs/:id/live. EventSource reconnects on its own and the server
-    // sends a fresh snapshot on every (re)connect, so a dropped stream heals without a reload.
-    subscribe(runId, cb) {
+    // Each EventSource connection to /api/runs/:id/live starts with a fresh snapshot.
+    subscribe(runId, cb, onError) {
       const source = new EventSource(`${base}/api/runs/${encodeURIComponent(runId)}/live`);
+      source.onerror = () => onError?.("Live updates disconnected.");
       source.onmessage = (event) => {
-        try { cb(JSON.parse(event.data) as RunDetail | null); } catch { /* ignore a malformed frame */ }
+        let run: RunDetail | null;
+        try {
+          run = JSON.parse(event.data) as RunDetail | null;
+        } catch {
+          onError?.("Live updates received an invalid snapshot.");
+          return;
+        }
+        cb(run);
       };
       return () => source.close();
     },

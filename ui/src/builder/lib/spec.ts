@@ -71,6 +71,15 @@ export function getFlow(doc: BuilderDoc): RawFlow {
 
 // ---------------------------------------------------------------- import / export
 
+/** Check the parts of step JSON that the canvas needs to render. */
+export function assertStepJson(step: unknown, path: string): asserts step is Record<string, unknown> {
+  if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`${path} must be an object.`);
+  const after = (step as Record<string, unknown>).after;
+  if (after !== undefined && (!Array.isArray(after) || after.some((id) => typeof id !== "string"))) {
+    throw new Error(`${path}.after must be an array of step IDs.`);
+  }
+}
+
 /**
  * Accept a document (or a run file, whose `spec` is the document). Checks only the envelope
  * the canvas needs to draw; everything else is left for `validateSpec` to judge, and nothing
@@ -94,9 +103,9 @@ export function parseImport(input: unknown): BuilderDoc {
     const steps = (flows[name] as { steps?: unknown }).steps;
     if (!Array.isArray(steps)) throw new Error(`flows.${name}.steps must be an array`);
     steps.forEach((step, index) => {
-      if (!step || typeof step !== "object" || typeof (step as { id?: unknown }).id !== "string") {
-        throw new Error(`flows.${name}.steps[${index}] needs a string "id"`);
-      }
+      const path = `flows.${name}.steps[${index}]`;
+      assertStepJson(step, path);
+      if (typeof step.id !== "string") throw new Error(`${path} needs a string "id"`);
     });
   }
   return { spec: clone(doc) as RawSpec, flowName: entry };

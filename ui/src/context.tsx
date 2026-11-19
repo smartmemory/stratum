@@ -48,11 +48,13 @@ export function useLoad<T>(
   load: (client: DataClient) => Promise<T>,
   deps: unknown[],
   pollMs = 0,
-  subscribe?: (client: DataClient, push: (value: T) => void) => (() => void) | undefined,
+  subscribe?: (client: DataClient, push: (value: T) => void, onError: (message: string) => void) => (() => void) | undefined,
 ): Loaded<T> {
   const client = useDataClient();
   const [data, setData] = useState<T | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  // Keep a stream warning visible through an in-flight HTTP load.
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const seq = useRef(0);
 
@@ -81,19 +83,28 @@ export function useLoad<T>(
   }, [run]);
 
   useEffect(() => {
+    setStreamError(null);
     if (subscribe) {
+      let active = true;
       const off = subscribe(client, (value) => {
+        if (!active) return;
         seq.current += 1; // a pushed value is newer than any load still in flight
         setData(value);
         setError(null);
+        setStreamError(null);
         setLoading(false);
+      }, (message) => {
+        if (active) setStreamError(message);
       });
-      if (off) return off;
+      if (off) return () => {
+        active = false;
+        off();
+      };
     }
     if (!pollMs) return undefined;
     const timer = setInterval(run, pollMs);
     return () => clearInterval(timer);
   }, [client, run, pollMs, subscribe]);
 
-  return { data, error, loading, reload: run };
+  return { data, error: subscribe ? streamError ?? error : error, loading, reload: run };
 }

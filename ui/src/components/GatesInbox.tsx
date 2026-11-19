@@ -26,9 +26,10 @@ function outcomeText(result: GateResolution): string {
   return `${result.kind === "conflict" ? "conflict" : "refused"} (${result.code}): ${result.message}`;
 }
 
-export function GateCard({ gate, busy, onResolve, onOpenRun, onOpenFlow }: {
+export function GateCard({ gate, busy, supportsRevisionNotes = true, onResolve, onOpenRun, onOpenFlow }: {
   gate: PendingGate;
   busy: boolean;
+  supportsRevisionNotes?: boolean;
   onResolve: (action: GateAction, note?: string) => void;
   onOpenRun?: (runId: string, stepId?: string) => void;
   onOpenFlow?: (runId: string) => void;
@@ -65,17 +66,20 @@ export function GateCard({ gate, busy, onResolve, onOpenRun, onOpenFlow }: {
 
         {mode === "revise" && (
           <div className="sui-form">
-            <label className="sui-micro" htmlFor={`note-${gateKey(gate)}`}>revision note</label>
+            <label className="sui-micro" htmlFor={`note-${gateKey(gate)}`}>
+              revision note{!supportsRevisionNotes && <> · <span>Coming soon</span></>}
+            </label>
             <textarea
               id={`note-${gateKey(gate)}`}
               className="sui-input sui-textarea"
-              value={note}
+              disabled={!supportsRevisionNotes}
+              value={supportsRevisionNotes ? note : ""}
               onChange={(event) => setNote(event.target.value)}
-              placeholder="What should change before the next review?"
+              placeholder={supportsRevisionNotes ? "What should change before the next review?" : undefined}
             />
             {gate.reviseEndsRun && <div className="sui-callout sui-callout-bad">No revision rounds left{gate.maxRounds === null ? " (the flow sets no max_rounds)" : ""}: a revise now ends the run.</div>}
             <div className="sui-actions">
-              <button type="button" className="sui-btn" disabled={busy || !note.trim()} onClick={() => onResolve("revise", note.trim())}>Request revision</button>
+              <button type="button" className="sui-btn" disabled={busy || (supportsRevisionNotes && !note.trim())} onClick={() => onResolve("revise", supportsRevisionNotes ? note.trim() : undefined)}>Request revision</button>
               <button type="button" className="sui-btn sui-btn-ghost" onClick={() => setMode("idle")}>Cancel</button>
             </div>
           </div>
@@ -169,6 +173,7 @@ export function GatesInbox({ onOpenRun, onOpenFlow, onOpenRuns, onOpenGates, run
               key={`${gateKey(gate)}/${gate.gateToken ?? ""}`}
               gate={gate}
               busy={busy === gateKey(gate)}
+              supportsRevisionNotes={client.supportsRevisionNotes}
               onResolve={(action, note) => void resolve(gate, action, note)}
               onOpenRun={onOpenRun}
               onOpenFlow={onOpenFlow}

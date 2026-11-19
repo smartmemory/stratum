@@ -180,7 +180,7 @@ export interface ResolveGateRequest {
   runId: string;
   stepId: string;
   action: GateAction;
-  /** Required for revise by the UI; the v1 CLI accepts and drops it (`query_gate.ts` gateCommand). */
+  /** Required for revise by the UI when the client supports revision notes. */
   note?: string;
   /** From PendingGate.gateToken. */
   gateToken: string;
@@ -198,15 +198,18 @@ export interface DataClient {
   getRun(runId: string): Promise<RunDetail | null>;
   /** Every gate currently awaiting a decision, across runs. */
   listGates(): Promise<PendingGate[]>;
+  /** Set false when the backend cannot use revision notes. Omitted preserves the existing note form. */
+  supportsRevisionNotes?: boolean;
   /** Approve, reject (kill) or revise one waiting gate. Never throws for a refusal; returns ok:false. */
   resolveGate(request: ResolveGateRequest): Promise<GateResolution>;
   /**
    * OPTIONAL live updates for one run. `cb` gets the run's full detail whenever its file
    * changes (and once right after subscribing, so a write between `getRun` and `subscribe`
-   * is not lost); `null` means the run file is gone. Returns an unsubscribe function.
+   * is not lost); `null` means the run file is gone. Reports interruptions through
+   * `onError` when supplied. Returns an unsubscribe function.
    * A host whose client has no `subscribe` (Compose's may not) gets screens that poll instead.
    */
-  subscribe?(runId: string, cb: (run: RunDetail | null) => void): () => void;
+  subscribe?(runId: string, cb: (run: RunDetail | null) => void, onError?: (message: string) => void): () => void;
   /**
    * Builder (STRAT-UI-BUILDER-1): the engine's own `validateSpec()` (`ts/src/ir/validate.ts:348`)
    * on a whole document, in the `stratum_validate` shape. Optional: a host without it shows

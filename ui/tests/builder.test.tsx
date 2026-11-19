@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { createRef, useRef } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { DataClientProvider, type DataClient } from "../src";
@@ -11,6 +11,43 @@ import { stepKind, KINDS } from "../src/builder/lib/spec";
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const GATE_SPEC = JSON.parse(readFileSync(join(__dirname, "fixtures", "specs", "gate-5dc37b92-dd13-4486-91ca-636021d5ac9d.json"), "utf8"));
+
+it.each([
+  ["[]", /step JSON must be an object/i],
+  ['{"after": 42}', /after must be an array of step IDs/i],
+  ['{"after": [{}]}', /after must be an array of step IDs/i],
+])("keeps the committed step and shows an error when Step JSON is %s", (draft, error) => {
+  const ref = createRef<React.ComponentRef<typeof FlowBuilder>>();
+  render(<FlowBuilder ref={ref} initialSpec={GATE_SPEC} initialStepId="review_gate" />);
+  fireEvent.click(screen.getByText("step JSON", { selector: "summary" }));
+  const editor = screen.getByRole("textbox", { name: "step json" });
+  fireEvent.change(editor, { target: { value: draft } });
+  fireEvent.blur(editor);
+
+  expect(screen.getByRole("alert").textContent).toMatch(error);
+  expect(ref.current?.getDocument()).toEqual(GATE_SPEC);
+});
+
+it("keeps a malformed after import open and lets the user correct it", () => {
+  const ref = createRef<React.ComponentRef<typeof FlowBuilder>>();
+  render(<FlowBuilder ref={ref} initialSpec={GATE_SPEC} />);
+  fireEvent.click(screen.getByRole("button", { name: "Import" }));
+  const dialog = within(screen.getByRole("dialog"));
+  const editor = dialog.getByRole("textbox", { name: "import json" });
+  const step = { id: "draft", after: 42 as number | string[], do: "Draft" };
+  const spec = { version: 1, contracts: {}, flows: { entry: "main", main: { steps: [step] } } };
+  const submit = () => fireEvent.click(dialog.getByRole("button", { name: "Import" }));
+  fireEvent.change(editor, { target: { value: JSON.stringify(spec) } });
+  submit();
+  expect(dialog.getByRole("alert").textContent).toMatch(/flows\.main\.steps\[0\]\.after must be an array of step IDs/i);
+  expect(ref.current?.getDocument()).toEqual(GATE_SPEC);
+
+  step.after = [];
+  fireEvent.change(editor, { target: { value: JSON.stringify(spec) } });
+  submit();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(ref.current?.getDocument()).toEqual(spec);
+});
 
 function fakeClient(overrides: Partial<DataClient> = {}): DataClient {
   return {

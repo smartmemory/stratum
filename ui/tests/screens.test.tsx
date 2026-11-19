@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DataClientProvider, GatesInbox, RunDetail, RunsList, type DataClient } from "../src";
 import type { RunDetail as RunDetailData, RunSummary } from "../src/data-client";
+import { createHttpClient } from "../shell/http-client";
 import { fakeClient, fakeDetail, fakeGate } from "./fixtures";
 
 // Proof that no screen fetches: any network call fails the test.
@@ -96,6 +97,21 @@ describe("RunDetail", () => {
 });
 
 describe("GatesInbox", () => {
+  it("marks standalone revision notes as coming soon and submits a revision without one", async () => {
+    const { client, resolved } = fakeClient({
+      supportsRevisionNotes: createHttpClient().supportsRevisionNotes,
+    });
+    mount(client, <GatesInbox />);
+    fireEvent.click(await screen.findByRole("button", { name: "Revise" }));
+    expect((screen.getByRole("textbox", { name: /revision note/i }) as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByText("Coming soon")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Request revision" }));
+    await screen.findByText(/revise →/);
+    expect(resolved).toEqual([
+      { runId: fakeGate.runId, stepId: fakeGate.stepId, action: "revise", gateToken: fakeGate.gateToken, note: undefined },
+    ]);
+  });
+
   it("approves with the gate token the inbox showed, and requires a note to revise", async () => {
     const { client, resolved } = fakeClient();
     mount(client, <GatesInbox onOpenRun={vi.fn()} />);
@@ -154,6 +170,39 @@ describe("GatesInbox", () => {
 });
 
 describe("RunDetail live updates", () => {
+  it("shows a standalone stream failure while keeping the run, then clears it on data or pause", async () => {
+    let source!: TestEventSource;
+    class TestEventSource extends EventTarget {
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor() {
+        super();
+        this.addEventListener("error", (event) => this.onerror?.(event));
+        this.addEventListener("message", (event) => this.onmessage?.(event as MessageEvent));
+        source = this;
+      }
+      close() {}
+    }
+    vi.stubGlobal("EventSource", TestEventSource);
+    const { client } = fakeClient();
+    mount({ ...createHttpClient(), getRun: client.getRun }, <RunDetail runId={fakeDetail.id} />);
+    await screen.findByText(/waiting on gate/i);
+
+    const disconnect = () => act(() => { source.dispatchEvent(new Event("error")); });
+    disconnect();
+    expect(screen.getByRole("alert").textContent).toMatch(/live updates disconnected/i);
+    expect(screen.getByText(/waiting on gate/i)).toBeTruthy();
+
+    act(() => {
+      source.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(fakeDetail) }));
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    disconnect();
+    fireEvent.click(screen.getByRole("button", { name: "live" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("uses the client's subscribe when it has one, renders pushes, never polls, and unsubscribes on unmount", async () => {
     let push: (run: RunDetailData | null) => void = () => {};
     let unsubscribed = 0;
