@@ -919,6 +919,27 @@ describe("P4 consumer-dispatched fanout", () => {
     expect(audit.events.filter((event) => event.type === "fanout_attempt_result")).toHaveLength(2);
   });
 
+  it("retries a reported consumer failure that carries no output (Compose's timeout and agent-error envelope)", async () => {
+    const e = await engine();
+    const warn = vi.spyOn(console, "warn");
+    try {
+      for (const failure of ["Timed out after 600s", "Agent error: connector exploded"]) {
+        const fresh = await e.plan(retrySpec("consumer"), { items: ["a"] });
+        if (fresh.status !== "ready") throw new Error("expected consumer item");
+        const retry = await e.stepDone(fresh.runId, "fan/0", { failure }, fresh.ready[0]!.dispatchToken);
+        expect(retry).toMatchObject({ status: "ready", ready: [{ id: "fan/0", attempt: 2, previousFailure: { reason: failure } }] });
+        if (retry.status !== "ready") throw new Error("expected a retry");
+        const done = await e.stepDone(fresh.runId, "fan/0", { output: { value: "ok" } }, retry.ready[0]!.dispatchToken);
+        expect(done.status).toBe("completed");
+        const audit = await e.audit(fresh.runId);
+        expect(audit.steps.fan?.fanout?.items[0]?.attempts.map((record) => record.failureKind)).toEqual(["connector", undefined]);
+      }
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("not retried"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("retries ensure failures item-locally through the shared settlement path", async () => {
     const e = await engine();
     const planned = await e.plan(retrySpec("consumer"), { items: ["a"] });

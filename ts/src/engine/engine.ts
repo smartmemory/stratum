@@ -31,6 +31,9 @@ import { buildReceipt, findReceipt, ReceiptValidationError, spineSpent, type Rec
 import { assertRunId, type AttemptRecord, type AttemptTelemetry, type AuditEvent, burnIssuances, type CarryEntry, type CarryProvenance, type FailureContext, type FanoutItemState, type FanoutState, type PersistedRun, type ReceiptRecord, type RunStatus, StateStore, type StepState } from "./state.js";
 
 const execFileAsync = promisify(execFile);
+/** COMP-TUI-4-1: reported fanout failures that cannot change on a retry (same item, same files_owned). Compose prefixes
+ *  an ownership violation with its finding code (compose lib/consumer-fanout.js). */
+const DETERMINISTIC_REPORTED_FAILURE = /^FILES_OWNED_VIOLATION\b/;
 
 type BudgetVerdict = "flow" | "subflow" | "task";
 type SettledReceiptRecord = ReceiptRecord & { budgetVerdict?: "ok" | BudgetVerdict };
@@ -2489,7 +2492,13 @@ export class StratumEngine {
       : undefined;
     if (hasBudget(usage)) this.event(run, "fanout_ledger_debit", step.id, { itemIndex: item.index, amount: usage });
     const stageStep = { ...step, do: stage.do, out: stage.out, ensure: stage.ensure, budget: step.budget } as Step;
-    const contractFailure = this.contractError(stageStep, result.output, contracts);
+    // A connector that reports a failure sends no output (Compose: `{ failure }`), so its output is not judged against
+    // the contract: the reported failure is the reason. Only a reported failure known to be deterministic (an ownership
+    // violation, COMP-TUI-4-1) counts as a contract failure and is not retried; timeouts and agent errors stay retryable.
+    const reportedFailure = result.failure !== undefined;
+    const contractFailure = reportedFailure
+      ? (DETERMINISTIC_REPORTED_FAILURE.test(String(result.failure)) ? String(result.failure) : undefined)
+      : this.contractError(stageStep, result.output, contracts);
     const failureReason = settled === "flow" ? "flow budget exhausted" : settled === "task" ? "task budget exhausted"
       : reportedDispatches ? "dispatches are engine-accounted; do not report them in usage"
         : result.failure ?? contractFailure;
