@@ -3,7 +3,7 @@ import { readFile, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SpecValidationError, StratumEngine, type EngineConnector } from "../../src/engine/engine.js";
 import { createEvaluator } from "../../src/eval/expr.js";
 import type { AuditEvent } from "../../src/engine/state.js";
@@ -854,27 +854,80 @@ describe("P4 consumer-dispatched fanout", () => {
     expect(connectorCalls).toBe(0);
   });
 
-  it("retries contract and ensure failures item-locally through the shared settlement path", async () => {
-    const e = await engine();
-    const spec = {
-      version: 1, contracts: { Result: { value: "string" } }, flows: { entry: "main", main: {
+  const retrySpec = (dispatch: "consumer" | "engine") => ({
+      version: 1, contracts: { Result: resultContract }, flows: { entry: "main", main: {
         input: { items: "string[]" }, output: { from: "${fan.output[0]}", contract: "Result" },
-        steps: [{ id: "fan", attempts: 3, fanout: {
-          over: "${input.items}", dispatch: "consumer", concurrency: 1, isolation: "none", require: "all", merge: "sequential",
+        steps: [{ id: "fan", attempts: 2, fanout: {
+          over: "${input.items}", dispatch, concurrency: 1, isolation: "none", require: "all", merge: "sequential",
           steps: [{ do: "fan ${item}", out: "Result", ensure: [{ expr: "result.value == 'ok'" }] }],
         } }],
       } },
-    };
-    const planned = await e.plan(spec, { items: ["a"] });
+  });
+
+  it("fails a consumer ownership violation after one attempt and explains why", async () => {
+    const e = await engine();
+    const planned = await e.plan(retrySpec("consumer"), { items: ["a"] });
+    if (planned.status !== "ready") throw new Error("expected consumer item");
+    const failure = "FILES_OWNED_VIOLATION: Task changed unowned paths: test/example.test.js";
+    const warn = vi.spyOn(console, "warn");
+    try {
+      const response = await e.stepDone(planned.runId, "fan/0", { failure }, planned.ready[0]!.dispatchToken);
+      const audit = await e.audit(planned.runId);
+      const item = audit.steps.fan?.fanout?.items[0];
+      expect(item?.attempts).toHaveLength(1);
+      expect(item).toMatchObject({
+        status: "failed",
+        failure: { reason: expect.stringContaining("not retried") },
+        attempts: [{ failureKind: "contract", failure: { reason: expect.stringContaining(failure) } }],
+      });
+      expect(audit.events.filter((event) => event.type === "fanout_attempt_result")).toMatchObject([
+        { detail: { itemIndex: 0, attempt: 1, success: false, failure: { kind: "contract" } } },
+      ]);
+      expect(audit.events.filter((event) => event.type === "fanout_item_ready")).toHaveLength(1);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("not retried"));
+      expect(response.status).toBe("failed");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("fails an engine-dispatched output contract violation after one attempt", async () => {
+    const e = await engine(async () => ({ output: { nope: true } }));
+    const planned = await e.plan(retrySpec("engine"), { items: ["a"] });
+    expect((await waitForTerminal(e, planned.runId)).status).toBe("failed");
+    const audit = await e.audit(planned.runId);
+    expect(audit.steps.fan?.fanout?.items[0]).toMatchObject({
+      status: "failed",
+      failure: { reason: expect.stringContaining("Unrecognized key") },
+      attempts: [{ failureKind: "contract" }],
+    });
+    expect(audit.steps.fan?.fanout?.items[0]?.attempts).toHaveLength(1);
+    expect(audit.events.filter((event) => event.type === "fanout_attempt_result")).toHaveLength(1);
+  });
+
+  it("preserves two attempts for a consumer result classified as a connector failure", async () => {
+    const e = await engine();
+    const planned = await e.plan(retrySpec("consumer"), { items: ["a"] });
+    if (planned.status !== "ready") throw new Error("expected consumer item");
+    const result = { output: { value: "ok" }, failure: "transient connector failure" };
+    const retry = await e.stepDone(planned.runId, "fan/0", result, planned.ready[0]!.dispatchToken);
+    expect(retry).toMatchObject({ status: "ready", ready: [{ id: "fan/0", attempt: 2, previousFailure: { reason: result.failure } }] });
+    if (retry.status !== "ready") throw new Error("expected connector retry");
+    expect((await e.stepDone(planned.runId, "fan/0", result, retry.ready[0]!.dispatchToken)).status).toBe("failed");
+    const audit = await e.audit(planned.runId);
+    expect(audit.steps.fan?.fanout?.items[0]?.attempts.map((record) => record.failureKind)).toEqual(["connector", "connector"]);
+    expect(audit.events.filter((event) => event.type === "fanout_attempt_result")).toHaveLength(2);
+  });
+
+  it("retries ensure failures item-locally through the shared settlement path", async () => {
+    const e = await engine();
+    const planned = await e.plan(retrySpec("consumer"), { items: ["a"] });
     if (planned.status !== "ready") throw new Error("expected consumer item");
     const first = planned.ready[0]!;
     expect(first as unknown as Record<string, unknown>).toMatchObject({ isFinalStage: true });
-    const schemaRetry = await e.stepDone(planned.runId, "fan/0", { output: { nope: true } }, first.dispatchToken);
-    if (schemaRetry.status !== "ready") throw new Error("expected contract retry");
-    expect(schemaRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 2, previousFailure: { reason: expect.stringContaining("Unrecognized key") } });
-    const ensureRetry = await e.stepDone(planned.runId, "fan/0", { output: { value: "bad" } }, schemaRetry.ready[0]!.dispatchToken);
+    const ensureRetry = await e.stepDone(planned.runId, "fan/0", { output: { value: "bad" } }, first.dispatchToken);
     if (ensureRetry.status !== "ready") throw new Error("expected ensure retry");
-    expect(ensureRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 3, previousFailure: { reason: expect.stringContaining("ensure") } });
+    expect(ensureRetry.ready[0]).toMatchObject({ id: "fan/0", attempt: 2, previousFailure: { reason: expect.stringContaining("ensure") } });
     const completed = await e.stepDone(planned.runId, "fan/0", { output: { value: "ok" } }, ensureRetry.ready[0]!.dispatchToken);
     expect(completed).toMatchObject({ status: "completed", output: { value: "ok" } });
   });

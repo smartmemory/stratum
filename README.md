@@ -727,6 +727,8 @@ flows:
 
 `fanout.over` must be one full reference that resolves to an array. Each item moves through the declared stages. `${item}` is the source item and `${prev}` is the previous stage output. The final stage needs `out` when later steps or the flow output reference the fanout result.
 
+The `attempts` limit applies per item and stage. A stage result classified as a contract failure ends that item immediately, even when attempts remain.
+
 `isolation: worktree` gives each item a Git worktree. `merge` only accepts `sequential`. `require` decides how many item successes are needed before merge. `dispatch` defaults to `engine`. Consumer-dispatched worktree fanout has extra validation rules, including a required unconditional successor gate.
 
 ### `run` Steps

@@ -2114,7 +2114,7 @@ export class StratumEngine {
       item.failure = outcome.failure;
       if (run.status !== "running") return this.response(run);
       const stageAttempts = item.attempts.filter((record) => record.stage === stageIndex).length;
-      if (stageAttempts < (stage.attempts ?? step.attempts ?? 2)) {
+      if (outcome.retryable && stageAttempts < (stage.attempts ?? step.attempts ?? 2)) {
         item.status = "pending";
         await this.prepareConsumerItem(run, spec, contracts, flow, step, state, item);
       } else {
@@ -2352,7 +2352,7 @@ export class StratumEngine {
             }) };
           }
           catch (error) { outcome = { ok: false, error }; }
-          const disposition = await lock(async (): Promise<"abandon" | "retry" | "accepted"> => {
+          const disposition = await lock(async (): Promise<"abandon" | "retry" | "failed" | "accepted"> => {
             if (stale()) return "abandon";
             if (!outcome.ok) {
               lastFailure = { attempt, reason: message(outcome.error) };
@@ -2365,12 +2365,13 @@ export class StratumEngine {
             if (stale()) return "abandon";
             if (!settled.success) {
               lastFailure = settled.failure;
-              return "retry";
+              return settled.retryable ? "retry" : "failed";
             }
             return "accepted";
           });
           if (disposition === "abandon") return;
           if (disposition === "retry") continue;
+          if (disposition === "failed") break;
           previous = outcome.ok ? outcome.result.output : undefined;
           success = true;
           break;
@@ -2464,7 +2465,7 @@ export class StratumEngine {
     result: StepResult,
     workspaceRoot?: string,
     dispatchId?: string,
-  ): Promise<{ success: true } | { success: false; failure: FailureContext }> {
+  ): Promise<{ success: true } | { success: false; failure: FailureContext; retryable: boolean }> {
     if (!step.fanout) throw new Error("fanout missing after validation");
     const stage = step.fanout.steps[stageIndex];
     if (!stage) throw new Error("fanout stage is out of range");
@@ -2476,7 +2477,7 @@ export class StratumEngine {
     if (!validConnectorTelemetry(result.telemetry) || !validUsage(result.usage ?? {})) {
       const failure = { attempt, reason: "invalid connector telemetry or usage" };
       this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, "usage", failure, result);
-      return { success: false, failure };
+      return { success: false, failure, retryable: true };
     }
     const usage = { ...(result.usage ?? {}) };
     const reportedDispatches = usage.dispatches !== undefined;
@@ -2508,10 +2509,15 @@ export class StratumEngine {
         : ensure?.kind === "fail" ? "ensure"
           : settled !== undefined || ensure?.kind === "flow_budget" || ensure?.kind === "subflow_budget" ? "budget"
             : !validConnectorTelemetry(result.telemetry) || !validUsage(result.usage ?? {}) ? "usage" : "connector";
-      const failure = { attempt, reason };
+      const retryable = kind !== "contract";
+      const stoppedForContract = !retryable && settled !== "flow";
+      const failure = { attempt, reason: stoppedForContract ? `${reason} (contract failure, not retried)` : reason };
       this.recordFanoutAttempt(run, step, item, stageIndex, attempt, false, kind, failure, result, usage);
+      if (stoppedForContract) {
+        console.warn(`Fanout run ${run.id}, step ${step.id}, item ${item.index}, stage ${stageIndex}: contract failure, not retried`);
+      }
       if (ensure?.kind === "flow_budget" || settled === "flow") await this.terminalBudget(run, failure);
-      return { success: false, failure };
+      return { success: false, failure, retryable };
     }
     item.attempts.push({
       attempt,
