@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-24
+
+- **Release: npm catches up with the source.** `@smartmemory/stratum` 0.7.4 and `@smartmemory/stratum-ui` 0.1.1 publish everything listed below. A new Compose user installing from npm got Stratum 0.7.3, which has no `models` command (`compose build --dry-run` failed to load the model catalog), and `stratum-ui` 0.1.0, which has no `NavProvider` export (`compose start` served a blank page). Both are patch numbers on purpose: Compose 0.7.2 already asks for `^0.7.3` and `^0.1.0`, so a fresh install of the published Compose picks these up with no Compose release, and every addition below is optional and backwards compatible. The notes below that call for a minor bump (the MCP `isolated` field, the `FlowBuilder` ref) are additive, so they ride this patch. The next breaking surface change still takes a minor, with Compose moving to the same minor.
+
 - **COMP-TUI-4-1 fix: a reported consumer failure with no output is retried again** (`ts/src/engine/engine.ts`). The first cut judged the missing output of every `{ failure }` result against the stage contract, so every Compose item failure (timeouts, agent and provider errors, `outcome: failed`) counted as a contract failure and was never retried; Compose's golden fanout file hung on "one item retry does not starve concurrent peers". A reported failure is now the reason as reported; only one that starts with `FILES_OWNED_VIOLATION` stays non-retryable. Tests: `ts/tests/engine/p4.test.ts` (new "retries a reported consumer failure that carries no output" case, fails on 4292d94), p4 32/32; Compose `test/ts-cutover-consumer-fanout-golden.test.js` 43/43 on this engine.
 
 - **COMP-TUI-4-1:** Fanout stops retrying an item after a stage result classified as a contract failure, including Compose ownership violations. The item and audit event explain why retries stopped.

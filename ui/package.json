@@ -1,6 +1,6 @@
 {
   "name": "@smartmemory/stratum-ui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Stratum run view and gate inbox as React components fed by an injected DataClient, plus a standalone shell and a read-only local server.",
   "license": "BUSL-1.1",
   "author": "SmartMemory",
